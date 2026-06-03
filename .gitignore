@@ -1,0 +1,27 @@
+# Python 字节码缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyInstaller 中间产物（dist/ 故意保留，方便 git clone 直接拿 exe 用）
+build/
+
+# 临时/恢复残留
+_strings.txt
+recovered_pycdc.py
+
+# venv
+.venv/
+.venv-linux/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
