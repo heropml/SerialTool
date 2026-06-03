@@ -1,0 +1,10 @@
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/pycxx.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/pycdas.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/pycdc.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/check.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/edit_cache.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/rebuild_cache.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/list_install_components.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/install.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/install/local.dir
+D:/tools/SerialTool/tools/pycdc-build-unix/CMakeFiles/install/strip.dir
