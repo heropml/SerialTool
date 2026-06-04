@@ -6,6 +6,26 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ---
 
+## Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+  - [Serial Setup](#serial-setup)
+  - [Receiving Data](#receiving-data)
+  - [Sending Data](#sending-data)
+  - [Interface](#interface)
+  - [Multilingual UI](#multilingual-ui)
+  - [Themes](#themes)
+  - [Hover Tooltips](#hover-tooltips)
+  - [System Tray](#system-tray)
+  - [Auto-saved Configuration](#auto-saved-configuration)
+- [Tips](#tips)
+- [Status Bar](#status-bar)
+- [FAQ](#faq)
+- [System Requirements](#system-requirements)
+
+---
+
 ## Quick Start
 
 1. Double-click the **SerialTool** icon on your desktop
@@ -93,7 +113,25 @@ RX and TX share one view; arrows indicate direction:
 
 ### Multilingual UI
 
-The dropdown in the top-right toggles between **简体中文 / English / 繁體中文**, no restart required — all UI text (labels, buttons, placeholders, error messages, file dialogs) switches instantly.
+A dropdown next to the title in the top-left toggles between **简体中文 / English / 繁體中文**, no restart required — all UI text (labels, buttons, placeholders, error messages, file dialogs) switches instantly.
+
+### Themes
+
+A second dropdown in the top-left (right next to the language picker) switches the overall color scheme. **9 themes** are available, each with a distinctive look that affects the whole window — sidebar cards, buttons, data area, status bar, even the close-confirm dialog:
+
+| Theme | Mode | Vibe |
+|-------|------|------|
+| Default | light | iOS-style — light cards on a soft grey background |
+| Dark | dark | Generic VSCode-style dark grey |
+| One Half Light | light | Atom editor light, clean off-white |
+| One Half Dark | dark | Atom editor dark, blue-tinted grey |
+| Solarized Light | light | Cream background, easy on the eyes |
+| Solarized Dark | dark | Deep teal-blue, classic terminal scheme |
+| Tango Dark | dark | Linux-style charcoal |
+| Campbell | dark | Pitch black (Windows Terminal default) |
+| Ubuntu | dark | Aubergine purple |
+
+Theme switching affects newly received data immediately; existing history keeps its original colors (clear the data area if you want everything recolored). The selected theme is remembered across restarts.
 
 ### Hover Tooltips
 

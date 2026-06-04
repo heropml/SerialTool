@@ -55,6 +55,97 @@ def get_app_icon():
 
 
 # ============== iOS 调色板 ==============
+# ============== 主题：整体配色 ==============
+# 每个主题指定 mode (light/dark) → 决定 chrome (侧边栏卡片/按钮/输入框等) 用哪套色板；
+# bg/fg = 数据区背景 + 默认文字; tx = 发送(→)颜色; ts = 时间戳颜色
+THEMES = {
+    "default":     {"label": "Default",         "mode": "light", "bg": "#FAFAFC", "fg": "#1C1C1E", "tx": "#007AFF", "ts": "#6E6E73"},
+    "dark":        {"label": "Dark",            "mode": "dark",  "bg": "#1E1E1E", "fg": "#D4D4D4", "tx": "#569CD6", "ts": "#808080"},
+    "one_half_lt": {"label": "One Half Light",  "mode": "light", "bg": "#FAFAFA", "fg": "#383A42", "tx": "#0184BC", "ts": "#A0A1A7"},
+    "one_half_dk": {"label": "One Half Dark",   "mode": "dark",  "bg": "#282C34", "fg": "#DCDFE4", "tx": "#61AFEF", "ts": "#5C6370"},
+    "solar_lt":    {"label": "Solarized Light", "mode": "light", "bg": "#FDF6E3", "fg": "#586E75", "tx": "#268BD2", "ts": "#93A1A1"},
+    "solar_dk":    {"label": "Solarized Dark",  "mode": "dark",  "bg": "#002B36", "fg": "#839496", "tx": "#268BD2", "ts": "#586E75"},
+    "tango_dk":    {"label": "Tango Dark",      "mode": "dark",  "bg": "#2E3436", "fg": "#D3D7CF", "tx": "#729FCF", "ts": "#888A85"},
+    "campbell":    {"label": "Campbell",        "mode": "dark",  "bg": "#0C0C0C", "fg": "#CCCCCC", "tx": "#3B78FF", "ts": "#767676"},
+    "ubuntu":      {"label": "Ubuntu",          "mode": "dark",  "bg": "#300A24", "fg": "#EEEEEC", "tx": "#3465A4", "ts": "#888A85"},
+}
+THEME_DEFAULT = "default"
+
+def _mix(c1: str, c2: str, ratio: float) -> str:
+    """混色：c1 朝 c2 偏移 ratio (0~1)，返回 #RRGGBB"""
+    h1, h2 = c1.lstrip("#"), c2.lstrip("#")
+    r1, g1, b1 = int(h1[0:2], 16), int(h1[2:4], 16), int(h1[4:6], 16)
+    r2, g2, b2 = int(h2[0:2], 16), int(h2[2:4], 16), int(h2[4:6], 16)
+    r = round(r1 + (r2 - r1) * ratio)
+    g = round(g1 + (g2 - g1) * ratio)
+    b = round(b1 + (b2 - b1) * ratio)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def chrome_for(theme_id: str) -> dict:
+    """根据主题 bg/fg/tx 派生整套 chrome 色 — 每个主题的 chrome 都是自己色调。
+    Light 主题: 窗口比卡片稍深 → 卡片浮在背景上的标准 iOS/Material 观感。
+    Dark 主题: 窗口 = theme.bg, 卡片比窗口稍亮（lighten）, 营造层次。
+    """
+    t = THEMES.get(theme_id, THEMES[THEME_DEFAULT])
+    is_dark = t.get("mode") == "dark"
+    bg = t["bg"]; fg = t["fg"]; accent = t["tx"]
+
+    if is_dark:
+        window_bg = bg
+        card_bg = _mix(bg, "#FFFFFF", 0.07)
+        # ghost / input 系列要比 card 更亮一截 — 否则按钮跟卡片同色, 视觉上"只有字"
+        input_bg = _mix(bg, "#FFFFFF", 0.13)
+        input_focus_bg = _mix(bg, "#FFFFFF", 0.18)
+        ghost_bg = _mix(bg, "#FFFFFF", 0.14)
+        ghost_hover = _mix(bg, "#FFFFFF", 0.22)
+        ghost_pressed = _mix(bg, "#FFFFFF", 0.30)
+        combo_dropdown_bg = _mix(bg, "#FFFFFF", 0.13)
+        separator = _mix(bg, "#FFFFFF", 0.18)
+        scrollbar = _mix(bg, "#FFFFFF", 0.28)
+        scrollbar_hover = _mix(bg, "#FFFFFF", 0.48)
+        title_btn_hover = "rgba(255, 255, 255, 24)"
+        title_combo_hover = "rgba(255, 255, 255, 18)"
+    else:
+        # Light 主题：窗口/数据区都用 theme.bg（cream/grey 等主题色），卡片**永远纯白**
+        # 这样 cards 在 themed bg 上明显浮起来 — 视觉层次：cards 白 > 窗口 themed > 数据区 themed
+        window_bg = bg
+        card_bg = "#FFFFFF"
+        input_bg = _mix(bg, "#000000", 0.05)
+        input_focus_bg = "#FFFFFF"
+        ghost_bg = _mix(bg, "#000000", 0.05)
+        ghost_hover = _mix(bg, "#000000", 0.11)
+        ghost_pressed = _mix(bg, "#000000", 0.18)
+        combo_dropdown_bg = "#FFFFFF"
+        separator = _mix(bg, "#000000", 0.10)
+        scrollbar = _mix(bg, "#000000", 0.20)
+        scrollbar_hover = _mix(bg, "#000000", 0.40)
+        title_btn_hover = "rgba(0, 0, 0, 18)"
+        title_combo_hover = "rgba(0, 0, 0, 14)"
+
+    return {
+        "window_bg":         window_bg,
+        "card_bg":           card_bg,
+        "text":              fg,
+        "text_sec":          _mix(fg, bg, 0.40),
+        "separator":         separator,
+        "input_bg":          input_bg,
+        "input_focus_bg":    input_focus_bg,
+        "ghost_bg":          ghost_bg,
+        "ghost_hover":       ghost_hover,
+        "ghost_pressed":     ghost_pressed,
+        "combo_dropdown_bg": combo_dropdown_bg,
+        "scrollbar":         scrollbar,
+        "scrollbar_hover":   scrollbar_hover,
+        "accent":            accent,
+        "accent_hover":      _mix(accent, "#FFFFFF", 0.20),
+        "accent_pressed":    _mix(accent, "#000000", 0.20),
+        "danger":            "#FF453A" if is_dark else "#FF3B30",
+        "danger_hover":      "#FF6961" if is_dark else "#FF5147",
+        "title_btn_hover":   title_btn_hover,
+        "title_combo_hover": title_combo_hover,
+    }
+
 COLOR_BG = "#F2F2F7"
 COLOR_CARD = "#FFFFFF"
 COLOR_TEXT = "#1C1C1E"
@@ -80,6 +171,17 @@ TR = {
         "hex_display": "HEX 显示",
         "encoding": "字符编码",
         "encoding_auto": "自动",
+        "theme": "主题",
+        # 主题名 — 国际通用术语（Solarized/Tango/Campbell/Ubuntu）保留原名，仅翻译 Light/Dark 后缀
+        "theme_default": "默认",
+        "theme_dark": "暗色",
+        "theme_one_half_lt": "One Half 浅色",
+        "theme_one_half_dk": "One Half 深色",
+        "theme_solar_lt": "Solarized 浅色",
+        "theme_solar_dk": "Solarized 深色",
+        "theme_tango_dk": "Tango 深色",
+        "theme_campbell": "Campbell",
+        "theme_ubuntu": "Ubuntu",
         "auto_wrap": "自动换行",
         "show_timestamp": "显示时间戳",
         "packet_split": "时间分包",
@@ -158,6 +260,7 @@ TR = {
         # —— 鼠标悬停说明 ——
         "hex_display_tip": "勾选后数据按 16 进制显示\n关闭：按文本/ASCII 显示",
         "encoding_tip": "字符编码（影响 RX 解码 / TX 编码 / 文件加载）\n自动：UTF-8 优先，乱码自动回退 GBK\n指定 UTF-8/GBK/GB2312/Big5 等则严格按选定编码",
+        "theme_tip": "数据区配色方案（终端风格）\n切换后仅影响新到的数据，历史不重涂\n想全部刷新点「清空」即可",
         "auto_wrap_tip": "行太长自动折行\n关闭：超出宽度需横向滚动查看",
         "show_timestamp_tip": "每个数据块前显示 [年/月/日 时:分:秒 毫秒] 时间戳和 ←/→ 收发方向箭头",
         "packet_split_tip": "收到数据后超过下方「超时」时间无新数据就开新行\n用于把短时间到达的连续数据合并显示",
@@ -181,6 +284,17 @@ TR = {
         "hex_display": "HEX View",
         "encoding": "Encoding",
         "encoding_auto": "Auto",
+        "theme": "Theme",
+        # English: keep original recognized theme names
+        "theme_default": "Default",
+        "theme_dark": "Dark",
+        "theme_one_half_lt": "One Half Light",
+        "theme_one_half_dk": "One Half Dark",
+        "theme_solar_lt": "Solarized Light",
+        "theme_solar_dk": "Solarized Dark",
+        "theme_tango_dk": "Tango Dark",
+        "theme_campbell": "Campbell",
+        "theme_ubuntu": "Ubuntu",
         "auto_wrap": "Word Wrap",
         "show_timestamp": "Timestamp",
         "packet_split": "Packet Split",
@@ -259,6 +373,7 @@ TR = {
         # —— hover tooltips ——
         "hex_display_tip": "Display incoming bytes as hex.\nOff: show as text/ASCII",
         "encoding_tip": "Character encoding for RX decoding / TX encoding / file load.\nAuto: UTF-8 first, fall back to GBK on mojibake.\nOr pick UTF-8 / GBK / GB2312 / Big5 etc. for strict decoding.",
+        "theme_tip": "Color scheme for the data area (terminal-style).\nOnly newly received data is recolored; history keeps its colors.\nClear the data area to apply the new theme to everything.",
         "auto_wrap_tip": "Wrap long lines automatically.\nOff: scroll horizontally",
         "show_timestamp_tip": "Prefix each block with [YYYY/MM/DD HH:MM:SS ms] timestamp and ←/→ direction arrow",
         "packet_split_tip": "Start a new block when no data arrives for longer than the timeout below.\nMerges burst data on the same line",
@@ -282,6 +397,16 @@ TR = {
         "hex_display": "HEX 顯示",
         "encoding": "字元編碼",
         "encoding_auto": "自動",
+        "theme": "主題",
+        "theme_default": "預設",
+        "theme_dark": "暗色",
+        "theme_one_half_lt": "One Half 淺色",
+        "theme_one_half_dk": "One Half 深色",
+        "theme_solar_lt": "Solarized 淺色",
+        "theme_solar_dk": "Solarized 深色",
+        "theme_tango_dk": "Tango 深色",
+        "theme_campbell": "Campbell",
+        "theme_ubuntu": "Ubuntu",
         "auto_wrap": "自動換行",
         "show_timestamp": "顯示時間戳",
         "packet_split": "時間分包",
@@ -360,6 +485,7 @@ TR = {
         # —— 滑鼠懸停說明 ——
         "hex_display_tip": "勾選後資料按 16 進位顯示\n關閉：按文字/ASCII 顯示",
         "encoding_tip": "字元編碼（影響 RX 解碼 / TX 編碼 / 檔案載入）\n自動：UTF-8 優先，亂碼自動回退 GBK\n指定 UTF-8/GBK/GB2312/Big5 等則嚴格按選定編碼",
+        "theme_tip": "資料區配色方案（終端風格）\n切換後僅影響新到的資料，歷史不重塗\n想全部重新整理點「清空」即可",
         "auto_wrap_tip": "行太長自動換行\n關閉：超出寬度需橫向捲動檢視",
         "show_timestamp_tip": "每個資料區塊前顯示 [年/月/日 時:分:秒 毫秒] 時間戳和 ←/→ 收發方向箭頭",
         "packet_split_tip": "收到資料後超過下方「超時」時間無新資料就開新行\n用於把短時間到達的連續資料合併顯示",
@@ -461,13 +587,19 @@ class TitleBar(QWidget):
             f"color: {COLOR_TEXT_SECONDARY}; background: transparent;")
         layout.addWidget(self.title_label)
 
-        layout.addStretch(1)
-
+        # 语言 + 主题切换全部左侧 — 紧挨标题（旧版语言在右上现挪到左上）
+        layout.addSpacing(12)
         self.cb_language = QComboBox()
         self.cb_language.setMinimumWidth(96)
         self.cb_language.setFixedHeight(26)
         layout.addWidget(self.cb_language)
-        layout.addSpacing(6)
+
+        self.cb_theme = QComboBox()
+        self.cb_theme.setMinimumWidth(120)
+        self.cb_theme.setFixedHeight(26)
+        layout.addWidget(self.cb_theme)
+
+        layout.addStretch(1)
 
         # 用 Segoe UI 里可靠的 Unicode 字符
         self._ch_min = "−"
@@ -560,6 +692,10 @@ def make_label(text, size=13, bold=False, color=COLOR_TEXT):
     if bold:
         f.setWeight(QFont.DemiBold)
     lbl.setFont(f)
+    if color == COLOR_TEXT_SECONDARY:
+        lbl.setProperty("theme_color_role", "secondary")
+    elif color == COLOR_TEXT:
+        lbl.setProperty("theme_color_role", "primary")
     lbl.setStyleSheet(f"color: {color}; background: transparent;")
     return lbl
 
@@ -650,12 +786,14 @@ class CloseDialog(QDialog):
     RESULT_CANCEL = 0
 
     def __init__(self, title_text: str, btn_min_text: str,
-                 btn_quit_text: str, btn_cancel_text: str, parent=None):
+                 btn_quit_text: str, btn_cancel_text: str,
+                 theme_id: str = THEME_DEFAULT, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self._result_val = self.RESULT_CANCEL
+        self._theme_id = theme_id
 
         # 外层透明容器，里面放圆角白卡
         outer = QVBoxLayout(self)
@@ -673,13 +811,14 @@ class CloseDialog(QDialog):
         v.setContentsMargins(28, 24, 28, 20)
         v.setSpacing(20)
 
-        # 标题文本 (居中)
+        # 标题文本 (居中) — 颜色按主题来
+        c = chrome_for(theme_id)
         self.lbl_title = QLabel(title_text)
         f = QFont("Segoe UI", 14)
         f.setWeight(QFont.DemiBold)
         self.lbl_title.setFont(f)
         self.lbl_title.setAlignment(Qt.AlignCenter)
-        self.lbl_title.setStyleSheet(f"color: {COLOR_TEXT}; background: transparent;")
+        self.lbl_title.setStyleSheet(f"color: {c['text']}; background: transparent;")
         v.addWidget(self.lbl_title)
 
         # 3 个按钮一行
@@ -711,13 +850,14 @@ class CloseDialog(QDialog):
         self.setMinimumWidth(380)
 
     def _build_qss(self):
+        c = chrome_for(self._theme_id)
         return f"""
         QFrame#DialogCard {{
-            background-color: {COLOR_CARD};
+            background-color: {c['card_bg']};
             border-radius: 14px;
         }}
         QPushButton#DialogPrimaryBtn {{
-            background-color: {COLOR_BLUE};
+            background-color: {c['accent']};
             color: white;
             border: 0px;
             border-radius: 9px;
@@ -726,10 +866,10 @@ class CloseDialog(QDialog):
             font-weight: 600;
             padding: 6px 12px;
         }}
-        QPushButton#DialogPrimaryBtn:hover {{ background-color: #1A86FF; }}
-        QPushButton#DialogPrimaryBtn:pressed {{ background-color: {COLOR_BLUE_PRESSED}; }}
+        QPushButton#DialogPrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QPushButton#DialogPrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
         QPushButton#DialogDangerBtn {{
-            background-color: {COLOR_RED};
+            background-color: {c['danger']};
             color: white;
             border: 0px;
             border-radius: 9px;
@@ -738,10 +878,10 @@ class CloseDialog(QDialog):
             font-weight: 600;
             padding: 6px 12px;
         }}
-        QPushButton#DialogDangerBtn:hover {{ background-color: #FF5147; }}
+        QPushButton#DialogDangerBtn:hover {{ background-color: {c['danger_hover']}; }}
         QPushButton#DialogGhostBtn {{
-            background-color: {COLOR_GRAY_LIGHT};
-            color: {COLOR_TEXT};
+            background-color: {c['ghost_bg']};
+            color: {c['text']};
             border: 0px;
             border-radius: 9px;
             font-family: 'Segoe UI';
@@ -749,8 +889,8 @@ class CloseDialog(QDialog):
             font-weight: 500;
             padding: 6px 12px;
         }}
-        QPushButton#DialogGhostBtn:hover {{ background-color: #E5E5EA; }}
-        QPushButton#DialogGhostBtn:pressed {{ background-color: #D1D1D6; }}
+        QPushButton#DialogGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        QPushButton#DialogGhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
         """
 
     def _on_min(self):
@@ -821,6 +961,24 @@ class SerialTool(QMainWindow):
         s = self._L.get(key, key)
         return s.format(**kwargs) if kwargs else s
 
+    def _theme_label(self, theme_id: str) -> str:
+        """主题显示名 — 优先用翻译 key (theme_<id>)，缺失就回退到 THEMES['label'] 英文名"""
+        key = f"theme_{theme_id}"
+        s = self._L.get(key)
+        if s:
+            return s
+        return THEMES.get(theme_id, {}).get("label", theme_id)
+
+    def _theme_id(self) -> str:
+        if not hasattr(self, "cb_theme"):
+            return THEME_DEFAULT
+        return self.cb_theme.currentData() or THEME_DEFAULT
+
+    def _set_state_color(self, opened: bool):
+        """状态点色：打开 = 通用绿（任何主题都看得清）；关闭 = 主题 danger 红"""
+        color = "#34C759" if opened else chrome_for(self._theme_id())["danger"]
+        self.lbl_state.setStyleSheet(f"color: {color};")
+
     def _tr_label(self, key, size=13, bold=False, color=COLOR_TEXT):
         lbl = make_label(self._t(key), size, bold, color)
         lbl.setProperty("tr_text", key)
@@ -858,6 +1016,14 @@ class SerialTool(QMainWindow):
         self.cb_language.setCurrentIndex(lang_idx)
         self.cb_language.currentIndexChanged.connect(
             lambda i: self._set_language(self.cb_language.itemData(i)))
+
+        # 主题下拉 — 也在标题栏左侧
+        self.cb_theme = self.title_bar.cb_theme
+        for theme_id in THEMES.keys():
+            self.cb_theme.addItem(self._theme_label(theme_id), theme_id)
+        self.cb_theme.setProperty("tr_tooltip", "theme_tip")
+        self.cb_theme.setToolTip(self._t("theme_tip"))
+        self.cb_theme.currentIndexChanged.connect(lambda _: self._on_theme_changed())
 
         root.addWidget(self.title_bar)
 
@@ -901,7 +1067,7 @@ class SerialTool(QMainWindow):
         self.lbl_rx_stat = QLabel("RX: 0 B")
         self.lbl_tx_stat = QLabel("TX: 0 B")
         self.lbl_state = QLabel(self._t("state_closed"))
-        self.lbl_state.setStyleSheet(f"color: {COLOR_RED};")
+        self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
             lbl.setFont(QFont("Segoe UI", 10))
         # 三个状态项放左下角 — 用 addWidget 而非 addPermanentWidget
@@ -1285,52 +1451,60 @@ class SerialTool(QMainWindow):
         return card
 
     def apply_style(self):
+        """根据当前主题构建全局 QSS — light/dark 模式整体切换"""
+        tid = self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT
+        c = chrome_for(tid)
+        t = THEMES.get(tid, THEMES[THEME_DEFAULT])
+
+        # Tooltip 在 dark mode 用浅色 (反差)，light 用深色
+        tooltip_bg = "#F2F2F7" if t.get("mode") == "dark" else "#1C1C1E"
+        tooltip_fg = "#1C1C1E" if t.get("mode") == "dark" else "#FFFFFF"
+
         qss = f"""
         QMainWindow, QWidget#Central, QWidget#Content {{
-            background-color: {COLOR_BG};
+            background-color: {c['window_bg']};
         }}
         QFrame#Card {{
-            background-color: {COLOR_CARD};
+            background-color: {c['card_bg']};
             border-radius: 14px;
             border: 0px;
         }}
+        QLabel {{ color: {c['text']}; background: transparent; }}
         QComboBox, QLineEdit {{
-            background-color: {COLOR_GRAY_LIGHT};
-            border: 1px solid {COLOR_SEPARATOR};
+            background-color: {c['input_bg']};
+            border: 1px solid {c['separator']};
             border-radius: 8px;
             padding: 5px 10px;
             min-height: 22px;
             font-family: 'Segoe UI';
             font-size: 13px;
-            color: {COLOR_TEXT};
-            selection-background-color: {COLOR_BLUE};
+            color: {c['text']};
+            selection-background-color: {c['accent']};
         }}
         QComboBox:focus, QLineEdit:focus {{
-            border: 1px solid {COLOR_BLUE};
-            background-color: #FFFFFF;
+            border: 1px solid {c['accent']};
+            background-color: {c['input_focus_bg']};
         }}
-        QComboBox::drop-down {{
-            border: none;
-            width: 22px;
-        }}
+        QComboBox::drop-down {{ border: none; width: 22px; }}
         QComboBox::down-arrow {{
             image: none;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-top: 5px solid {COLOR_TEXT_SECONDARY};
+            border-top: 5px solid {c['text_sec']};
             margin-right: 8px;
         }}
         QComboBox QAbstractItemView {{
-            background-color: #FFFFFF;
-            border: 1px solid {COLOR_SEPARATOR};
+            background-color: {c['combo_dropdown_bg']};
+            color: {c['text']};
+            border: 1px solid {c['separator']};
             border-radius: 8px;
             padding: 4px;
             outline: 0px;
-            selection-background-color: {COLOR_BLUE};
+            selection-background-color: {c['accent']};
             selection-color: #FFFFFF;
         }}
         QPushButton#PrimaryBtn {{
-            background-color: {COLOR_BLUE};
+            background-color: {c['accent']};
             color: white;
             border: 0px;
             border-radius: 10px;
@@ -1339,13 +1513,13 @@ class SerialTool(QMainWindow):
             font-weight: 600;
             padding: 6px 18px;
         }}
-        QPushButton#PrimaryBtn:hover {{ background-color: #1A86FF; }}
-        QPushButton#PrimaryBtn:pressed {{ background-color: {COLOR_BLUE_PRESSED}; }}
-        QPushButton#PrimaryBtn[state="open"] {{ background-color: {COLOR_RED}; }}
-        QPushButton#PrimaryBtn[state="open"]:hover {{ background-color: #FF5147; }}
+        QPushButton#PrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QPushButton#PrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
+        QPushButton#PrimaryBtn[state="open"] {{ background-color: {c['danger']}; }}
+        QPushButton#PrimaryBtn[state="open"]:hover {{ background-color: {c['danger_hover']}; }}
         QPushButton#GhostBtn {{
-            background-color: {COLOR_GRAY_LIGHT};
-            color: {COLOR_BLUE};
+            background-color: {c['ghost_bg']};
+            color: {c['accent']};
             border: 0px;
             border-radius: 8px;
             font-family: 'Segoe UI';
@@ -1354,30 +1528,38 @@ class SerialTool(QMainWindow):
             padding: 6px 14px;
             min-height: 22px;
         }}
-        QPushButton#GhostBtn:hover {{ background-color: #E5E5EA; }}
-        QPushButton#GhostBtn:pressed {{ background-color: #D1D1D6; }}
+        QPushButton#GhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        QPushButton#GhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
         QPushButton#IconBtn {{
-            background-color: {COLOR_GRAY_LIGHT};
-            color: {COLOR_TEXT_SECONDARY};
+            background-color: {c['ghost_bg']};
+            color: {c['text_sec']};
             border: 0px;
             border-radius: 8px;
             font-size: 14px;
             font-weight: bold;
         }}
         QPushButton#IconBtn:hover {{
-            background-color: #E5E5EA;
-            color: {COLOR_BLUE};
+            background-color: {c['ghost_hover']};
+            color: {c['accent']};
         }}
-        QTextEdit#RecvBox, QTextEdit#SendBox {{
-            background-color: #FAFAFC;
-            border: 1px solid {COLOR_SEPARATOR};
+        QTextEdit#RecvBox {{
+            background-color: {t['bg']};
+            border: 1px solid {c['separator']};
             border-radius: 10px;
             padding: 10px;
-            color: {COLOR_TEXT};
-            selection-background-color: {COLOR_BLUE};
+            color: {t['fg']};
+            selection-background-color: {c['accent']};
+        }}
+        QTextEdit#SendBox {{
+            background-color: {c['input_bg']};
+            border: 1px solid {c['separator']};
+            border-radius: 10px;
+            padding: 10px;
+            color: {c['text']};
+            selection-background-color: {c['accent']};
         }}
         QTextEdit#RecvBox:focus, QTextEdit#SendBox:focus {{
-            border: 1px solid {COLOR_BLUE};
+            border: 1px solid {c['accent']};
         }}
         QScrollBar:vertical {{
             background: transparent;
@@ -1385,38 +1567,40 @@ class SerialTool(QMainWindow):
             margin: 4px;
         }}
         QScrollBar::handle:vertical {{
-            background: #C7C7CC;
+            background: {c['scrollbar']};
             border-radius: 5px;
             min-height: 30px;
         }}
-        QScrollBar::handle:vertical:hover {{ background: #8E8E93; }}
+        QScrollBar::handle:vertical:hover {{ background: {c['scrollbar_hover']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
         QStatusBar {{
             background: transparent;
-            border-top: 1px solid {COLOR_SEPARATOR};
+            color: {c['text_sec']};
+            border-top: 1px solid {c['separator']};
         }}
+        QStatusBar QLabel {{ color: {c['text_sec']}; background: transparent; }}
         QStatusBar::item {{ border: 0px; }}
         QToolTip {{
-            background-color: #1C1C1E;
-            color: #FFFFFF;
+            background-color: {tooltip_bg};
+            color: {tooltip_fg};
             border: 0px;
             border-radius: 6px;
             padding: 4px 8px;
         }}
         QWidget#TitleBar {{
-            background-color: {COLOR_BG};
-            border-bottom: 1px solid {COLOR_SEPARATOR};
+            background-color: {c['window_bg']};
+            border-bottom: 1px solid {c['separator']};
         }}
         QPushButton#CtrlBtn {{
             background-color: transparent;
-            color: {COLOR_TEXT};
+            color: {c['text']};
             border: 0px;
             font-size: 14px;
             font-family: 'Segoe UI';
         }}
-        QPushButton#CtrlBtn:hover {{ background-color: rgba(0, 0, 0, 18); }}
+        QPushButton#CtrlBtn:hover {{ background-color: {c['title_btn_hover']}; }}
         QPushButton#CloseBtn:hover {{
-            background-color: {COLOR_RED};
+            background-color: {c['danger']};
             color: #FFFFFF;
         }}
         QWidget#TitleBar QComboBox {{
@@ -1426,10 +1610,10 @@ class SerialTool(QMainWindow):
             padding: 1px 8px;
             min-height: 22px;
             font-size: 12px;
-            color: {COLOR_TEXT};
+            color: {c['text']};
         }}
         QWidget#TitleBar QComboBox:hover {{
-            background-color: rgba(0, 0, 0, 14);
+            background-color: {c['title_combo_hover']};
         }}
         QWidget#TitleBar QComboBox::drop-down {{
             border: none;
@@ -1447,6 +1631,11 @@ class SerialTool(QMainWindow):
         }}
         """
         self.setStyleSheet(qss)
+        # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
+        # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
+        for w in self.findChildren(QWidget):
+            w.style().unpolish(w)
+            w.style().polish(w)
 
     # ----- 端口扫描 -----
     def _clear_oneshot_scan(self, scan):
@@ -1546,7 +1735,7 @@ class SerialTool(QMainWindow):
         self.btn_open.style().unpolish(self.btn_open)
         self.btn_open.style().polish(self.btn_open)
         self.lbl_state.setText(f"● {port} @ {baud}")
-        self.lbl_state.setStyleSheet(f"color: {COLOR_GREEN};")
+        self._set_state_color(opened=True)
         self.set_settings_enabled(False)
 
     def _flush_pending_cr(self):
@@ -1589,13 +1778,56 @@ class SerialTool(QMainWindow):
         self.btn_open.style().unpolish(self.btn_open)
         self.btn_open.style().polish(self.btn_open)
         self.lbl_state.setText(self._t("state_closed"))
-        self.lbl_state.setStyleSheet(f"color: {COLOR_RED};")
+        self._set_state_color(opened=False)
         self.set_settings_enabled(True)
 
     def set_settings_enabled(self, enabled):
         for w in (self.cb_port, self.cb_baud, self.cb_databits,
                   self.cb_parity, self.cb_stopbits, self.btn_refresh):
             w.setEnabled(enabled)
+
+    # ----- 主题 -----
+    def _theme(self) -> dict:
+        return THEMES.get(self._theme_id(), THEMES[THEME_DEFAULT])
+
+    def _apply_theme_label_styles(self, chrome: dict = None):
+        c = chrome or chrome_for(self._theme_id())
+        for lbl in self.findChildren(QLabel):
+            role = lbl.property("theme_color_role")
+            if role == "primary":
+                lbl.setStyleSheet(f"color: {c['text']}; background: transparent;")
+            elif role == "secondary":
+                lbl.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
+
+    def _update_legend_label(self, chrome: dict = None):
+        if not hasattr(self, "legend_label"):
+            return
+        c = chrome or chrome_for(self._theme_id())
+        t = self._theme()
+        self.legend_label.setText(
+            f'<span style="color:{c["text_sec"]};">{self._t("legend_rx")}</span>'
+            f'&nbsp;&nbsp;'
+            f'<span style="color:{t["tx"]};">{self._t("legend_tx")}</span>'
+        )
+
+    def _on_theme_changed(self):
+        """切换主题：整体重建 QSS — 侧边栏卡片/按钮/输入框/标题栏/数据区都跟着 light/dark 切换。
+        历史文字不重涂（旧 TX 蓝、旧 RX 文字保留各自原色）"""
+        # 1. 重建全局 QSS，apply_style 会读 cb_theme 当前选项自适应
+        self.apply_style()
+        # 2. 内联 setStyleSheet 的几处也跟着 chrome palette 刷
+        c = chrome_for(self._theme_id())
+        self._apply_theme_label_styles(c)
+        if hasattr(self, "lbl_version"):
+            self.lbl_version.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
+        if hasattr(self, "status_bar"):
+            self.status_bar.setStyleSheet(f"background: transparent; color: {c['text_sec']};")
+        if hasattr(self, "lbl_state"):
+            self._set_state_color(opened=bool(self.ser and self.ser.is_open))
+        if hasattr(self, "title_bar") and hasattr(self.title_bar, "title_label"):
+            self.title_bar.title_label.setStyleSheet(
+                f"color: {c['text_sec']}; background: transparent;")
+        self._update_legend_label(c)
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -1739,13 +1971,11 @@ class SerialTool(QMainWindow):
         self._last_recv_time = now
 
     def _append_block_data(self, text: str, direction: str, force_new_block: bool):
-        color = COLOR_BLUE if direction == "tx" else COLOR_TEXT
+        theme = self._theme()
+        # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
+        body_color = theme["tx"] if direction == "tx" else theme["fg"]
         cursor = self.txt_recv.textCursor()
         cursor.movePosition(QTextCursor.End)
-
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
 
         log_pieces = []
 
@@ -1763,17 +1993,25 @@ class SerialTool(QMainWindow):
                 # 箭头跟时间戳绑一起：时间戳关掉时也不显示，纯数据更干净
                 prefix += "→ " if direction == "tx" else "← "
             if prefix:
+                # 时间戳 + 箭头用 ts 灰色（淡化）
+                ts_fmt = QTextCharFormat()
+                ts_fmt.setForeground(QColor(theme["ts"]))
+                cursor.setCharFormat(ts_fmt)
                 cursor.insertText(prefix)
                 log_pieces.append(prefix)
                 self._txt_ends_with_nl = False
 
+        # 正文用 body_color
+        body_fmt = QTextCharFormat()
+        body_fmt.setForeground(QColor(body_color))
+        cursor.setCharFormat(body_fmt)
         cursor.insertText(text)
         log_pieces.append(text)
         if text:
             self._txt_ends_with_nl = text.endswith("\n")
 
         reset = QTextCharFormat()
-        reset.setForeground(QColor(COLOR_TEXT))
+        reset.setForeground(QColor(theme["fg"]))
         cursor.setCharFormat(reset)
         self.txt_recv.setTextCursor(cursor)
 
@@ -2097,12 +2335,8 @@ class SerialTool(QMainWindow):
                 except Exception:
                     pass
 
-        if hasattr(self, "legend_label"):
-            self.legend_label.setText(
-                f'<span style="color:{COLOR_TEXT_SECONDARY};">{self._t("legend_rx")}</span>'
-                f'&nbsp;&nbsp;'
-                f'<span style="color:{COLOR_BLUE};">{self._t("legend_tx")}</span>'
-            )
+        self._apply_theme_label_styles()
+        self._update_legend_label()
 
         if hasattr(self, "cb_checksum"):
             idx = self.cb_checksum.currentIndex()
@@ -2119,6 +2353,15 @@ class SerialTool(QMainWindow):
 
         if hasattr(self, "cb_encoding"):
             self.cb_encoding.setItemText(0, self._t("encoding_auto"))
+
+        # 主题下拉的 9 项也跟着语言切换
+        if hasattr(self, "cb_theme"):
+            self.cb_theme.blockSignals(True)
+            for i in range(self.cb_theme.count()):
+                tid = self.cb_theme.itemData(i)
+                if tid:
+                    self.cb_theme.setItemText(i, self._theme_label(tid))
+            self.cb_theme.blockSignals(False)
 
         if hasattr(self, "btn_open"):
             opened = bool(self.ser and self.ser.is_open)
@@ -2199,6 +2442,7 @@ class SerialTool(QMainWindow):
             s.setValue("line_split", self.sw_line_split.isChecked())
             s.setValue("line_nl_mode", self.cb_line_nl.currentIndex())
             s.setValue("encoding", self.cb_encoding.currentData())
+            s.setValue("theme", self.cb_theme.currentData())
             s.setValue("packet_timeout", self.ed_packet_timeout.text())
             s.setValue("max_lines", self.ed_max_lines.text())
             s.setValue("tx_hex", self.sw_tx_hex.isChecked())
@@ -2276,6 +2520,19 @@ class SerialTool(QMainWindow):
                 break
         # 触发一次 _on_encoding_changed 初始化增量解码器
         self._on_encoding_changed()
+
+        # 主题 — 按 theme_id 查 itemData
+        theme_saved = s.value("theme", THEME_DEFAULT) or THEME_DEFAULT
+        # 静默切到目标 idx — 不让 setCurrentIndex 在 __init__ 阶段触发 _on_theme_changed
+        # （此时 widget 还没完成首次 show，Qt setStyleSheet 不会完全 propagate 到子组件）
+        self.cb_theme.blockSignals(True)
+        for i in range(self.cb_theme.count()):
+            if self.cb_theme.itemData(i) == theme_saved:
+                self.cb_theme.setCurrentIndex(i)
+                break
+        self.cb_theme.blockSignals(False)
+        # 推迟到 event loop 启动后再应用 — 此时所有 widget 已 show，setStyleSheet 全部生效
+        QTimer.singleShot(0, self._on_theme_changed)
         self.sw_tx_hex.setChecked(to_bool(s.value("tx_hex", False)), animate=False)
         self.sw_append_newline.setChecked(to_bool(s.value("append_newline", False)), animate=False)
         try:
@@ -2433,6 +2690,7 @@ class SerialTool(QMainWindow):
             self._t("close_minimize"),
             self._t("close_quit"),
             self._t("close_cancel"),
+            theme_id=self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT,
             parent=self,
         )
         dlg.exec_()

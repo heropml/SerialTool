@@ -69,10 +69,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; 把整个 dist\SerialTool 目录搬进 {app}
 Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 用户向使用说明（区别于源码仓库里的 README.md 开发文档）
-; 用 USAGE.md 英文文件名 + 英文内容 — 安装包是多语言的，不能默认绑死中文
-Source: "USAGE.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
-; USAGE 里引用的图，少了它 Typora 显示破图
+; 用户向使用说明 — 按安装语言条件装对应文档
+; english     → USAGE.md
+; chinesesimp → 使用说明.md
+; chinesetrad → 使用說明.md
+Source: "USAGE.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Languages: english
+Source: "使用说明.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Languages: chinesesimp
+Source: "使用說明.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Languages: chinesetrad
+; 三份文档都引用的预览图
 Source: "icon_preview.png"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -81,6 +85,30 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 ; 桌面快捷方式（可选）
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[INI]
+; 首次安装时根据安装语言 seed settings.ini，让 SerialTool 第一次启动就用对应语言
+; - 写两份（{app} 和 {userappdata}\SerialTool）兼容两种 settings 落地路径：
+;   per-user 装 → 走 {app}；all-users 装到 Program Files + 非管理员运行 → 走 %APPDATA% fallback
+; - 用 Check 函数确保只在文件还不存在时 seed，不覆盖已有用户配置
+Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedApp
+Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedApp
+Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedApp
+Filename: "{userappdata}\SerialTool\settings.ini"; Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedAppData
+Filename: "{userappdata}\SerialTool\settings.ini"; Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedAppData
+Filename: "{userappdata}\SerialTool\settings.ini"; Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedAppData
+
+[Code]
+function ShouldSeedApp: Boolean;
+begin
+  // 只在 {app}\settings.ini 不存在时 seed —— 升级安装保留用户旧偏好
+  Result := not FileExists(ExpandConstant('{app}\settings.ini'));
+end;
+
+function ShouldSeedAppData: Boolean;
+begin
+  Result := not FileExists(ExpandConstant('{userappdata}\SerialTool\settings.ini'));
+end;
 
 [Run]
 ; 安装完成后可选立即启动
