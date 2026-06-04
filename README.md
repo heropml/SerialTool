@@ -2,7 +2,7 @@
 
 iOS 风格的串口调试工具，基于 PyQt5 + pyserial。支持中英文动态切换、无边框窗口 + 自绘标题栏、QSplitter 可拖拽布局、Xshell 风格日志、10 种校验算法、关闭确认 + 系统托盘、图标固化在源码内（防替换）。
 
-![iOS 风格 UI](icon_preview.png)
+![iOS 风格 UI](./icon_preview.png)
 
 ---
 

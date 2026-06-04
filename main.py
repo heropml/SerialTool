@@ -8,6 +8,12 @@ import sys
 import time
 from datetime import datetime
 
+# 单点真源版本号，与 SerialTool.iss / build_installer.bat 同步
+try:
+    from version import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = "0.0.0"
+
 import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import (Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -874,6 +880,12 @@ class SerialTool(QMainWindow):
         self.status_bar.addWidget(self.lbl_rx_stat)
         self.status_bar.addWidget(QLabel("    "))
         self.status_bar.addWidget(self.lbl_tx_stat)
+
+        # 版本号 — 右下角 (addPermanentWidget 走右边)
+        self.lbl_version = QLabel(f"v{APP_VERSION}")
+        self.lbl_version.setFont(QFont("Segoe UI", 10))
+        self.lbl_version.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+        self.status_bar.addPermanentWidget(self.lbl_version)
 
         # 同步最大行数
         self._on_max_lines_changed()

@@ -6,6 +6,19 @@ __pycache__/
 
 # PyInstaller 中间产物（dist/ 故意保留，方便 git clone 直接拿 exe 用）
 build/
+build_onefile/
+dist_onefile/
+# .spec 文件每次 PyInstaller 自动重新生成（build.bat 用 CLI 参数构造）
+*.spec
+
+# Inno Setup 安装包产物（按需 release，不进 git）
+installer/
+
+# 运行时用户配置（每台机器不同）
+settings.ini
+
+# pycdc Python 反编译器（恢复 main.py 时临时用过，SerialTool 编译/运行不需要）
+tools/
 
 # 临时/恢复残留
 _strings.txt
