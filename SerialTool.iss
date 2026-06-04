@@ -70,8 +70,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 用户向使用说明（区别于源码仓库里的 README.md 开发文档）
-Source: "使用说明.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
-; 使用说明里引用的图，少了它 Typora 显示破图
+; 用 USAGE.md 英文文件名 + 英文内容 — 安装包是多语言的，不能默认绑死中文
+Source: "USAGE.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
+; USAGE 里引用的图，少了它 Typora 显示破图
 Source: "icon_preview.png"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
