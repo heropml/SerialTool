@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"D:/tools/SerialTool/tools/pycdc-build-unix/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
