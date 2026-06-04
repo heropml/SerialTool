@@ -3,6 +3,7 @@
 SerialTool - iOS 风格串口调试工具
 PyQt5 + pyserial
 """
+import codecs
 import os
 import sys
 import time
@@ -77,6 +78,8 @@ TR = {
         "legend_rx": "← 收",
         "legend_tx": "→ 发",
         "hex_display": "HEX 显示",
+        "encoding": "字符编码",
+        "encoding_auto": "自动",
         "auto_wrap": "自动换行",
         "show_timestamp": "显示时间戳",
         "packet_split": "时间分包",
@@ -135,6 +138,7 @@ TR = {
         "err_serial_not_open": "串口未打开",
         "err_hex_odd": "HEX 长度必须为偶数",
         "err_hex_bad": "HEX 格式错误: {e}",
+        "err_hex_invalid_chars": "非法字符 {chars}",
         "err_send_failed": "发送失败: {e}",
         "err_checksum": "校验计算失败: {e}",
         "err_save_failed": "保存失败: {e}",
@@ -153,12 +157,13 @@ TR = {
         "tray_minimized": "{app} 已最小化到系统托盘",
         # —— 鼠标悬停说明 ——
         "hex_display_tip": "勾选后数据按 16 进制显示\n关闭：按文本/ASCII 显示",
+        "encoding_tip": "字符编码（影响 RX 解码 / TX 编码 / 文件加载）\n自动：UTF-8 优先，乱码自动回退 GBK\n指定 UTF-8/GBK/GB2312/Big5 等则严格按选定编码",
         "auto_wrap_tip": "行太长自动折行\n关闭：超出宽度需横向滚动查看",
         "show_timestamp_tip": "每个数据块前显示 [年/月/日 时:分:秒 毫秒] 时间戳和 ←/→ 收发方向箭头",
         "packet_split_tip": "收到数据后超过下方「超时」时间无新数据就开新行\n用于把短时间到达的连续数据合并显示",
         "timeout_tip": "时间分包的间隔阈值（毫秒）\n两次接收间隔超过此值就开新行",
         "line_split_tip": "按换行符自动分行显示\n可选自动识别 / CRLF / LF / CR",
-        "real_time_log_tip": "接收的数据实时追加保存到日志文件\n关闭后停止写入",
+        "real_time_log_tip": "收发数据实时追加保存到日志文件\n显示什么就记什么(含时间戳/箭头/HEX)，关闭后停止写入",
         "max_lines_tip": "数据区最多保留的行数\n超出会丢弃最早的（防止内存涨爆）",
         "hex_send_tip": "把输入框的 16 进制字符串按字节发送（如 AA BB CC）\n关闭：按文本原样发送",
         "append_newline_tip": "每次发送后自动追加换行符\n可选 CRLF / LF / CR",
@@ -174,6 +179,8 @@ TR = {
         "legend_rx": "← RX",
         "legend_tx": "→ TX",
         "hex_display": "HEX View",
+        "encoding": "Encoding",
+        "encoding_auto": "Auto",
         "auto_wrap": "Word Wrap",
         "show_timestamp": "Timestamp",
         "packet_split": "Packet Split",
@@ -232,6 +239,7 @@ TR = {
         "err_serial_not_open": "Port not opened",
         "err_hex_odd": "HEX length must be even",
         "err_hex_bad": "HEX format error: {e}",
+        "err_hex_invalid_chars": "invalid character(s) {chars}",
         "err_send_failed": "Send failed: {e}",
         "err_checksum": "Checksum failed: {e}",
         "err_save_failed": "Save failed: {e}",
@@ -250,12 +258,13 @@ TR = {
         "tray_minimized": "{app} minimized to system tray",
         # —— hover tooltips ——
         "hex_display_tip": "Display incoming bytes as hex.\nOff: show as text/ASCII",
+        "encoding_tip": "Character encoding for RX decoding / TX encoding / file load.\nAuto: UTF-8 first, fall back to GBK on mojibake.\nOr pick UTF-8 / GBK / GB2312 / Big5 etc. for strict decoding.",
         "auto_wrap_tip": "Wrap long lines automatically.\nOff: scroll horizontally",
         "show_timestamp_tip": "Prefix each block with [YYYY/MM/DD HH:MM:SS ms] timestamp and ←/→ direction arrow",
         "packet_split_tip": "Start a new block when no data arrives for longer than the timeout below.\nMerges burst data on the same line",
         "timeout_tip": "Time-split threshold (ms).\nNew block when receive gap exceeds this",
         "line_split_tip": "Split on newline characters.\nAuto / CRLF / LF / CR",
-        "real_time_log_tip": "Append received data to a log file in real time.\nOff to stop writing",
+        "real_time_log_tip": "Append both RX and TX data to a log file in real time.\nWYSIWYG: timestamp/arrow/HEX preserved. Off to stop writing.",
         "max_lines_tip": "Maximum lines kept in the data area.\nOldest are dropped (prevents memory bloat)",
         "hex_send_tip": "Send input as raw bytes parsed from a hex string (e.g. AA BB CC).\nOff: send as text",
         "append_newline_tip": "Append a newline after each send.\nCRLF / LF / CR",
@@ -271,6 +280,8 @@ TR = {
         "legend_rx": "← 收",
         "legend_tx": "→ 發",
         "hex_display": "HEX 顯示",
+        "encoding": "字元編碼",
+        "encoding_auto": "自動",
         "auto_wrap": "自動換行",
         "show_timestamp": "顯示時間戳",
         "packet_split": "時間分包",
@@ -329,6 +340,7 @@ TR = {
         "err_serial_not_open": "串口未開啟",
         "err_hex_odd": "HEX 長度必須為偶數",
         "err_hex_bad": "HEX 格式錯誤: {e}",
+        "err_hex_invalid_chars": "非法字元 {chars}",
         "err_send_failed": "發送失敗: {e}",
         "err_checksum": "校驗計算失敗: {e}",
         "err_save_failed": "儲存失敗: {e}",
@@ -347,12 +359,13 @@ TR = {
         "tray_minimized": "{app} 已最小化到系統托盤",
         # —— 滑鼠懸停說明 ——
         "hex_display_tip": "勾選後資料按 16 進位顯示\n關閉：按文字/ASCII 顯示",
+        "encoding_tip": "字元編碼（影響 RX 解碼 / TX 編碼 / 檔案載入）\n自動：UTF-8 優先，亂碼自動回退 GBK\n指定 UTF-8/GBK/GB2312/Big5 等則嚴格按選定編碼",
         "auto_wrap_tip": "行太長自動換行\n關閉：超出寬度需橫向捲動檢視",
         "show_timestamp_tip": "每個資料區塊前顯示 [年/月/日 時:分:秒 毫秒] 時間戳和 ←/→ 收發方向箭頭",
         "packet_split_tip": "收到資料後超過下方「超時」時間無新資料就開新行\n用於把短時間到達的連續資料合併顯示",
         "timeout_tip": "時間分包的間隔閾值（毫秒）\n兩次接收間隔超過此值就開新行",
         "line_split_tip": "按換行符自動分行顯示\n可選自動識別 / CRLF / LF / CR",
-        "real_time_log_tip": "接收的資料即時追加儲存到日誌檔案\n關閉後停止寫入",
+        "real_time_log_tip": "收發資料即時追加儲存到日誌檔案\n顯示什麼就記什麼(含時間戳/箭頭/HEX)，關閉後停止寫入",
         "max_lines_tip": "資料區最多保留的行數\n超出會丟棄最早的（防止記憶體漲爆）",
         "hex_send_tip": "把輸入框的 16 進位字串按位元組發送（如 AA BB CC）\n關閉：按文字原樣發送",
         "append_newline_tip": "每次發送後自動追加換行符\n可選 CRLF / LF / CR",
@@ -612,6 +625,23 @@ class PortScannerThread(QThread):
         self.wait(2000)
 
 
+class OneShotPortScanner(QThread):
+    """点 ⟳ 手动刷新端口时用的一次性扫描线程，避免在 GUI 线程跑 comports() 卡顿"""
+    scan_complete = pyqtSignal(list)
+
+    def run(self):
+        try:
+            ports = list(serial.tools.list_ports.comports())
+            result = []
+            for p in ports:
+                desc = p.description.replace(p.device, "").strip(" ()-")
+                label = f"{p.device}  {desc}" if desc else p.device
+                result.append((p.device, label))
+            self.scan_complete.emit(result)
+        except Exception:
+            self.scan_complete.emit([])
+
+
 # ============== 关闭确认对话框 (iOS 风格) ==============
 class CloseDialog(QDialog):
     """无边框 + 圆角白底 + 居中标题 + 3 个并排按钮"""
@@ -763,6 +793,7 @@ class SerialTool(QMainWindow):
         self._pending_line_break = False
         self._rx_decode_buffer = b""
         self._rx_pending_cr = False
+        self._inc_decoder = None  # 重置增量解码器（None → _decode_rx 首次调用时按当前 codec 重建）
         self._txt_ends_with_nl = True
         self._log_file = None
         self._log_file_path = ""
@@ -1028,6 +1059,15 @@ class SerialTool(QMainWindow):
         self.sw_rx_hex = IOSSwitch(False)
         sw_row(row, "hex_display", self.sw_rx_hex); row += 1
 
+        # 字符编码 — 影响 RX 解码、TX 编码、文件加载
+        self.cb_encoding = QComboBox()
+        self.cb_encoding.addItem(self._t("encoding_auto"), "auto")
+        for codec_name in ("UTF-8", "GBK", "GB2312", "GB18030", "Big5", "ASCII", "Latin-1"):
+            self.cb_encoding.addItem(codec_name, codec_name.lower())
+        self.cb_encoding.setFixedWidth(MAIN_W)
+        self.cb_encoding.currentIndexChanged.connect(lambda _: self._on_encoding_changed())
+        extra_row(row, "encoding", self.cb_encoding); row += 1
+
         self.sw_wrap = IOSSwitch(True)
         self.sw_wrap.toggled.connect(self.on_wrap_toggled)
         sw_row(row, "auto_wrap", self.sw_wrap); row += 1
@@ -1048,6 +1088,8 @@ class SerialTool(QMainWindow):
         self.cb_line_nl.addItem("LF")
         self.cb_line_nl.addItem("CR")
         self.cb_line_nl.setFixedWidth(MAIN_W)
+        # 切换换行模式时把待定 \r 冲出来（防止从 CRLF 切到 LF/CR 后旧 \r 永远见不到）
+        self.cb_line_nl.currentIndexChanged.connect(lambda _: self._flush_pending_cr())
         sw_extra_row(row, "line_split", self.sw_line_split, self.cb_line_nl); row += 1
 
         self.sw_log_file = IOSSwitch(False)
@@ -1407,19 +1449,28 @@ class SerialTool(QMainWindow):
         self.setStyleSheet(qss)
 
     # ----- 端口扫描 -----
+    def _clear_oneshot_scan(self, scan):
+        """deleteLater 之后清掉 Python 属性引用，避免下次 isRunning() 访问已删 C++ 对象。
+        `is scan` 守卫：如果期间已经创建了新 scan，不清新的"""
+        if getattr(self, "_oneshot_scan", None) is scan:
+            self._oneshot_scan = None
+
     def refresh_ports(self):
-        ports = list(serial.tools.list_ports.comports())
-        if not ports:
-            port_list = [("", self._t("no_ports"))]
-        else:
-            port_list = []
-            for p in ports:
-                desc = p.description.replace(p.device, "").strip(" ()-")
-                label = f"{p.device}  {desc}" if desc else p.device
-                port_list.append((p.device, label))
-        keep = self.cb_port.currentData() if hasattr(self, 'cb_port') else None
-        self._last_port_list = port_list
-        self._populate_port_combo(port_list, keep)
+        """点 ⟳ 时调用 — 用一次性后台线程，避免慢驱动卡 GUI。
+        扫描结果通过 _on_port_scan_complete 回 GUI 线程（和后台轮询线程共用同一处理逻辑）
+
+        线程**不挂 parent**：万一退出时 wait(2000) 超时 comports() 还卡住，
+        线程对象不会跟着主窗口一起销毁；finished 后 deleteLater() 自己清，
+        同时 _clear_oneshot_scan 把 Python 属性置 None 避免悬空引用。
+        """
+        if getattr(self, "_oneshot_scan", None) and self._oneshot_scan.isRunning():
+            return  # 节流：上一次还在跑就忽略
+        scan = OneShotPortScanner()  # 故意无 parent
+        self._oneshot_scan = scan
+        scan.scan_complete.connect(self._on_port_scan_complete)
+        scan.finished.connect(lambda: self._clear_oneshot_scan(scan))
+        scan.finished.connect(scan.deleteLater)
+        scan.start()
 
     def _populate_port_combo(self, port_list, keep_device=None):
         self.cb_port.blockSignals(True)
@@ -1498,9 +1549,23 @@ class SerialTool(QMainWindow):
         self.lbl_state.setStyleSheet(f"color: {COLOR_GREEN};")
         self.set_settings_enabled(False)
 
+    def _flush_pending_cr(self):
+        """把跨包待定的 \\r 输出出来。
+        场景：CRLF 模式下设备只发了孤立 \\r 然后没下文，关串口/切模式时
+        如果不冲掉，用户永远看不到那个 \\r。"""
+        if not self._rx_pending_cr:
+            return
+        self._rx_pending_cr = False
+        force_new = (self._last_direction != "rx") or self._pending_line_break
+        self._append_block_data("\r", direction="rx", force_new_block=force_new)
+        self._last_direction = "rx"
+
     def close_serial(self):
         if self.sw_period.isChecked():
             self.sw_period.setChecked(False)
+        # 串口关之前先把待定 \r 显示出来，否则数据丢用户视觉
+        # 同时要在关闭实时日志前执行，保证日志和屏幕显示一致。
+        self._flush_pending_cr()
         if self.sw_log_file.isChecked():
             self.sw_log_file.setChecked(False)
         if self.reader:
@@ -1533,8 +1598,41 @@ class SerialTool(QMainWindow):
             w.setEnabled(enabled)
 
     # ----- 接收 -----
+    def _get_codec(self) -> str:
+        """当前 RX/TX/文件 编码模式 — 'auto' 或具体 codec 名"""
+        if hasattr(self, "cb_encoding"):
+            return self.cb_encoding.currentData() or "auto"
+        return "auto"
+
+    def _send_codec(self) -> str:
+        """TX 用的具体 codec — Auto 模式下默认 utf-8"""
+        c = self._get_codec()
+        return "utf-8" if c == "auto" else c
+
+    def _on_encoding_changed(self):
+        """切换编码时重置增量解码状态，悬挂字节别用新 codec 错误解码"""
+        self._rx_decode_buffer = b""
+        enc = self._get_codec()
+        if enc == "auto":
+            self._inc_decoder = None
+        else:
+            try:
+                self._inc_decoder = codecs.getincrementaldecoder(enc)(errors="replace")
+            except (LookupError, TypeError):
+                self._inc_decoder = None  # 罕见的找不到 codec 直接回退 auto
+
     def _decode_rx(self, data: bytes) -> str:
-        """增量 UTF-8/GBK 解码"""
+        """按选定编码增量解码。Auto 走 UTF-8 优先 / GBK 回退；其他走 Python 标准增量解码器"""
+        if self._get_codec() != "auto":
+            if self._inc_decoder is None:
+                # 第一次调用 / 刚切到具体编码 — 初始化
+                self._on_encoding_changed()
+            if self._inc_decoder is not None:
+                return self._inc_decoder.decode(data, final=False)
+            # codec lookup 失败兜底
+            return data.decode("latin-1")
+
+        # Auto 模式 — 原 UTF-8 优先, 不完整就缓存, 真乱码回退 GBK
         self._rx_decode_buffer += data
         if not self._rx_decode_buffer:
             return ""
@@ -1568,14 +1666,20 @@ class SerialTool(QMainWindow):
         else:
             text = self._decode_rx(data)
 
-        # Auto 模式跨 chunk 的 \r\n 处理
+        # 跨 chunk 的 \r\n 处理 — Auto(0) 和 CRLF(1) 都需要
+        # （LF/CR 模式因为单字符就是终止符，无歧义，不需要 defer）
         cross_chunk_crlf = False
-        if use_line_split and self.cb_line_nl.currentIndex() == 0:
+        nl_mode_for_defer = self.cb_line_nl.currentIndex() if use_line_split else -1
+        if nl_mode_for_defer in (0, 1):
             if self._rx_pending_cr:
                 if text.startswith("\n"):
                     text = text[1:]
                     cross_chunk_crlf = True
                 else:
+                    # 没接到 \n —— Auto 模式下 \r 单字符也是换行；
+                    # CRLF 模式下 \r 单字符是数据（不是终止符），但 QTextEdit
+                    # 渲染时仍会把它当换行显示。两种模式都先把 \r 还回去，
+                    # 后续 split 按规则处理（Auto 把它当换行；CRLF 视为数据）
                     text = "\r" + text
                 self._rx_pending_cr = False
             if text.endswith("\r"):
@@ -1701,22 +1805,37 @@ class SerialTool(QMainWindow):
         try:
             if self.sw_tx_hex.isChecked():
                 import re as _re
-                # 先剥掉注释 — 否则注释里 "face" "dead" "beef" 这些 a-f 字符会被当数据
+                # 1. 先剥掉注释 — 否则注释里 "face" "dead" "beef" 这些 a-f 字符会被当数据
                 cleaned = _re.sub(r'/\*.*?\*/', '', raw, flags=_re.DOTALL)   # 块注释
                 cleaned = _re.sub(r'//[^\n]*', '', cleaned)                    # 行注释 //
                 cleaned = _re.sub(r'#[^\n]*', '', cleaned)                     # 行注释 #
-                # 去掉 0x/0X 前缀
+                # 2. 去掉 0x/0X 前缀
                 cleaned = cleaned.replace("0x", "").replace("0X", "")
-                # 剩下的过滤出 hex 字符
-                hex_str = "".join(c for c in cleaned if c in "0123456789abcdefABCDEF")
-                if not hex_str:
+                # 3. 移除允许的分隔符（空白、- : , ;）
+                allowed_seps = set(" \t\r\n-:,;")
+                filtered = "".join(c for c in cleaned if c not in allowed_seps)
+                if not filtered:
                     return
-                if len(hex_str) % 2 != 0:
+                # 4. 检查剩下的必须全是 hex —— 出现 ZZ / G 这种就报错，不再静默丢弃
+                bad_chars = sorted(set(c for c in filtered
+                                       if c not in "0123456789abcdefABCDEF"))
+                if bad_chars:
+                    err = self._t(
+                        "err_hex_invalid_chars",
+                        chars=" ".join(repr(c) for c in bad_chars),
+                    )
+                    self.toast(
+                        self._t("err_hex_bad", e=err),
+                        error=True,
+                    )
+                    return
+                if len(filtered) % 2 != 0:
                     self.toast(self._t("err_hex_odd"), error=True)
                     return
-                data = bytes.fromhex(hex_str)
+                data = bytes.fromhex(filtered)
             else:
-                data = raw.encode("utf-8")
+                # 按选定编码发送（默认 UTF-8）— 让用户能给 GBK 设备发中文
+                data = raw.encode(self._send_codec(), errors="replace")
         except ValueError as e:
             self.toast(self._t("err_hex_bad", e=e), error=True)
             return
@@ -1747,14 +1866,11 @@ class SerialTool(QMainWindow):
         self.tx_bytes += len(data)
         self.lbl_tx_stat.setText(f"TX: {self.fmt_bytes(self.tx_bytes)}")
 
-        # 显示到数据区
+        # 显示到数据区 — 文本模式按当前 codec 解（默认 utf-8），lossy 但仅用于显示
         if self.sw_tx_hex.isChecked():
             display = " ".join(f"{b:02X}" for b in data) + " "
         else:
-            try:
-                display = data.decode("utf-8")
-            except UnicodeDecodeError:
-                display = data.decode("gbk", errors="replace")
+            display = data.decode(self._send_codec(), errors="replace")
         self._append_block_data(display, direction="tx", force_new_block=True)
         self._last_direction = "tx"
 
@@ -1913,10 +2029,8 @@ class SerialTool(QMainWindow):
             if self.sw_tx_hex.isChecked():
                 self.txt_send.setPlainText(" ".join(f"{b:02X}" for b in data))
             else:
-                try:
-                    self.txt_send.setPlainText(data.decode("utf-8"))
-                except UnicodeDecodeError:
-                    self.txt_send.setPlainText(data.decode("gbk", errors="replace"))
+                # 按选定编码读取（默认 utf-8），lossy 容错避免文件偶有坏字节就报错
+                self.txt_send.setPlainText(data.decode(self._send_codec(), errors="replace"))
         except Exception as e:
             self.toast(self._t("err_read_failed", e=e), error=True)
 
@@ -1930,6 +2044,7 @@ class SerialTool(QMainWindow):
         self._pending_line_break = False
         self._rx_decode_buffer = b""
         self._rx_pending_cr = False
+        self._inc_decoder = None  # 重置增量解码器（None → _decode_rx 首次调用时按当前 codec 重建）
         self._txt_ends_with_nl = True
 
     # ----- 工具 -----
@@ -2002,6 +2117,9 @@ class SerialTool(QMainWindow):
         if hasattr(self, "cb_line_nl"):
             self.cb_line_nl.setItemText(0, self._t("nl_auto"))
 
+        if hasattr(self, "cb_encoding"):
+            self.cb_encoding.setItemText(0, self._t("encoding_auto"))
+
         if hasattr(self, "btn_open"):
             opened = bool(self.ser and self.ser.is_open)
             self.btn_open.setText(self._t("close_serial" if opened else "open_serial"))
@@ -2025,11 +2143,48 @@ class SerialTool(QMainWindow):
     # ----- 持久化 -----
     @staticmethod
     def _settings_file() -> str:
+        """
+        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\SerialTool\\。
+        场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
+        """
         if getattr(sys, "frozen", False):
             base = os.path.dirname(sys.executable)
         else:
             base = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(base, "settings.ini")
+
+        portable = os.path.join(base, "settings.ini")
+
+        # 判定 portable 路径可不可用：
+        # - 文件已存在 → 测试能否打开追加写（覆盖只读文件场景）
+        # - 文件不存在 → 在目录里试写一个临时文件
+        def _portable_writable():
+            if os.path.exists(portable):
+                try:
+                    with open(portable, "a"):
+                        pass
+                    return True
+                except (OSError, PermissionError):
+                    return False
+            test = os.path.join(base, ".write_test")
+            try:
+                with open(test, "w"):
+                    pass
+                os.remove(test)
+                return True
+            except (OSError, PermissionError):
+                return False
+
+        if _portable_writable():
+            return portable
+
+        # 回退用户配置目录
+        appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+        cfg_dir = os.path.join(appdata, "SerialTool")
+        try:
+            os.makedirs(cfg_dir, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(cfg_dir, "settings.ini")
 
     def _save_settings(self):
         try:
@@ -2043,6 +2198,7 @@ class SerialTool(QMainWindow):
             s.setValue("packet_split", self.sw_packet_split.isChecked())
             s.setValue("line_split", self.sw_line_split.isChecked())
             s.setValue("line_nl_mode", self.cb_line_nl.currentIndex())
+            s.setValue("encoding", self.cb_encoding.currentData())
             s.setValue("packet_timeout", self.ed_packet_timeout.text())
             s.setValue("max_lines", self.ed_max_lines.text())
             s.setValue("tx_hex", self.sw_tx_hex.isChecked())
@@ -2112,6 +2268,14 @@ class SerialTool(QMainWindow):
                 self.cb_line_nl.setCurrentIndex(nl_idx)
         except (ValueError, TypeError):
             pass
+        # 字符编码 — 按 codec name 查 itemData 找回上次选项
+        enc_saved = s.value("encoding", "auto") or "auto"
+        for i in range(self.cb_encoding.count()):
+            if self.cb_encoding.itemData(i) == enc_saved:
+                self.cb_encoding.setCurrentIndex(i)
+                break
+        # 触发一次 _on_encoding_changed 初始化增量解码器
+        self._on_encoding_changed()
         self.sw_tx_hex.setChecked(to_bool(s.value("tx_hex", False)), animate=False)
         self.sw_append_newline.setChecked(to_bool(s.value("append_newline", False)), animate=False)
         try:
@@ -2245,6 +2409,12 @@ class SerialTool(QMainWindow):
                 pass
         return super().nativeEvent(event_type, message)
 
+    def _wait_oneshot_scan(self):
+        """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running"""
+        scan = getattr(self, "_oneshot_scan", None)
+        if scan and scan.isRunning():
+            scan.wait(2000)
+
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
             self._save_settings()
@@ -2252,6 +2422,7 @@ class SerialTool(QMainWindow):
             self._close_log_file()
             if self.port_scanner:
                 self.port_scanner.stop()
+            self._wait_oneshot_scan()
             if self._tray:
                 self._tray.hide()
             e.accept()
@@ -2283,6 +2454,7 @@ class SerialTool(QMainWindow):
             self._close_log_file()
             if self.port_scanner:
                 self.port_scanner.stop()
+            self._wait_oneshot_scan()
             self._tray.hide()
             e.accept()
         else:
