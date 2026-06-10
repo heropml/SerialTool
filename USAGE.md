@@ -13,6 +13,8 @@ An iOS-style serial port debugging tool, designed for embedded development and p
   - [Serial Setup](#serial-setup)
   - [Receiving Data](#receiving-data)
   - [Sending Data](#sending-data)
+  - [Keyword Highlighting](#keyword-highlighting)
+  - [Multi-Send](#multi-send)
   - [Interface](#interface)
   - [Multilingual UI](#multilingual-ui)
   - [Themes](#themes)
@@ -34,13 +36,29 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ---
 
+## What's New in v1.0.1
+
+- **HiDPI scaling** — UI and fonts stay properly sized on high-resolution displays (no longer tiny)
+- **Scroll-lock / auto-follow** — scrolling up in the Data area freezes the view while data keeps arriving; a floating **↓ Latest** button (bottom-right) jumps back to the bottom and resumes auto-follow
+- **Click to highlight** — click any line in the Data area to highlight it (click again to clear)
+- **Theme-aware recolor** — switching themes recolors existing Data-area text by role (timestamp / RX / TX), so light↔dark switches never leave text invisible
+- **Multi-Send dialog** — opened from the **Multi-Send** button in the Send area; manage multiple data entries and cycle through them
+- **Keyword Highlighting** — opened from the **Highlight** button in the Data-area title bar; color-highlight lines that match your keyword rules
+- **Matches only** filter — show only the lines that match a keyword, hiding the rest
+- **Themed dialog title bars** — dialog native title bars now follow the dark/light theme
+- **High-speed baud rates** — the dropdown now includes 256000, 500000, 512000, 600000, 750000, 1000000, 1500000 and 2000000 (custom values still accepted)
+- **Auto-sizing Serial-Setup labels** — English labels in Serial Setup are no longer clipped
+- **Consistent HEX display** — the Data area's HEX vs text view is now governed solely by the **HEX View** switch, so RX and TX always display the same way (independent of **HEX Send**)
+
+---
+
 ## Features
 
 ### Serial Setup
 
 - Auto-detects available COM ports, hot-plug refresh every 1.5 s in the background
 - The port dropdown also shows the device description (helpful with multiple USB-to-serial adapters)
-- Baud rate: 1200–921600, or type any custom value
+- Baud rate: 1200–2000000 (including high-speed rates 256000, 500000, 512000, 600000, 750000, 1000000, 1500000, 2000000), or type any custom value
 - Data bits 5/6/7/8, parity None/Even/Odd/Mark/Space, stop bits 1/1.5/2
 
 ### Receiving Data
@@ -64,6 +82,13 @@ RX and TX share one view; arrows indicate direction:
   - **CRLF / LF / CR**: strict mode, only the chosen terminator counts
 - **Log to File** — Xshell-style live log to a `.log` file, **what you see is what gets saved** (timestamps, arrows, HEX/ASCII included)
 - **Max Lines** — caps the displayed line count; older lines are dropped (keeps long runs snappy). **Log file is not affected.**
+- **Matches only** — a switch that hides every line except those containing a keyword match (see [Keyword Highlighting](#keyword-highlighting))
+
+**Scroll-lock / auto-follow** — by default the view auto-scrolls to the newest data. Scroll up and the view **freezes** so you can read history while data keeps arriving in the background; a floating **↓ Latest** button appears in the bottom-right. Click it (or scroll back to the bottom) to jump to the latest data and resume auto-follow.
+
+**Highlight a line** — click any line in the data area to highlight it; click it again to clear the highlight.
+
+**Keyword highlighting** — click the **Highlight** button in the card title bar to define color rules that mark matching lines (see [Keyword Highlighting](#keyword-highlighting)).
 
 **Font size** — the `A−` / `A+` buttons in the top-right adjust the data area font (7–28 pt)
 
@@ -104,6 +129,27 @@ RX and TX share one view; arrows indicate direction:
 
 **Load File** — load a file into the send box (HEX mode auto-converts bytes to a hex string)
 
+**Multi-Send** — the **Multi-Send** button opens a dialog for managing several data entries at once (see [Multi-Send](#multi-send))
+
+### Keyword Highlighting
+
+Click the **Highlight** button in the Data-area title bar to open the keyword-highlight dialog. Here you can define multiple keyword rules, each of which:
+
+- has its own **color**, applied either as a **Background** or **Text** color
+- is **scoped** to RX / TX / both
+- matches as a **case-sensitive substring**
+
+Timestamps are skipped when matching (so a keyword won't accidentally match the time prefix). Rules are persisted across restarts. Pair this with the **Matches only** switch in the Data card to hide every non-matching line.
+
+### Multi-Send
+
+Click the **Multi-Send** button in the Send area to open the multi-send dialog:
+
+- Each **row** is one data entry with its own **checkbox**
+- Each row carries its own **HEX**, **newline**, and **checksum** settings
+- Check several rows and use **Cycle-Send** to loop through them at a set interval
+- Rows are persisted across restarts
+
 ### Interface
 
 - **Frameless window** + **iOS-style rounded cards** with soft shadows
@@ -131,7 +177,7 @@ A second dropdown in the top-left (right next to the language picker) switches t
 | Campbell | dark | Pitch black (Windows Terminal default) |
 | Ubuntu | dark | Aubergine purple |
 
-Theme switching affects newly received data immediately; existing history keeps its original colors (clear the data area if you want everything recolored). The selected theme is remembered across restarts.
+Theme switching affects newly received data immediately, and existing Data-area text is recolored by role (timestamp / RX / TX) to match the new theme, so switching between light and dark never leaves text invisible. The selected theme is remembered across restarts.
 
 ### Hover Tooltips
 
@@ -188,7 +234,7 @@ Bottom-left:
 - `RX: bytes` (auto-scales to B / KB / MB)
 - `TX: bytes`
 
-Bottom-right: current **version** (`v1.0.0`).
+Bottom-right: current **version** (`v1.0.1`).
 
 ---
 

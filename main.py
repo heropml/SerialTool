@@ -4,6 +4,7 @@ SerialTool - iOS 风格串口调试工具
 PyQt5 + pyserial
 """
 import codecs
+import json
 import os
 import sys
 import time
@@ -18,16 +19,17 @@ except Exception:
 import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import (Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-                          QEasingCurve, QRect, QSize, QPoint, pyqtProperty, QSettings)
+                          QEasingCurve, QRect, QSize, QPoint, pyqtProperty, QSettings,
+                          QEvent)
 from PyQt5.QtGui import (QFont, QColor, QPainter, QPen, QBrush, QIcon,
-                         QTextCursor, QTextCharFormat, QFontMetrics)
+                         QTextCursor, QTextCharFormat, QFontMetrics, QTextFormat)
 from PyQt5.QtWidgets import (QApplication, QWidget, QMainWindow, QLabel,
                              QPushButton, QComboBox, QTextEdit, QLineEdit,
                              QCheckBox, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog,
                              QMessageBox, QDialog, QGraphicsDropShadowEffect,
                              QSizePolicy, QSpacerItem, QStatusBar,
-                             QSystemTrayIcon, QMenu, QAction)
+                             QSystemTrayIcon, QMenu, QAction, QColorDialog)
 
 
 # ============== 资源路径 (兼容 PyInstaller) ==============
@@ -53,6 +55,10 @@ def get_app_icon():
     globals()["_APP_ICON_CACHE"] = icon
     return icon
 
+
+# 数据区文本段角色标记 — 切主题时据此把历史文字重涂成新主题对应色（否则浅↔深切换看不见）
+ROLE_PROP = QTextFormat.UserProperty + 1
+ROLE_TS, ROLE_RX, ROLE_TX = 1, 2, 3
 
 # ============== iOS 调色板 ==============
 # ============== 主题：整体配色 ==============
@@ -168,6 +174,7 @@ TR = {
         "data_area": "数据区",
         "legend_rx": "← 收",
         "legend_tx": "→ 发",
+        "to_bottom": "↓ 最新",
         "hex_display": "HEX 显示",
         "encoding": "字符编码",
         "encoding_auto": "自动",
@@ -219,6 +226,29 @@ TR = {
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
         "send_placeholder": "在这里输入要发送的内容...   HEX 模式示例: AA BB CC 01 02 (空格可省)",
+        "multi_send": "多条发送",
+        "multi_send_title": "多条发送",
+        "ms_add": "＋ 添加一条",
+        "ms_interval": "间隔",
+        "ms_cycle_start": "▶ 循环发送",
+        "ms_cycle_stop": "■ 停止",
+        "ms_send_one": "发送",
+        "ms_nl_none": "无",
+        "ms_placeholder": "数据（HEX 或文本）",
+        "ms_none_checked": "请先勾选要循环发送的条目",
+        "ms_hint": "每行可独立设 HEX / 换行 / 校验（与主界面无关）。勾选多条 → 循环发送：按间隔依次轮发，到底再从头。",
+        "kw_highlight": "关键字高亮",
+        "kw_title": "关键字高亮",
+        "kw_add": "＋ 添加关键字",
+        "kw_mode_bg": "背景",
+        "kw_mode_fg": "文字",
+        "kw_color": "选择高亮颜色",
+        "kw_placeholder": "关键字（区分大小写）",
+        "kw_hint": "数据区匹配到关键字就按设定颜色高亮（区分大小写）。每条可限定 收 / 发 / 收发。",
+        "kw_scope_both": "收发",
+        "kw_scope_rx": "收",
+        "kw_scope_tx": "发",
+        "filter_highlight": "只显高亮行",
         "read_file": "读取文件",
         "send_btn": "发  送",
         "state_closed": "● 未打开",
@@ -281,6 +311,7 @@ TR = {
         "data_area": "Data",
         "legend_rx": "← RX",
         "legend_tx": "→ TX",
+        "to_bottom": "↓ Latest",
         "hex_display": "HEX View",
         "encoding": "Encoding",
         "encoding_auto": "Auto",
@@ -332,6 +363,29 @@ TR = {
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
         "send_placeholder": "Type data to send...   HEX example: AA BB CC 01 02 (spaces optional)",
+        "multi_send": "Multi-Send",
+        "multi_send_title": "Multi-Send",
+        "ms_add": "＋ Add Row",
+        "ms_interval": "Interval",
+        "ms_cycle_start": "▶ Cycle Send",
+        "ms_cycle_stop": "■ Stop",
+        "ms_send_one": "Send",
+        "ms_nl_none": "None",
+        "ms_placeholder": "Data (HEX or text)",
+        "ms_none_checked": "Check at least one item to cycle-send",
+        "ms_hint": "Each row has its own HEX / newline / checksum (independent of the main window). Check items → Cycle Send loops through them at the interval.",
+        "kw_highlight": "Highlight",
+        "kw_title": "Keyword Highlight",
+        "kw_add": "＋ Add Keyword",
+        "kw_mode_bg": "Background",
+        "kw_mode_fg": "Text",
+        "kw_color": "Pick highlight color",
+        "kw_placeholder": "Keyword (case-sensitive)",
+        "kw_hint": "Matching text in the data area is highlighted (case-sensitive). Each rule can target RX / TX / both.",
+        "kw_scope_both": "RX+TX",
+        "kw_scope_rx": "RX",
+        "kw_scope_tx": "TX",
+        "filter_highlight": "Matches only",
         "read_file": "Load File",
         "send_btn": "Send",
         "state_closed": "● Disconnected",
@@ -394,6 +448,7 @@ TR = {
         "data_area": "資料區",
         "legend_rx": "← 收",
         "legend_tx": "→ 發",
+        "to_bottom": "↓ 最新",
         "hex_display": "HEX 顯示",
         "encoding": "字元編碼",
         "encoding_auto": "自動",
@@ -444,6 +499,29 @@ TR = {
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
         "send_placeholder": "在這裡輸入要發送的內容...   HEX 模式範例: AA BB CC 01 02 (空格可省)",
+        "multi_send": "多條發送",
+        "multi_send_title": "多條發送",
+        "ms_add": "＋ 新增一條",
+        "ms_interval": "間隔",
+        "ms_cycle_start": "▶ 迴圈發送",
+        "ms_cycle_stop": "■ 停止",
+        "ms_send_one": "發送",
+        "ms_nl_none": "無",
+        "ms_placeholder": "資料（HEX 或文字）",
+        "ms_none_checked": "請先勾選要迴圈發送的條目",
+        "ms_hint": "每行可獨立設 HEX / 換行 / 校驗（與主介面無關）。勾選多條 → 迴圈發送：按間隔依次輪發，到底再從頭。",
+        "kw_highlight": "關鍵字高亮",
+        "kw_title": "關鍵字高亮",
+        "kw_add": "＋ 新增關鍵字",
+        "kw_mode_bg": "背景",
+        "kw_mode_fg": "文字",
+        "kw_color": "選擇高亮顏色",
+        "kw_placeholder": "關鍵字（區分大小寫）",
+        "kw_hint": "資料區匹配到關鍵字就按設定顏色高亮（區分大小寫）。每條可限定 收 / 發 / 收發。",
+        "kw_scope_both": "收發",
+        "kw_scope_rx": "收",
+        "kw_scope_tx": "發",
+        "filter_highlight": "只顯高亮行",
         "read_file": "讀取檔案",
         "send_btn": "發  送",
         "state_closed": "● 未開啟",
@@ -909,6 +987,495 @@ class CloseDialog(QDialog):
         return self._result_val
 
 
+def _set_win_titlebar_dark(widget, is_dark):
+    """Windows DWM 沉浸式深/浅标题栏；非 Windows 静默跳过。
+    供 MultiSendDialog / KeywordHighlightDialog 共用，避免重复+标志不一致。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = int(widget.winId())
+        val = ctypes.c_int(1 if is_dark else 0)
+        # 属性号 20 = Win10 20H1+/Win11；失败(HRESULT≠0)才回退老版本的 19
+        hr = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
+        if hr != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 19, ctypes.byref(val), ctypes.sizeof(val))
+        if widget.isVisible():
+            # SWP_NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED — 仅重绘非客户区，不动大小/位置/层级
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+    except Exception:
+        pass
+
+
+def _make_list_scroll():
+    """列表型弹窗共用：建滚动区 + 内部容器(底栏 stretch)，并关掉 viewport/host 的
+    autoFillBackground(否则深色主题下默认白底盖住对话框)。返回 (scroll, host, vbox)。"""
+    host = QWidget()
+    host.setObjectName("MsListHost")
+    vbox = QVBoxLayout(host)
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(6)
+    vbox.addStretch(1)
+    scroll = QScrollArea()
+    scroll.setObjectName("MsScroll")
+    scroll.setWidget(host)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    host.setAutoFillBackground(False)
+    scroll.viewport().setAutoFillBackground(False)
+    return scroll, host, vbox
+
+
+def _dialog_list_qss(c):
+    """MultiSendDialog / KeywordHighlightDialog 共用的列表型弹窗基础样式表。
+    各自再拼接自己特有的按钮样式(MsPrimaryBtn/MsSendBtn 等)。"""
+    return f"""
+    QDialog {{ background-color: {c['window_bg']}; }}
+    QLabel {{ color: {c['text']}; background: transparent; font-family: 'Segoe UI'; font-size: 12px; }}
+    QLabel#MsHint {{ color: {c['text_sec']}; font-size: 11px; }}
+    QScrollArea#MsScroll {{ background: transparent; border: 0px; }}
+    QScrollArea#MsScroll > QWidget > QWidget {{ background: transparent; }}
+    QWidget#MsListHost {{ background: transparent; }}
+    QFrame#MsRow {{ background-color: {c['card_bg']}; border-radius: 8px; }}
+    QLineEdit {{
+        background-color: {c['input_bg']}; border: 1px solid {c['separator']};
+        border-radius: 6px; padding: 4px 8px; color: {c['text']};
+        font-family: 'Consolas'; font-size: 12px;
+        selection-background-color: {c['accent']};
+    }}
+    QLineEdit:focus {{ border: 1px solid {c['accent']}; background-color: {c['input_focus_bg']}; }}
+    QCheckBox {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 11px; spacing: 4px; }}
+    QComboBox {{
+        background-color: {c['input_bg']}; border: 1px solid {c['separator']};
+        border-radius: 6px; padding: 3px 6px; color: {c['text']};
+        font-family: 'Segoe UI'; font-size: 11px;
+        selection-background-color: {c['accent']};
+    }}
+    QComboBox:focus {{ border: 1px solid {c['accent']}; }}
+    QComboBox::drop-down {{ border: none; width: 16px; }}
+    QComboBox QAbstractItemView {{
+        background-color: {c['combo_dropdown_bg']}; color: {c['text']};
+        border: 1px solid {c['separator']}; border-radius: 0px; padding: 2px;
+        outline: 0px; selection-background-color: {c['accent']}; selection-color: #FFFFFF;
+    }}
+    QPushButton#MsGhostBtn {{
+        background-color: {c['ghost_bg']}; color: {c['text']}; border: 0px;
+        border-radius: 8px; font-family: 'Segoe UI'; font-size: 12px; padding: 5px 10px;
+    }}
+    QPushButton#MsGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+    QPushButton#MsDelBtn {{
+        background-color: transparent; color: {c['text_sec']}; border: 0px;
+        font-size: 13px; font-weight: bold;
+    }}
+    QPushButton#MsDelBtn:hover {{ color: {c['danger']}; }}
+    """
+
+
+# ============== 多条发送弹窗 ==============
+class MultiSendDialog(QDialog):
+    """多条自定义发送：每行一条数据 + 复选框。
+    可逐条点「发送」，也可勾选多条后「循环发送」按间隔依次轮发。
+    HEX/换行/校验跟随主界面发送区设置；条目持久化到 QSettings。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.setWindowTitle(app._t("multi_send_title"))
+        # 去掉标题栏右侧没用的「?」上下文帮助按钮
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setMinimumSize(600, 360)
+        self.resize(760, 460)
+        self._rows = []            # [{frame, chk, edit}]
+        self._cycle_seq = []       # 当前循环的(行号,数据)序列
+        self._cycle_idx = 0
+        self._cycle_timer = QTimer(self)
+        self._cycle_timer.timeout.connect(self._cycle_tick)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        # 行列表（可滚动）
+        scroll, self._list_host, self._list_v = _make_list_scroll()
+        root.addWidget(scroll, 1)
+
+        self.btn_add = QPushButton(app._t("ms_add"))
+        self.btn_add.setObjectName("MsGhostBtn")
+        self.btn_add.setMinimumHeight(32)
+        self.btn_add.clicked.connect(lambda *_: (self._add_row("", False), self._save()))
+        root.addWidget(self.btn_add)
+
+        # 底部：间隔 + 循环发送
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        self.lbl_interval = QLabel(app._t("ms_interval"))
+        bottom.addWidget(self.lbl_interval)
+        self.ed_interval = QLineEdit("1000")
+        self.ed_interval.setFixedWidth(72)
+        bottom.addWidget(self.ed_interval)
+        bottom.addWidget(QLabel("ms"))
+        bottom.addStretch(1)
+        self.btn_cycle = QPushButton(app._t("ms_cycle_start"))
+        self.btn_cycle.setObjectName("MsPrimaryBtn")
+        self.btn_cycle.setMinimumHeight(34)
+        self.btn_cycle.setMinimumWidth(120)
+        self.btn_cycle.clicked.connect(self._toggle_cycle)
+        bottom.addWidget(self.btn_cycle)
+        root.addLayout(bottom)
+
+        self.lbl_hint = QLabel(app._t("ms_hint"))
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setObjectName("MsHint")
+        root.addWidget(self.lbl_hint)
+
+        self.refresh_theme()
+        self._load()
+
+    # ----- 行管理 -----
+    def _add_row(self, data="", checked=False, hex_on=False, nl=0, cs=0):
+        frame = QFrame()
+        frame.setObjectName("MsRow")
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(6)
+        chk = QCheckBox()
+        chk.setChecked(checked)
+        chk.stateChanged.connect(self._save)
+        h.addWidget(chk)
+        edit = QLineEdit(data)
+        edit.setPlaceholderText(self.app._t("ms_placeholder"))
+        edit.textChanged.connect(self._save)
+        h.addWidget(edit, 1)
+        # 每行独立 HEX / 换行 / 校验
+        cb_hex = QCheckBox("HEX")
+        cb_hex.setChecked(hex_on)
+        cb_hex.stateChanged.connect(self._save)
+        h.addWidget(cb_hex)
+        cb_nl = QComboBox()
+        cb_nl.addItems([self.app._t("ms_nl_none"), "CRLF", "LF", "CR"])  # 0=无
+        cb_nl.setCurrentIndex(nl)
+        cb_nl.setFixedWidth(74)
+        cb_nl.currentIndexChanged.connect(self._save)
+        h.addWidget(cb_nl)
+        cb_cs = QComboBox()
+        cb_cs.addItems([self.app._t(k) for k in CHECKSUM_KEYS])           # 0=无校验
+        cb_cs.setCurrentIndex(cs)
+        cb_cs.setFixedWidth(112)
+        cb_cs.currentIndexChanged.connect(self._save)
+        h.addWidget(cb_cs)
+        btn_send = QPushButton(self.app._t("ms_send_one"))
+        btn_send.setObjectName("MsSendBtn")
+        row = {"frame": frame, "chk": chk, "edit": edit,
+               "hex": cb_hex, "nl": cb_nl, "cs": cb_cs}
+        btn_send.clicked.connect(lambda _=False, r=row: self._send_row(r))
+        h.addWidget(btn_send)
+        btn_del = QPushButton("✕")
+        btn_del.setObjectName("MsDelBtn")
+        btn_del.setFixedWidth(28)
+        btn_del.clicked.connect(lambda _=False, r=row: self._del_row(r))
+        h.addWidget(btn_del)
+        self._list_v.insertWidget(self._list_v.count() - 1, frame)  # 插在 stretch 前
+        self._rows.append(row)
+
+    def _row_params(self, row):
+        """(数据, hex_mode, newline 0-3, checksum 索引)"""
+        return (row["edit"].text(), row["hex"].isChecked(),
+                row["nl"].currentIndex(), row["cs"].currentIndex())
+
+    def _send_row(self, row):
+        data, hx, nl, cs = self._row_params(row)
+        self.app._send_text(data, hex_mode=hx, newline=nl, checksum=cs)
+
+    def _del_row(self, row):
+        row["frame"].setParent(None)
+        row["frame"].deleteLater()
+        if row in self._rows:
+            self._rows.remove(row)
+        self._save()
+
+    # ----- 循环发送 -----
+    def _toggle_cycle(self):
+        if self._cycle_timer.isActive():
+            self._stop_cycle()
+            return
+        seq = [self._row_params(r) for r in self._rows
+               if r["chk"].isChecked() and r["edit"].text().strip()]
+        if not seq:
+            self.app.toast(self.app._t("ms_none_checked"), error=True)
+            return
+        if not (self.app.ser and self.app.ser.is_open):
+            self.app.toast(self.app._t("err_serial_not_open"), error=True)
+            return
+        try:
+            interval = max(10, int(self.ed_interval.text()))
+        except (ValueError, TypeError):
+            interval = 1000
+        self._cycle_seq = seq               # [(data, hex, nl, cs), ...]
+        self._cycle_idx = 0
+        self.btn_cycle.setText(self.app._t("ms_cycle_stop"))
+        self._cycle_tick()                 # 立即发第一条
+        self._cycle_timer.start(interval)
+
+    def _cycle_tick(self):
+        if not self._cycle_seq:
+            self._stop_cycle()
+            return
+        # 只有串口真的关了才停整个循环；单条发送失败(空/坏数据)只跳过，继续轮发
+        if not (self.app.ser and self.app.ser.is_open):
+            self.app.toast(self.app._t("err_serial_not_open"), error=True)
+            self._stop_cycle()
+            return
+        data, hx, nl, cs = self._cycle_seq[self._cycle_idx % len(self._cycle_seq)]
+        self.app._send_text(data, hex_mode=hx, newline=nl, checksum=cs)
+        self._cycle_idx += 1
+
+    def _stop_cycle(self):
+        self._cycle_timer.stop()
+        self.btn_cycle.setText(self.app._t("ms_cycle_start"))
+
+    # ----- 持久化 -----
+    def _save(self):
+        items = [{"data": r["edit"].text(), "checked": r["chk"].isChecked(),
+                  "hex": r["hex"].isChecked(), "nl": r["nl"].currentIndex(),
+                  "cs": r["cs"].currentIndex()}
+                 for r in self._rows]
+        self.app.settings.setValue("multi_send_items",
+                                   json.dumps(items, ensure_ascii=False))
+        self.app.settings.sync()
+
+    def _load(self):
+        raw = self.app.settings.value("multi_send_items", "")
+        items = []
+        if raw:
+            try:
+                items = json.loads(raw)
+            except Exception:
+                items = []
+        if not items:
+            items = [{"data": "", "checked": False}]
+        for it in items:
+            self._add_row(str(it.get("data", "")), bool(it.get("checked", False)),
+                          bool(it.get("hex", False)), int(it.get("nl", 0)),
+                          int(it.get("cs", 0)))
+
+    def closeEvent(self, e):
+        self._stop_cycle()
+        self._save()
+        super().closeEvent(e)
+
+    # ----- 主题 -----
+    def retranslate(self):
+        self.setWindowTitle(self.app._t("multi_send_title"))
+        self.btn_add.setText(self.app._t("ms_add"))
+        self.lbl_interval.setText(self.app._t("ms_interval"))
+        self.lbl_hint.setText(self.app._t("ms_hint"))
+        self.btn_cycle.setText(self.app._t(
+            "ms_cycle_stop" if self._cycle_timer.isActive() else "ms_cycle_start"))
+        for r in self._rows:
+            r["edit"].setPlaceholderText(self.app._t("ms_placeholder"))
+            r["nl"].setItemText(0, self.app._t("ms_nl_none"))      # 仅“无”随语言变
+            cs_idx = r["cs"].currentIndex()
+            r["cs"].blockSignals(True)
+            for i, k in enumerate(CHECKSUM_KEYS):
+                r["cs"].setItemText(i, self.app._t(k))
+            r["cs"].setCurrentIndex(cs_idx)
+            r["cs"].blockSignals(False)
+
+    def _apply_titlebar_theme(self):
+        _set_win_titlebar_dark(self, self.app._theme().get("mode") == "dark")
+
+    def refresh_theme(self):
+        self._apply_titlebar_theme()
+        c = chrome_for(self.app._theme_id())
+        # 公共列表样式 + 本弹窗特有的主按钮/单条发送按钮
+        self.setStyleSheet(_dialog_list_qss(c) + f"""
+        QPushButton#MsPrimaryBtn {{
+            background-color: {c['accent']}; color: white; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px; font-weight: 600;
+            padding: 6px 14px;
+        }}
+        QPushButton#MsPrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QPushButton#MsPrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
+        QPushButton#MsSendBtn {{
+            background-color: {c['accent']}; color: white; border: 0px;
+            border-radius: 6px; font-family: 'Segoe UI'; font-size: 12px; padding: 4px 12px;
+        }}
+        QPushButton#MsSendBtn:hover {{ background-color: {c['accent_hover']}; }}
+        """)
+        # 弹出容器(独立顶层窗口)底色刷深，避免深色主题下露白边
+        for r in getattr(self, "_rows", []):
+            for key in ("nl", "cs"):
+                popup = r[key].view().window()
+                popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+
+
+# ============== 关键字高亮配置弹窗 ==============
+class KeywordHighlightDialog(QDialog):
+    """配置多条关键字高亮：每条选 背景/文字 着色 + 颜色。
+    区分大小写子串匹配，RX/TX 都高亮；规则持久化、即时生效。"""
+    PRESET_COLORS = ["#FFD60A", "#FF453A", "#32D74B", "#0A84FF", "#BF5AF2", "#FF9F0A"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.setWindowTitle(app._t("kw_title"))
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setMinimumSize(620, 320)
+        self.resize(740, 400)
+        self._rows = []
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        scroll, self._list_host, self._list_v = _make_list_scroll()
+        root.addWidget(scroll, 1)
+
+        self.btn_add = QPushButton(app._t("kw_add"))
+        self.btn_add.setObjectName("MsGhostBtn")
+        self.btn_add.setMinimumHeight(32)
+        self.btn_add.clicked.connect(lambda *_: self._on_add())
+        root.addWidget(self.btn_add)
+
+        self.lbl_hint = QLabel(app._t("kw_hint"))
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setObjectName("MsHint")
+        root.addWidget(self.lbl_hint)
+
+        self.refresh_theme()
+        self._load()
+
+    # ----- 行管理 -----
+    def _on_add(self):
+        # 新加行默认不勾选(与首次默认行一致)：用户填好关键字后再手动启用
+        color = self.PRESET_COLORS[len(self._rows) % len(self.PRESET_COLORS)]
+        self._add_row("", "bg", color, False)
+        self._commit()
+
+    _SCOPES = ("both", "rx", "tx")
+
+    def _add_row(self, pattern="", mode="bg", color="#FFD60A", enabled=True, scope="both"):
+        frame = QFrame()
+        frame.setObjectName("MsRow")
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(6)
+        chk = QCheckBox()
+        chk.setChecked(enabled)
+        chk.stateChanged.connect(self._commit)
+        h.addWidget(chk)
+        edit = QLineEdit(pattern)
+        edit.setPlaceholderText(self.app._t("kw_placeholder"))
+        edit.textChanged.connect(self._commit)
+        h.addWidget(edit, 1)
+        cb_scope = QComboBox()
+        cb_scope.addItems([self.app._t("kw_scope_both"), self.app._t("kw_scope_rx"),
+                           self.app._t("kw_scope_tx")])
+        cb_scope.setCurrentIndex(self._SCOPES.index(scope) if scope in self._SCOPES else 0)
+        cb_scope.setFixedWidth(74)
+        cb_scope.currentIndexChanged.connect(self._commit)
+        h.addWidget(cb_scope)
+        cb_mode = QComboBox()
+        cb_mode.addItems([self.app._t("kw_mode_bg"), self.app._t("kw_mode_fg")])
+        cb_mode.setCurrentIndex(0 if mode == "bg" else 1)
+        cb_mode.setFixedWidth(78)
+        cb_mode.currentIndexChanged.connect(self._commit)
+        h.addWidget(cb_mode)
+        btn_color = QPushButton()
+        btn_color.setObjectName("KwColorBtn")
+        btn_color.setFixedSize(40, 24)
+        btn_color.setCursor(Qt.PointingHandCursor)
+        row = {"frame": frame, "chk": chk, "edit": edit, "scope": cb_scope,
+               "mode": cb_mode, "color": color, "colorbtn": btn_color}
+        self._paint_color_btn(row)
+        btn_color.clicked.connect(lambda _=False, r=row: self._pick_color(r))
+        h.addWidget(btn_color)
+        btn_del = QPushButton("✕")
+        btn_del.setObjectName("MsDelBtn")
+        btn_del.setFixedWidth(28)
+        btn_del.clicked.connect(lambda _=False, r=row: self._del_row(r))
+        h.addWidget(btn_del)
+        self._list_v.insertWidget(self._list_v.count() - 1, frame)
+        self._rows.append(row)
+
+    def _paint_color_btn(self, row):
+        row["colorbtn"].setStyleSheet(
+            f"QPushButton#KwColorBtn {{ background-color: {row['color']};"
+            f" border: 1px solid rgba(128,128,128,0.5); border-radius: 5px; }}")
+
+    def _pick_color(self, row):
+        col = QColorDialog.getColor(QColor(row["color"]), self, self.app._t("kw_color"))
+        if col.isValid():
+            row["color"] = col.name()
+            self._paint_color_btn(row)
+            self._commit()
+
+    def _del_row(self, row):
+        row["frame"].setParent(None)
+        row["frame"].deleteLater()
+        if row in self._rows:
+            self._rows.remove(row)
+        self._commit()
+
+    # ----- 应用 / 持久化 -----
+    def _commit(self):
+        self.app._keyword_rules = [
+            {"pattern": r["edit"].text(),
+             "mode": "bg" if r["mode"].currentIndex() == 0 else "fg",
+             "scope": self._SCOPES[r["scope"].currentIndex()],
+             "color": r["color"],
+             "enabled": r["chk"].isChecked()}
+            for r in self._rows]
+        self.app._apply_keyword_rules()
+
+    def _load(self):
+        rules = self.app._keyword_rules
+        if not rules:
+            rules = [{"pattern": "", "mode": "bg",
+                      "color": self.PRESET_COLORS[0], "enabled": False}]
+        for r in rules:
+            self._add_row(str(r.get("pattern", "")), r.get("mode", "bg"),
+                          r.get("color", "#FFD60A"), bool(r.get("enabled", True)),
+                          r.get("scope", "both"))
+
+    # ----- 主题 / 语言 -----
+    def retranslate(self):
+        self.setWindowTitle(self.app._t("kw_title"))
+        self.btn_add.setText(self.app._t("kw_add"))
+        self.lbl_hint.setText(self.app._t("kw_hint"))
+        for r in self._rows:
+            r["edit"].setPlaceholderText(self.app._t("kw_placeholder"))
+            idx = r["mode"].currentIndex()
+            r["mode"].blockSignals(True)
+            r["mode"].setItemText(0, self.app._t("kw_mode_bg"))
+            r["mode"].setItemText(1, self.app._t("kw_mode_fg"))
+            r["mode"].setCurrentIndex(idx)
+            r["mode"].blockSignals(False)
+            sidx = r["scope"].currentIndex()
+            r["scope"].blockSignals(True)
+            r["scope"].setItemText(0, self.app._t("kw_scope_both"))
+            r["scope"].setItemText(1, self.app._t("kw_scope_rx"))
+            r["scope"].setItemText(2, self.app._t("kw_scope_tx"))
+            r["scope"].setCurrentIndex(sidx)
+            r["scope"].blockSignals(False)
+
+    def _apply_titlebar_theme(self):
+        _set_win_titlebar_dark(self, self.app._theme().get("mode") == "dark")
+
+    def refresh_theme(self):
+        self._apply_titlebar_theme()
+        c = chrome_for(self.app._theme_id())
+        self.setStyleSheet(_dialog_list_qss(c))    # 公共列表样式即可（颜色按钮单独内联上色）
+        for r in self._rows:                       # 颜色按钮保持各自底色
+            self._paint_color_btn(r)
+            for key in ("mode", "scope"):
+                popup = r[key].view().window()
+                popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+
+
 # ============== 主窗口 ==============
 class SerialTool(QMainWindow):
     RESIZE_MARGIN = 6
@@ -1147,7 +1714,8 @@ class SerialTool(QMainWindow):
         self.cb_baud = QComboBox()
         self.cb_baud.setEditable(True)
         for b in ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
-                  "115200", "230400", "460800", "921600"]:
+                  "115200", "230400", "256000", "460800", "500000", "512000",
+                  "600000", "750000", "921600", "1000000", "1500000", "2000000"]:
             self.cb_baud.addItem(b)
         self.cb_baud.setCurrentText("115200")
         r.addWidget(self.cb_baud, 1)
@@ -1270,6 +1838,11 @@ class SerialTool(QMainWindow):
         self.sw_log_file.toggled.connect(self.on_log_file_toggled)
         sw_row(row, "real_time_log", self.sw_log_file); row += 1
 
+        # 只显高亮行：开启后数据区只保留命中关键字的行（折叠其余）
+        self.sw_filter_hl = IOSSwitch(False)
+        self.sw_filter_hl.toggled.connect(self._on_filter_hl_toggled)
+        sw_row(row, "filter_highlight", self.sw_filter_hl); row += 1
+
         self.ed_max_lines = QLineEdit("10000")
         self.ed_max_lines.setAlignment(Qt.AlignRight)
         self.ed_max_lines.setFixedWidth(MAIN_W)
@@ -1388,6 +1961,13 @@ class SerialTool(QMainWindow):
         title_row.addWidget(self.legend_label)
         title_row.addStretch(1)
 
+        self.btn_keyword = QPushButton(self._t("kw_highlight"))
+        self.btn_keyword.setObjectName("GhostBtn")
+        self.btn_keyword.setProperty("tr_text", "kw_highlight")
+        self.btn_keyword.clicked.connect(self.open_keyword_highlight)
+        title_row.addWidget(self.btn_keyword)
+        title_row.addSpacing(8)
+
         self.btn_font_dec = QPushButton("A−")
         self.btn_font_dec.setObjectName("IconBtn")
         self.btn_font_dec.setFixedSize(34, 30)
@@ -1414,7 +1994,269 @@ class SerialTool(QMainWindow):
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
 
+        # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
+        self._recv_highlight_line = -1          # 当前高亮的块号，-1 表示无
+        # 关键字高亮规则: [{pattern, mode('bg'/'fg'), color, enabled}]，从设置加载
+        self._keyword_rules = self._load_keyword_rules()
+        # 节流定时器：收数据高频，关键字重扫合并到 ~150ms 一次，避免卡顿
+        self._kw_timer = QTimer(self)
+        self._kw_timer.setSingleShot(True)
+        self._kw_timer.setInterval(150)
+        self._kw_timer.timeout.connect(self._refresh_extra_selections)
+        # 浮动「回到底部」按钮：做成 txt_recv 子控件，悬在右下角；翻到上面才显示
+        self.btn_to_bottom = QPushButton(self._t("to_bottom"), self.txt_recv)
+        self.btn_to_bottom.setObjectName("ToBottomBtn")
+        self.btn_to_bottom.setProperty("tr_text", "to_bottom")
+        self.btn_to_bottom.setCursor(Qt.PointingHandCursor)
+        self.btn_to_bottom.clicked.connect(self._scroll_recv_to_bottom)
+        self.btn_to_bottom.hide()
+        # 滚动条变化时判断是否在底部，决定按钮显隐
+        self.txt_recv.verticalScrollBar().valueChanged.connect(self._on_recv_scroll)
+        # 监听 viewport 点击(行高亮) 和 txt_recv 尺寸变化(重定位按钮)
+        self.txt_recv.viewport().installEventFilter(self)
+        self.txt_recv.installEventFilter(self)
+
         return card
+
+    # ----- 数据区：滚动锁定 + 单击行高亮 -----
+    def eventFilter(self, obj, event):
+        if hasattr(self, "txt_recv"):
+            # 接收区尺寸变化 → 重定位浮动「回到底部」按钮
+            if obj is self.txt_recv and event.type() == QEvent.Resize:
+                self._reposition_to_bottom_btn()
+            # 接收区 viewport 单击 → 整行高亮
+            elif obj is self.txt_recv.viewport() and event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.LeftButton:
+                    self._highlight_recv_line(event.pos())
+        return super().eventFilter(obj, event)
+
+    def _recv_at_bottom(self, slack: int = 4) -> bool:
+        sb = self.txt_recv.verticalScrollBar()
+        return sb.value() >= sb.maximum() - slack
+
+    def _scroll_recv_to_bottom(self):
+        sb = self.txt_recv.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        self.btn_to_bottom.hide()
+
+    def _on_recv_scroll(self, _value=None):
+        """用户往上翻 → 显示「回到底部」；回到底部 → 隐藏并恢复跟随"""
+        self.btn_to_bottom.setVisible(not self._recv_at_bottom())
+        self._reposition_to_bottom_btn()
+
+    def _reposition_to_bottom_btn(self):
+        if not hasattr(self, "btn_to_bottom"):
+            return
+        self.btn_to_bottom.adjustSize()
+        vp = self.txt_recv.viewport()
+        bw = self.btn_to_bottom.width()
+        bh = self.btn_to_bottom.height()
+        # 右下角，留 12px 边距（基于 viewport 尺寸，避开滚动条）
+        x = vp.width() - bw - 12
+        y = vp.height() - bh - 12
+        self.btn_to_bottom.move(max(0, x), max(0, y))
+        self.btn_to_bottom.raise_()
+
+    def _highlight_recv_line(self, pos):
+        """单击数据区某一行 → 整行高亮；点已高亮行则取消"""
+        cur = self.txt_recv.cursorForPosition(pos)
+        block_no = cur.blockNumber()
+        if block_no == self._recv_highlight_line:
+            self._recv_highlight_line = -1
+        else:
+            self._recv_highlight_line = block_no
+        self._refresh_extra_selections()
+
+    def _apply_recv_highlight(self):
+        """兼容旧调用名：刷新所有叠加高亮(行高亮 + 关键字高亮)"""
+        self._refresh_extra_selections()
+
+    def _schedule_keyword_rebuild(self):
+        """收到新数据时调用：有关键字规则才启动节流定时器重扫"""
+        if self._keyword_rules and not self._kw_timer.isActive():
+            self._kw_timer.start()
+
+    _KW_MAX_SELECTIONS = 2000  # 安全上限，避免像 '00' 这种在 HEX 流里匹配出上万条
+
+    def _refresh_extra_selections(self):
+        """统一构建数据区叠加高亮：关键字着色(背景/文字，分收/发范围) + 单击行高亮(最上层)；
+        若开启「只显高亮行」过滤，则隐藏未命中关键字的行(块可见性折叠)。"""
+        if not hasattr(self, "txt_recv"):
+            return
+        doc = self.txt_recv.document()
+        sels = []
+        # 1. 关键字高亮（区分大小写子串匹配；按规则 scope 限定 收/发/收发）
+        rules = [r for r in self._keyword_rules
+                 if r.get("enabled", True) and r.get("pattern")]
+        # (pattern, QColor, is_bg, scope) — scope: 'both'/'rx'/'tx'
+        parsed = [(r["pattern"], QColor(r.get("color", "#FFD60A")),
+                   r.get("mode", "bg") == "bg", r.get("scope", "both")) for r in rules]
+        # 过滤仅在有 启用+非空 规则时才生效，避免"开了过滤却没规则 → 全空"
+        filter_on = self._filter_active()
+        capped = False
+        dirty = False
+        block = doc.begin()
+        while block.isValid():
+            block_has_match = False
+            if parsed and not capped:
+                it = block.begin()
+                while not it.atEnd():
+                    frag = it.fragment()
+                    role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
+                    if role in (ROLE_RX, ROLE_TX):
+                        ftext = frag.text()
+                        base = frag.position()
+                        for pat, col, is_bg, scope in parsed:
+                            if scope == "rx" and role != ROLE_RX:
+                                continue
+                            if scope == "tx" and role != ROLE_TX:
+                                continue
+                            start = 0
+                            while True:
+                                idx = ftext.find(pat, start)
+                                if idx < 0:
+                                    break
+                                block_has_match = True
+                                sel = QTextEdit.ExtraSelection()
+                                if is_bg:
+                                    sel.format.setBackground(col)
+                                else:
+                                    sel.format.setForeground(col)
+                                cur = QTextCursor(doc)
+                                cur.setPosition(base + idx)
+                                cur.setPosition(base + idx + len(pat), QTextCursor.KeepAnchor)
+                                sel.cursor = cur
+                                sels.append(sel)
+                                start = idx + len(pat)
+                                if len(sels) >= self._KW_MAX_SELECTIONS:
+                                    capped = True
+                                    break
+                            if capped:
+                                break
+                    it += 1
+                    if capped:
+                        break
+            # 过滤：开启时只留命中行；关闭时所有行可见（恢复）
+            want_vis = block_has_match if filter_on else True
+            if block.isVisible() != want_vis:
+                block.setVisible(want_vis)
+                dirty = True
+            block = block.next()
+        if dirty:
+            doc.markContentsDirty(0, doc.characterCount())
+            self.txt_recv.viewport().update()
+        # 2. 单击行高亮（放最后 → 画在最上层），中性半透明，不跟文字撞色
+        if self._recv_highlight_line >= 0:
+            block = doc.findBlockByNumber(self._recv_highlight_line)
+            if block.isValid():
+                is_dark = self._theme().get("mode") == "dark"
+                hl = QColor(255, 255, 255, 46) if is_dark else QColor(0, 0, 0, 38)
+                sel = QTextEdit.ExtraSelection()
+                sel.format.setBackground(hl)
+                sel.format.setProperty(QTextFormat.FullWidthSelection, True)
+                sel.cursor = QTextCursor(block)
+                sels.append(sel)
+            else:
+                self._recv_highlight_line = -1
+        self.txt_recv.setExtraSelections(sels)
+
+    # ----- 关键字高亮规则：加载/保存/应用 -----
+    def _load_keyword_rules(self):
+        raw = self.settings.value("keyword_rules", "")
+        if raw:
+            try:
+                rules = json.loads(raw)
+                if isinstance(rules, list):
+                    return rules
+            except Exception:
+                pass
+        return []
+
+    def _save_keyword_rules(self):
+        self.settings.setValue("keyword_rules",
+                               json.dumps(self._keyword_rules, ensure_ascii=False))
+        self.settings.sync()
+
+    def _apply_keyword_rules(self):
+        """规则变更后：持久化 + 立即重扫高亮（绕过节流，立刻见效）"""
+        self._save_keyword_rules()
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+
+    def _on_filter_hl_toggled(self, _on=None):
+        """切换「只显高亮行」：立即重算可见性"""
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+
+    def _filter_active(self) -> bool:
+        """「只显高亮行」是否真正生效：开关开 且 至少有一条 启用+非空 的规则。
+        _append_block_data 与 _refresh_extra_selections 共用，避免判断不一致导致闪烁。"""
+        if not (hasattr(self, "sw_filter_hl") and self.sw_filter_hl.isChecked()):
+            return False
+        return any(r.get("enabled", True) and r.get("pattern")
+                   for r in self._keyword_rules)
+
+    def _block_has_keyword_match(self, block) -> bool:
+        """单个块的 RX/TX 正文是否命中任一启用规则(按 scope 限定 收/发)"""
+        rules = [r for r in self._keyword_rules
+                 if r.get("enabled", True) and r.get("pattern")]
+        if not rules:
+            return False
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
+            if role in (ROLE_RX, ROLE_TX):
+                ftext = frag.text()
+                for r in rules:
+                    scope = r.get("scope", "both")
+                    if scope == "rx" and role != ROLE_RX:
+                        continue
+                    if scope == "tx" and role != ROLE_TX:
+                        continue
+                    if r["pattern"] in ftext:
+                        return True
+            it += 1
+        return False
+
+    def _role_color(self, role, theme=None):
+        """数据区某角色(时间戳/RX/TX)在指定主题下的文字色"""
+        theme = theme or self._theme()
+        if role == ROLE_TS:
+            return _mix(theme["ts"], theme["fg"], 0.40)
+        if role == ROLE_TX:
+            return theme["tx"]
+        return theme["fg"]          # ROLE_RX 及兜底
+
+    def _recolor_history(self):
+        """切主题时把数据区已有文字按角色重涂成新主题色，避免浅↔深切换后看不见。
+        遍历所有 fragment 读 ROLE_PROP，先收集区间再统一改(改格式会让迭代器失效)"""
+        theme = self._theme()
+        doc = self.txt_recv.document()
+        ranges = []  # (start, end, color)
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    # 无 ROLE_PROP 的旧片段也重涂(role=None → _role_color 返回 fg)，
+                    # 避免极端情况下未标记文字切主题后仍不可见
+                    role = frag.charFormat().property(ROLE_PROP)
+                    start = frag.position()
+                    ranges.append((start, start + frag.length(),
+                                   self._role_color(role, theme)))
+                it += 1
+            block = block.next()
+        if not ranges:
+            return
+        cur = QTextCursor(doc)
+        for start, end, color in ranges:
+            cur.setPosition(start)
+            cur.setPosition(end, QTextCursor.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            cur.mergeCharFormat(fmt)
 
     def build_send_card(self):
         """右侧主区域：发送区"""
@@ -1444,6 +2286,12 @@ class SerialTool(QMainWindow):
         self.btn_clear_tx.setProperty("tr_text", "clear")
         self.btn_clear_tx.clicked.connect(lambda: self.txt_send.clear())
         btn_row.addWidget(self.btn_clear_tx)
+
+        self.btn_multi = QPushButton(self._t("multi_send"))
+        self.btn_multi.setObjectName("GhostBtn")
+        self.btn_multi.setProperty("tr_text", "multi_send")
+        self.btn_multi.clicked.connect(self.open_multi_send)
+        btn_row.addWidget(self.btn_multi)
 
         btn_row.addStretch(1)
 
@@ -1550,6 +2398,18 @@ class SerialTool(QMainWindow):
             background-color: {c['ghost_hover']};
             color: {c['accent']};
         }}
+        QPushButton#ToBottomBtn {{
+            background-color: {c['accent']};
+            color: white;
+            border: 0px;
+            border-radius: 13px;
+            padding: 4px 14px;
+            font-family: 'Segoe UI';
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        QPushButton#ToBottomBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QPushButton#ToBottomBtn:pressed {{ background-color: {c['accent_pressed']}; }}
         QTextEdit#RecvBox {{
             background-color: {t['bg']};
             border: 1px solid {c['separator']};
@@ -1826,7 +2686,7 @@ class SerialTool(QMainWindow):
 
     def _on_theme_changed(self):
         """切换主题：整体重建 QSS — 侧边栏卡片/按钮/输入框/标题栏/数据区都跟着 light/dark 切换。
-        历史文字不重涂（旧 TX 蓝、旧 RX 文字保留各自原色）"""
+        数据区历史文字按角色(时间戳/RX/TX)重涂成新主题色，避免浅↔深切换后看不见。"""
         # 1. 重建全局 QSS，apply_style 会读 cb_theme 当前选项自适应
         self.apply_style()
         # 2. 内联 setStyleSheet 的几处也跟着 chrome palette 刷
@@ -1842,6 +2702,15 @@ class SerialTool(QMainWindow):
             self.title_bar.title_label.setStyleSheet(
                 f"color: {c['text_sec']}; background: transparent;")
         self._update_legend_label(c)
+        # 数据区历史文字按角色重涂成新主题色 + 行高亮换色（否则浅↔深切换后文字看不见）
+        if hasattr(self, "txt_recv"):
+            self._recolor_history()
+            self._apply_recv_highlight()
+        # 多条发送/关键字高亮弹窗若开着也跟着换主题
+        if getattr(self, "_multi_send_dlg", None) is not None:
+            self._multi_send_dlg.refresh_theme()
+        if getattr(self, "_keyword_dlg", None) is not None:
+            self._keyword_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -1988,7 +2857,9 @@ class SerialTool(QMainWindow):
         theme = self._theme()
         # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
-        cursor = self.txt_recv.textCursor()
+        # 滚动锁定：插入前先记住是否在底部；用独立游标插入，避免动可见光标/选区/视图
+        was_at_bottom = self._recv_at_bottom()
+        cursor = QTextCursor(self.txt_recv.document())
         cursor.movePosition(QTextCursor.End)
 
         log_pieces = []
@@ -2009,15 +2880,19 @@ class SerialTool(QMainWindow):
             if prefix:
                 # 时间戳 + 箭头用 ts 灰色（淡化）
                 ts_fmt = QTextCharFormat()
-                ts_fmt.setForeground(QColor(theme["ts"]))
+                # 时间戳色朝正文 fg 靠拢 40%，提高对比度（原 ts 偏淡看不清）
+                ts_fmt.setForeground(QColor(self._role_color(ROLE_TS, theme)))
+                ts_fmt.setProperty(ROLE_PROP, ROLE_TS)
                 cursor.setCharFormat(ts_fmt)
                 cursor.insertText(prefix)
                 log_pieces.append(prefix)
                 self._txt_ends_with_nl = False
 
         # 正文用 body_color
+        body_role = ROLE_TX if direction == "tx" else ROLE_RX
         body_fmt = QTextCharFormat()
         body_fmt.setForeground(QColor(body_color))
+        body_fmt.setProperty(ROLE_PROP, body_role)
         cursor.setCharFormat(body_fmt)
         cursor.insertText(text)
         log_pieces.append(text)
@@ -2027,7 +2902,22 @@ class SerialTool(QMainWindow):
         reset = QTextCharFormat()
         reset.setForeground(QColor(theme["fg"]))
         cursor.setCharFormat(reset)
-        self.txt_recv.setTextCursor(cursor)
+        # 只有原本就在底部才跟随到最新；用户往上翻看时保持定住
+        # 过滤开启时，立即决定刚追加这行的可见性 —— 在滚动到底之前完成，
+        # 避免"先显示→滚到底→150ms后异步隐藏→高度收缩跳动"的抖动
+        if self._filter_active():
+            blk = cursor.block()
+            vis = self._block_has_keyword_match(blk)
+            if blk.isVisible() != vis:
+                blk.setVisible(vis)
+                self.txt_recv.document().markContentsDirty(
+                    blk.position(), max(1, blk.length()))
+
+        if was_at_bottom:
+            sb = self.txt_recv.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+        self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
 
         if self._log_file:
             try:
@@ -2043,19 +2933,52 @@ class SerialTool(QMainWindow):
         self.close_serial()
 
     # ----- 发送 -----
-    def do_send(self):
-        if not (self.ser and self.ser.is_open):
-            self.toast(self._t("err_serial_not_open"), error=True)
-            if self.sw_period.isChecked():
-                self.sw_period.setChecked(False)
-            return
+    def open_multi_send(self):
+        """打开多条发送弹窗（单实例，复用并刷新主题/语言）"""
+        if getattr(self, "_multi_send_dlg", None) is None:
+            self._multi_send_dlg = MultiSendDialog(self)
+        dlg = self._multi_send_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
+    def open_keyword_highlight(self):
+        """打开关键字高亮配置弹窗（单实例，复用并刷新主题/语言）"""
+        if getattr(self, "_keyword_dlg", None) is None:
+            self._keyword_dlg = KeywordHighlightDialog(self)
+        dlg = self._keyword_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def do_send(self):
         raw = self.txt_send.toPlainText()
         if not raw:
             return
+        ok = self._send_text(raw)
+        # 串口没开导致发送失败时，顺手关掉定时发送开关
+        if not ok and self.sw_period.isChecked() and not (self.ser and self.ser.is_open):
+            self.sw_period.setChecked(False)
+
+    def _send_text(self, raw, hex_mode=None, newline=None, checksum=None) -> bool:
+        """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
+        hex_mode/newline/checksum 为 None 时用主界面全局设置；多条发送可逐条传入独立值。
+          newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
+          checksum: None=全局; 否则校验项索引(0=无…)
+        成功返回 True"""
+        if not (self.ser and self.ser.is_open):
+            self.toast(self._t("err_serial_not_open"), error=True)
+            return False
+        if not raw:
+            return False
+        use_hex = self.sw_tx_hex.isChecked() if hex_mode is None else hex_mode
 
         try:
-            if self.sw_tx_hex.isChecked():
+            if use_hex:
                 import re as _re
                 # 1. 先剥掉注释 — 否则注释里 "face" "dead" "beef" 这些 a-f 字符会被当数据
                 cleaned = _re.sub(r'/\*.*?\*/', '', raw, flags=_re.DOTALL)   # 块注释
@@ -2067,7 +2990,7 @@ class SerialTool(QMainWindow):
                 allowed_seps = set(" \t\r\n-:,;")
                 filtered = "".join(c for c in cleaned if c not in allowed_seps)
                 if not filtered:
-                    return
+                    return False
                 # 4. 检查剩下的必须全是 hex —— 出现 ZZ / G 这种就报错，不再静默丢弃
                 bad_chars = sorted(set(c for c in filtered
                                        if c not in "0123456789abcdefABCDEF"))
@@ -2080,51 +3003,52 @@ class SerialTool(QMainWindow):
                         self._t("err_hex_bad", e=err),
                         error=True,
                     )
-                    return
+                    return False
                 if len(filtered) % 2 != 0:
                     self.toast(self._t("err_hex_odd"), error=True)
-                    return
+                    return False
                 data = bytes.fromhex(filtered)
             else:
                 # 按选定编码发送（默认 UTF-8）— 让用户能给 GBK 设备发中文
                 data = raw.encode(self._send_codec(), errors="replace")
         except ValueError as e:
             self.toast(self._t("err_hex_bad", e=e), error=True)
-            return
+            return False
 
         # 追加换行 - HEX 和 ASCII 模式都生效
-        if self.sw_append_newline.isChecked():
-            nl_idx = self.cb_append_nl.currentIndex()
-            if nl_idx == 1:
-                data += b"\n"
-            elif nl_idx == 2:
-                data += b"\r"
-            else:
-                data += b"\r\n"
+        if newline is None:
+            if self.sw_append_newline.isChecked():
+                nl_idx = self.cb_append_nl.currentIndex()  # 0=CRLF,1=LF,2=CR
+                data += {0: b"\r\n", 1: b"\n", 2: b"\r"}.get(nl_idx, b"\r\n")
+        else:
+            data += {1: b"\r\n", 2: b"\n", 3: b"\r"}.get(newline, b"")  # 0=无
 
         # 追加校验
+        cs_idx = self.cb_checksum.currentIndex() if checksum is None else checksum
         try:
-            data = data + self.compute_checksum(data, self.cb_checksum.currentIndex())
+            data = data + self.compute_checksum(data, cs_idx)
         except Exception as e:
             self.toast(self._t("err_checksum", e=e), error=True)
-            return
+            return False
 
         try:
             self.ser.write(data)
         except Exception as e:
             self.toast(self._t("err_send_failed", e=e), error=True)
-            return
+            return False
 
         self.tx_bytes += len(data)
         self.lbl_tx_stat.setText(f"TX: {self.fmt_bytes(self.tx_bytes)}")
 
-        # 显示到数据区 — 文本模式按当前 codec 解（默认 utf-8），lossy 但仅用于显示
-        if self.sw_tx_hex.isChecked():
+        # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
+        # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
+        if self.sw_rx_hex.isChecked():
             display = " ".join(f"{b:02X}" for b in data) + " "
         else:
             display = data.decode(self._send_codec(), errors="replace")
         self._append_block_data(display, direction="tx", force_new_block=True)
         self._last_direction = "tx"
+        return True
 
     @staticmethod
     def compute_checksum(data: bytes, index: int) -> bytes:
@@ -2288,6 +3212,9 @@ class SerialTool(QMainWindow):
 
     def clear_recv(self):
         self.txt_recv.clear()
+        self._recv_highlight_line = -1
+        self.txt_recv.setExtraSelections([])
+        self.btn_to_bottom.hide()
         self.rx_bytes = 0
         self.tx_bytes = 0
         self.lbl_rx_stat.setText("RX: 0 B")
@@ -2400,6 +3327,12 @@ class SerialTool(QMainWindow):
             if hasattr(self, "_tray_quit_action"):
                 self._tray_quit_action.setText(self._t("tray_quit"))
 
+        # 多条发送/关键字高亮弹窗若开着也跟着切语言
+        if getattr(self, "_multi_send_dlg", None) is not None:
+            self._multi_send_dlg.retranslate()
+        if getattr(self, "_keyword_dlg", None) is not None:
+            self._keyword_dlg.retranslate()
+
     # ----- 持久化 -----
     @staticmethod
     def _settings_file() -> str:
@@ -2462,6 +3395,7 @@ class SerialTool(QMainWindow):
             s.setValue("theme", self.cb_theme.currentData())
             s.setValue("packet_timeout", self.ed_packet_timeout.text())
             s.setValue("max_lines", self.ed_max_lines.text())
+            s.setValue("filter_highlight", self.sw_filter_hl.isChecked())
             s.setValue("tx_hex", self.sw_tx_hex.isChecked())
             s.setValue("append_newline", self.sw_append_newline.isChecked())
             s.setValue("append_nl_mode", self.cb_append_nl.currentIndex())
@@ -2523,6 +3457,7 @@ class SerialTool(QMainWindow):
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)
         self.sw_packet_split.setChecked(to_bool(pkt_split_raw), animate=False)
         self.sw_line_split.setChecked(to_bool(s.value("line_split", False)), animate=False)
+        self.sw_filter_hl.setChecked(to_bool(s.value("filter_highlight", False)), animate=False)
         try:
             nl_idx = int(s.value("line_nl_mode", 0))
             if 0 <= nl_idx < self.cb_line_nl.count():
@@ -2744,6 +3679,18 @@ def main():
                 "Tools.SerialTool.1.0")
         except Exception:
             pass
+
+    # 高分屏(HiDPI)缩放：必须在 QApplication 创建前设置，否则 2560x1600 等高分屏上
+    # Qt 按物理像素渲染，字号/下拉框都显得很小。PassThrough 让 150% 等分数缩放也平滑。
+    try:
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
