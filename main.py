@@ -20,7 +20,7 @@ import serial.tools.list_ports
 from PyQt5.QtCore import (Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
                           QEasingCurve, QRect, QSize, QPoint, pyqtProperty, QSettings)
 from PyQt5.QtGui import (QFont, QColor, QPainter, QPen, QBrush, QIcon,
-                         QTextCursor, QTextCharFormat)
+                         QTextCursor, QTextCharFormat, QFontMetrics)
 from PyQt5.QtWidgets import (QApplication, QWidget, QMainWindow, QLabel,
                              QPushButton, QComboBox, QTextEdit, QLineEdit,
                              QCheckBox, QHBoxLayout, QVBoxLayout, QGridLayout,
@@ -979,6 +979,14 @@ class SerialTool(QMainWindow):
         color = "#34C759" if opened else chrome_for(self._theme_id())["danger"]
         self.lbl_state.setStyleSheet(f"color: {color};")
 
+    def _label_col_width(self) -> int:
+        """串口设置左侧标签列宽：按当前语言下 5 个标签的最大实测文本宽度自适应，
+        避免英文单词(如 Baud Rate)被输入框遮挡。"""
+        keys = ("port", "baud_rate", "data_bits", "parity", "stop_bits")
+        fm = QFontMetrics(QFont("Segoe UI", 13))
+        w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
+        return max(50, w + 10)  # +10 右边距；中文下至少 50 保持原观感
+
     def _tr_label(self, key, size=13, bold=False, color=COLOR_TEXT):
         lbl = make_label(self._t(key), size, bold, color)
         lbl.setProperty("tr_text", key)
@@ -1120,7 +1128,7 @@ class SerialTool(QMainWindow):
 
         # 端口
         r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("port", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(50)
+        lbl = self._tr_label("port", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
         r.addWidget(lbl)
         self.cb_port = QComboBox()
         self.cb_port.setMinimumWidth(100)
@@ -1134,7 +1142,7 @@ class SerialTool(QMainWindow):
 
         # 波特率
         r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("baud_rate", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(50)
+        lbl = self._tr_label("baud_rate", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
         r.addWidget(lbl)
         self.cb_baud = QComboBox()
         self.cb_baud.setEditable(True)
@@ -1147,7 +1155,7 @@ class SerialTool(QMainWindow):
 
         # 数据位
         r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("data_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(50)
+        lbl = self._tr_label("data_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
         r.addWidget(lbl)
         self.cb_databits = QComboBox()
         self.cb_databits.addItems(["5", "6", "7", "8"])
@@ -1157,7 +1165,7 @@ class SerialTool(QMainWindow):
 
         # 校验
         r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("parity", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(50)
+        lbl = self._tr_label("parity", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
         r.addWidget(lbl)
         self.cb_parity = QComboBox()
         self.cb_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
@@ -1166,7 +1174,7 @@ class SerialTool(QMainWindow):
 
         # 停止位
         r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("stop_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(50)
+        lbl = self._tr_label("stop_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
         r.addWidget(lbl)
         self.cb_stopbits = QComboBox()
         self.cb_stopbits.addItems(["1", "1.5", "2"])
@@ -1497,7 +1505,7 @@ class SerialTool(QMainWindow):
             background-color: {c['combo_dropdown_bg']};
             color: {c['text']};
             border: 1px solid {c['separator']};
-            border-radius: 8px;
+            border-radius: 0px;
             padding: 4px;
             outline: 0px;
             selection-background-color: {c['accent']};
@@ -1636,6 +1644,12 @@ class SerialTool(QMainWindow):
         for w in self.findChildren(QWidget):
             w.style().unpolish(w)
             w.style().polish(w)
+
+        # 下拉弹出容器(QComboBoxPrivateContainer)是独立顶层窗口，其底色走系统调色板默认白，
+        # 深色主题下圆角/边框处会露白边。这里把每个下拉的弹出容器背景刷成下拉色，彻底消除白边。
+        for combo in self.findChildren(QComboBox):
+            popup = combo.view().window()
+            popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
 
     # ----- 端口扫描 -----
     def _clear_oneshot_scan(self, scan):
@@ -2334,6 +2348,9 @@ class SerialTool(QMainWindow):
                     w.setToolTip(self._t(k))
                 except Exception:
                     pass
+            # 固定宽标签（串口设置左列）随语言调整列宽，避免英文被遮挡
+            if w.property("tr_fixedw"):
+                w.setFixedWidth(self._label_col_width())
 
         self._apply_theme_label_styles()
         self._update_legend_label()
