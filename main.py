@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QMainWindow, QLabel,
                              QSplitter, QScrollArea, QFrame, QFileDialog,
                              QMessageBox, QDialog, QGraphicsDropShadowEffect,
                              QSizePolicy, QSpacerItem, QStatusBar,
-                             QSystemTrayIcon, QMenu, QAction, QColorDialog)
+                             QSystemTrayIcon, QMenu, QAction, QColorDialog, QInputDialog,
+                             QListWidget, QListWidgetItem)
 
 
 # ============== 资源路径 (兼容 PyInstaller) ==============
@@ -196,8 +197,13 @@ TR = {
         "nl_auto": "自动",
         "timeout": "超时",
         "real_time_log": "实时记录",
+        "log_split_none": "不分包",
+        "log_path_idle": "（未记录）",
+        "log_split_tip": "实时记录按文件大小分包：写到设定大小就切到新文件(原名加 _001/_002…)。\n可手填自定义，如 3M / 500K；选「不分包」则单文件不限。",
         "max_lines": "最大行数",
         "save": "保存",
+        "ctx_copy": "复制",
+        "ctx_select_all": "全选",
         "clear": "清空",
         "font_dec": "字号减小",
         "font_inc": "字号增大",
@@ -229,14 +235,15 @@ TR = {
         "multi_send": "多条发送",
         "multi_send_title": "多条发送",
         "ms_add": "＋ 添加一条",
-        "ms_interval": "间隔",
-        "ms_cycle_start": "▶ 循环发送",
+        "ms_cycle": "▶ 循环",
         "ms_cycle_stop": "■ 停止",
         "ms_send_one": "发送",
         "ms_nl_none": "无",
         "ms_placeholder": "数据（HEX 或文本）",
         "ms_none_checked": "请先勾选要循环发送的条目",
-        "ms_hint": "每行可独立设 HEX / 换行 / 校验（与主界面无关）。勾选多条 → 循环发送：按间隔依次轮发，到底再从头。",
+        "ms_hint": "左侧管理分组；每行可独立设 名称 / 延时 / HEX / 换行 / 校验。勾选多条 → 循环发送：发完每条等其「延时」再发下一条，到底再从头。",
+        "ms_name_ph": "名称",
+        "ms_delay_tip": "延时(ms)：发完本条后等这么久再发下一条",
         "kw_highlight": "关键字高亮",
         "kw_title": "关键字高亮",
         "kw_add": "＋ 添加关键字",
@@ -249,6 +256,16 @@ TR = {
         "kw_scope_rx": "收",
         "kw_scope_tx": "发",
         "filter_highlight": "只显高亮行",
+        "kw_default_group": "默认",
+        "kw_group_off": "（关闭）",
+        "kw_group_label": "分组",
+        "kw_new_group": "新建",
+        "kw_rename_group": "重命名",
+        "kw_del_group": "删除",
+        "kw_group_name_prompt": "分组名称：",
+        "kw_group_min": "至少保留一个分组",
+        "kw_new_group_default": "新分组",
+        "kw_group_tip": "双击分组名可改名",
         "read_file": "读取文件",
         "send_btn": "发  送",
         "state_closed": "● 未打开",
@@ -260,8 +277,8 @@ TR = {
         "filter_all": "All Files (*)",
         "log_header": "\n========== 日志开始 {time} ==========\n",
         "log_footer": "\n========== 日志结束 {time} ==========\n",
-        "log_started": "日志保存到 {path}",
-        "log_stopped": "已停止记录: {path}",
+        "log_started": "实时记录已开启",
+        "log_stopped": "实时记录已停止",
         "saved_to": "已保存到 {path}",
         "err_no_port": "请先选择串口",
         "err_bad_baud": "波特率无效",
@@ -279,6 +296,7 @@ TR = {
         "err_min_period": "周期最小 10ms",
         "err_open_log": "打开失败: {e}",
         "err_log_write": "写日志失败: {e}",
+        "err_rx": "接收处理出错: {e}",
         "font_size_msg": "字号: {size} pt",
         "close_prompt": "你想怎么关闭程序？",
         "close_minimize": "最小化到托盘",
@@ -333,8 +351,13 @@ TR = {
         "nl_auto": "Auto",
         "timeout": "Timeout",
         "real_time_log": "Log to File",
+        "log_split_none": "No split",
+        "log_path_idle": "(not logging)",
+        "log_split_tip": "Split the log file by size: when it reaches the set size, a new file is started (original name + _001/_002…).\nType a custom value like 3M / 500K; pick \"No split\" for a single unbounded file.",
         "max_lines": "Max Lines",
         "save": "Save",
+        "ctx_copy": "Copy",
+        "ctx_select_all": "Select All",
         "clear": "Clear",
         "font_dec": "Decrease Font",
         "font_inc": "Increase Font",
@@ -366,14 +389,15 @@ TR = {
         "multi_send": "Multi-Send",
         "multi_send_title": "Multi-Send",
         "ms_add": "＋ Add Row",
-        "ms_interval": "Interval",
-        "ms_cycle_start": "▶ Cycle Send",
+        "ms_cycle": "▶ Cycle",
         "ms_cycle_stop": "■ Stop",
         "ms_send_one": "Send",
         "ms_nl_none": "None",
         "ms_placeholder": "Data (HEX or text)",
         "ms_none_checked": "Check at least one item to cycle-send",
-        "ms_hint": "Each row has its own HEX / newline / checksum (independent of the main window). Check items → Cycle Send loops through them at the interval.",
+        "ms_hint": "Manage groups on the left; each row has its own name / delay / HEX / newline / checksum. Check items → Cycle Send: after each command waits its delay, then loops.",
+        "ms_name_ph": "Name",
+        "ms_delay_tip": "Delay (ms): wait this long after this command before the next",
         "kw_highlight": "Highlight",
         "kw_title": "Keyword Highlight",
         "kw_add": "＋ Add Keyword",
@@ -386,6 +410,16 @@ TR = {
         "kw_scope_rx": "RX",
         "kw_scope_tx": "TX",
         "filter_highlight": "Matches only",
+        "kw_default_group": "Default",
+        "kw_group_off": "(Off)",
+        "kw_group_label": "Group",
+        "kw_new_group": "New",
+        "kw_rename_group": "Rename",
+        "kw_del_group": "Delete",
+        "kw_group_name_prompt": "Group name:",
+        "kw_group_min": "Keep at least one group",
+        "kw_new_group_default": "New Group",
+        "kw_group_tip": "Double-click a group to rename",
         "read_file": "Load File",
         "send_btn": "Send",
         "state_closed": "● Disconnected",
@@ -397,8 +431,8 @@ TR = {
         "filter_all": "All Files (*)",
         "log_header": "\n========== Log started {time} ==========\n",
         "log_footer": "\n========== Log ended {time} ==========\n",
-        "log_started": "Logging to {path}",
-        "log_stopped": "Stopped logging: {path}",
+        "log_started": "Logging started",
+        "log_stopped": "Logging stopped",
         "saved_to": "Saved to {path}",
         "err_no_port": "Select a port first",
         "err_bad_baud": "Invalid baud rate",
@@ -416,6 +450,7 @@ TR = {
         "err_min_period": "Min period 10ms",
         "err_open_log": "Open failed: {e}",
         "err_log_write": "Log write failed: {e}",
+        "err_rx": "RX error: {e}",
         "font_size_msg": "Font size: {size} pt",
         "close_prompt": "How do you want to close?",
         "close_minimize": "Minimize to Tray",
@@ -469,8 +504,13 @@ TR = {
         "nl_auto": "自動",
         "timeout": "超時",
         "real_time_log": "即時記錄",
+        "log_split_none": "不分包",
+        "log_path_idle": "（未記錄）",
+        "log_split_tip": "即時記錄按檔案大小分包：寫到設定大小就切到新檔(原名加 _001/_002…)。\n可手填自訂，如 3M / 500K；選「不分包」則單檔不限。",
         "max_lines": "最大行數",
         "save": "儲存",
+        "ctx_copy": "複製",
+        "ctx_select_all": "全選",
         "clear": "清空",
         "font_dec": "字號減小",
         "font_inc": "字號增大",
@@ -502,14 +542,15 @@ TR = {
         "multi_send": "多條發送",
         "multi_send_title": "多條發送",
         "ms_add": "＋ 新增一條",
-        "ms_interval": "間隔",
-        "ms_cycle_start": "▶ 迴圈發送",
+        "ms_cycle": "▶ 迴圈",
         "ms_cycle_stop": "■ 停止",
         "ms_send_one": "發送",
         "ms_nl_none": "無",
         "ms_placeholder": "資料（HEX 或文字）",
         "ms_none_checked": "請先勾選要迴圈發送的條目",
-        "ms_hint": "每行可獨立設 HEX / 換行 / 校驗（與主介面無關）。勾選多條 → 迴圈發送：按間隔依次輪發，到底再從頭。",
+        "ms_hint": "左側管理分組；每行可獨立設 名稱 / 延時 / HEX / 換行 / 校驗。勾選多條 → 迴圈發送：發完每條等其「延時」再發下一條，到底再從頭。",
+        "ms_name_ph": "名稱",
+        "ms_delay_tip": "延時(ms)：發完本條後等這麼久再發下一條",
         "kw_highlight": "關鍵字高亮",
         "kw_title": "關鍵字高亮",
         "kw_add": "＋ 新增關鍵字",
@@ -522,6 +563,16 @@ TR = {
         "kw_scope_rx": "收",
         "kw_scope_tx": "發",
         "filter_highlight": "只顯高亮行",
+        "kw_default_group": "預設",
+        "kw_group_off": "（關閉）",
+        "kw_group_label": "分組",
+        "kw_new_group": "新增",
+        "kw_rename_group": "重新命名",
+        "kw_del_group": "刪除",
+        "kw_group_name_prompt": "分組名稱：",
+        "kw_group_min": "至少保留一個分組",
+        "kw_new_group_default": "新分組",
+        "kw_group_tip": "雙擊分組名可改名",
         "read_file": "讀取檔案",
         "send_btn": "發  送",
         "state_closed": "● 未開啟",
@@ -533,8 +584,8 @@ TR = {
         "filter_all": "All Files (*)",
         "log_header": "\n========== 日誌開始 {time} ==========\n",
         "log_footer": "\n========== 日誌結束 {time} ==========\n",
-        "log_started": "日誌儲存到 {path}",
-        "log_stopped": "已停止記錄: {path}",
+        "log_started": "即時記錄已開啟",
+        "log_stopped": "即時記錄已停止",
         "saved_to": "已儲存到 {path}",
         "err_no_port": "請先選擇串口",
         "err_bad_baud": "鮑率無效",
@@ -552,6 +603,7 @@ TR = {
         "err_min_period": "週期最小 10ms",
         "err_open_log": "開啟失敗: {e}",
         "err_log_write": "寫日誌失敗: {e}",
+        "err_rx": "接收處理出錯: {e}",
         "font_size_msg": "字號: {size} pt",
         "close_prompt": "你想怎麼關閉程式？",
         "close_minimize": "最小化到托盤",
@@ -587,9 +639,9 @@ class IOSSwitch(QWidget):
 
     def __init__(self, checked=False, parent=None):
         super().__init__(parent)
-        self.setFixedSize(46, 28)
+        self.setFixedSize(40, 24)
         self._checked = checked
-        self._circle_pos = 22 if checked else 2
+        self._circle_pos = 18 if checked else 2
         self.setCursor(Qt.PointingHandCursor)
         self._anim = QPropertyAnimation(self, b"circle_pos", self)
         self._anim.setDuration(160)
@@ -605,10 +657,10 @@ class IOSSwitch(QWidget):
         self._anim.stop()
         if animate:
             self._anim.setStartValue(self._circle_pos)
-            self._anim.setEndValue(22 if value else 2)
+            self._anim.setEndValue(18 if value else 2)
             self._anim.start()
         else:
-            self._circle_pos = 22 if value else 2
+            self._circle_pos = 18 if value else 2
             self.update()
         self.toggled.emit(value)
 
@@ -631,12 +683,12 @@ class IOSSwitch(QWidget):
         track_color = QColor(COLOR_GREEN) if self._checked else QColor("#E5E5EA")
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(track_color))
-        p.drawRoundedRect(0, 0, 46, 28, 14, 14)
+        p.drawRoundedRect(0, 0, 40, 24, 12, 12)
         shadow = QColor(0, 0, 0, 40)
         p.setBrush(QBrush(shadow))
-        p.drawEllipse(self._circle_pos, 3, 24, 24)
+        p.drawEllipse(self._circle_pos, 3, 20, 20)
         p.setBrush(QBrush(QColor("#FFFFFF")))
-        p.drawEllipse(self._circle_pos, 2, 24, 24)
+        p.drawEllipse(self._circle_pos, 2, 20, 20)
 
 
 # ============== 自定义标题栏 ==============
@@ -653,7 +705,7 @@ class TitleBar(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(18, 18)
@@ -764,7 +816,7 @@ class Card(QFrame):
 
 
 # ============== 标签 ==============
-def make_label(text, size=13, bold=False, color=COLOR_TEXT):
+def make_label(text, size=11, bold=False, color=COLOR_TEXT):
     lbl = QLabel(text)
     f = QFont("Segoe UI", size)
     if bold:
@@ -1076,66 +1128,162 @@ def _dialog_list_qss(c):
 
 # ============== 多条发送弹窗 ==============
 class MultiSendDialog(QDialog):
-    """多条自定义发送：每行一条数据 + 复选框。
-    可逐条点「发送」，也可勾选多条后「循环发送」按间隔依次轮发。
-    HEX/换行/校验跟随主界面发送区设置；条目持久化到 QSettings。"""
+    """多条自定义发送，支持分组(左侧列表)：每行一条命令 + 名称 + 独立延时 + HEX/换行/校验。
+    可逐条点「发送」，也可勾选多条后「循环发送」按每行延时依次轮发。分组与命令持久化。"""
 
     def __init__(self, app):
         super().__init__(app)
         self.app = app
         self.setWindowTitle(app._t("multi_send_title"))
-        # 去掉标题栏右侧没用的「?」上下文帮助按钮
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setMinimumSize(600, 360)
-        self.resize(760, 460)
-        self._rows = []            # [{frame, chk, edit}]
-        self._cycle_seq = []       # 当前循环的(行号,数据)序列
-        self._cycle_idx = 0
-        self._cycle_timer = QTimer(self)
-        self._cycle_timer.timeout.connect(self._cycle_tick)
+        self.setMinimumSize(900, 400)
+        self.resize(1040, 480)
+        self._rows = []
+        self._populating = False
+        self._edit_idx = 0      # 编辑哪个分组（数据存于 app._ms_groups，循环在主界面）
+        # 去抖：连敲键时合并存盘+重建，避免每个字符都 sync 磁盘/重建快捷栏卡顿
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(300)
+        self._save_timer.timeout.connect(self._commit_now)
 
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(10)
+        root.setSpacing(12)
 
-        # 行列表（可滚动）
+        # ===== 左侧：分组列表 =====
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        grp_btns = QHBoxLayout()
+        grp_btns.setSpacing(6)
+        self.btn_new_group = QPushButton(app._t("kw_new_group"))
+        self.btn_new_group.setObjectName("MsGhostBtn")
+        self.btn_new_group.setMinimumHeight(30)
+        self.btn_new_group.clicked.connect(self._new_group)
+        grp_btns.addWidget(self.btn_new_group, 1)
+        self.btn_del_group = QPushButton(app._t("kw_del_group"))
+        self.btn_del_group.setObjectName("MsGhostBtn")
+        self.btn_del_group.setMinimumHeight(30)
+        self.btn_del_group.clicked.connect(self._delete_group)
+        grp_btns.addWidget(self.btn_del_group, 1)
+        left.addLayout(grp_btns)
+        self.list_groups = QListWidget()
+        self.list_groups.setObjectName("KwGroupList")
+        self.list_groups.currentRowChanged.connect(self._on_group_row_changed)
+        self.list_groups.itemChanged.connect(self._on_group_renamed)
+        self.list_groups.itemDoubleClicked.connect(self.list_groups.editItem)
+        left.addWidget(self.list_groups, 1)
+        self.lbl_group_tip = QLabel(app._t("kw_group_tip"))
+        self.lbl_group_tip.setObjectName("MsHint")
+        self.lbl_group_tip.setWordWrap(True)
+        left.addWidget(self.lbl_group_tip)
+        left_host = QWidget()
+        left_host.setLayout(left)
+        left_host.setFixedWidth(180)
+        root.addWidget(left_host)
+
+        # ===== 右侧：当前分组的命令 =====
+        right = QVBoxLayout()
+        right.setSpacing(10)
         scroll, self._list_host, self._list_v = _make_list_scroll()
-        root.addWidget(scroll, 1)
+        right.addWidget(scroll, 1)
 
         self.btn_add = QPushButton(app._t("ms_add"))
         self.btn_add.setObjectName("MsGhostBtn")
         self.btn_add.setMinimumHeight(32)
-        self.btn_add.clicked.connect(lambda *_: (self._add_row("", False), self._save()))
-        root.addWidget(self.btn_add)
-
-        # 底部：间隔 + 循环发送
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-        self.lbl_interval = QLabel(app._t("ms_interval"))
-        bottom.addWidget(self.lbl_interval)
-        self.ed_interval = QLineEdit("1000")
-        self.ed_interval.setFixedWidth(72)
-        bottom.addWidget(self.ed_interval)
-        bottom.addWidget(QLabel("ms"))
-        bottom.addStretch(1)
-        self.btn_cycle = QPushButton(app._t("ms_cycle_start"))
-        self.btn_cycle.setObjectName("MsPrimaryBtn")
-        self.btn_cycle.setMinimumHeight(34)
-        self.btn_cycle.setMinimumWidth(120)
-        self.btn_cycle.clicked.connect(self._toggle_cycle)
-        bottom.addWidget(self.btn_cycle)
-        root.addLayout(bottom)
+        self.btn_add.clicked.connect(lambda *_: (self._add_row(), self._commit_now()))
+        right.addWidget(self.btn_add)
 
         self.lbl_hint = QLabel(app._t("ms_hint"))
         self.lbl_hint.setWordWrap(True)
         self.lbl_hint.setObjectName("MsHint")
-        root.addWidget(self.lbl_hint)
+        right.addWidget(self.lbl_hint)
+        root.addLayout(right, 1)
 
         self.refresh_theme()
-        self._load()
+        self._reload_group_list()
+        self._reload_rows()
 
-    # ----- 行管理 -----
-    def _add_row(self, data="", checked=False, hex_on=False, nl=0, cs=0):
+    # ----- 分组管理（左侧列表）-----
+    @property
+    def _groups(self):
+        """分组数据存于主窗口(与发送区快捷栏共享)，弹窗只是编辑器。"""
+        return self.app._ms_groups
+
+    def _reload_group_list(self):
+        self._populating = True
+        self.list_groups.clear()
+        for i, g in enumerate(self._groups):
+            item = QListWidgetItem(g.get("name", f"组{i + 1}"))
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            self.list_groups.addItem(item)
+        if not (0 <= self._edit_idx < len(self._groups)):
+            self._edit_idx = 0
+        self.list_groups.setCurrentRow(self._edit_idx)
+        self._populating = False
+        self.btn_del_group.setEnabled(len(self._groups) > 1)
+
+    def _on_group_row_changed(self, row):
+        if self._populating or row < 0:
+            return
+        if self._save_timer.isActive():     # 切组前把上一组未提交的编辑落盘，避免丢失
+            self._commit_now()
+        self._edit_idx = row
+        self._reload_rows()
+
+    def _on_group_renamed(self, item):
+        if self._populating:
+            return
+        row = self.list_groups.row(item)
+        if not (0 <= row < len(self._groups)):
+            return
+        name = item.text().strip()
+        if not name:
+            self._populating = True
+            item.setText(self._groups[row].get("name", ""))
+            self._populating = False
+            return
+        self._groups[row]["name"] = name
+        self.app._ms_groups_changed()
+
+    def _new_group(self):
+        if self._save_timer.isActive():   # 先把当前组未提交编辑落盘
+            self._commit_now()
+        base = self.app._t("kw_new_group_default")
+        existing = {g.get("name") for g in self._groups}
+        name, n = base, 1
+        while name in existing:
+            n += 1
+            name = f"{base}{n}"
+        self._groups.append({"name": name, "items": []})
+        self._edit_idx = len(self._groups) - 1
+        self.app._ms_groups_changed()
+        self._reload_group_list()
+        self._reload_rows()
+        item = self.list_groups.item(self._edit_idx)
+        if item:
+            self.list_groups.editItem(item)
+
+    def _delete_group(self):
+        if len(self._groups) <= 1:
+            self.app.toast(self.app._t("kw_group_min"), error=True)
+            return
+        self._save_timer.stop()    # 当前组将被删，丢弃其待提交编辑
+        d = self._edit_idx
+        self._groups.pop(d)
+        # 同步主窗口选中分组索引的偏移（删除项在其之前/即其本身时）
+        if self.app._ms_group_idx == d:
+            self.app._ms_group_idx = min(d, len(self._groups) - 1)
+        elif self.app._ms_group_idx > d:
+            self.app._ms_group_idx -= 1
+        self._edit_idx = min(d, len(self._groups) - 1)
+        self.app._ms_groups_changed()
+        self._reload_group_list()
+        self._reload_rows()
+
+    # ----- 命令行管理 -----
+    def _add_row(self, data="", checked=False, hex_on=False, nl=0, cs=0,
+                 name="", delay=1000):
         frame = QFrame()
         frame.setObjectName("MsRow")
         h = QHBoxLayout(frame)
@@ -1145,31 +1293,41 @@ class MultiSendDialog(QDialog):
         chk.setChecked(checked)
         chk.stateChanged.connect(self._save)
         h.addWidget(chk)
+        ed_name = QLineEdit(name)
+        ed_name.setPlaceholderText(self.app._t("ms_name_ph"))
+        ed_name.setFixedWidth(82)
+        ed_name.textChanged.connect(self._save)
+        h.addWidget(ed_name)
         edit = QLineEdit(data)
         edit.setPlaceholderText(self.app._t("ms_placeholder"))
         edit.textChanged.connect(self._save)
         h.addWidget(edit, 1)
-        # 每行独立 HEX / 换行 / 校验
+        ed_delay = QLineEdit(str(delay))
+        ed_delay.setFixedWidth(58)
+        ed_delay.setToolTip(self.app._t("ms_delay_tip"))
+        ed_delay.setPlaceholderText("ms")
+        ed_delay.textChanged.connect(self._save)
+        h.addWidget(ed_delay)
         cb_hex = QCheckBox("HEX")
         cb_hex.setChecked(hex_on)
         cb_hex.stateChanged.connect(self._save)
         h.addWidget(cb_hex)
         cb_nl = QComboBox()
-        cb_nl.addItems([self.app._t("ms_nl_none"), "CRLF", "LF", "CR"])  # 0=无
+        cb_nl.addItems([self.app._t("ms_nl_none"), "CRLF", "LF", "CR"])
         cb_nl.setCurrentIndex(nl)
-        cb_nl.setFixedWidth(74)
+        cb_nl.setFixedWidth(66)
         cb_nl.currentIndexChanged.connect(self._save)
         h.addWidget(cb_nl)
         cb_cs = QComboBox()
-        cb_cs.addItems([self.app._t(k) for k in CHECKSUM_KEYS])           # 0=无校验
+        cb_cs.addItems([self.app._t(k) for k in CHECKSUM_KEYS])
         cb_cs.setCurrentIndex(cs)
-        cb_cs.setFixedWidth(112)
+        cb_cs.setFixedWidth(104)
         cb_cs.currentIndexChanged.connect(self._save)
         h.addWidget(cb_cs)
         btn_send = QPushButton(self.app._t("ms_send_one"))
         btn_send.setObjectName("MsSendBtn")
-        row = {"frame": frame, "chk": chk, "edit": edit,
-               "hex": cb_hex, "nl": cb_nl, "cs": cb_cs}
+        row = {"frame": frame, "chk": chk, "name": ed_name, "edit": edit,
+               "delay": ed_delay, "hex": cb_hex, "nl": cb_nl, "cs": cb_cs}
         btn_send.clicked.connect(lambda _=False, r=row: self._send_row(r))
         h.addWidget(btn_send)
         btn_del = QPushButton("✕")
@@ -1177,16 +1335,23 @@ class MultiSendDialog(QDialog):
         btn_del.setFixedWidth(28)
         btn_del.clicked.connect(lambda _=False, r=row: self._del_row(r))
         h.addWidget(btn_del)
-        self._list_v.insertWidget(self._list_v.count() - 1, frame)  # 插在 stretch 前
+        self._list_v.insertWidget(self._list_v.count() - 1, frame)
         self._rows.append(row)
 
+    def _row_delay(self, row):
+        try:
+            return max(0, int(row["delay"].text()))
+        except (ValueError, TypeError):
+            return 1000
+
     def _row_params(self, row):
-        """(数据, hex_mode, newline 0-3, checksum 索引)"""
+        """(数据, hex_mode, newline 0-3, checksum 索引, 延时 ms)"""
         return (row["edit"].text(), row["hex"].isChecked(),
-                row["nl"].currentIndex(), row["cs"].currentIndex())
+                row["nl"].currentIndex(), row["cs"].currentIndex(),
+                self._row_delay(row))
 
     def _send_row(self, row):
-        data, hx, nl, cs = self._row_params(row)
+        data, hx, nl, cs, _d = self._row_params(row)
         self.app._send_text(data, hex_mode=hx, newline=nl, checksum=cs)
 
     def _del_row(self, row):
@@ -1194,89 +1359,60 @@ class MultiSendDialog(QDialog):
         row["frame"].deleteLater()
         if row in self._rows:
             self._rows.remove(row)
-        self._save()
+        self._commit_now()
 
-    # ----- 循环发送 -----
-    def _toggle_cycle(self):
-        if self._cycle_timer.isActive():
-            self._stop_cycle()
-            return
-        seq = [self._row_params(r) for r in self._rows
-               if r["chk"].isChecked() and r["edit"].text().strip()]
-        if not seq:
-            self.app.toast(self.app._t("ms_none_checked"), error=True)
-            return
-        if not (self.app.ser and self.app.ser.is_open):
-            self.app.toast(self.app._t("err_serial_not_open"), error=True)
-            return
-        try:
-            interval = max(10, int(self.ed_interval.text()))
-        except (ValueError, TypeError):
-            interval = 1000
-        self._cycle_seq = seq               # [(data, hex, nl, cs), ...]
-        self._cycle_idx = 0
-        self.btn_cycle.setText(self.app._t("ms_cycle_stop"))
-        self._cycle_tick()                 # 立即发第一条
-        self._cycle_timer.start(interval)
+    # ----- 持久化（写回主窗口分组 + 同步快捷栏）-----
+    def _row_dict(self, r):
+        return {"name": r["name"].text(), "data": r["edit"].text(),
+                "checked": r["chk"].isChecked(), "delay": self._row_delay(r),
+                "hex": r["hex"].isChecked(), "nl": r["nl"].currentIndex(),
+                "cs": r["cs"].currentIndex()}
 
-    def _cycle_tick(self):
-        if not self._cycle_seq:
-            self._stop_cycle()
-            return
-        # 只有串口真的关了才停整个循环；单条发送失败(空/坏数据)只跳过，继续轮发
-        if not (self.app.ser and self.app.ser.is_open):
-            self.app.toast(self.app._t("err_serial_not_open"), error=True)
-            self._stop_cycle()
-            return
-        data, hx, nl, cs = self._cycle_seq[self._cycle_idx % len(self._cycle_seq)]
-        self.app._send_text(data, hex_mode=hx, newline=nl, checksum=cs)
-        self._cycle_idx += 1
-
-    def _stop_cycle(self):
-        self._cycle_timer.stop()
-        self.btn_cycle.setText(self.app._t("ms_cycle_start"))
-
-    # ----- 持久化 -----
     def _save(self):
-        items = [{"data": r["edit"].text(), "checked": r["chk"].isChecked(),
-                  "hex": r["hex"].isChecked(), "nl": r["nl"].currentIndex(),
-                  "cs": r["cs"].currentIndex()}
-                 for r in self._rows]
-        self.app.settings.setValue("multi_send_items",
-                                   json.dumps(items, ensure_ascii=False))
-        self.app.settings.sync()
+        """行内编辑触发：去抖，300ms 内合并多次按键为一次落盘+重建。"""
+        self._save_timer.start()
 
-    def _load(self):
-        raw = self.app.settings.value("multi_send_items", "")
+    def _commit_now(self):
+        """把当前行写回编辑分组，并刷新主界面快捷栏/下拉（去抖后或结构性操作时立即调用）。"""
+        self._save_timer.stop()
+        if 0 <= self._edit_idx < len(self._groups):
+            self._groups[self._edit_idx]["items"] = [self._row_dict(r) for r in self._rows]
+        self.app._ms_groups_changed()
+
+    def _reload_rows(self):
+        for r in self._rows:
+            r["frame"].setParent(None)
+            r["frame"].deleteLater()
+        self._rows = []
         items = []
-        if raw:
-            try:
-                items = json.loads(raw)
-            except Exception:
-                items = []
+        if 0 <= self._edit_idx < len(self._groups):
+            items = self._groups[self._edit_idx]["items"]
         if not items:
             items = [{"data": "", "checked": False}]
         for it in items:
             self._add_row(str(it.get("data", "")), bool(it.get("checked", False)),
                           bool(it.get("hex", False)), int(it.get("nl", 0)),
-                          int(it.get("cs", 0)))
+                          int(it.get("cs", 0)), str(it.get("name", "")),
+                          int(it.get("delay", 1000)))
+        self.refresh_theme()
 
     def closeEvent(self, e):
-        self._stop_cycle()
-        self._save()
+        self._commit_now()    # 关窗时立即落盘待提交编辑
         super().closeEvent(e)
 
-    # ----- 主题 -----
+    # ----- 主题 / 语言 -----
     def retranslate(self):
         self.setWindowTitle(self.app._t("multi_send_title"))
         self.btn_add.setText(self.app._t("ms_add"))
-        self.lbl_interval.setText(self.app._t("ms_interval"))
         self.lbl_hint.setText(self.app._t("ms_hint"))
-        self.btn_cycle.setText(self.app._t(
-            "ms_cycle_stop" if self._cycle_timer.isActive() else "ms_cycle_start"))
+        self.btn_new_group.setText(self.app._t("kw_new_group"))
+        self.btn_del_group.setText(self.app._t("kw_del_group"))
+        self.lbl_group_tip.setText(self.app._t("kw_group_tip"))
         for r in self._rows:
             r["edit"].setPlaceholderText(self.app._t("ms_placeholder"))
-            r["nl"].setItemText(0, self.app._t("ms_nl_none"))      # 仅“无”随语言变
+            r["name"].setPlaceholderText(self.app._t("ms_name_ph"))
+            r["delay"].setToolTip(self.app._t("ms_delay_tip"))
+            r["nl"].setItemText(0, self.app._t("ms_nl_none"))
             cs_idx = r["cs"].currentIndex()
             r["cs"].blockSignals(True)
             for i, k in enumerate(CHECKSUM_KEYS):
@@ -1290,7 +1426,6 @@ class MultiSendDialog(QDialog):
     def refresh_theme(self):
         self._apply_titlebar_theme()
         c = chrome_for(self.app._theme_id())
-        # 公共列表样式 + 本弹窗特有的主按钮/单条发送按钮
         self.setStyleSheet(_dialog_list_qss(c) + f"""
         QPushButton#MsPrimaryBtn {{
             background-color: {c['accent']}; color: white; border: 0px;
@@ -1304,8 +1439,20 @@ class MultiSendDialog(QDialog):
             border-radius: 6px; font-family: 'Segoe UI'; font-size: 12px; padding: 4px 12px;
         }}
         QPushButton#MsSendBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QListWidget#KwGroupList {{
+            background-color: {c['input_bg']}; border: 1px solid {c['separator']};
+            border-radius: 8px; color: {c['text']};
+            font-family: 'Segoe UI'; font-size: 12px; outline: 0px; padding: 3px;
+        }}
+        QListWidget#KwGroupList::item {{ padding: 5px 6px; border-radius: 5px; }}
+        QListWidget#KwGroupList::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+        QListWidget#KwGroupList::item:hover {{ background-color: {c['ghost_hover']}; }}
+        QListWidget#KwGroupList QLineEdit {{
+            background-color: {c['input_focus_bg']}; color: {c['text']};
+            border: 1px solid {c['accent']}; border-radius: 4px; padding: 1px 4px;
+            selection-background-color: {c['accent']}; selection-color: #FFFFFF;
+        }}
         """)
-        # 弹出容器(独立顶层窗口)底色刷深，避免深色主题下露白边
         for r in getattr(self, "_rows", []):
             for key in ("nl", "cs"):
                 popup = r[key].view().window()
@@ -1323,37 +1470,81 @@ class KeywordHighlightDialog(QDialog):
         self.app = app
         self.setWindowTitle(app._t("kw_title"))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setMinimumSize(620, 320)
-        self.resize(740, 400)
+        self.setMinimumSize(720, 380)
+        self.resize(860, 460)
         self._rows = []
+        self._populating = False    # 编程填充分组列表时忽略 itemChanged(重命名)
+        # 去抖：连敲键时合并落盘+全量重扫高亮，避免每个字符都 sync+重扫卡顿
+        self._commit_timer = QTimer(self)
+        self._commit_timer.setSingleShot(True)
+        self._commit_timer.setInterval(300)
+        self._commit_timer.timeout.connect(self._commit_now)
+        # 编辑目标分组（与主界面「生效分组」独立）：默认编辑当前生效分组，关闭时编辑第一个
+        self._edit_idx = (app._keyword_active
+                          if 0 <= app._keyword_active < len(app._keyword_groups) else 0)
 
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(10)
+        root.setSpacing(12)
 
+        # ===== 左侧：分组列表（仿 SuperCom）=====
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        # 新建 / 删除 并排一行
+        grp_btns = QHBoxLayout()
+        grp_btns.setSpacing(6)
+        self.btn_new_group = QPushButton(app._t("kw_new_group"))
+        self.btn_new_group.setObjectName("MsGhostBtn")
+        self.btn_new_group.setMinimumHeight(30)
+        self.btn_new_group.clicked.connect(self._new_group)
+        grp_btns.addWidget(self.btn_new_group, 1)
+        self.btn_del_group = QPushButton(app._t("kw_del_group"))
+        self.btn_del_group.setObjectName("MsGhostBtn")
+        self.btn_del_group.setMinimumHeight(30)
+        self.btn_del_group.clicked.connect(self._delete_group)
+        grp_btns.addWidget(self.btn_del_group, 1)
+        left.addLayout(grp_btns)
+        self.list_groups = QListWidget()
+        self.list_groups.setObjectName("KwGroupList")
+        self.list_groups.currentRowChanged.connect(self._on_group_row_changed)
+        self.list_groups.itemChanged.connect(self._on_group_renamed)
+        self.list_groups.itemDoubleClicked.connect(self.list_groups.editItem)
+        left.addWidget(self.list_groups, 1)
+        self.lbl_group_tip = QLabel(app._t("kw_group_tip"))
+        self.lbl_group_tip.setObjectName("MsHint")
+        self.lbl_group_tip.setWordWrap(True)
+        left.addWidget(self.lbl_group_tip)
+        left_host = QWidget()
+        left_host.setLayout(left)
+        left_host.setFixedWidth(180)
+        root.addWidget(left_host)
+
+        # ===== 右侧：当前分组的规则 =====
+        right = QVBoxLayout()
+        right.setSpacing(10)
         scroll, self._list_host, self._list_v = _make_list_scroll()
-        root.addWidget(scroll, 1)
-
+        right.addWidget(scroll, 1)
         self.btn_add = QPushButton(app._t("kw_add"))
         self.btn_add.setObjectName("MsGhostBtn")
         self.btn_add.setMinimumHeight(32)
         self.btn_add.clicked.connect(lambda *_: self._on_add())
-        root.addWidget(self.btn_add)
-
+        right.addWidget(self.btn_add)
         self.lbl_hint = QLabel(app._t("kw_hint"))
         self.lbl_hint.setWordWrap(True)
         self.lbl_hint.setObjectName("MsHint")
-        root.addWidget(self.lbl_hint)
+        right.addWidget(self.lbl_hint)
+        root.addLayout(right, 1)
 
         self.refresh_theme()
-        self._load()
+        self._reload_group_list()
+        self._reload_rows()
 
     # ----- 行管理 -----
     def _on_add(self):
         # 新加行默认不勾选(与首次默认行一致)：用户填好关键字后再手动启用
         color = self.PRESET_COLORS[len(self._rows) % len(self.PRESET_COLORS)]
         self._add_row("", "bg", color, False)
-        self._commit()
+        self._commit_now()
 
     _SCOPES = ("both", "rx", "tx")
 
@@ -1411,41 +1602,141 @@ class KeywordHighlightDialog(QDialog):
         if col.isValid():
             row["color"] = col.name()
             self._paint_color_btn(row)
-            self._commit()
+            self._commit_now()
 
     def _del_row(self, row):
         row["frame"].setParent(None)
         row["frame"].deleteLater()
         if row in self._rows:
             self._rows.remove(row)
-        self._commit()
+        self._commit_now()
 
-    # ----- 应用 / 持久化 -----
+    # ----- 分组管理（左侧列表）-----
+    def _reload_group_list(self):
+        """用各分组名重建左侧列表，选中当前编辑分组。双击列表项可改名。"""
+        self._populating = True
+        self.list_groups.clear()
+        for i, g in enumerate(self.app._keyword_groups):
+            item = QListWidgetItem(g.get("name", f"组{i + 1}"))
+            item.setFlags(item.flags() | Qt.ItemIsEditable)   # 双击改名
+            self.list_groups.addItem(item)
+        if not (0 <= self._edit_idx < len(self.app._keyword_groups)):
+            self._edit_idx = 0
+        self.list_groups.setCurrentRow(self._edit_idx)
+        self._populating = False
+        self.btn_del_group.setEnabled(len(self.app._keyword_groups) > 1)  # 至少保留一个
+
+    def _on_group_row_changed(self, row):
+        if self._populating or row < 0:
+            return
+        if self._commit_timer.isActive():   # 切组前把上一组未提交的编辑落盘
+            self._commit_now()
+        self._edit_idx = row
+        self._reload_rows()
+
+    def _on_group_renamed(self, item):
+        """双击改名提交：写回分组名并同步主下拉。"""
+        if self._populating:
+            return
+        row = self.list_groups.row(item)
+        if not (0 <= row < len(self.app._keyword_groups)):
+            return
+        name = item.text().strip()
+        if not name:   # 空名还原
+            self._populating = True
+            item.setText(self.app._keyword_groups[row].get("name", ""))
+            self._populating = False
+            return
+        self.app._keyword_groups[row]["name"] = name
+        self.app._kw_groups_changed()   # 存盘 + 重建主界面分组下拉
+
+    def _new_group(self):
+        if self._commit_timer.isActive():   # 先把当前组未提交编辑落盘
+            self._commit_now()
+        # 起个不重复的默认名，加进列表并进入改名状态(贴近 SuperCom 流程)
+        base = self.app._t("kw_new_group_default")
+        existing = {g.get("name") for g in self.app._keyword_groups}
+        name, n = base, 1
+        while name in existing:
+            n += 1
+            name = f"{base}{n}"
+        self.app._keyword_groups.append({"name": name, "rules": []})
+        self._edit_idx = len(self.app._keyword_groups) - 1
+        self.app._kw_groups_changed()
+        self._reload_group_list()
+        self._reload_rows()
+        item = self.list_groups.item(self._edit_idx)
+        if item:
+            self.list_groups.editItem(item)   # 直接改名
+
+    def _delete_group(self):
+        if len(self.app._keyword_groups) <= 1:
+            self.app.toast(self.app._t("kw_group_min"), error=True)
+            return
+        self._commit_timer.stop()   # 当前组将被删，丢弃其待提交编辑
+        d = self._edit_idx
+        self.app._keyword_groups.pop(d)
+        # 调整生效分组索引
+        if self.app._keyword_active == d:
+            self.app._keyword_active = -1
+        elif self.app._keyword_active > d:
+            self.app._keyword_active -= 1
+        self._edit_idx = min(d, len(self.app._keyword_groups) - 1)
+        self.app._kw_groups_changed()
+        self._reload_group_list()
+        self._reload_rows()
+
+    # ----- 规则行 应用 / 加载 -----
     def _commit(self):
-        self.app._keyword_rules = [
+        """行内编辑触发：去抖，300ms 内合并多次按键为一次落盘+全量重扫高亮。"""
+        self._commit_timer.start()
+
+    def _commit_now(self):
+        self._commit_timer.stop()
+        rules = [
             {"pattern": r["edit"].text(),
              "mode": "bg" if r["mode"].currentIndex() == 0 else "fg",
              "scope": self._SCOPES[r["scope"].currentIndex()],
              "color": r["color"],
              "enabled": r["chk"].isChecked()}
             for r in self._rows]
-        self.app._apply_keyword_rules()
+        if 0 <= self._edit_idx < len(self.app._keyword_groups):
+            self.app._keyword_groups[self._edit_idx]["rules"] = rules
+        self.app._apply_keyword_rules()   # 存盘 + 刷新(若编辑的是生效分组即时见效)
 
-    def _load(self):
-        rules = self.app._keyword_rules
+    def _reload_rows(self):
+        """清掉现有行，载入当前编辑分组的规则。"""
+        for r in self._rows:
+            r["frame"].setParent(None)
+            r["frame"].deleteLater()
+        self._rows = []
+        rules = []
+        if 0 <= self._edit_idx < len(self.app._keyword_groups):
+            rules = self.app._keyword_groups[self._edit_idx]["rules"]
         if not rules:
+            # 空分组给一条占位行(不勾选、不写回，等用户填了再 commit)
             rules = [{"pattern": "", "mode": "bg",
-                      "color": self.PRESET_COLORS[0], "enabled": False}]
+                      "color": self.PRESET_COLORS[0], "enabled": False, "scope": "both"}]
         for r in rules:
             self._add_row(str(r.get("pattern", "")), r.get("mode", "bg"),
                           r.get("color", "#FFD60A"), bool(r.get("enabled", True)),
                           r.get("scope", "both"))
+        # 给新行的下拉弹出容器/颜色块刷主题色
+        self.refresh_theme()
+
+    def closeEvent(self, e):
+        if self._commit_timer.isActive():   # 关窗时立即落盘待提交编辑
+            self._commit_now()
+        super().closeEvent(e)
 
     # ----- 主题 / 语言 -----
     def retranslate(self):
         self.setWindowTitle(self.app._t("kw_title"))
         self.btn_add.setText(self.app._t("kw_add"))
         self.lbl_hint.setText(self.app._t("kw_hint"))
+        self.btn_new_group.setText(self.app._t("kw_new_group"))
+        self.btn_del_group.setText(self.app._t("kw_del_group"))
+        self.lbl_group_tip.setText(self.app._t("kw_group_tip"))
         for r in self._rows:
             r["edit"].setPlaceholderText(self.app._t("kw_placeholder"))
             idx = r["mode"].currentIndex()
@@ -1468,7 +1759,32 @@ class KeywordHighlightDialog(QDialog):
     def refresh_theme(self):
         self._apply_titlebar_theme()
         c = chrome_for(self.app._theme_id())
-        self.setStyleSheet(_dialog_list_qss(c))    # 公共列表样式即可（颜色按钮单独内联上色）
+        # 公共列表样式 + 左侧分组列表(QListWidget)样式
+        self.setStyleSheet(_dialog_list_qss(c) + f"""
+        QListWidget#KwGroupList {{
+            background-color: {c['input_bg']};
+            border: 1px solid {c['separator']};
+            border-radius: 8px;
+            color: {c['text']};
+            font-family: 'Segoe UI'; font-size: 12px;
+            outline: 0px;
+            padding: 3px;
+        }}
+        QListWidget#KwGroupList::item {{ padding: 5px 6px; border-radius: 5px; }}
+        QListWidget#KwGroupList::item:selected {{
+            background-color: {c['accent']}; color: #FFFFFF;
+        }}
+        QListWidget#KwGroupList::item:hover {{ background-color: {c['ghost_hover']}; }}
+        QListWidget#KwGroupList QLineEdit {{
+            background-color: {c['input_focus_bg']};
+            color: {c['text']};
+            border: 1px solid {c['accent']};
+            border-radius: 4px;
+            padding: 1px 4px;
+            selection-background-color: {c['accent']};
+            selection-color: #FFFFFF;
+        }}
+        """)
         for r in self._rows:                       # 颜色按钮保持各自底色
             self._paint_color_btn(r)
             for key in ("mode", "scope"):
@@ -1504,6 +1820,9 @@ class SerialTool(QMainWindow):
         self._txt_ends_with_nl = True
         self._log_file = None
         self._log_file_path = ""
+        self._log_limit = 0       # 分包字节上限，0=不分包
+        self._log_base_path = ""  # 用户选的原始路径，分包时据此派生 _001/_002...
+        self._log_seg = 0         # 当前分包序号
         self._recv_font_size = 10
 
         self.settings = QSettings(self._settings_file(), QSettings.IniFormat)
@@ -1550,11 +1869,11 @@ class SerialTool(QMainWindow):
         """串口设置左侧标签列宽：按当前语言下 5 个标签的最大实测文本宽度自适应，
         避免英文单词(如 Baud Rate)被输入框遮挡。"""
         keys = ("port", "baud_rate", "data_bits", "parity", "stop_bits")
-        fm = QFontMetrics(QFont("Segoe UI", 13))
+        fm = QFontMetrics(QFont("Segoe UI", 11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
-        return max(50, w + 10)  # +10 右边距；中文下至少 50 保持原观感
+        return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
 
-    def _tr_label(self, key, size=13, bold=False, color=COLOR_TEXT):
+    def _tr_label(self, key, size=11, bold=False, color=COLOR_TEXT):
         lbl = make_label(self._t(key), size, bold, color)
         lbl.setProperty("tr_text", key)
         # 自动挂 tooltip：若同名 _tip 键存在则用它，语言切换时由 _apply_language 同步
@@ -1645,13 +1964,31 @@ class SerialTool(QMainWindow):
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
             lbl.setFont(QFont("Segoe UI", 10))
+
+        def _sep():
+            """竖线分隔符（无自带色 → 跟随状态栏 text_sec，主题自适应）"""
+            s = QLabel("│")
+            s.setFont(QFont("Segoe UI", 10))
+            s.setObjectName("StatusSep")
+            return s
+
         # 三个状态项放左下角 — 用 addWidget 而非 addPermanentWidget
         # (addPermanentWidget 会贴右边；addWidget 走左边，缺点是 toast 出现时会被临时遮盖)
         self.status_bar.addWidget(self.lbl_state)
-        self.status_bar.addWidget(QLabel("    "))
+        self.status_bar.addWidget(_sep())
         self.status_bar.addWidget(self.lbl_rx_stat)
-        self.status_bar.addWidget(QLabel("    "))
+        self.status_bar.addWidget(_sep())
         self.status_bar.addWidget(self.lbl_tx_stat)
+
+        # 实时记录文件路径 — 右下角(版本号左侧)，仅记录时显示，太长中间省略+悬停看全路径
+        self.lbl_log_path = QLabel("")
+        self.lbl_log_path.setFont(QFont("Segoe UI", 9))
+        self.lbl_log_path.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+        self._log_path_elide_w = 560
+        self.status_bar.addPermanentWidget(self.lbl_log_path)
+        self._log_path_sep = _sep()
+        self._log_path_sep.hide()    # 未记录时隐藏这条分隔，避免悬空
+        self.status_bar.addPermanentWidget(self._log_path_sep)
 
         # 版本号 — 右下角 (addPermanentWidget 走右边)
         self.lbl_version = QLabel(f"v{APP_VERSION}")
@@ -1689,9 +2026,9 @@ class SerialTool(QMainWindow):
     def build_settings_card(self):
         card = Card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
-        layout.addWidget(self._tr_label("serial_settings", 13, bold=True))
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
+        layout.addWidget(self._tr_label("serial_settings", 12, bold=True))
 
         # 端口
         r = QHBoxLayout(); r.setSpacing(6)
@@ -1762,15 +2099,15 @@ class SerialTool(QMainWindow):
     def build_data_options_card(self):
         card = Card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
-        layout.addWidget(self._tr_label("data_area", 13, bold=True))
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
+        layout.addWidget(self._tr_label("data_area", 12, bold=True))
 
         MAIN_W = 90
         grid = QGridLayout()
         grid.setColumnStretch(0, 1)
         grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(8)
+        grid.setVerticalSpacing(6)
 
         def lbl(key):
             return self._tr_label(key, color=COLOR_TEXT_SECONDARY)
@@ -1799,6 +2136,9 @@ class SerialTool(QMainWindow):
 
         row = 0
         self.sw_rx_hex = IOSSwitch(False)
+        # 切 HEX/文本 显示时复位增量解码状态：否则文本模式残留的半个多字节
+        # 在切回文本时会和新数据拼接错误解码 → 乱码
+        self.sw_rx_hex.toggled.connect(lambda _=False: self._on_encoding_changed())
         sw_row(row, "hex_display", self.sw_rx_hex); row += 1
 
         # 字符编码 — 影响 RX 解码、TX 编码、文件加载
@@ -1836,12 +2176,19 @@ class SerialTool(QMainWindow):
 
         self.sw_log_file = IOSSwitch(False)
         self.sw_log_file.toggled.connect(self.on_log_file_toggled)
-        sw_row(row, "real_time_log", self.sw_log_file); row += 1
+        # 实时记录按文件大小分包：到设定大小切到新文件（可编辑自定义，如 3M）
+        self.cb_log_split = QComboBox()
+        self.cb_log_split.setEditable(True)
+        self.cb_log_split.addItem(self._t("log_split_none"))   # 不分包
+        for s in ("1M", "2M", "5M", "10M", "20M", "50M", "100M"):
+            self.cb_log_split.addItem(s)
+        self.cb_log_split.setCurrentIndex(0)
+        self.cb_log_split.setFixedWidth(MAIN_W)
+        self.cb_log_split.setToolTip(self._t("log_split_tip"))
+        self.cb_log_split.setProperty("tr_tooltip", "log_split_tip")
+        self.cb_log_split.currentTextChanged.connect(self._on_log_split_changed)
+        sw_extra_row(row, "real_time_log", self.sw_log_file, self.cb_log_split); row += 1
 
-        # 只显高亮行：开启后数据区只保留命中关键字的行（折叠其余）
-        self.sw_filter_hl = IOSSwitch(False)
-        self.sw_filter_hl.toggled.connect(self._on_filter_hl_toggled)
-        sw_row(row, "filter_highlight", self.sw_filter_hl); row += 1
 
         self.ed_max_lines = QLineEdit("10000")
         self.ed_max_lines.setAlignment(Qt.AlignRight)
@@ -1879,15 +2226,15 @@ class SerialTool(QMainWindow):
     def build_send_options_card(self):
         card = Card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
-        layout.addWidget(self._tr_label("send_area", 13, bold=True))
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
+        layout.addWidget(self._tr_label("send_area", 12, bold=True))
 
         MAIN_W = 90
         grid = QGridLayout()
         grid.setColumnStretch(0, 1)
         grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(8)
+        grid.setVerticalSpacing(6)
 
         def lbl(key):
             return self._tr_label(key, color=COLOR_TEXT_SECONDARY)
@@ -1949,7 +2296,7 @@ class SerialTool(QMainWindow):
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        title_row.addWidget(self._tr_label("data_area", 14, bold=True))
+        title_row.addWidget(self._tr_label("data_area", 13, bold=True))
         title_row.addSpacing(10)
         self.legend_label = QLabel(
             f'<span style="color:{COLOR_TEXT_SECONDARY};">{self._t("legend_rx")}</span>'
@@ -1961,11 +2308,27 @@ class SerialTool(QMainWindow):
         title_row.addWidget(self.legend_label)
         title_row.addStretch(1)
 
+        # 生效分组下拉（顶部「（关闭）」+ 各分组）—— 选哪个分组就按哪个分组高亮
+        self.cb_kw_group = QComboBox()
+        self.cb_kw_group.setMinimumWidth(96)
+        self.cb_kw_group.currentIndexChanged.connect(self._on_kw_group_changed)
+        title_row.addWidget(self.cb_kw_group)
+        title_row.addSpacing(6)
+
         self.btn_keyword = QPushButton(self._t("kw_highlight"))
         self.btn_keyword.setObjectName("GhostBtn")
         self.btn_keyword.setProperty("tr_text", "kw_highlight")
         self.btn_keyword.clicked.connect(self.open_keyword_highlight)
         title_row.addWidget(self.btn_keyword)
+        title_row.addSpacing(6)
+
+        # 只显高亮行：可切换按钮，开启后数据区只保留命中关键字的行（折叠其余）
+        self.btn_filter_hl = QPushButton(self._t("filter_highlight"))
+        self.btn_filter_hl.setObjectName("GhostBtn")
+        self.btn_filter_hl.setCheckable(True)
+        self.btn_filter_hl.setProperty("tr_text", "filter_highlight")
+        self.btn_filter_hl.toggled.connect(self._on_filter_hl_toggled)
+        title_row.addWidget(self.btn_filter_hl)
         title_row.addSpacing(8)
 
         self.btn_font_dec = QPushButton("A−")
@@ -1996,8 +2359,11 @@ class SerialTool(QMainWindow):
 
         # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
         self._recv_highlight_line = -1          # 当前高亮的块号，-1 表示无
-        # 关键字高亮规则: [{pattern, mode('bg'/'fg'), color, enabled}]，从设置加载
-        self._keyword_rules = self._load_keyword_rules()
+        # 关键字高亮分组: [{name, rules:[{pattern,mode,scope,color,enabled}]}]，_keyword_active=生效分组(-1关闭)
+        self._keyword_groups, self._keyword_active, _kw_ok = self._load_keyword_groups()
+        if not _kw_ok:      # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
+            self._save_keyword_groups()
+        self._rebuild_kw_group_combo()      # 填充标题栏分组下拉
         # 节流定时器：收数据高频，关键字重扫合并到 ~150ms 一次，避免卡顿
         self._kw_timer = QTimer(self)
         self._kw_timer.setSingleShot(True)
@@ -2015,8 +2381,44 @@ class SerialTool(QMainWindow):
         # 监听 viewport 点击(行高亮) 和 txt_recv 尺寸变化(重定位按钮)
         self.txt_recv.viewport().installEventFilter(self)
         self.txt_recv.installEventFilter(self)
+        # 自定义右键菜单（跟随程序语言）：在 eventFilter 拦截 ContextMenu 事件弹出
+        # （QTextEdit 的右键事件发往 viewport，CustomContextMenu 信号路由不稳，故走 eventFilter）
+        self.txt_recv.setContextMenuPolicy(Qt.PreventContextMenu)
 
         return card
+
+    def _recv_context_menu(self, global_pos):
+        """数据区右键菜单：复制 / 全选 / 清空 / 保存，文字跟随程序语言。"""
+        menu = QMenu(self.txt_recv)
+        c = chrome_for(self._theme_id())
+        menu.setStyleSheet(f"""
+            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
+                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
+            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+            QMenu::item:disabled {{ color: {c['text_sec']}; }}
+            QMenu::separator {{ height: 1px; background: {c['separator']}; margin: 4px 8px; }}
+        """)
+        has_sel = self.txt_recv.textCursor().hasSelection()
+        has_text = bool(self.txt_recv.document().characterCount() > 1)
+        act_copy = menu.addAction(self._t("ctx_copy"))
+        act_copy.setEnabled(has_sel)
+        act_all = menu.addAction(self._t("ctx_select_all"))
+        act_all.setEnabled(has_text)
+        menu.addSeparator()
+        act_clear = menu.addAction(self._t("clear"))
+        act_clear.setEnabled(has_text)
+        act_save = menu.addAction(self._t("save"))
+        act_save.setEnabled(has_text)
+        chosen = menu.exec_(global_pos)
+        if chosen is act_copy:
+            self.txt_recv.copy()
+        elif chosen is act_all:
+            self.txt_recv.selectAll()
+        elif chosen is act_clear:
+            self.clear_recv()
+        elif chosen is act_save:
+            self.save_recv()
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
@@ -2024,9 +2426,14 @@ class SerialTool(QMainWindow):
             # 接收区尺寸变化 → 重定位浮动「回到底部」按钮
             if obj is self.txt_recv and event.type() == QEvent.Resize:
                 self._reposition_to_bottom_btn()
-            # 接收区 viewport 单击 → 整行高亮
-            elif obj is self.txt_recv.viewport() and event.type() == QEvent.MouseButtonPress:
-                if event.button() == Qt.LeftButton:
+            elif obj is self.txt_recv.viewport():
+                # 右键 → 自定义中文菜单（拦截并消费，阻止 Qt 默认菜单）
+                if event.type() == QEvent.ContextMenu:
+                    self._recv_context_menu(event.globalPos())
+                    return True
+                # 左键单击 → 整行高亮
+                elif (event.type() == QEvent.MouseButtonPress
+                      and event.button() == Qt.LeftButton):
                     self._highlight_recv_line(event.pos())
         return super().eventFilter(obj, event)
 
@@ -2072,8 +2479,8 @@ class SerialTool(QMainWindow):
         self._refresh_extra_selections()
 
     def _schedule_keyword_rebuild(self):
-        """收到新数据时调用：有关键字规则才启动节流定时器重扫"""
-        if self._keyword_rules and not self._kw_timer.isActive():
+        """收到新数据时调用：生效分组有规则才启动节流定时器重扫"""
+        if self._active_rules() and not self._kw_timer.isActive():
             self._kw_timer.start()
 
     _KW_MAX_SELECTIONS = 2000  # 安全上限，避免像 '00' 这种在 HEX 流里匹配出上万条
@@ -2085,8 +2492,8 @@ class SerialTool(QMainWindow):
             return
         doc = self.txt_recv.document()
         sels = []
-        # 1. 关键字高亮（区分大小写子串匹配；按规则 scope 限定 收/发/收发）
-        rules = [r for r in self._keyword_rules
+        # 1. 关键字高亮（生效分组；区分大小写子串匹配；按规则 scope 限定 收/发/收发）
+        rules = [r for r in self._active_rules()
                  if r.get("enabled", True) and r.get("pattern")]
         # (pattern, QColor, is_bg, scope) — scope: 'both'/'rx'/'tx'
         parsed = [(r["pattern"], QColor(r.get("color", "#FFD60A")),
@@ -2160,26 +2567,96 @@ class SerialTool(QMainWindow):
                 self._recv_highlight_line = -1
         self.txt_recv.setExtraSelections(sels)
 
-    # ----- 关键字高亮规则：加载/保存/应用 -----
-    def _load_keyword_rules(self):
-        raw = self.settings.value("keyword_rules", "")
+    # ----- 关键字高亮：分组模型（多个命名分组，每组多条规则，单个生效分组）-----
+    def _load_keyword_groups(self):
+        """加载分组 + 生效分组名。兼容旧版扁平 keyword_rules → 迁移成「默认」分组。
+        返回 (groups, active_index, loaded_ok)；loaded_ok=False 表示走了迁移/默认(损坏或缺失)，
+        调用方据此落盘，避免每次启动重复迁移。active=-1 表示关闭。"""
+        groups = []
+        raw = self.settings.value("keyword_groups", "")
         if raw:
             try:
-                rules = json.loads(raw)
-                if isinstance(rules, list):
-                    return rules
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    groups = [g for g in data
+                              if isinstance(g, dict) and isinstance(g.get("rules"), list)]
             except Exception:
-                pass
-        return []
+                groups = []
+        loaded_ok = bool(groups)
+        if not groups:
+            # 迁移旧扁平规则(若有)到「默认」分组
+            old_rules = []
+            old = self.settings.value("keyword_rules", "")
+            if old:
+                try:
+                    parsed = json.loads(old)
+                    if isinstance(parsed, list):
+                        old_rules = parsed
+                except Exception:
+                    pass
+            groups = [{"name": self._t("kw_default_group"), "rules": old_rules}]
+        # 生效分组按名称记忆(索引会因增删变动)
+        active = -1
+        active_name = self.settings.value("keyword_active", "")
+        if active_name:
+            for i, g in enumerate(groups):
+                if g.get("name") == active_name:
+                    active = i
+                    break
+        return groups, active, loaded_ok
 
-    def _save_keyword_rules(self):
-        self.settings.setValue("keyword_rules",
-                               json.dumps(self._keyword_rules, ensure_ascii=False))
+    def _save_keyword_groups(self):
+        self.settings.setValue("keyword_groups",
+                               json.dumps(self._keyword_groups, ensure_ascii=False))
+        name = (self._keyword_groups[self._keyword_active]["name"]
+                if 0 <= self._keyword_active < len(self._keyword_groups) else "")
+        self.settings.setValue("keyword_active", name)
+        self.settings.remove("keyword_rules")    # 清理已迁移的旧扁平键
         self.settings.sync()
 
+    def _active_rules(self):
+        """当前生效分组的规则列表；关闭(-1)或越界时返回空列表。"""
+        if 0 <= self._keyword_active < len(self._keyword_groups):
+            return self._keyword_groups[self._keyword_active]["rules"]
+        return []
+
     def _apply_keyword_rules(self):
-        """规则变更后：持久化 + 立即重扫高亮（绕过节流，立刻见效）"""
-        self._save_keyword_rules()
+        """规则内容变更后：持久化 + 立即重扫高亮（绕过节流，立刻见效）"""
+        self._save_keyword_groups()
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+
+    def _rebuild_kw_group_combo(self):
+        """重建数据区标题栏的分组下拉：顶部「（关闭）」+ 各分组名，选中当前生效分组。"""
+        if not hasattr(self, "cb_kw_group"):
+            return
+        self.cb_kw_group.blockSignals(True)
+        self.cb_kw_group.clear()
+        self.cb_kw_group.addItem(self._t("kw_group_off"), -1)
+        for i, g in enumerate(self._keyword_groups):
+            self.cb_kw_group.addItem(g.get("name", f"组{i + 1}"), i)
+        sel = 0
+        for k in range(self.cb_kw_group.count()):
+            if self.cb_kw_group.itemData(k) == self._keyword_active:
+                sel = k
+                break
+        self.cb_kw_group.setCurrentIndex(sel)
+        self.cb_kw_group.blockSignals(False)
+
+    def _on_kw_group_changed(self, _i=None):
+        """主界面切换生效分组：按哪个分组高亮。"""
+        data = self.cb_kw_group.currentData()
+        self._keyword_active = data if data is not None else -1
+        self._save_keyword_groups()
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+
+    def _kw_groups_changed(self):
+        """弹窗里增/删/重命名分组后：钳制生效索引、存盘、重建主下拉、刷新高亮。"""
+        if self._keyword_active >= len(self._keyword_groups):
+            self._keyword_active = -1
+        self._save_keyword_groups()
+        self._rebuild_kw_group_combo()
         self._kw_timer.stop()
         self._refresh_extra_selections()
 
@@ -2191,14 +2668,14 @@ class SerialTool(QMainWindow):
     def _filter_active(self) -> bool:
         """「只显高亮行」是否真正生效：开关开 且 至少有一条 启用+非空 的规则。
         _append_block_data 与 _refresh_extra_selections 共用，避免判断不一致导致闪烁。"""
-        if not (hasattr(self, "sw_filter_hl") and self.sw_filter_hl.isChecked()):
+        if not (hasattr(self, "btn_filter_hl") and self.btn_filter_hl.isChecked()):
             return False
         return any(r.get("enabled", True) and r.get("pattern")
-                   for r in self._keyword_rules)
+                   for r in self._active_rules())
 
     def _block_has_keyword_match(self, block) -> bool:
-        """单个块的 RX/TX 正文是否命中任一启用规则(按 scope 限定 收/发)"""
-        rules = [r for r in self._keyword_rules
+        """单个块的 RX/TX 正文是否命中生效分组里任一启用规则(按 scope 限定 收/发)"""
+        rules = [r for r in self._active_rules()
                  if r.get("enabled", True) and r.get("pattern")]
         if not rules:
             return False
@@ -2230,33 +2707,45 @@ class SerialTool(QMainWindow):
 
     def _recolor_history(self):
         """切主题时把数据区已有文字按角色重涂成新主题色，避免浅↔深切换后看不见。
-        遍历所有 fragment 读 ROLE_PROP，先收集区间再统一改(改格式会让迭代器失效)"""
+        遍历所有 fragment 读 ROLE_PROP，先收集区间再统一改(改格式会让迭代器失效)。
+        大文档优化：合并相邻同色区间 + beginEditBlock 批处理 + 关刷新，避免逐片段重排卡死。"""
         theme = self._theme()
         doc = self.txt_recv.document()
-        ranges = []  # (start, end, color)
+        # 每个角色的目标色只算一次(原来每片段都建 QColor + 调 _role_color)
+        role_col = {r: QColor(self._role_color(r, theme))
+                    for r in (None, ROLE_TS, ROLE_RX, ROLE_TX)}
+        ranges = []  # (start, end, QColor)，相邻同色自动合并
         block = doc.begin()
         while block.isValid():
             it = block.begin()
             while not it.atEnd():
                 frag = it.fragment()
                 if frag.isValid():
-                    # 无 ROLE_PROP 的旧片段也重涂(role=None → _role_color 返回 fg)，
-                    # 避免极端情况下未标记文字切主题后仍不可见
                     role = frag.charFormat().property(ROLE_PROP)
+                    col = role_col.get(role, role_col[None])
                     start = frag.position()
-                    ranges.append((start, start + frag.length(),
-                                   self._role_color(role, theme)))
+                    end = start + frag.length()
+                    if ranges and ranges[-1][1] == start and ranges[-1][2] == col:
+                        ranges[-1] = (ranges[-1][0], end, col)   # 合并相邻同色
+                    else:
+                        ranges.append((start, end, col))
                 it += 1
             block = block.next()
         if not ranges:
             return
+        self.txt_recv.setUpdatesEnabled(False)
         cur = QTextCursor(doc)
-        for start, end, color in ranges:
-            cur.setPosition(start)
-            cur.setPosition(end, QTextCursor.KeepAnchor)
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor(color))
-            cur.mergeCharFormat(fmt)
+        cur.beginEditBlock()
+        try:
+            for start, end, col in ranges:
+                cur.setPosition(start)
+                cur.setPosition(end, QTextCursor.KeepAnchor)
+                fmt = QTextCharFormat()
+                fmt.setForeground(col)
+                cur.mergeCharFormat(fmt)
+        finally:
+            cur.endEditBlock()
+            self.txt_recv.setUpdatesEnabled(True)
 
     def build_send_card(self):
         """右侧主区域：发送区"""
@@ -2264,15 +2753,66 @@ class SerialTool(QMainWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
-        layout.addWidget(self._tr_label("send_area", 14, bold=True))
+        layout.addWidget(self._tr_label("send_area", 13, bold=True))
+
+        # ---- 多条发送快捷栏：选分组 + ▶/■ 循环 + 命令平铺直接发 ----
+        self._ms_groups, _ms_ok = self._load_ms_groups()
+        try:
+            self._ms_group_idx = int(self.settings.value("multi_send_group_idx", 0))
+        except (ValueError, TypeError):
+            self._ms_group_idx = 0
+        if not (0 <= self._ms_group_idx < len(self._ms_groups)):
+            self._ms_group_idx = 0
+        if not _ms_ok:    # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
+            self._save_ms_groups()
+        self._ms_cycle_seq = []
+        self._ms_cycle_idx = 0
+        self._ms_cycle_timer = QTimer(self)
+        self._ms_cycle_timer.setSingleShot(True)
+        self._ms_cycle_timer.timeout.connect(self._ms_cycle_step)
+
+        ms_bar = QHBoxLayout()
+        ms_bar.setSpacing(6)
+        self.btn_multi = QPushButton(self._t("multi_send"))
+        self.btn_multi.setObjectName("GhostBtn")
+        self.btn_multi.setProperty("tr_text", "multi_send")
+        self.btn_multi.clicked.connect(self.open_multi_send)
+        ms_bar.addWidget(self.btn_multi)
+        self.btn_ms_cycle = QPushButton(self._t("ms_cycle"))
+        self.btn_ms_cycle.setObjectName("GhostBtn")
+        self.btn_ms_cycle.clicked.connect(self._ms_toggle_cycle)
+        ms_bar.addWidget(self.btn_ms_cycle)
+        self.cb_ms_group = QComboBox()
+        self.cb_ms_group.setMinimumWidth(110)
+        self.cb_ms_group.currentIndexChanged.connect(self._on_ms_group_changed)
+        ms_bar.addWidget(self.cb_ms_group)
+        self._ms_quick_host = QWidget()
+        self._ms_quick_host.setObjectName("MsQuickHost")
+        self._ms_quick_h = QHBoxLayout(self._ms_quick_host)
+        self._ms_quick_h.setContentsMargins(0, 0, 0, 0)
+        self._ms_quick_h.setSpacing(6)
+        self._ms_quick_host.setAutoFillBackground(False)
+        ms_qscroll = QScrollArea()
+        ms_qscroll.setObjectName("MsQuickScroll")
+        ms_qscroll.setWidget(self._ms_quick_host)
+        ms_qscroll.setWidgetResizable(True)
+        ms_qscroll.setFrameShape(QFrame.NoFrame)
+        ms_qscroll.setFixedHeight(38)
+        ms_qscroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        ms_qscroll.viewport().setAutoFillBackground(False)
+        ms_bar.addWidget(ms_qscroll, 1)
+        layout.addLayout(ms_bar)
+        self._rebuild_ms_group_combo()
+        self._rebuild_ms_quick_bar()
 
         self.txt_send = QTextEdit()
         self.txt_send.setObjectName("SendBox")
         self.txt_send.setFont(QFont("Consolas", 10))
-        self.txt_send.setMinimumHeight(60)
+        # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
+        self.txt_send.setFixedHeight(64)
         self.txt_send.setProperty("tr_placeholder", "send_placeholder")
         self.txt_send.setPlaceholderText(self._t("send_placeholder"))
-        layout.addWidget(self.txt_send, 1)
+        layout.addWidget(self.txt_send)
 
         btn_row = QHBoxLayout()
         self.btn_load = QPushButton(self._t("read_file"))
@@ -2286,12 +2826,6 @@ class SerialTool(QMainWindow):
         self.btn_clear_tx.setProperty("tr_text", "clear")
         self.btn_clear_tx.clicked.connect(lambda: self.txt_send.clear())
         btn_row.addWidget(self.btn_clear_tx)
-
-        self.btn_multi = QPushButton(self._t("multi_send"))
-        self.btn_multi.setObjectName("GhostBtn")
-        self.btn_multi.setProperty("tr_text", "multi_send")
-        self.btn_multi.clicked.connect(self.open_multi_send)
-        btn_row.addWidget(self.btn_multi)
 
         btn_row.addStretch(1)
 
@@ -2329,11 +2863,11 @@ class SerialTool(QMainWindow):
         QComboBox, QLineEdit {{
             background-color: {c['input_bg']};
             border: 1px solid {c['separator']};
-            border-radius: 8px;
-            padding: 5px 10px;
-            min-height: 22px;
+            border-radius: 6px;
+            padding: 2px 7px;
+            min-height: 16px;
             font-family: 'Segoe UI';
-            font-size: 13px;
+            font-size: 11px;
             color: {c['text']};
             selection-background-color: {c['accent']};
         }}
@@ -2363,11 +2897,11 @@ class SerialTool(QMainWindow):
             background-color: {c['accent']};
             color: white;
             border: 0px;
-            border-radius: 10px;
+            border-radius: 9px;
             font-family: 'Segoe UI';
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
-            padding: 6px 18px;
+            padding: 5px 16px;
         }}
         QPushButton#PrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
         QPushButton#PrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
@@ -2377,27 +2911,35 @@ class SerialTool(QMainWindow):
             background-color: {c['ghost_bg']};
             color: {c['accent']};
             border: 0px;
-            border-radius: 8px;
+            border-radius: 7px;
             font-family: 'Segoe UI';
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 500;
-            padding: 6px 14px;
-            min-height: 22px;
+            padding: 5px 12px;
+            min-height: 18px;
         }}
         QPushButton#GhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QPushButton#GhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
+        QPushButton#GhostBtn:checked {{ background-color: {c['accent']}; color: white; }}
         QPushButton#IconBtn {{
             background-color: {c['ghost_bg']};
             color: {c['text_sec']};
             border: 0px;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: bold;
         }}
         QPushButton#IconBtn:hover {{
             background-color: {c['ghost_hover']};
             color: {c['accent']};
         }}
+        QScrollArea#MsQuickScroll, QWidget#MsQuickHost {{ background: transparent; border: 0px; }}
+        QPushButton#MsQuickBtn {{
+            background-color: {c['ghost_bg']}; color: {c['text']}; border: 1px solid {c['separator']};
+            border-radius: 6px; font-family: 'Segoe UI'; font-size: 11px; padding: 2px 10px;
+        }}
+        QPushButton#MsQuickBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
+        QPushButton#MsQuickBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
         QPushButton#ToBottomBtn {{
             background-color: {c['accent']};
             color: white;
@@ -2694,6 +3236,8 @@ class SerialTool(QMainWindow):
         self._apply_theme_label_styles(c)
         if hasattr(self, "lbl_version"):
             self.lbl_version.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
+        if hasattr(self, "lbl_log_path"):
+            self.lbl_log_path.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
         if hasattr(self, "status_bar"):
             self.status_bar.setStyleSheet(f"background: transparent; color: {c['text_sec']};")
         if hasattr(self, "lbl_state"):
@@ -2769,6 +3313,13 @@ class SerialTool(QMainWindow):
             return text
 
     def on_data_received(self, data: bytes):
+        # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
+        try:
+            self._on_data_received_impl(data)
+        except Exception as e:
+            self.toast(self._t("err_rx", e=e), error=True)
+
+    def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
         self.lbl_rx_stat.setText(f"RX: {self.fmt_bytes(self.rx_bytes)}")
 
@@ -2923,6 +3474,7 @@ class SerialTool(QMainWindow):
             try:
                 self._log_file.write("".join(log_pieces))
                 self._log_file.flush()
+                self._maybe_rotate_log()    # 超过分包上限则切到下一个文件
             except Exception as e:
                 self.toast(self._t("err_log_write", e=e), error=True)
                 self._close_log_file()
@@ -2932,14 +3484,160 @@ class SerialTool(QMainWindow):
         self.toast(self._t("err_serial", e=msg), error=True)
         self.close_serial()
 
+    # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
+    def _load_ms_groups(self):
+        """加载多条发送分组；兼容旧版扁平 multi_send_items → 迁移成「默认」分组。
+        返回 (groups, loaded_ok)；loaded_ok=False 表示走了迁移/默认(损坏或缺失)，调用方据此落盘。"""
+        groups = []
+        raw = self.settings.value("multi_send_groups", "")
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    groups = [g for g in data
+                              if isinstance(g, dict) and isinstance(g.get("items"), list)]
+            except Exception:
+                groups = []
+        loaded_ok = bool(groups)
+        if not groups:
+            old_items = []
+            old = self.settings.value("multi_send_items", "")
+            if old:
+                try:
+                    parsed = json.loads(old)
+                    if isinstance(parsed, list):
+                        old_items = parsed
+                except Exception:
+                    pass
+            groups = [{"name": self._t("kw_default_group"), "items": old_items}]
+        return groups, loaded_ok
+
+    def _save_ms_groups(self):
+        self.settings.setValue("multi_send_groups",
+                               json.dumps(self._ms_groups, ensure_ascii=False))
+        self.settings.setValue("multi_send_group_idx", self._ms_group_idx)
+        self.settings.remove("multi_send_items")    # 清理已迁移的旧扁平键
+        self.settings.sync()
+
+    def _ms_active_items(self):
+        if 0 <= self._ms_group_idx < len(self._ms_groups):
+            return self._ms_groups[self._ms_group_idx]["items"]
+        return []
+
+    def _send_ms_item(self, item):
+        self._send_text(item.get("data", ""),
+                        hex_mode=bool(item.get("hex", False)),
+                        newline=int(item.get("nl", 0)),
+                        checksum=int(item.get("cs", 0)))
+
+    def _rebuild_ms_group_combo(self):
+        if not hasattr(self, "cb_ms_group"):
+            return
+        self.cb_ms_group.blockSignals(True)
+        self.cb_ms_group.clear()
+        for i, g in enumerate(self._ms_groups):
+            self.cb_ms_group.addItem(g.get("name", f"组{i + 1}"), i)
+        if not (0 <= self._ms_group_idx < len(self._ms_groups)):
+            self._ms_group_idx = 0
+        self.cb_ms_group.setCurrentIndex(self._ms_group_idx)
+        self.cb_ms_group.blockSignals(False)
+
+    def _on_ms_group_changed(self, _i=None):
+        data = self.cb_ms_group.currentData()
+        self._ms_group_idx = data if data is not None else 0
+        self._ms_stop_cycle()
+        self._save_ms_groups()
+        self._rebuild_ms_quick_bar()
+
+    def _rebuild_ms_quick_bar(self):
+        """重建快捷发送按钮：选中分组里每条非空命令一个按钮，点击立即发。"""
+        if not hasattr(self, "_ms_quick_h"):
+            return
+        while self._ms_quick_h.count():
+            it = self._ms_quick_h.takeAt(0)
+            w = it.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+        for item in self._ms_active_items():
+            if not str(item.get("data", "")).strip():
+                continue
+            label = (item.get("name") or "").strip() or item.get("data", "")
+            if len(label) > 16:
+                label = label[:15] + "…"
+            btn = QPushButton(label)
+            btn.setObjectName("MsQuickBtn")
+            btn.setToolTip(item.get("data", ""))
+            btn.clicked.connect(lambda _=False, it=item: self._send_ms_item(it))
+            self._ms_quick_h.addWidget(btn)
+        self._ms_quick_h.addStretch(1)
+
+    def _ms_groups_changed(self):
+        """弹窗编辑分组后回调：钳制索引、存盘、重建主界面下拉与快捷栏。"""
+        if self._ms_group_idx >= len(self._ms_groups):
+            self._ms_group_idx = max(0, len(self._ms_groups) - 1)
+        self._save_ms_groups()
+        self._rebuild_ms_group_combo()
+        self._rebuild_ms_quick_bar()
+
+    # ----- 多条发送：循环（按每行延时）-----
+    def _ms_toggle_cycle(self):
+        if self._ms_cycle_timer.isActive():
+            self._ms_stop_cycle()
+            return
+        seq = [(it.get("data", ""), bool(it.get("hex", False)), int(it.get("nl", 0)),
+                int(it.get("cs", 0)), max(1, int(it.get("delay", 1000))))
+               for it in self._ms_active_items()
+               if it.get("checked") and str(it.get("data", "")).strip()]
+        if not seq:
+            self.toast(self._t("ms_none_checked"), error=True)
+            return
+        if not (self.ser and self.ser.is_open):
+            self.toast(self._t("err_serial_not_open"), error=True)
+            return
+        self._ms_cycle_seq = seq
+        self._ms_cycle_idx = 0
+        self._set_ms_cycle_btn(True)
+        self._ms_cycle_step()
+
+    def _ms_cycle_step(self):
+        if not self._ms_cycle_seq:
+            self._ms_stop_cycle()
+            return
+        if not (self.ser and self.ser.is_open):
+            self.toast(self._t("err_serial_not_open"), error=True)
+            self._ms_stop_cycle()
+            return
+        data, hx, nl, cs, delay = self._ms_cycle_seq[self._ms_cycle_idx % len(self._ms_cycle_seq)]
+        # 发送失败(坏数据/串口写异常等)立即停止，避免每轮都刷错误 toast
+        # (空命令在 _ms_toggle_cycle 构建序列时已过滤，这里的 False 都是真失败)
+        if not self._send_text(data, hex_mode=hx, newline=nl, checksum=cs):
+            self._ms_stop_cycle()
+            return
+        self._ms_cycle_idx += 1
+        self._ms_cycle_timer.start(delay)
+
+    def _ms_stop_cycle(self):
+        if hasattr(self, "_ms_cycle_timer"):
+            self._ms_cycle_timer.stop()
+        self._set_ms_cycle_btn(False)
+
+    def _set_ms_cycle_btn(self, running):
+        if hasattr(self, "btn_ms_cycle"):
+            self.btn_ms_cycle.setText(self._t("ms_cycle_stop" if running else "ms_cycle"))
+
     # ----- 发送 -----
     def open_multi_send(self):
         """打开多条发送弹窗（单实例，复用并刷新主题/语言）"""
         if getattr(self, "_multi_send_dlg", None) is None:
             self._multi_send_dlg = MultiSendDialog(self)
         dlg = self._multi_send_dlg
+        if dlg._save_timer.isActive():   # 重复打开前先落盘待提交编辑，避免 _reload_rows 清掉
+            dlg._commit_now()
         dlg.refresh_theme()
         dlg.retranslate()
+        dlg._reload_group_list()
+        dlg._reload_rows()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -2949,8 +3647,12 @@ class SerialTool(QMainWindow):
         if getattr(self, "_keyword_dlg", None) is None:
             self._keyword_dlg = KeywordHighlightDialog(self)
         dlg = self._keyword_dlg
+        if dlg._commit_timer.isActive():   # 重复打开前先落盘待提交编辑
+            dlg._commit_now()
         dlg.refresh_theme()
         dlg.retranslate()
+        dlg._reload_group_list()    # 复用时同步最新分组
+        dlg._reload_rows()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -3124,6 +3826,75 @@ class SerialTool(QMainWindow):
             QTextEdit.WidgetWidth if on else QTextEdit.NoWrap)
 
     # ----- 日志记录 -----
+    def _parse_log_limit(self, text) -> int:
+        """把分包大小文本解析成字节；无数字(如「不分包」)返回 0。无单位默认 MB。"""
+        import re
+        m = re.search(r'(\d+(?:\.\d+)?)\s*([KkMmGg]?)', text or "")
+        if not m:
+            return 0
+        val = float(m.group(1))
+        mult = {"K": 1024, "M": 1024 * 1024, "G": 1024 ** 3}.get(m.group(2).upper(), 1024 * 1024)
+        return int(val * mult)
+
+    def _on_log_split_changed(self, _text=None):
+        """改分包大小：实时记录进行中也即时生效。"""
+        self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
+
+    def _log_segment_path(self) -> str:
+        """当前分包序号对应的文件名：第 0 包用原始路径，之后加 _001/_002…后缀。"""
+        if self._log_seg <= 0:
+            return self._log_base_path
+        root, ext = os.path.splitext(self._log_base_path)
+        return f"{root}_{self._log_seg:03d}{ext}"
+
+    def _set_log_path_label(self, path):
+        """更新状态栏的日志文件路径显示（仅记录时显示，太长中间省略，悬停看全路径）。"""
+        if not hasattr(self, "lbl_log_path"):
+            return
+        if not path:
+            self.lbl_log_path.setText("")
+            self.lbl_log_path.setToolTip("")
+            if hasattr(self, "_log_path_sep"):
+                self._log_path_sep.hide()
+            return
+        fm = QFontMetrics(self.lbl_log_path.font())
+        w = getattr(self, "_log_path_elide_w", 560)
+        self.lbl_log_path.setText("📝 " + fm.elidedText(path, Qt.ElideMiddle, w))
+        self.lbl_log_path.setToolTip(path)
+        if hasattr(self, "_log_path_sep"):
+            self._log_path_sep.show()
+
+    def _open_log_segment(self, path) -> bool:
+        try:
+            self._log_file = open(path, "a", encoding="utf-8")
+            self._log_file_path = path
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._log_file.write(self._t("log_header", time=ts))
+            self._log_file.flush()
+            self._set_log_path_label(path)
+            return True
+        except Exception as e:
+            self.toast(self._t("err_open_log", e=e), error=True)
+            return False
+
+    def _maybe_rotate_log(self):
+        """写入后若超过分包上限，切到下一个分包文件。"""
+        if not (self._log_file and self._log_limit > 0):
+            return
+        try:
+            if self._log_file.tell() < self._log_limit:
+                return
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._log_file.write(self._t("log_footer", time=ts))
+            self._log_file.flush()    # close 前先刷盘，避免 close 失败时尾部缓冲丢失
+            self._log_file.close()
+        except Exception:
+            pass
+        self._log_seg += 1
+        self._log_file = None
+        if not self._open_log_segment(self._log_segment_path()):
+            self.sw_log_file.setChecked(False)
+
     def on_log_file_toggled(self, on):
         if on:
             path, _ = QFileDialog.getSaveFileName(
@@ -3131,17 +3902,16 @@ class SerialTool(QMainWindow):
                 f"data_log_{datetime.now():%Y%m%d_%H%M%S}.log",
                 self._t("filter_text"))
             if not path:
+                self.sw_log_file.blockSignals(True)   # 取消选择 → 关开关但别递归回调本函数
                 self.sw_log_file.setChecked(False)
+                self.sw_log_file.blockSignals(False)
                 return
-            try:
-                self._log_file = open(path, "a", encoding="utf-8")
-                self._log_file_path = path
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self._log_file.write(self._t("log_header", time=ts))
-                self._log_file.flush()
+            self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
+            self._log_base_path = path
+            self._log_seg = 0
+            if self._open_log_segment(path):
                 self.toast(self._t("log_started", path=path))
-            except Exception as e:
-                self.toast(self._t("err_open_log", e=e), error=True)
+            else:
                 self.sw_log_file.setChecked(False)
         else:
             self._close_log_file()
@@ -3151,12 +3921,14 @@ class SerialTool(QMainWindow):
             try:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self._log_file.write(self._t("log_footer", time=ts))
+                self._log_file.flush()
                 self._log_file.close()
             except Exception:
                 pass
             self.toast(self._t("log_stopped", path=self._log_file_path))
             self._log_file = None
             self._log_file_path = ""
+            self._set_log_path_label("")
 
     def change_recv_font_size(self, delta):
         new_size = self._recv_font_size + delta
@@ -3327,6 +4099,17 @@ class SerialTool(QMainWindow):
             if hasattr(self, "_tray_quit_action"):
                 self._tray_quit_action.setText(self._t("tray_quit"))
 
+        # 数据区分组下拉的「（关闭）」项随语言变
+        if hasattr(self, "cb_kw_group"):
+            self._rebuild_kw_group_combo()
+        # 日志分包下拉的「不分包」项随语言变
+        if hasattr(self, "cb_log_split"):
+            self.cb_log_split.blockSignals(True)
+            self.cb_log_split.setItemText(0, self._t("log_split_none"))
+            self.cb_log_split.blockSignals(False)
+        # 多条发送循环按钮文字随语言变
+        if hasattr(self, "btn_ms_cycle"):
+            self._set_ms_cycle_btn(self._ms_cycle_timer.isActive())
         # 多条发送/关键字高亮弹窗若开着也跟着切语言
         if getattr(self, "_multi_send_dlg", None) is not None:
             self._multi_send_dlg.retranslate()
@@ -3395,7 +4178,8 @@ class SerialTool(QMainWindow):
             s.setValue("theme", self.cb_theme.currentData())
             s.setValue("packet_timeout", self.ed_packet_timeout.text())
             s.setValue("max_lines", self.ed_max_lines.text())
-            s.setValue("filter_highlight", self.sw_filter_hl.isChecked())
+            s.setValue("filter_highlight", self.btn_filter_hl.isChecked())
+            s.setValue("log_split", self.cb_log_split.currentText())
             s.setValue("tx_hex", self.sw_tx_hex.isChecked())
             s.setValue("append_newline", self.sw_append_newline.isChecked())
             s.setValue("append_nl_mode", self.cb_append_nl.currentIndex())
@@ -3457,7 +4241,12 @@ class SerialTool(QMainWindow):
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)
         self.sw_packet_split.setChecked(to_bool(pkt_split_raw), animate=False)
         self.sw_line_split.setChecked(to_bool(s.value("line_split", False)), animate=False)
-        self.sw_filter_hl.setChecked(to_bool(s.value("filter_highlight", False)), animate=False)
+        self.btn_filter_hl.blockSignals(True)
+        self.btn_filter_hl.setChecked(to_bool(s.value("filter_highlight", False)))
+        self.btn_filter_hl.blockSignals(False)
+        log_split = s.value("log_split", "")
+        if log_split:
+            self.cb_log_split.setCurrentText(str(log_split))
         try:
             nl_idx = int(s.value("line_nl_mode", 0))
             if 0 <= nl_idx < self.cb_line_nl.count():
@@ -3570,8 +4359,11 @@ class SerialTool(QMainWindow):
         try:
             if hasattr(self, "_left_send_card") and hasattr(self, "_right_send_card"):
                 h = self._left_send_card.height()
+                # 上限取「左侧高度」与「右侧内容最小高度」的较大值：
+                # 否则左侧卡片变矮(字号/间距缩小)时，会把内容更多的右侧(含多条发送快捷栏)压到重叠
+                need = self._right_send_card.minimumSizeHint().height()
                 if h > 60:
-                    self._right_send_card.setMaximumHeight(h)
+                    self._right_send_card.setMaximumHeight(max(h, need))
         except Exception:
             pass
 
@@ -3590,7 +4382,10 @@ class SerialTool(QMainWindow):
                     lparam = msg.lParam
                     x = ctypes.c_short(lparam & 0xFFFF).value
                     y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
-                    pt = self.mapFromGlobal(QPoint(x, y))
+                    # lParam 是物理像素；开 HiDPI 缩放后 Qt 用逻辑像素，需按设备像素比换算，
+                    # 否则缩放热区与实际边缘错位、拖不动窗口
+                    dpr = self.devicePixelRatioF() or 1.0
+                    pt = self.mapFromGlobal(QPoint(int(x / dpr), int(y / dpr)))
                     if self.isMaximized():
                         return False, 0
                     m = self.RESIZE_MARGIN
@@ -3626,6 +4421,8 @@ class SerialTool(QMainWindow):
 
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
+            if hasattr(self, "_ms_cycle_timer"):
+                self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
             self._save_settings()
             self.close_serial()
             self._close_log_file()
@@ -3659,6 +4456,8 @@ class SerialTool(QMainWindow):
             )
         elif choice == CloseDialog.RESULT_QUIT:
             self._closing_real = True
+            if hasattr(self, "_ms_cycle_timer"):
+                self._ms_cycle_timer.stop()   # 与直接退出路径一致，避免销毁中触发 toast
             self._save_settings()
             self.close_serial()
             self._close_log_file()

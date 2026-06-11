@@ -36,6 +36,19 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ---
 
+## What's New in v1.0.2
+
+- **Compact UI** — smaller fonts, inputs and iOS switches, plus tighter card spacing, so more fits on screen
+- **Keyword-highlight groups** — the highlight dialog now manages **rule groups**: a group list on the left (new / rename by double-click / delete), and a **group dropdown** in the Data-area title bar selects the active group (with an **(Off)** item to disable all highlighting). The group you're editing and the active group are independent
+- **Multi-Send groups** — the Multi-Send dialog now manages **command groups**: a group list on the left (new / delete / rename by double-click); each command row gains a **Name** column and a per-row **Delay (ms)** column
+- **Multi-Send quick bar** — a row above the Send box: **[Multi-Send (edit)]** **[▶ Cycle]** **[group dropdown]**, plus every command in the active group laid out as a button you click to send directly — no dialog needed. Cycle send waits each row's own delay before moving on
+- **Log split by file size** — a dropdown next to **Log to File** offers **No split / 1M / 2M / 5M / 10M / 20M / 50M / 100M**, plus custom typed values (e.g. `3M`, `500K`). When a log reaches the size it rolls over to a new file (original name + `_001` / `_002` …)
+- **Log path in status bar** — the bottom-right shows **📝 path** of the current log file (elided in the middle, full path on hover); blank when not logging. Vertical separators now divide the status-bar items
+- **Localized right-click menu** — the Data area's context menu (**Copy / Select All / Clear / Save**) now follows the app language instead of Qt's system-language default
+- **Performance & stability** — dialog-edit debouncing, much faster theme-switch recolor on large buffers (no more freeze when switching themes after timed sending piles up data), and several edge-case fixes
+
+---
+
 ## What's New in v1.0.1
 
 - **HiDPI scaling** — UI and fonts stay properly sized on high-resolution displays (no longer tiny)
@@ -81,8 +94,9 @@ RX and TX share one view; arrows indicate direction:
   - **Auto**: recognises all three (Windows + Linux + classic Mac)
   - **CRLF / LF / CR**: strict mode, only the chosen terminator counts
 - **Log to File** — Xshell-style live log to a `.log` file, **what you see is what gets saved** (timestamps, arrows, HEX/ASCII included)
+  - **Split by size** — a dropdown next to the switch offers **No split / 1M / 2M / 5M / 10M / 20M / 50M / 100M**, or type a custom value (e.g. `3M`, `500K`). When the log reaches the chosen size it rolls over to a new file (original name + `_001` / `_002` …)
 - **Max Lines** — caps the displayed line count; older lines are dropped (keeps long runs snappy). **Log file is not affected.**
-- **Matches only** — a switch that hides every line except those containing a keyword match (see [Keyword Highlighting](#keyword-highlighting))
+- **Matches only** — a toggle button in the Data-area title bar (highlighted when on) that hides every line except those containing a keyword match (see [Keyword Highlighting](#keyword-highlighting))
 
 **Scroll-lock / auto-follow** — by default the view auto-scrolls to the newest data. Scroll up and the view **freezes** so you can read history while data keeps arriving in the background; a floating **↓ Latest** button appears in the bottom-right. Click it (or scroll back to the bottom) to jump to the latest data and resume auto-follow.
 
@@ -93,6 +107,8 @@ RX and TX share one view; arrows indicate direction:
 **Font size** — the `A−` / `A+` buttons in the top-right adjust the data area font (7–28 pt)
 
 **Save / Clear** — buttons at the bottom of the card; save filename is `save_log_YYYYMMDD_HHMMSS.log`
+
+**Right-click menu** — right-click the data area for a localized context menu (**Copy / Select All / Clear / Save**) that follows the app language
 
 ### Sending Data
 
@@ -139,16 +155,22 @@ Click the **Highlight** button in the Data-area title bar to open the keyword-hi
 - is **scoped** to RX / TX / both
 - matches as a **case-sensitive substring**
 
-Timestamps are skipped when matching (so a keyword won't accidentally match the time prefix). Rules are persisted across restarts. Pair this with the **Matches only** switch in the Data card to hide every non-matching line.
+Timestamps are skipped when matching (so a keyword won't accidentally match the time prefix). Rules are persisted across restarts. Pair this with the **Matches only** toggle button in the Data-area title bar to hide every non-matching line.
+
+**Rule groups** — rules are organised into **groups** so you can keep separate rule sets for different devices or protocols. A group list down the left of the dialog lets you **create** a new group, **rename** one (double-click), or **delete** it. Back in the Data-area title bar, a **group dropdown** picks which group is currently **active** — choose **(Off)** to disable all highlighting. The group you're editing in the dialog and the active group are independent, so you can tweak one set while another stays in effect.
 
 ### Multi-Send
 
 Click the **Multi-Send** button in the Send area to open the multi-send dialog:
 
-- Each **row** is one data entry with its own **checkbox**
+- Each **row** is one data entry with its own **checkbox**, a **Name** column, and a per-row **Delay (ms)** column
 - Each row carries its own **HEX**, **newline**, and **checksum** settings
-- Check several rows and use **Cycle-Send** to loop through them at a set interval
+- Check several rows and use **Cycle-Send** to loop through them; each row waits its own **Delay (ms)** before the next is sent
 - Rows are persisted across restarts
+
+**Command groups** — commands are organised into **groups** so you can keep separate command sets for different tasks. A group list down the left of the dialog lets you **create** a new group, **rename** one (double-click), or **delete** it.
+
+**Quick bar** — a row sits just above the Send box in the main window: **[Multi-Send (edit)]** opens the dialog, **[▶ Cycle]** cycle-sends the active group, and a **group dropdown** picks the active group. Every command in that group is laid out as a button — click it to send that command directly, without opening the dialog.
 
 ### Interface
 
@@ -228,13 +250,18 @@ If the install directory is read-only (e.g. Program Files without admin), the co
 
 ## Status Bar
 
+Items are divided by vertical separators.
+
 Bottom-left:
 
 - `● Disconnected` / `● Connected COMxx @ baud` (red / green dot)
 - `RX: bytes` (auto-scales to B / KB / MB)
 - `TX: bytes`
 
-Bottom-right: current **version** (`v1.0.1`).
+Bottom-right:
+
+- **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
+- current **version** (`v1.0.2`)
 
 ---
 
