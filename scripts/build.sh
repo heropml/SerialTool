@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "============================================"
-echo " Building SerialTool (Linux) with PyInstaller"
+echo " Building NetworkTool (Linux) with PyInstaller"
 echo "============================================"
 echo
 
@@ -23,15 +23,14 @@ echo "[2/3] Installing deps ..."
 # 国内用户可用清华镜像加速；海外/已配 pip.conf 的话删掉 -i 参数即可
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 pip install --upgrade pip -i "$PIP_INDEX"
-pip install -i "$PIP_INDEX" PyQt5 pyserial pyinstaller
+pip install -i "$PIP_INDEX" PyQt5 pyinstaller
 
 echo "[3/3] Running PyInstaller ..."
 pyinstaller \
     --noconfirm \
     --clean \
     --windowed \
-    --name SerialTool \
-    --hidden-import serial.tools.list_ports_linux \
+    --name NetworkTool \
     --exclude-module PyQt5.QtBluetooth \
     --exclude-module PyQt5.QtDBus \
     --exclude-module PyQt5.QtDesigner \
@@ -59,15 +58,11 @@ pyinstaller \
     src/main.py
 
 echo
-if [ -x "./dist/SerialTool/SerialTool" ]; then
+if [ -x "./dist/NetworkTool/NetworkTool" ]; then
     echo "============================================"
     echo " Build OK"
-    echo " Output:  ./dist/SerialTool/"
-    echo " Run:     ./dist/SerialTool/SerialTool"
-    echo
-    echo " 串口权限 (一次性):"
-    echo "   sudo usermod -aG dialout \$USER"
-    echo "   # 然后重新登录"
+    echo " Output:  ./dist/NetworkTool/"
+    echo " Run:     ./dist/NetworkTool/NetworkTool"
     echo "============================================"
 else
     echo "============================================"

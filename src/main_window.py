@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
-"""主窗口 SerialTool。"""
+"""主窗口 NetworkTool。"""
 import codecs
 import json
 import os
 import sys
 import time
 from datetime import datetime
-import serial
-import serial.tools.list_ports
 from PyQt5.QtCore import Qt, QTimer, QPoint, QSettings, QEvent
 from PyQt5.QtGui import (QFont, QColor, QTextCursor, QTextCharFormat,
                          QFontMetrics, QTextFormat)
@@ -24,28 +22,27 @@ from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, 
 from i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
 from widgets import make_label, IOSSwitch, TitleBar, Card
-from serial_io import SerialReader, PortScannerThread, OneShotPortScanner
+from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
+                    PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
+                    PROTOCOLS, SEND_NO_TARGET, local_ipv4_list, is_multicast_ipv4,
+                    is_valid_ip)
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog
 
 
 # ============== 主窗口 ==============
-class SerialTool(QMainWindow):
+class NetworkTool(QMainWindow):
     RESIZE_MARGIN = 6
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
-        self.ser = None
-        self.reader = None
+        self.conn = None          # 当前网络连接 (TcpServerConn/TcpClientConn/UdpConn)
         self.rx_bytes = 0
         self.tx_bytes = 0
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self.do_send)
-
-        self._last_port_list = []
-        self.port_scanner = None
 
         self._last_recv_time = 0.0
         self._last_direction = None
@@ -70,14 +67,9 @@ class SerialTool(QMainWindow):
         self._tray = None
 
         self.init_ui()
-        self.refresh_ports()
         self.apply_style()
         self._load_settings()
         self._setup_tray()
-
-        self.port_scanner = PortScannerThread(interval_ms=1500)
-        self.port_scanner.scan_complete.connect(self._on_port_scan_complete)
-        self.port_scanner.start()
 
     def _t(self, key, **kwargs) -> str:
         s = self._L.get(key, key)
@@ -101,10 +93,15 @@ class SerialTool(QMainWindow):
         color = "#34C759" if opened else chrome_for(self._theme_id())["danger"]
         self.lbl_state.setStyleSheet(f"color: {color};")
 
+    def _is_open(self) -> bool:
+        """是否已建立连接并可发送（统一状态判断，替代原 self.ser and self.ser.is_open）。"""
+        return bool(self.conn and self.conn.is_open)
+
     def _label_col_width(self) -> int:
-        """串口设置左侧标签列宽：按当前语言下 5 个标签的最大实测文本宽度自适应，
-        避免英文单词(如 Baud Rate)被输入框遮挡。"""
-        keys = ("port", "baud_rate", "data_bits", "parity", "stop_bits")
+        """网络设置左侧标签列宽：按当前语言下各标签的最大实测文本宽度自适应，
+        避免英文单词(如 Remote Port)被输入框遮挡。"""
+        keys = ("protocol_type", "local_ip", "local_port", "group_addr",
+                "remote_ip", "remote_port", "target_client", "use_remote")
         fm = QFontMetrics(QFont("Segoe UI", 11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
         return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
@@ -264,73 +261,113 @@ class SerialTool(QMainWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(6)
-        layout.addWidget(self._tr_label("serial_settings", 12, bold=True))
+        layout.addWidget(self._tr_label("network_settings", 12, bold=True))
 
-        # 端口
-        r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("port", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
-        r.addWidget(lbl)
-        self.cb_port = QComboBox()
-        self.cb_port.setMinimumWidth(100)
-        r.addWidget(self.cb_port, 1)
-        self.btn_refresh = QPushButton("⟳")
-        self.btn_refresh.setObjectName("IconBtn")
-        self.btn_refresh.setFixedSize(30, 26)
-        self.btn_refresh.clicked.connect(self.refresh_ports)
-        r.addWidget(self.btn_refresh)
-        layout.addLayout(r)
+        def make_row(label_key, field):
+            """一行：固定宽标签 + 字段，整行包成 QWidget 便于按协议显隐。"""
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(6)
+            lbl = self._tr_label(label_key, color=COLOR_TEXT_SECONDARY)
+            lbl.setFixedWidth(self._label_col_width())
+            lbl.setProperty("tr_fixedw", True)
+            rl.addWidget(lbl)
+            rl.addWidget(field, 1)
+            layout.addWidget(row)
+            return row
 
-        # 波特率
-        r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("baud_rate", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
-        r.addWidget(lbl)
-        self.cb_baud = QComboBox()
-        self.cb_baud.setEditable(True)
-        for b in ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
-                  "115200", "230400", "256000", "460800", "500000", "512000",
-                  "600000", "750000", "921600", "1000000", "1500000", "2000000"]:
-            self.cb_baud.addItem(b)
-        self.cb_baud.setCurrentText("115200")
-        r.addWidget(self.cb_baud, 1)
-        layout.addLayout(r)
+        # 协议类型
+        self.cb_proto = QComboBox()
+        self.cb_proto.addItems(PROTOCOLS)
+        self.cb_proto.currentIndexChanged.connect(lambda _: self._update_net_fields())
+        make_row("protocol_type", self.cb_proto)
 
-        # 数据位
-        r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("data_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
-        r.addWidget(lbl)
-        self.cb_databits = QComboBox()
-        self.cb_databits.addItems(["5", "6", "7", "8"])
-        self.cb_databits.setCurrentText("8")
-        r.addWidget(self.cb_databits, 1)
-        layout.addLayout(r)
+        # 本地 IP（TCP Server / UDP）— 下拉本机网卡 IP，可编辑
+        self.cb_local_ip = QComboBox()
+        self.cb_local_ip.setEditable(True)
+        self.cb_local_ip.setMinimumWidth(100)
+        self.cb_local_ip.addItems(local_ipv4_list())
+        self.row_local_ip = make_row("local_ip", self.cb_local_ip)
 
-        # 校验
-        r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("parity", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
-        r.addWidget(lbl)
-        self.cb_parity = QComboBox()
-        self.cb_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
-        r.addWidget(self.cb_parity, 1)
-        layout.addLayout(r)
+        # 组播地址（仅 UDP Multicast）
+        self.ed_group = QLineEdit("239.0.0.1")
+        self.row_group = make_row("group_addr", self.ed_group)
 
-        # 停止位
-        r = QHBoxLayout(); r.setSpacing(6)
-        lbl = self._tr_label("stop_bits", color=COLOR_TEXT_SECONDARY); lbl.setFixedWidth(self._label_col_width()); lbl.setProperty("tr_fixedw", True)
-        r.addWidget(lbl)
-        self.cb_stopbits = QComboBox()
-        self.cb_stopbits.addItems(["1", "1.5", "2"])
-        self.cb_stopbits.setCurrentText("1")
-        r.addWidget(self.cb_stopbits, 1)
-        layout.addLayout(r)
+        # 本地端口
+        self.ed_local_port = QLineEdit("8080")
+        self.row_local_port = make_row("local_port", self.ed_local_port)
 
-        # 打开按钮
-        self.btn_open = QPushButton(self._t("open_serial"))
+        # 指定远程 开关（仅 UDP）：关=回复最近对端；开=固定发往下面的远程地址
+        self.sw_udp_remote = IOSSwitch(False)
+        self.sw_udp_remote.toggled.connect(lambda _=False: self._update_net_fields())
+        sw_row = QWidget()
+        swl = QHBoxLayout(sw_row)
+        swl.setContentsMargins(0, 0, 0, 0)
+        swl.setSpacing(6)
+        sw_lbl = self._tr_label("use_remote", color=COLOR_TEXT_SECONDARY)
+        sw_lbl.setFixedWidth(self._label_col_width())
+        sw_lbl.setProperty("tr_fixedw", True)
+        swl.addWidget(sw_lbl)
+        swl.addWidget(self.sw_udp_remote)
+        swl.addStretch(1)
+        layout.addWidget(sw_row)
+        self.row_udp_remote = sw_row
+
+        # 远程 IP（TCP Client 必填 / UDP 由「指定远程」开关启用）
+        self.ed_remote_ip = QLineEdit()
+        self.row_remote_ip = make_row("remote_ip", self.ed_remote_ip)
+
+        # 远程端口
+        self.ed_remote_port = QLineEdit()
+        self.row_remote_port = make_row("remote_port", self.ed_remote_port)
+
+        # 目标客户端（仅 TCP Server 监听后显示）
+        self.cb_target = QComboBox()
+        self.row_target = make_row("target_client", self.cb_target)
+
+        # 动作按钮（文案随协议/状态变化）
+        self.btn_open = QPushButton(self._t("btn_listen"))
         self.btn_open.setObjectName("PrimaryBtn")
         self.btn_open.setMinimumHeight(34)
-        self.btn_open.clicked.connect(self.toggle_serial)
+        self.btn_open.clicked.connect(self.toggle_conn)
         layout.addWidget(self.btn_open)
 
+        self._update_net_fields()
         return card
+
+    def _update_net_fields(self):
+        """按当前协议类型 + 连接状态，显隐字段行并刷新动作按钮文案。"""
+        proto = self.cb_proto.currentText()
+        engaged = self.conn is not None
+        is_srv = proto == PROTO_TCP_SERVER
+        is_cli = proto == PROTO_TCP_CLIENT
+        is_udp = proto == PROTO_UDP
+        is_grp = proto == PROTO_UDP_MULTICAST
+        self.row_local_ip.setVisible(is_srv or is_udp or is_grp)   # 组播时=出网卡
+        self.row_group.setVisible(is_grp)
+        self.row_local_port.setVisible(is_srv or is_udp or is_grp)
+        self.row_udp_remote.setVisible(is_udp)        # 「指定远程」开关仅普通 UDP
+        self.row_remote_ip.setVisible(is_cli or is_udp)
+        self.row_remote_port.setVisible(is_cli or is_udp)
+        # 「目标」行仅在 TCP Server 已监听**且**有客户端连入(cb_target 已填充)时显示，
+        # 避免刚监听、还没客户端时露出一个空下拉
+        self.row_target.setVisible(is_srv and engaged and self.cb_target.count() > 0)
+        # 远程框启用：TCP Client 恒启用；UDP 看「指定远程」开关；连接期间整体锁定(灰)
+        remote_en = (not engaged) and (is_cli or (is_udp and self.sw_udp_remote.isChecked()))
+        self.ed_remote_ip.setEnabled(remote_en)
+        self.ed_remote_port.setEnabled(remote_en)
+        if engaged:
+            key = {PROTO_TCP_SERVER: "btn_listen_stop",
+                   PROTO_TCP_CLIENT: "btn_disconnect",
+                   PROTO_UDP: "btn_udp_close",
+                   PROTO_UDP_MULTICAST: "btn_udp_close"}[proto]
+        else:
+            key = {PROTO_TCP_SERVER: "btn_listen",
+                   PROTO_TCP_CLIENT: "btn_connect",
+                   PROTO_UDP: "btn_udp_open",
+                   PROTO_UDP_MULTICAST: "btn_udp_open"}[proto]
+        self.btn_open.setText(self._t(key))
 
     def build_data_options_card(self):
         card = Card()
@@ -1111,6 +1148,11 @@ class SerialTool(QMainWindow):
             border: 1px solid {c['accent']};
             background-color: {c['input_focus_bg']};
         }}
+        QComboBox:disabled, QLineEdit:disabled {{
+            background-color: {c['card_bg']};
+            color: {_mix(c['text_sec'], c['card_bg'], 0.45)};
+            border: 1px solid {_mix(c['separator'], c['card_bg'], 0.5)};
+        }}
         QComboBox::drop-down {{ border: none; width: 22px; }}
         QComboBox::down-arrow {{
             image: none;
@@ -1289,110 +1331,173 @@ class SerialTool(QMainWindow):
             popup = combo.view().window()
             popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
 
-    # ----- 端口扫描 -----
-    def _clear_oneshot_scan(self, scan):
-        """deleteLater 之后清掉 Python 属性引用，避免下次 isRunning() 访问已删 C++ 对象。
-        `is scan` 守卫：如果期间已经创建了新 scan，不清新的"""
-        if getattr(self, "_oneshot_scan", None) is scan:
-            self._oneshot_scan = None
-
-    def refresh_ports(self):
-        """点 ⟳ 时调用 — 用一次性后台线程，避免慢驱动卡 GUI。
-        扫描结果通过 _on_port_scan_complete 回 GUI 线程（和后台轮询线程共用同一处理逻辑）
-
-        线程**不挂 parent**：万一退出时 wait(2000) 超时 comports() 还卡住，
-        线程对象不会跟着主窗口一起销毁；finished 后 deleteLater() 自己清，
-        同时 _clear_oneshot_scan 把 Python 属性置 None 避免悬空引用。
-        """
-        if getattr(self, "_oneshot_scan", None) and self._oneshot_scan.isRunning():
-            return  # 节流：上一次还在跑就忽略
-        scan = OneShotPortScanner()  # 故意无 parent
-        self._oneshot_scan = scan
-        scan.scan_complete.connect(self._on_port_scan_complete)
-        scan.finished.connect(lambda: self._clear_oneshot_scan(scan))
-        scan.finished.connect(scan.deleteLater)
-        scan.start()
-
-    def _populate_port_combo(self, port_list, keep_device=None):
-        self.cb_port.blockSignals(True)
-        self.cb_port.clear()
-        for device, label in port_list:
-            self.cb_port.addItem(label, device)
-        if keep_device:
-            for i in range(self.cb_port.count()):
-                if self.cb_port.itemData(i) == keep_device:
-                    self.cb_port.setCurrentIndex(i)
-                    break
-        self.cb_port.blockSignals(False)
-
-    def _on_port_scan_complete(self, port_list):
-        if not port_list:
-            port_list = [("", self._t("no_ports"))]
-        if self.cb_port.view().isVisible():
-            return
-        if self.ser and self.ser.is_open:
-            return
-        if port_list == self._last_port_list:
-            return
-        keep = self.cb_port.currentData()
-        self._last_port_list = port_list
-        self._populate_port_combo(port_list, keep)
-
-    # ----- 串口打开/关闭 -----
-    def toggle_serial(self):
-        if self.ser and self.ser.is_open:
-            self.close_serial()
+    # ----- 连接 打开/关闭 -----
+    def toggle_conn(self):
+        if self.conn is not None:
+            self.close_conn()
         else:
-            self.open_serial()
+            self.open_conn()
 
-    def open_serial(self):
-        port = self.cb_port.currentData() or self.cb_port.currentText().split(" ")[0]
-        if not port or port.startswith("("):
-            self.toast(self._t("err_no_port"), error=True)
-            return
+    @staticmethod
+    def _parse_port(text):
         try:
-            baud = int(self.cb_baud.currentText())
+            p = int(str(text).strip())
         except ValueError:
-            self.toast(self._t("err_bad_baud"), error=True)
+            return None
+        return p if 1 <= p <= 65535 else None
+
+    def open_conn(self):
+        proto = self.cb_proto.currentText()
+        if proto == PROTO_TCP_SERVER:
+            port = self._parse_port(self.ed_local_port.text())
+            if port is None:
+                self.toast(self._t("err_bad_port"), error=True)
+                return
+            conn = TcpServerConn(self.cb_local_ip.currentText().strip(), port)
+        elif proto == PROTO_TCP_CLIENT:
+            ip = self.ed_remote_ip.text().strip()
+            port = self._parse_port(self.ed_remote_port.text())
+            if not is_valid_ip(ip):
+                self.toast(self._t("err_bad_ip"), error=True)
+                return
+            if port is None:
+                self.toast(self._t("err_bad_port"), error=True)
+                return
+            conn = TcpClientConn(ip, port)
+        elif proto == PROTO_UDP_MULTICAST:
+            port = self._parse_port(self.ed_local_port.text())
+            if port is None:
+                self.toast(self._t("err_bad_port"), error=True)
+                return
+            group = self.ed_group.text().strip()
+            if not is_multicast_ipv4(group):
+                self.toast(self._t("err_not_multicast"), error=True)
+                return
+            conn = UdpGroupConn(self.cb_local_ip.currentText().strip(), group, port)
+        else:  # UDP
+            lport = self._parse_port(self.ed_local_port.text())
+            if lport is None:
+                self.toast(self._t("err_bad_port"), error=True)
+                return
+            if self.sw_udp_remote.isChecked():
+                # 指定远程：IP/端口必填且合法，固定发往该地址
+                rip = self.ed_remote_ip.text().strip()
+                rport = self._parse_port(self.ed_remote_port.text())
+                if not is_valid_ip(rip):   # 校验 IP 字面量，挡掉 "not.a.valid.ip" 之类
+                    self.toast(self._t("err_bad_ip"), error=True)
+                    return
+                if rport is None:
+                    self.toast(self._t("err_bad_port"), error=True)
+                    return
+            else:
+                rip, rport = "", 0   # 不指定远程：回复最近发来数据的对端
+            conn = UdpConn(self.cb_local_ip.currentText().strip(), lport, rip, rport)
+
+        conn.data_received.connect(self.on_data_received)
+        conn.error_occurred.connect(self._on_conn_error)
+        conn.state_changed.connect(self._on_conn_state_changed)
+        conn.clients_changed.connect(self._on_clients_changed)
+        conn.peer_changed.connect(self._on_udp_peer_changed)
+
+        # 先赋值再 open()：TCP Server / UDP / 组播的 open() 会**同步**发出 state_changed(True)，
+        # 此时 self.conn 必须已指向 conn，否则 _on_conn_state_changed 看到 None、状态栏先跑一次「未连接」
+        self.conn = conn
+        if not conn.open():   # 同步失败(端口占用/绑定失败)：error_occurred 已触发 _on_conn_error → close_conn 复位
+            if self.conn is conn:   # 兜底：万一 _on_conn_error 未清理，这里补清
+                self.conn = None
+                conn.deleteLater()
             return
 
-        parity_map = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
-                      "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
-                      "Space": serial.PARITY_SPACE}
-        stopbits_map = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
-                        "2": serial.STOPBITS_TWO}
-        databits_map = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
-                        "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
-
-        try:
-            self.ser = serial.Serial(
-                port=port, baudrate=baud,
-                bytesize=databits_map[self.cb_databits.currentText()],
-                parity=parity_map[self.cb_parity.currentText()],
-                stopbits=stopbits_map[self.cb_stopbits.currentText()],
-                timeout=0,
-            )
-        except Exception as e:
-            self.toast(self._t("err_open_failed", e=e), error=True)
-            self.ser = None
-            return
-
-        self.reader = SerialReader(self.ser)
-        self.reader.data_received.connect(self.on_data_received)
-        self.reader.error_occurred.connect(self.on_reader_error)
-        self.reader.start()
-
-        self.btn_open.setText(self._t("close_serial"))
         self.btn_open.setProperty("state", "open")
         self.btn_open.style().unpolish(self.btn_open)
         self.btn_open.style().polish(self.btn_open)
-        self.lbl_state.setText(f"● {port} @ {baud}")
-        self._set_state_color(opened=True)
         self.set_settings_enabled(False)
+        self._update_net_fields()
+        self._update_conn_status()
+
+    def _on_conn_error(self, msg):
+        """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
+        proto = self.cb_proto.currentText() if hasattr(self, "cb_proto") else ""
+        key = {PROTO_TCP_SERVER: "err_listen_failed",
+               PROTO_TCP_CLIENT: "err_connect_failed",
+               PROTO_UDP: "err_bind_failed",
+               PROTO_UDP_MULTICAST: "err_bind_failed"}.get(proto, "err_connect_failed")
+        self.toast(self._t(key, e=msg), error=True)
+        if self.conn is not None:
+            self.close_conn()
+
+    def _on_conn_state_changed(self, up):
+        """已连接/监听(up=True) 或 对端断开(up=False)。
+        主动 close_conn() 会先 blockSignals，断开的 False 不会回到这里。"""
+        if up:
+            self._update_conn_status()
+            self._update_net_fields()   # TCP Server 连上后显示「目标」行
+        elif self.conn is not None:
+            self.toast(self._t("net_peer_closed"))
+            self.close_conn()
+
+    def _on_clients_changed(self, clients):
+        """TCP Server 客户端列表变化 → 刷新「目标」下拉（含「全部」）。"""
+        if not hasattr(self, "cb_target"):
+            return
+        cur = self.cb_target.currentData()
+        self.cb_target.blockSignals(True)
+        self.cb_target.clear()
+        self.cb_target.addItem(self._t("client_all"), "__all__")
+        for key, label in clients:
+            self.cb_target.addItem(label, key)
+        idx = self.cb_target.findData(cur) if cur else 0
+        self.cb_target.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cb_target.blockSignals(False)
+        self._update_net_fields()   # 客户端 0↔有 变化时同步「目标」行的显隐
+
+    def _on_udp_peer_changed(self, ip, port):
+        """UDP 收到新对端时，若「指定远程」关闭(回复模式)，把灰显的远程框刷成最近对端地址。
+        纯显示——让用户看到当前在跟谁通信、发送会回复给谁；之后打开「指定远程」即预填好该对端。
+        「指定远程」打开时不刷(那是用户固定的目标，不能被覆盖)。"""
+        if (self.cb_proto.currentText() == PROTO_UDP
+                and not self.sw_udp_remote.isChecked()):
+            self.ed_remote_ip.setText(ip)
+            self.ed_remote_port.setText(str(port))
+
+    def _update_conn_status(self):
+        """刷新状态栏左下角的连接状态文本 + 状态点颜色。"""
+        if self.conn is None:
+            self.lbl_state.setText(self._t("state_closed"))
+            self._set_state_color(opened=False)
+            return
+        proto = self.cb_proto.currentText()
+        if proto == PROTO_TCP_SERVER:
+            addr = f"{self.cb_local_ip.currentText().strip()}:{self.ed_local_port.text().strip()}"
+            self.lbl_state.setText(self._t("net_listening", proto="TCP", addr=addr))
+            self._set_state_color(opened=True)
+        elif proto == PROTO_TCP_CLIENT:
+            if self.conn.is_open:
+                addr = f"{self.ed_remote_ip.text().strip()}:{self.ed_remote_port.text().strip()}"
+                self.lbl_state.setText(self._t("net_connected", addr=addr))
+                self._set_state_color(opened=True)
+            else:
+                self.lbl_state.setText(self._t("net_connecting"))
+                self._set_state_color(opened=False)
+        elif proto == PROTO_UDP_MULTICAST:
+            addr = f"{self.ed_group.text().strip()}:{self.ed_local_port.text().strip()}"
+            self.lbl_state.setText(self._t("net_group_joined", addr=addr))
+            self._set_state_color(opened=True)
+        else:  # UDP
+            addr = f"{self.cb_local_ip.currentText().strip()}:{self.ed_local_port.text().strip()}"
+            self.lbl_state.setText(self._t("net_udp_bound", addr=addr))
+            self._set_state_color(opened=True)
+
+    def _send_target(self):
+        """TCP Server 模式下，当前选中的发送目标客户端 key（"__all__"=全部）；其余协议返回 None。"""
+        if (self.cb_proto.currentText() == PROTO_TCP_SERVER
+                and hasattr(self, "cb_target") and self.cb_target.count() > 0):
+            return self.cb_target.currentData()
+        return None
 
     def _flush_pending_cr(self):
         """把跨包待定的 \\r 输出出来。
-        场景：CRLF 模式下设备只发了孤立 \\r 然后没下文，关串口/切模式时
+        场景：CRLF 模式下对端只发了孤立 \\r 然后没下文，断开连接/切模式时
         如果不冲掉，用户永远看不到那个 \\r。"""
         if not self._rx_pending_cr:
             return
@@ -1401,23 +1506,26 @@ class SerialTool(QMainWindow):
         self._append_block_data("\r", direction="rx", force_new_block=force_new)
         self._last_direction = "rx"
 
-    def close_serial(self):
+    def close_conn(self):
         if self.sw_period.isChecked():
             self.sw_period.setChecked(False)
-        # 串口关之前先把待定 \r 显示出来，否则数据丢用户视觉
+        # 停多条发送循环定时器：否则非 closeEvent 路径(点断开/对端断开/连接错误)断连后，
+        # 下一 tick 的 _ms_cycle_step 还会再弹一个「未连接」toast，造成双重错误提示
+        self._ms_stop_cycle()
+        # 断开前先把待定 \r 显示出来，否则数据丢用户视觉
         # 同时要在关闭实时日志前执行，保证日志和屏幕显示一致。
         self._flush_pending_cr()
         if self.sw_log_file.isChecked():
             self.sw_log_file.setChecked(False)
-        if self.reader:
-            self.reader.stop()
-            self.reader = None
-        if self.ser:
+        conn = self.conn
+        self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
+        if conn:
             try:
-                self.ser.close()
+                conn.blockSignals(True)
+                conn.close()
             except Exception:
                 pass
-        self.ser = None
+            conn.deleteLater()
 
         self._last_recv_time = 0.0
         self._last_direction = None
@@ -1425,17 +1533,21 @@ class SerialTool(QMainWindow):
         self._rx_decode_buffer = b""
         self._rx_pending_cr = False
 
-        self.btn_open.setText(self._t("open_serial"))
         self.btn_open.setProperty("state", "")
         self.btn_open.style().unpolish(self.btn_open)
         self.btn_open.style().polish(self.btn_open)
         self.lbl_state.setText(self._t("state_closed"))
         self._set_state_color(opened=False)
         self.set_settings_enabled(True)
+        if hasattr(self, "cb_target"):
+            self.cb_target.clear()
+        self._update_net_fields()
 
     def set_settings_enabled(self, enabled):
-        for w in (self.cb_port, self.cb_baud, self.cb_databits,
-                  self.cb_parity, self.cb_stopbits, self.btn_refresh):
+        # 远程框(ed_remote_*)启用由 _update_net_fields 统管(TCP恒开/UDP看开关)；
+        # 目标客户端下拉(cb_target)连接期间要可切换发送目标，不锁
+        for w in (self.cb_proto, self.cb_local_ip, self.ed_local_port,
+                  self.ed_group, self.sw_udp_remote):
             w.setEnabled(enabled)
 
     # ----- 主题 -----
@@ -1477,7 +1589,7 @@ class SerialTool(QMainWindow):
         if hasattr(self, "status_bar"):
             self.status_bar.setStyleSheet(f"background: transparent; color: {c['text_sec']};")
         if hasattr(self, "lbl_state"):
-            self._set_state_color(opened=bool(self.ser and self.ser.is_open))
+            self._set_state_color(opened=self._is_open())
         if hasattr(self, "title_bar") and hasattr(self.title_bar, "title_label"):
             self.title_bar.title_label.setStyleSheet(
                 f"color: {c['text_sec']}; background: transparent;")
@@ -1716,10 +1828,6 @@ class SerialTool(QMainWindow):
                 self._close_log_file()
                 self.sw_log_file.setChecked(False)
 
-    def on_reader_error(self, msg):
-        self.toast(self._t("err_serial", e=msg), error=True)
-        self.close_serial()
-
     # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
     def _load_ms_groups(self):
         """加载多条发送分组；兼容旧版扁平 multi_send_items → 迁移成「默认」分组。
@@ -1828,8 +1936,8 @@ class SerialTool(QMainWindow):
         if not seq:
             self.toast(self._t("ms_none_checked"), error=True)
             return
-        if not (self.ser and self.ser.is_open):
-            self.toast(self._t("err_serial_not_open"), error=True)
+        if not self._is_open():
+            self.toast(self._t("net_not_open"), error=True)
             return
         self._ms_cycle_seq = seq
         self._ms_cycle_idx = 0
@@ -1840,12 +1948,12 @@ class SerialTool(QMainWindow):
         if not self._ms_cycle_seq:
             self._ms_stop_cycle()
             return
-        if not (self.ser and self.ser.is_open):
-            self.toast(self._t("err_serial_not_open"), error=True)
+        if not self._is_open():
+            self.toast(self._t("net_not_open"), error=True)
             self._ms_stop_cycle()
             return
         data, hx, nl, cs, delay = self._ms_cycle_seq[self._ms_cycle_idx % len(self._ms_cycle_seq)]
-        # 发送失败(坏数据/串口写异常等)立即停止，避免每轮都刷错误 toast
+        # 发送失败(坏数据/写异常等)立即停止，避免每轮都刷错误 toast
         # (空命令在 _ms_toggle_cycle 构建序列时已过滤，这里的 False 都是真失败)
         if not self._send_text(data, hex_mode=hx, newline=nl, checksum=cs):
             self._ms_stop_cycle()
@@ -1898,8 +2006,9 @@ class SerialTool(QMainWindow):
         if not raw:
             return
         ok = self._send_text(raw)
-        # 串口没开导致发送失败时，顺手关掉定时发送开关
-        if not ok and self.sw_period.isChecked() and not (self.ser and self.ser.is_open):
+        # 定时发送时任何发送失败(数据格式错误/未连接/无目标/写失败)都关掉定时器，
+        # 避免格式错误等确定性失败每周期刷一次 toast 形成轰炸
+        if not ok and self.sw_period.isChecked():
             self.sw_period.setChecked(False)
 
     def _send_text(self, raw, hex_mode=None, newline=None, checksum=None) -> bool:
@@ -1908,8 +2017,8 @@ class SerialTool(QMainWindow):
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
           checksum: None=全局; 否则校验项索引(0=无…)
         成功返回 True"""
-        if not (self.ser and self.ser.is_open):
-            self.toast(self._t("err_serial_not_open"), error=True)
+        if not self._is_open():
+            self.toast(self._t("net_not_open"), error=True)
             return False
         if not raw:
             return False
@@ -1970,9 +2079,15 @@ class SerialTool(QMainWindow):
             return False
 
         try:
-            self.ser.write(data)
+            sent = self.conn.send(data, self._send_target())
         except Exception as e:
             self.toast(self._t("err_send_failed", e=e), error=True)
+            return False
+        if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
+            self.toast(self._t("net_no_target"), error=True)
+            return False
+        if sent <= 0:                # 底层 write/writeDatagram 失败（对端断开/网络不可达等）
+            self.toast(self._t("net_send_failed"), error=True)
             return False
 
         self.tx_bytes += len(data)
@@ -2049,8 +2164,8 @@ class SerialTool(QMainWindow):
                 self.toast(self._t("err_period_bad", e=e), error=True)
                 self.sw_period.setChecked(False)
                 return
-            if not (self.ser and self.ser.is_open):
-                self.toast(self._t("err_serial_not_open"), error=True)
+            if not self._is_open():
+                self.toast(self._t("net_not_open"), error=True)
                 self.sw_period.setChecked(False)
                 return
             self.send_timer.start(ms)
@@ -2283,7 +2398,7 @@ class SerialTool(QMainWindow):
                     w.setToolTip(self._t(k))
                 except Exception:
                     pass
-            # 固定宽标签（串口设置左列）随语言调整列宽，避免英文被遮挡
+            # 固定宽标签（网络设置左列）随语言调整列宽，避免英文被遮挡
             if w.property("tr_fixedw"):
                 w.setFixedWidth(self._label_col_width())
 
@@ -2315,18 +2430,20 @@ class SerialTool(QMainWindow):
                     self.cb_theme.setItemText(i, self._theme_label(tid))
             self.cb_theme.blockSignals(False)
 
-        if hasattr(self, "btn_open"):
-            opened = bool(self.ser and self.ser.is_open)
-            self.btn_open.setText(self._t("close_serial" if opened else "open_serial"))
+        # 网络设置区：动作按钮文案随协议/状态、字段行随协议显隐重算
+        if hasattr(self, "cb_proto"):
+            self._update_net_fields()
 
+        # 状态栏连接文本随语言刷新
         if hasattr(self, "lbl_state"):
-            if not (self.ser and self.ser.is_open):
+            if self.conn is not None:
+                self._update_conn_status()
+            else:
                 self.lbl_state.setText(self._t("state_closed"))
 
-        if hasattr(self, "cb_port") and self.cb_port.count() == 1:
-            data = self.cb_port.itemData(0)
-            if not data:
-                self.cb_port.setItemText(0, self._t("no_ports"))
+        # 「目标」下拉里的「全部」项随语言刷新
+        if hasattr(self, "cb_target") and self.cb_target.count() > 0:
+            self.cb_target.setItemText(0, self._t("client_all"))
 
         if self._tray:
             self._tray.setToolTip(self._t("app_title"))
@@ -2356,7 +2473,7 @@ class SerialTool(QMainWindow):
     @staticmethod
     def _settings_file() -> str:
         """
-        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\SerialTool\\。
+        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\NetworkTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
         """
         if getattr(sys, "frozen", False):
@@ -2381,17 +2498,21 @@ class SerialTool(QMainWindow):
             try:
                 with open(test, "w"):
                     pass
-                os.remove(test)
-                return True
             except (OSError, PermissionError):
                 return False
+            # 写成功 = 目录可写；删测试文件是 best-effort，删不掉(杀软锁等)也不该误判为不可写
+            try:
+                os.remove(test)
+            except OSError:
+                pass
+            return True
 
         if _portable_writable():
             return portable
 
         # 回退用户配置目录
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-        cfg_dir = os.path.join(appdata, "SerialTool")
+        cfg_dir = os.path.join(appdata, "NetworkTool")
         try:
             os.makedirs(cfg_dir, exist_ok=True)
         except Exception:
@@ -2422,11 +2543,13 @@ class SerialTool(QMainWindow):
             s.setValue("period_ms", self.ed_period_ms.text())
             s.setValue("checksum_idx", self.cb_checksum.currentIndex())
             s.setValue("send_text", self.txt_send.toPlainText())
-            s.setValue("port", self.cb_port.currentData() or "")
-            s.setValue("baud", self.cb_baud.currentText())
-            s.setValue("databits", self.cb_databits.currentText())
-            s.setValue("parity", self.cb_parity.currentText())
-            s.setValue("stopbits", self.cb_stopbits.currentText())
+            s.setValue("net_proto", self.cb_proto.currentText())
+            s.setValue("net_local_ip", self.cb_local_ip.currentText())
+            s.setValue("net_local_port", self.ed_local_port.text())
+            s.setValue("net_remote_ip", self.ed_remote_ip.text())
+            s.setValue("net_remote_port", self.ed_remote_port.text())
+            s.setValue("net_use_remote", self.sw_udp_remote.isChecked())
+            s.setValue("net_group_addr", self.ed_group.text())
             s.sync()
         except Exception:
             pass
@@ -2540,17 +2663,25 @@ class SerialTool(QMainWindow):
                 self.cb_checksum.setCurrentIndex(ck_idx)
         except (ValueError, TypeError):
             pass
-        restore_combo(self.cb_baud, "baud")
-        restore_combo(self.cb_databits, "databits")
-        restore_combo(self.cb_parity, "parity")
-        restore_combo(self.cb_stopbits, "stopbits")
-
-        saved_port = s.value("port", "")
-        if saved_port:
-            for i in range(self.cb_port.count()):
-                if self.cb_port.itemData(i) == saved_port:
-                    self.cb_port.setCurrentIndex(i)
-                    break
+        # 网络设置恢复
+        restore_combo(self.cb_proto, "net_proto")
+        v = s.value("net_local_ip", None)
+        if v:
+            self.cb_local_ip.setCurrentText(str(v))
+        v = s.value("net_local_port", None)
+        if v:
+            self.ed_local_port.setText(str(v))
+        v = s.value("net_remote_ip", None)
+        if v:
+            self.ed_remote_ip.setText(str(v))
+        v = s.value("net_remote_port", None)
+        if v:
+            self.ed_remote_port.setText(str(v))
+        self.sw_udp_remote.setChecked(to_bool(s.value("net_use_remote", False)), animate=False)
+        v = s.value("net_group_addr", None)
+        if v:
+            self.ed_group.setText(str(v))
+        self._update_net_fields()   # 按恢复的协议+开关刷新字段显隐/启用 + 按钮文案
 
     # ----- 系统托盘 -----
     def _setup_tray(self):
@@ -2649,22 +2780,13 @@ class SerialTool(QMainWindow):
                 pass
         return super().nativeEvent(event_type, message)
 
-    def _wait_oneshot_scan(self):
-        """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running"""
-        scan = getattr(self, "_oneshot_scan", None)
-        if scan and scan.isRunning():
-            scan.wait(2000)
-
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
             if hasattr(self, "_ms_cycle_timer"):
                 self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
             self._save_settings()
-            self.close_serial()
+            self.close_conn()
             self._close_log_file()
-            if self.port_scanner:
-                self.port_scanner.stop()
-            self._wait_oneshot_scan()
             if self._tray:
                 self._tray.hide()
             e.accept()
@@ -2695,11 +2817,8 @@ class SerialTool(QMainWindow):
             if hasattr(self, "_ms_cycle_timer"):
                 self._ms_cycle_timer.stop()   # 与直接退出路径一致，避免销毁中触发 toast
             self._save_settings()
-            self.close_serial()
+            self.close_conn()
             self._close_log_file()
-            if self.port_scanner:
-                self.port_scanner.stop()
-            self._wait_oneshot_scan()
             self._tray.hide()
             e.accept()
         else:

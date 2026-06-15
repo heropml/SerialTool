@@ -1,6 +1,6 @@
-# SerialTool Usage Guide
+# NetworkTool Usage Guide
 
-An iOS-style serial port debugging tool, designed for embedded development and protocol debugging.
+An iOS-style network debugging tool (TCP/UDP), designed for embedded development and protocol debugging.
 
 ![UI preview](./icon_preview.png)
 
@@ -10,7 +10,7 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 - [Quick Start](#quick-start)
 - [Features](#features)
-  - [Serial Setup](#serial-setup)
+  - [Network](#network)
   - [Receiving Data](#receiving-data)
   - [Sending Data](#sending-data)
   - [Keyword Highlighting](#keyword-highlighting)
@@ -30,8 +30,8 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ## Quick Start
 
-1. Double-click the **SerialTool** icon on your desktop
-2. In the left **Serial Setup** panel, pick a port and baud rate, then click **Open Port**
+1. Double-click the **NetworkTool** icon on your desktop
+2. In the left **Network** panel, pick a **Protocol**, fill in the address / port, then click **Open** / **Connect** / **Listen** (depending on protocol)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 
 ---
@@ -59,20 +59,49 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 - **Keyword Highlighting** — opened from the **Highlight** button in the Data-area title bar; color-highlight lines that match your keyword rules
 - **Matches only** filter — show only the lines that match a keyword, hiding the rest
 - **Themed dialog title bars** — dialog native title bars now follow the dark/light theme
-- **High-speed baud rates** — the dropdown now includes 256000, 500000, 512000, 600000, 750000, 1000000, 1500000 and 2000000 (custom values still accepted)
-- **Auto-sizing Serial-Setup labels** — English labels in Serial Setup are no longer clipped
+- **Auto-sizing Network labels** — English labels in the Network settings are no longer clipped
 - **Consistent HEX display** — the Data area's HEX vs text view is now governed solely by the **HEX View** switch, so RX and TX always display the same way (independent of **HEX Send**)
 
 ---
 
 ## Features
 
-### Serial Setup
+### Network
 
-- Auto-detects available COM ports, hot-plug refresh every 1.5 s in the background
-- The port dropdown also shows the device description (helpful with multiple USB-to-serial adapters)
-- Baud rate: 1200–2000000 (including high-speed rates 256000, 500000, 512000, 600000, 750000, 1000000, 1500000, 2000000), or type any custom value
-- Data bits 5/6/7/8, parity None/Even/Odd/Mark/Space, stop bits 1/1.5/2
+The top-left **Network** card configures the connection. The first row is a **Protocol** dropdown with 4 options (**UDP** is the default):
+
+- **UDP**
+- **UDP Multicast**
+- **TCP Server**
+- **TCP Client**
+
+The fields below change to match the selected protocol:
+
+- **UDP**
+  - **Local IP** — dropdown of your local NIC IPs (`0.0.0.0` = all NICs)
+  - **Local Port**
+  - **Use remote** toggle — off = reply to the last sender; on = enables **Remote IP** / **Remote Port** and always sends to that address
+    - When **off**, each incoming datagram refreshes the greyed **Remote IP** / **Remote Port** to the **last sender's address** (so you can see who you're talking to / who a send replies to; only updated when the peer changes). After you receive from a peer, just turn **Use remote** on to lock onto it — the address is already pre-filled
+- **UDP Multicast**
+  - **Local IP** — the interface to use (`0.0.0.0` = default)
+  - **Group Addr** — e.g. `239.0.0.1` (must be in `224.0.0.0`–`239.255.255.255`)
+  - **Local Port**
+- **TCP Server**
+  - **Local IP**, **Local Port** → **Listen**
+  - Once clients connect, a **Target** dropdown appears so you can pick a specific client or **All** (broadcast) to send to
+- **TCP Client**
+  - **Remote IP** (required), **Remote Port** (required) → **Connect**
+
+**Action button** — its text depends on the protocol and state:
+
+| Protocol | Button |
+|----------|--------|
+| UDP | Open / Close |
+| UDP Multicast | Open / Close |
+| TCP Server | Listen / Stop |
+| TCP Client | Connect / Disconnect |
+
+Once connected, the whole card **locks and grays out** — disabled fields are shown greyed until you close / stop / disconnect.
 
 ### Receiving Data
 
@@ -127,7 +156,7 @@ RX and TX share one view; arrows indicate direction:
   Stray non-hex characters (e.g. `AA ZZ BB`) are rejected with a format error.
 
 - **Append CRLF** + **mode (CRLF / LF / CR)** — auto-append a newline after every send (handy for AT commands)
-- **Auto Send** + **Period ms** — send the current content periodically; minimum 10 ms; pauses automatically when the port closes
+- **Auto Send** + **Period ms** — send the current content periodically; minimum 10 ms; stops automatically if a send fails (not connected, bad format, no target, etc.)
 - **Checksum** (10 algorithms) — append a checksum to each transmission
 
 | Algorithm | Bytes | Notes |
@@ -175,7 +204,7 @@ Click the **Multi-Send** button in the Send area to open the multi-send dialog:
 ### Interface
 
 - **Frameless window** + **iOS-style rounded cards** with soft shadows
-- Left sidebar (serial / data / send settings) + right data area; the divider is **draggable**
+- Left sidebar (network / data / send settings) + right data area; the divider is **draggable**
 - Drag the title bar to move; double-click it to maximise
 - Native edge resize (feels identical to a system window)
 
@@ -234,7 +263,7 @@ On exit, settings are written to `settings.ini` in the install directory; on nex
 - All switches / input fields / dropdown selections
 - Send box content, font size, max line count
 
-If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\SerialTool\settings.ini` automatically.
+If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\NetworkTool\settings.ini` automatically.
 
 ---
 
@@ -254,7 +283,13 @@ Items are divided by vertical separators.
 
 Bottom-left:
 
-- `● Disconnected` / `● Connected COMxx @ baud` (red / green dot)
+- Connection state (red / green dot), one of:
+  - `● Disconnected`
+  - `● UDP addr:port`
+  - `● Multicast addr:port`
+  - `● TCP listening addr:port`
+  - `● Connected addr:port`
+  - `● Connecting…`
 - `RX: bytes` (auto-scales to B / KB / MB)
 - `TX: bytes`
 
@@ -267,11 +302,20 @@ Bottom-right:
 
 ## FAQ
 
-**Q: "Access denied" when opening the port?**
-A: Another program is holding it (another serial tool, an IDE's serial monitor, etc.). Close that one first.
+**Q: TCP Server "Listen" fails / port in use?**
+A: The port is taken by another program or needs permission. Use another port or close the conflicting program.
 
-**Q: Auto-send sometimes doesn't fire?**
-A: The minimum period is 10 ms and the port must stay open. Auto-send pauses automatically if the port closes.
+**Q: TCP Client can't connect?**
+A: Check the remote IP / port, that the peer is actually listening, and that the firewall allows the connection.
+
+**Q: UDP send says "No send target"?**
+A: "Use remote" is off and no peer has sent to you yet. Turn on **Use remote** and fill in the remote address, or wait for the peer to send to you first.
+
+**Q: UDP multicast receives nothing?**
+A: Check the firewall, that sender and receiver use the same group address and port, and that they're on the same subnet / NIC.
+
+**Q: Timed send not working?**
+A: The minimum period is 10 ms and you must stay connected. It pauses automatically on disconnect.
 
 **Q: Chinese characters show as garbled text?**
 A: Auto mode tries UTF-8 first and falls back to GBK. If that's still wrong, the device may use another encoding (e.g. Big5) — pick it explicitly from the **Encoding** dropdown, or switch to HEX View to inspect the raw bytes.
@@ -281,9 +325,6 @@ A: HEX is parsed byte-by-byte. `AA B` has 3 hex chars which can't pair up — wr
 
 **Q: Does the log file slow things down when it gets large?**
 A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** only limits the on-screen display, not what's written to disk.
-
-**Q: I unplugged the USB-to-serial adapter but the port list didn't refresh?**
-A: Some drivers don't notify the system on unplug. Click the `⟳` button next to the port dropdown to force a refresh.
 
 ---
 

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""SerialTool 入口。"""
+"""NetworkTool 入口。"""
 import sys
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication
 from app_icon import get_app_icon
-from main_window import SerialTool
+from main_window import NetworkTool
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "Tools.SerialTool.1.0")
+                "Tools.NetworkTool.1.0")
         except Exception:
             pass
 
@@ -39,7 +39,7 @@ def main():
             app.setFont(f)
             break
 
-    w = SerialTool()
+    w = NetworkTool()
     w.setWindowIcon(get_app_icon())
     w.show()
     sys.exit(app.exec_())

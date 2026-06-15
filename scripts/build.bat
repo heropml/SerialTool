@@ -1,7 +1,7 @@
 @echo off
 cd /d %~dp0..
 echo ============================================
-echo  Building SerialTool.exe with PyInstaller
+echo  Building NetworkTool.exe with PyInstaller
 echo ============================================
 echo.
 
@@ -9,9 +9,8 @@ py -3 -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
-  --name SerialTool ^
+  --name NetworkTool ^
   --icon assets\icon.ico ^
-  --hidden-import serial.tools.list_ports_windows ^
   --exclude-module PyQt5.QtBluetooth ^
   --exclude-module PyQt5.QtDBus ^
   --exclude-module PyQt5.QtDesigner ^
@@ -39,11 +38,11 @@ py -3 -m PyInstaller ^
   src\main.py
 
 echo.
-if exist "dist\SerialTool\SerialTool.exe" (
+if exist "dist\NetworkTool\NetworkTool.exe" (
   echo ============================================
   echo  Build OK
-  echo  Output: dist\SerialTool\
-  echo  Run:    dist\SerialTool\SerialTool.exe
+  echo  Output: dist\NetworkTool\
+  echo  Run:    dist\NetworkTool\NetworkTool.exe
   echo ============================================
 ) else (
   echo ============================================

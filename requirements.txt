@@ -1,6 +1,6 @@
 # 运行时依赖
+# PyQt5 自带 QtNetwork（TCP/UDP），网络版不再依赖 pyserial
 PyQt5>=5.15
-pyserial>=3.5
 
 # 开发时依赖（打包 exe / 重新生成图标）
 pyinstaller>=6.0

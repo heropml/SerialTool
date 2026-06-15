@@ -1,46 +1,35 @@
-# SerialTool v1.0.3
+# NetworkTool（网络版）
 
-本次为**工程结构重构版**：代码拆分为多模块、目录分类整理，**功能与界面与 v1.0.2 完全一致，无用户可见变化**。日常使用者无需关注，开发/打包者请留意路径变动。
+由串口版 **SerialTool v1.0.3** 改造而来：左上角「串口」连接区整体换成「网络」，**数据区显示 / 发送 / HEX / 校验 / 关键字高亮 / 实时记录 / 多条发送 / 主题 / 语言等其余功能完全复用、行为不变**。产品更名为 **NetworkTool**（运行时窗口标题已更新）。
 
-## 🧱 代码模块化
+## 🌐 网络连接（替代原串口连接）
 
-- 原 ~4500 行单文件 `main.py` 按职责拆分为独立模块，便于后期维护：
-  - `main.py` — 入口（HiDPI + QApplication + 启动）
-  - `main_window.py` — 主窗口 `SerialTool` 主体类
-  - `dialogs.py` — 多条发送 / 关键字高亮 / 关闭确认 弹窗
-  - `widgets.py` — 自定义控件（IOSSwitch / TitleBar / Card）
-  - `serial_io.py` — 串口读线程 + 端口扫描线程
-  - `theme.py` — 主题配色表 + 角色着色
-  - `i18n.py` — 三语翻译表（简 / 英 / 繁）
-  - `app_icon.py` / `icon_data.py` — 运行时图标加载与 base64 数据
-  - `version.py` — 版本号单点真源
-- 拆分经 pyflakes（零未定义/未使用）+ 全模块导入 + 运行冒烟校验。
+支持 4 种协议，下拉选择，字段随协议动态显隐：
 
-## 🗂️ 目录分类整理
+| 协议 | 关键字段 | 动作按钮 |
+|------|---------|---------|
+| **UDP** | 本地IP + 本地端口 +「指定远程」开关（关=回复最近对端，开=固定发往远程IP/端口） | 打开 / 关闭 |
+| **UDP Multicast（组播）** | 本地IP（出/入网卡）+ 组播地址（224.0.0.0~239.255.255.255）+ 本地端口 | 打开 / 关闭 |
+| **TCP Server** | 本地IP + 本地端口；连入后「目标」下拉选某客户端或「全部」广播 | 开始监听 / 停止监听 |
+| **TCP Client** | 远程IP（必填）+ 远程端口（必填） | 连接 / 断开 |
 
-根目录原先几十个文件平铺，现按类型归入子目录：
+- 本地IP 下拉自动列出本机网卡 IP（`0.0.0.0` = 所有网卡）
+- 「指定远程」**关闭时远程框变灰**，一眼看出当前用不用远程；且**关闭时收到数据会把远程框刷成最近对端地址**（显示当前对端，打开开关即预填）
+- 连接建立后整张卡片锁定变灰；状态栏显示 `● TCP 监听/● 组播/● UDP/● 已连接 地址:端口`
 
-| 目录 | 内容 |
-|------|------|
-| `src/` | 全部 Python 源码 |
-| `docs/` | USAGE.md / 使用说明.md / 使用說明.md / RELEASE_NOTES.md |
-| `scripts/` | run*.bat/vbs、build*.bat/sh、SerialTool.iss |
-| `assets/` | icon.ico、icon_preview.png、icon_convert.py |
+## 🧱 实现
 
-根目录只保留 `README.md`、`requirements.txt` 和三个打包产物目录（`dist/`、`dist_onefile/`、`installer/`）。
+- 新增 `src/net_io.py` 统一连接层：基类 `NetConn` + `TcpServerConn / TcpClientConn / UdpConn / UdpGroupConn`，对外语义与原串口一致（`open/close/send/is_open` + `data_received` 等信号）
+- 基于 Qt 自带 **QtNetwork**（事件驱动，无轮询线程）；**移除 `serial_io.py` 与 pyserial 依赖**
+- 主窗口只认 `NetConn` 接口 → 上层所有功能无感复用
+- 三语（简/英/繁）网络相关文案齐全；网络设置随语言/主题切换刷新；配置项（协议/IP/端口/组播地址/指定远程开关）持久化
 
-## 🔧 构建链同步更新
+## ✅ 验证
 
-- 所有启动/构建脚本内部 `cd` 回项目根再执行，**双击即用，无需手动切目录**。
-- `SerialTool.iss` 内路径全部加 `..\` 前缀指回根目录；安装包编译走 PowerShell 调 ISCC（避免 MSYS 路径转换问题）。
-- 打包命令统一改用 `py -3 -m PyInstaller`（规避裸 `pyinstaller` 命中 PATH 旧版静默失败）。
+- 连接层回环测试全过：TCP 服务端↔客户端双向、UDP 双向、UDP 组播收发、无目标软错误
+- pyflakes 零告警、GUI 启动无报错
 
-## 📦 下载
+## 📦 说明
 
-| 形式 | 文件 | 说明 |
-|------|------|------|
-| 安装版 | `SerialTool_Setup_v1.0.3.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| 单文件版 | `SerialTool_onefile_v1.0.3.exe` | 免安装，双击即用（首次启动略慢 1~2 秒） |
-| 文件夹版 | `dist/SerialTool/` | 解压即用，启动最快 |
-
-> 无需安装 Python；Windows 10/11。功能同 v1.0.2。
+- 打包产物（`NetworkTool.exe` / `NetworkTool_Setup_v*.exe` / `dist\NetworkTool\`）、窗口标题、`%APPDATA%\NetworkTool` 配置目录已**统一更名为 NetworkTool**
+- 运行环境：Windows 10/11，无需安装 Python / PyQt5（打包版自带）
