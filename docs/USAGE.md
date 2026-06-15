@@ -261,7 +261,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.0.3`)
+- current **version** (`v1.0.4`)
 
 ---
 

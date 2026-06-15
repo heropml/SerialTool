@@ -1404,6 +1404,9 @@ class SerialTool(QMainWindow):
     def close_serial(self):
         if self.sw_period.isChecked():
             self.sw_period.setChecked(False)
+        # 停多条发送循环定时器：否则串口出错/非 closeEvent 路径关闭后，下一 tick 的
+        # _ms_cycle_step 还会再弹一个「串口未打开」toast，造成双重错误提示
+        self._ms_stop_cycle()
         # 串口关之前先把待定 \r 显示出来，否则数据丢用户视觉
         # 同时要在关闭实时日志前执行，保证日志和屏幕显示一致。
         self._flush_pending_cr()
@@ -1898,8 +1901,8 @@ class SerialTool(QMainWindow):
         if not raw:
             return
         ok = self._send_text(raw)
-        # 串口没开导致发送失败时，顺手关掉定时发送开关
-        if not ok and self.sw_period.isChecked() and not (self.ser and self.ser.is_open):
+        # 定时发送时任何发送失败(数据格式错误/串口未开等)都关掉定时器，避免格式错误每周期刷 toast 轰炸
+        if not ok and self.sw_period.isChecked():
             self.sw_period.setChecked(False)
 
     def _send_text(self, raw, hex_mode=None, newline=None, checksum=None) -> bool:
@@ -2381,10 +2384,14 @@ class SerialTool(QMainWindow):
             try:
                 with open(test, "w"):
                     pass
-                os.remove(test)
-                return True
             except (OSError, PermissionError):
                 return False
+            # 写成功 = 目录可写；删测试文件是 best-effort，删不掉(杀软锁等)也不该误判为不可写
+            try:
+                os.remove(test)
+            except OSError:
+                pass
+            return True
 
         if _portable_writable():
             return portable
