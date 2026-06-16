@@ -6,6 +6,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication
 from app_icon import get_app_icon
 from main_window import NetworkTool
+from updater import cleanup_temp_installers
 
 
 def main():
@@ -39,6 +40,7 @@ def main():
             app.setFont(f)
             break
 
+    cleanup_temp_installers()   # 清理上次更新残留在 %TEMP% 的安装包
     w = NetworkTool()
     w.setWindowIcon(get_app_icon())
     w.show()

@@ -26,7 +26,7 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip)
-from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog
+from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog
 
 
 # ============== 主窗口 ==============
@@ -2449,6 +2449,8 @@ class NetworkTool(QMainWindow):
             self._tray.setToolTip(self._t("app_title"))
             if hasattr(self, "_tray_show_action"):
                 self._tray_show_action.setText(self._t("tray_show"))
+            if hasattr(self, "_tray_about_action"):
+                self._tray_about_action.setText(self._t("about"))
             if hasattr(self, "_tray_quit_action"):
                 self._tray_quit_action.setText(self._t("tray_quit"))
 
@@ -2693,6 +2695,8 @@ class NetworkTool(QMainWindow):
         menu = QMenu()
         self._tray_show_action = menu.addAction(self._t("tray_show"))
         self._tray_show_action.triggered.connect(self._show_from_tray)
+        self._tray_about_action = menu.addAction(self._t("about"))
+        self._tray_about_action.triggered.connect(self.open_about)
         menu.addSeparator()
         self._tray_quit_action = menu.addAction(self._t("tray_quit"))
         self._tray_quit_action.triggered.connect(self._real_quit)
@@ -2703,7 +2707,11 @@ class NetworkTool(QMainWindow):
 
     def _on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self._show_from_tray()
+            # 点托盘图标 toggle：窗口正显示就缩小到托盘，已隐藏/最小化就恢复
+            if self.isVisible() and not self.isMinimized():
+                self.hide()
+            else:
+                self._show_from_tray()
 
     def _show_from_tray(self):
         self.showNormal()
@@ -2713,6 +2721,19 @@ class NetworkTool(QMainWindow):
     def _real_quit(self):
         self._closing_real = True
         self.close()
+
+    def open_about(self):
+        """打开「关于 + 检查更新」对话框（托盘菜单触发）。"""
+        dlg = AboutDialog(
+            tr=self._t,
+            app_name=self._t("app_title"),
+            version=APP_VERSION,
+            icon=get_app_icon(),
+            theme_id=self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT,
+            on_quit=self._real_quit,
+            parent=self,
+        )
+        dlg.exec_()
 
     def showEvent(self, event):
         super().showEvent(event)
