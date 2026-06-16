@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLin
                              QListWidget, QListWidgetItem)
 from theme import chrome_for, THEME_DEFAULT
 from i18n import CHECKSUM_KEYS
+from updater import UpdateChecker, UpdateDownloader, run_installer
 
 
 # ============== 关闭确认对话框 (iOS 风格) ==============
@@ -140,6 +141,171 @@ class CloseDialog(QDialog):
 
     def result_value(self):
         return self._result_val
+
+
+# ============== 关于 + 检查更新 对话框 ==============
+class AboutDialog(QDialog):
+    """无边框圆角卡：图标 + 名称 + 版本 + 简介 + 「检查更新」。
+    tr: 主窗口翻译函数 _t；app_name/version；icon：QIcon；on_quit：去装更新前退出 app 的回调。"""
+
+    def __init__(self, tr, app_name, version, icon=None,
+                 theme_id=THEME_DEFAULT, on_quit=None, parent=None):
+        super().__init__(parent)
+        self._tr = tr
+        self._version = version
+        self._theme_id = theme_id
+        self._on_quit = on_quit
+        self._checker = None
+        self._downloader = None
+        self._dl_url = ""
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        self._card = QFrame()
+        self._card.setObjectName("DialogCard")
+        sh = QGraphicsDropShadowEffect(self._card)
+        sh.setBlurRadius(30)
+        sh.setColor(QColor(0, 0, 0, 60))
+        sh.setOffset(0, 4)
+        self._card.setGraphicsEffect(sh)
+        v = QVBoxLayout(self._card)
+        v.setContentsMargins(28, 22, 28, 20)
+        v.setSpacing(12)
+        c = chrome_for(theme_id)
+
+        if icon is not None:
+            li = QLabel()
+            li.setPixmap(icon.pixmap(64, 64))
+            li.setAlignment(Qt.AlignCenter)
+            v.addWidget(li)
+
+        ln = QLabel(app_name)
+        fn = QFont("Segoe UI", 16)
+        fn.setWeight(QFont.DemiBold)
+        ln.setFont(fn)
+        ln.setAlignment(Qt.AlignCenter)
+        ln.setStyleSheet(f"color: {c['text']}; background: transparent;")
+        v.addWidget(ln)
+
+        lv = QLabel(f"v{version}")
+        lv.setAlignment(Qt.AlignCenter)
+        lv.setStyleSheet(f"color: {c['text_sec']}; background: transparent; font-size: 12px;")
+        v.addWidget(lv)
+
+        ld = QLabel(tr("about_desc"))
+        ld.setAlignment(Qt.AlignCenter)
+        ld.setWordWrap(True)
+        ld.setStyleSheet(f"color: {c['text_sec']}; background: transparent; font-size: 11px;")
+        v.addWidget(ld)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setStyleSheet(f"color: {c['text']}; background: transparent; font-size: 11px;")
+        self.lbl_status.hide()
+        v.addWidget(self.lbl_status)
+
+        h = QHBoxLayout()
+        h.setSpacing(10)
+        self.btn_check = QPushButton(tr("check_update"))
+        self.btn_check.setObjectName("DialogPrimaryBtn")
+        self.btn_check.setMinimumHeight(36)
+        self.btn_check.clicked.connect(self._check)
+        h.addWidget(self.btn_check, 1)
+        self.btn_action = QPushButton(tr("update_download"))
+        self.btn_action.setObjectName("DialogPrimaryBtn")
+        self.btn_action.setMinimumHeight(36)
+        self.btn_action.clicked.connect(self._download)
+        self.btn_action.hide()
+        h.addWidget(self.btn_action, 1)
+        self.btn_close = QPushButton(tr("close_cancel"))
+        self.btn_close.setObjectName("DialogGhostBtn")
+        self.btn_close.setMinimumHeight(36)
+        self.btn_close.clicked.connect(self.reject)
+        h.addWidget(self.btn_close, 1)
+        v.addLayout(h)
+
+        outer.addWidget(self._card)
+        self.setStyleSheet(CloseDialog._build_qss(self))
+        self.setMinimumWidth(340)
+
+    def _set_status(self, text):
+        self.lbl_status.setText(text)
+        self.lbl_status.setVisible(bool(text))
+
+    # ----- 检查 -----
+    def _check(self):
+        self.btn_check.setEnabled(False)
+        self._set_status(self._tr("update_checking"))
+        self._checker = UpdateChecker(self._version, self)
+        self._checker.finished.connect(self._on_checked)
+        self._checker.start()
+
+    def _on_checked(self, info, err):
+        self.btn_check.setEnabled(True)
+        if info is None:
+            self._set_status(self._tr("update_failed", e=err))
+            return
+        if not info.get("newer"):
+            self._set_status(self._tr("update_latest", ver=info["version"]))
+            return
+        self._dl_url = info.get("url", "")
+        txt = self._tr("update_found", ver=info["version"])
+        if info.get("notes"):
+            txt += "\n" + info["notes"]
+        self._set_status(txt)
+        if self._dl_url:
+            self.btn_check.hide()
+            self.btn_action.show()
+
+    # ----- 下载 + 安装 -----
+    def _download(self):
+        if not self._dl_url:
+            return
+        self.btn_action.setEnabled(False)
+        self._set_status(self._tr("update_downloading", pct=0))
+        self._downloader = UpdateDownloader(self._dl_url, self)
+        self._downloader.progress.connect(self._on_progress)
+        self._downloader.finished.connect(self._on_downloaded)
+        self._downloader.start()
+
+    def _on_progress(self, rec, total):
+        pct = int(rec * 100 / total) if total > 0 else 0
+        self._set_status(self._tr("update_downloading", pct=pct))
+
+    def _on_downloaded(self, path, err):
+        if not path:
+            self._set_status(self._tr("update_dl_failed", e=err))
+            self.btn_action.setEnabled(True)
+            return
+        self._set_status(self._tr("update_installing"))
+        if run_installer(path):
+            if self._on_quit:
+                QTimer.singleShot(500, self._on_quit)
+        else:
+            self._set_status(self._tr("update_dl_failed", e="installer launch failed"))
+            self.btn_action.setEnabled(True)
+
+    def _abort_inflight(self):
+        # 中止进行中的检查/下载：避免请求悬挂 + %TEMP% 残留写了一半的安装包。
+        chk = getattr(self, "_checker", None)
+        if chk is not None:
+            chk.abort()
+        dl = getattr(self, "_downloader", None)
+        if dl is not None:
+            dl.abort()
+
+    def reject(self):
+        # 「关闭」按钮 / ESC 走的是 reject（不是 closeEvent），这里一并中止在途请求。
+        self._abort_inflight()
+        super().reject()
+
+    def closeEvent(self, e):
+        self._abort_inflight()
+        super().closeEvent(e)
 
 
 def _set_win_titlebar_dark(widget, is_dark):

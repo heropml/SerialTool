@@ -20,6 +20,7 @@ An iOS-style serial port debugging tool, designed for embedded development and p
   - [Themes](#themes)
   - [Hover Tooltips](#hover-tooltips)
   - [System Tray](#system-tray)
+  - [Online Update](#online-update)
   - [Auto-saved Configuration](#auto-saved-configuration)
 - [Tips](#tips)
 - [Status Bar](#status-bar)
@@ -33,6 +34,12 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 1. Double-click the **SerialTool** icon on your desktop
 2. In the left **Serial Setup** panel, pick a port and baud rate, then click **Open Port**
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
+
+---
+
+## What's New in v1.0.5
+
+- **Online Update** — the tray icon's right-click menu gains an **About** entry that opens an **About** dialog (app icon, name, version, a short description, and a **Check for Updates** button). Click **Check for Updates** to fetch the latest version from the update source and compare it with the one you're running. If a newer version exists, the dialog shows the new version number, the release notes, and a **Download and Update** button: click it to download (with a live progress percentage), and when the download finishes the **regular install wizard** launches so you finish the upgrade yourself by clicking **Next / Install** (it is not a silent install). If you're already on the latest version, the dialog just tells you so. The update source tries the intranet mirror first and automatically falls back to the public one; each source has an 8-second timeout, so it never hangs for long even on an external network. The downloaded file is integrity-checked, and closing the dialog mid-download cancels the download automatically. (See [Online Update](#online-update).)
 
 ---
 
@@ -224,6 +231,17 @@ Tray icon:
 - Single / double click → restore window
 - Right-click → "Show Window" / "Quit"
 
+### Online Update
+
+Right-click the tray icon and choose **About** to open the **About** dialog. It shows the app icon, name, current version and a short description, plus a **Check for Updates** button.
+
+- **Check for Updates** — fetches the latest version from the update source and compares it with the one you're running:
+  - **A newer version is available** → the dialog shows the new version number, the **release notes**, and a **Download and Update** button. Click it to download (a **progress percentage** is shown). When the download completes, the **regular install wizard** opens — finish the upgrade yourself by clicking **Next / Install** (this is **not** a silent install).
+  - **Already up to date** → the dialog simply tells you you're on the latest version.
+- **Update sources** — the **intranet mirror** is tried first and the tool automatically **falls back to the public one**; each source has an **8-second timeout**, so it never hangs for long even on an external network.
+- **Integrity check** — the downloaded file is verified for integrity before the wizard runs.
+- **Cancel anytime** — closing the dialog while a download is in progress cancels the download automatically.
+
 ### Auto-saved Configuration
 
 On exit, settings are written to `settings.ini` in the install directory; on next launch **everything is restored**:
@@ -261,7 +279,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.0.4`)
+- current **version** (`v1.0.5`)
 
 ---
 
