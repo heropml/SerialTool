@@ -1,5 +1,5 @@
 {
-  "version": "1.0.5",
-  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.5/SerialTool_Setup_v1.0.5.exe",
-  "notes": "v1.0.5：新增在线更新功能 —— 托盘「关于 → 检查更新」一键下载并手动安装升级。"
+  "version": "1.0.6",
+  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.6/SerialTool_Setup_v1.0.6.exe",
+  "notes": "v1.0.6：数据区搜索（Ctrl+F，高亮 + 上下跳转 + 实时计数）、多屏状态栏/拖拽/最小化修复、深色主题高亮对比优化、托盘点击 toggle。"
 }
