@@ -160,9 +160,14 @@ class TitleBar(QWidget):
         if event.buttons() == Qt.LeftButton:
             if self._win.isMaximized():
                 ratio = event.x() / max(self.width(), 1)
+                # 先取还原后的宽度（normalGeometry 不受最大化状态影响）。否则 showNormal()
+                # 后立即 width() 可能仍是最大化宽度，drag_pos 偏移过大、窗口与鼠标严重脱节
+                # （窗口跑一边、鼠标在另一边）。
+                new_w = self._win.normalGeometry().width()
                 self._win.showNormal()
                 self.update_max_icon()
-                new_w = self._win.width()
+                if new_w <= 0:
+                    new_w = self._win.width()
                 self._drag_pos = QPoint(int(new_w * ratio), event.y())
                 self._win.move(event.globalPos() - self._drag_pos)
             elif self._drag_pos is not None:

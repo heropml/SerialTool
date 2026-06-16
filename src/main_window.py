@@ -629,6 +629,7 @@ class NetworkTool(QMainWindow):
         self.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
+        self._build_search_bar()
 
         # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
         self._recv_highlight_line = -1          # 当前高亮的块号，-1 表示无
@@ -674,6 +675,8 @@ class NetworkTool(QMainWindow):
         """)
         has_sel = self.txt_recv.textCursor().hasSelection()
         has_text = bool(self.txt_recv.document().characterCount() > 1)
+        act_search = menu.addAction(self._t("search"))
+        menu.addSeparator()
         act_copy = menu.addAction(self._t("ctx_copy"))
         act_copy.setEnabled(has_sel)
         act_all = menu.addAction(self._t("ctx_select_all"))
@@ -684,7 +687,9 @@ class NetworkTool(QMainWindow):
         act_save = menu.addAction(self._t("save"))
         act_save.setEnabled(has_text)
         chosen = menu.exec_(global_pos)
-        if chosen is act_copy:
+        if chosen is act_search:
+            self._open_search()
+        elif chosen is act_copy:
             self.txt_recv.copy()
         elif chosen is act_all:
             self.txt_recv.selectAll()
@@ -696,9 +701,21 @@ class NetworkTool(QMainWindow):
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
         if hasattr(self, "txt_recv"):
-            # 接收区尺寸变化 → 重定位浮动「回到底部」按钮
+            # 接收区尺寸变化 → 重定位浮动「回到底部」按钮 + 查找栏
             if obj is self.txt_recv and event.type() == QEvent.Resize:
                 self._reposition_to_bottom_btn()
+                if hasattr(self, "_search_bar"):
+                    self._reposition_search_bar()
+            # Ctrl+F 打开查找栏 / Esc 关闭（查找栏可见时）
+            elif obj is self.txt_recv and event.type() == QEvent.KeyPress:
+                if (event.key() == Qt.Key_F
+                        and event.modifiers() & Qt.ControlModifier):
+                    self._open_search()
+                    return True
+                if (event.key() == Qt.Key_Escape and hasattr(self, "_search_bar")
+                        and self._search_bar.isVisible()):
+                    self._close_search()
+                    return True
             elif obj is self.txt_recv.viewport():
                 # 右键 → 自定义中文菜单（拦截并消费，阻止 Qt 默认菜单）
                 if event.type() == QEvent.ContextMenu:
@@ -736,6 +753,144 @@ class NetworkTool(QMainWindow):
         y = vp.height() - bh - 12
         self.btn_to_bottom.move(max(0, x), max(0, y))
         self.btn_to_bottom.raise_()
+
+    # ----- 数据区：内嵌浮动查找栏（浏览器 Ctrl+F 风格）-----
+    def _build_search_bar(self):
+        """创建悬浮在 txt_recv 右上角的查找栏（默认隐藏）。"""
+        self._search_term = ""
+        self._search_matches = []     # 存 QTextCursor
+        self._search_idx = -1
+        self._search_bar = QWidget(self.txt_recv)
+        row = QHBoxLayout(self._search_bar)
+        row.setContentsMargins(8, 6, 8, 6)
+        row.setSpacing(6)
+        self.ed_search = QLineEdit()
+        self.ed_search.setProperty("tr_placeholder", "search_ph")
+        self.ed_search.setPlaceholderText(self._t("search_ph"))
+        self.ed_search.setFixedWidth(180)
+        self.ed_search.textChanged.connect(self._do_search)
+        self.ed_search.returnPressed.connect(self._search_next)
+        self.lbl_search_cnt = QLabel("")
+        self.btn_search_prev = QPushButton("▲")
+        self.btn_search_prev.setProperty("tr_tooltip", "search_prev")
+        self.btn_search_prev.setToolTip(self._t("search_prev"))
+        self.btn_search_prev.setCursor(Qt.PointingHandCursor)
+        self.btn_search_prev.setFixedSize(26, 26)
+        self.btn_search_prev.clicked.connect(self._search_prev)
+        self.btn_search_next = QPushButton("▼")
+        self.btn_search_next.setProperty("tr_tooltip", "search_next")
+        self.btn_search_next.setToolTip(self._t("search_next"))
+        self.btn_search_next.setCursor(Qt.PointingHandCursor)
+        self.btn_search_next.setFixedSize(26, 26)
+        self.btn_search_next.clicked.connect(self._search_next)
+        self.btn_search_close = QPushButton("✕")
+        self.btn_search_close.setCursor(Qt.PointingHandCursor)
+        self.btn_search_close.setFixedSize(26, 26)
+        self.btn_search_close.clicked.connect(self._close_search)
+        row.addWidget(self.ed_search)
+        row.addWidget(self.lbl_search_cnt)
+        row.addWidget(self.btn_search_prev)
+        row.addWidget(self.btn_search_next)
+        row.addWidget(self.btn_search_close)
+        self._style_search_bar()
+        self._search_bar.hide()
+
+    def _style_search_bar(self):
+        """按当前主题给查找栏上色（卡片底 + ghost 按钮）。"""
+        c = chrome_for(self._theme_id())
+        self._search_bar.setStyleSheet(f"""
+            QWidget {{ background-color: {c['card_bg']};
+                       border: 1px solid {c['separator']}; border-radius: 8px; }}
+            QLineEdit {{ background-color: {c['input_bg']}; color: {c['text']};
+                         border: 1px solid {c['separator']}; border-radius: 6px;
+                         padding: 3px 6px; }}
+            QLabel {{ background: transparent; border: none; color: {c['text_sec']};
+                      padding: 0 2px; }}
+            QPushButton {{ background-color: {c['ghost_bg']}; color: {c['text']};
+                           border: none; border-radius: 6px; }}
+            QPushButton:hover {{ background-color: {c['ghost_hover']}; }}
+        """)
+
+    def _open_search(self):
+        """打开查找栏：定位 + 聚焦，若数据区有选中文本则填入。"""
+        if not hasattr(self, "_search_bar"):
+            return
+        sel = self.txt_recv.textCursor().selectedText()
+        if sel and " " not in sel:
+            self.ed_search.setText(sel)
+        self._style_search_bar()
+        self._search_bar.show()
+        self._reposition_search_bar()
+        self.ed_search.setFocus()
+        self.ed_search.selectAll()
+        if self.ed_search.text():
+            self._do_search()
+
+    def _do_search(self, text=None):
+        """输入变化时：交给 _refresh_extra_selections 统一收集匹配 + 刷新高亮/计数，再定位首个。"""
+        self._search_term = self.ed_search.text()
+        self._search_idx = 0 if self._search_term else -1
+        self._refresh_extra_selections()   # 搜索段会收集匹配、clamp idx、刷新计数
+        if not self._search_term:
+            self._search_matches = []
+            self._update_search_count()
+        if self._search_matches:
+            self._goto_match(self._search_idx)
+
+    def _update_search_count(self):
+        if self._search_matches:
+            self.lbl_search_cnt.setText(
+                f"{self._search_idx + 1}/{len(self._search_matches)}")
+        elif self._search_term:
+            self.lbl_search_cnt.setText(self._t("search_no_match"))
+        else:
+            self.lbl_search_cnt.setText("")
+        # 计数文本变化会改变查找栏所需宽度，重新自适应 + 定位，避免子控件被压缩重叠
+        if hasattr(self, "_search_bar"):
+            self._reposition_search_bar()
+
+    def _search_next(self):
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+        self._goto_match(self._search_idx)
+        self._update_search_count()
+        self._refresh_extra_selections()
+
+    def _search_prev(self):
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx - 1) % len(self._search_matches)
+        self._goto_match(self._search_idx)
+        self._update_search_count()
+        self._refresh_extra_selections()
+
+    def _goto_match(self, idx):
+        if not (0 <= idx < len(self._search_matches)):
+            return
+        self.txt_recv.setTextCursor(self._search_matches[idx])
+        self.txt_recv.ensureCursorVisible()
+
+    def _close_search(self):
+        if hasattr(self, "_search_bar"):
+            self._search_bar.hide()
+        self._search_term = ""
+        self._search_matches = []
+        self._search_idx = -1
+        if hasattr(self, "lbl_search_cnt"):
+            self.lbl_search_cnt.setText("")
+        self._refresh_extra_selections()
+
+    def _reposition_search_bar(self):
+        if not hasattr(self, "_search_bar"):
+            return
+        self._search_bar.adjustSize()
+        vp = self.txt_recv.viewport()
+        bw = self._search_bar.width()
+        x = vp.width() - bw - 12
+        y = 12
+        self._search_bar.move(max(0, x), max(0, y))
+        self._search_bar.raise_()
 
     def _highlight_recv_line(self, pos):
         """单击数据区某一行 → 整行高亮；点已高亮行则取消"""
@@ -800,6 +955,12 @@ class NetworkTool(QMainWindow):
                                 sel = QTextEdit.ExtraSelection()
                                 if is_bg:
                                     sel.format.setBackground(col)
+                                    # 背景模式：按背景亮度自动配黑/白文字，避免深色主题下
+                                    # 浅色文字落在亮高亮底上看不清（亮底配黑字、暗底配白字）。
+                                    lum = (0.299 * col.red() + 0.587 * col.green()
+                                           + 0.114 * col.blue())
+                                    sel.format.setForeground(
+                                        QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
                                 else:
                                     sel.format.setForeground(col)
                                 cur = QTextCursor(doc)
@@ -838,6 +999,27 @@ class NetworkTool(QMainWindow):
                 sels.append(sel)
             else:
                 self._recv_highlight_line = -1
+        # 3. 搜索高亮（叠加在最上层）：所有匹配淡黄，当前匹配橙色
+        if getattr(self, "_search_term", ""):
+            # 顺便重新收集匹配 + 刷新计数：实时接收新数据时上面的「N/总数」会自动更新
+            self._search_matches = []
+            pos = 0
+            while True:
+                cur = doc.find(self._search_term, pos)
+                if cur.isNull():
+                    break
+                sel = QTextEdit.ExtraSelection()
+                i = len(self._search_matches)
+                col = QColor("#FFA940") if i == self._search_idx else QColor("#FFE58F")
+                sel.format.setBackground(col)
+                sel.format.setForeground(QColor("#1C1C1E"))  # 深色文字配亮黄/橙底，深色主题也看得清
+                sel.cursor = cur
+                sels.append(sel)
+                self._search_matches.append(cur)
+                pos = cur.selectionEnd()
+            if not (0 <= self._search_idx < len(self._search_matches)):
+                self._search_idx = 0 if self._search_matches else -1
+            self._update_search_count()
         self.txt_recv.setExtraSelections(sels)
 
     # ----- 关键字高亮：分组模型（多个命名分组，每组多条规则，单个生效分组）-----
@@ -1598,6 +1780,8 @@ class NetworkTool(QMainWindow):
         if hasattr(self, "txt_recv"):
             self._recolor_history()
             self._apply_recv_highlight()
+        if hasattr(self, "_search_bar"):
+            self._style_search_bar()
         # 多条发送/关键字高亮弹窗若开着也跟着换主题
         if getattr(self, "_multi_send_dlg", None) is not None:
             self._multi_send_dlg.refresh_theme()
@@ -2742,6 +2926,34 @@ class NetworkTool(QMainWindow):
         if not getattr(self, "_height_synced", False):
             self._height_synced = True
             QTimer.singleShot(0, self._sync_right_send_height)
+        # 跨显示器后状态栏等透明区域不重绘的修复：监听屏幕切换（只连一次）
+        if not getattr(self, "_screen_sig_connected", False):
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.screenChanged.connect(self._on_screen_changed)
+                self._screen_sig_connected = True
+        # 无边框窗口默认丢了 WS_MINIMIZEBOX 样式，任务栏图标 / Aero 无法最小化；
+        # 用 Windows API 把最小化 + 最大化框样式加回去（只做一次）。
+        if sys.platform == "win32" and not getattr(self, "_minbox_set", False):
+            self._minbox_set = True
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                GWL_STYLE = -16
+                WS_MINIMIZEBOX = 0x00020000
+                WS_MAXIMIZEBOX = 0x00010000
+                cur = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+                ctypes.windll.user32.SetWindowLongW(
+                    hwnd, GWL_STYLE, cur | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            except Exception:
+                pass
+
+    def _on_screen_changed(self, _screen):
+        # 窗口移到另一个显示器后强制重绘（含底部透明状态栏），
+        # 修复多屏 backing store 不刷新导致状态栏显示空白的问题。
+        self.repaint()
+        if hasattr(self, "status_bar"):
+            self.status_bar.repaint()
 
     def _sync_right_send_height(self):
         try:
@@ -2758,6 +2970,9 @@ class NetworkTool(QMainWindow):
     def changeEvent(self, e):
         if e.type() == e.WindowStateChange and hasattr(self, "title_bar"):
             self.title_bar.update_max_icon()
+            # 最大化/还原后底部透明状态栏可能不重绘（尤其副屏），延迟一拍强制刷新
+            if hasattr(self, "status_bar"):
+                QTimer.singleShot(0, self.status_bar.repaint)
         super().changeEvent(e)
 
     def nativeEvent(self, event_type, message):
@@ -2766,6 +2981,39 @@ class NetworkTool(QMainWindow):
                 import ctypes
                 from ctypes import wintypes
                 msg = wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0024:  # WM_GETMINMAXINFO
+                    # 无边框窗口最大化时限制到当前显示器的「工作区」，否则会覆盖任务栏 /
+                    # 超出屏幕底部，导致状态栏被挤出看不到（尤其副屏没有任务栏时整屏覆盖）。
+                    class _PT(ctypes.Structure):
+                        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+                    class _RC(ctypes.Structure):
+                        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                                    ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+                    class _MI(ctypes.Structure):
+                        _fields_ = [("cb", ctypes.c_ulong), ("rcMon", _RC),
+                                    ("rcWork", _RC), ("flags", ctypes.c_ulong)]
+
+                    class _MMI(ctypes.Structure):
+                        _fields_ = [("ptRes", _PT), ("ptMaxSize", _PT), ("ptMaxPos", _PT),
+                                    ("ptMinTrack", _PT), ("ptMaxTrack", _PT)]
+
+                    hmon = ctypes.windll.user32.MonitorFromWindow(int(self.winId()), 2)
+                    if hmon:
+                        mi = _MI()
+                        mi.cb = ctypes.sizeof(_MI)
+                        ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(mi))
+                        w = mi.rcWork
+                        mon = mi.rcMon
+                        mmi = _MMI.from_address(int(msg.lParam))
+                        mmi.ptMaxPos.x = w.l - mon.l       # 最大化位置（相对显示器左上）
+                        mmi.ptMaxPos.y = w.t - mon.t
+                        mmi.ptMaxSize.x = w.r - w.l        # 最大化尺寸 = 工作区尺寸
+                        mmi.ptMaxSize.y = w.b - w.t
+                        mmi.ptMaxTrack.x = w.r - w.l
+                        mmi.ptMaxTrack.y = w.b - w.t
+                    return True, 0
                 if msg.message == 0x0084:  # WM_NCHITTEST
                     lparam = msg.lParam
                     x = ctypes.c_short(lparam & 0xFFFF).value
