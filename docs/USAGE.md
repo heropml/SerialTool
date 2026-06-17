@@ -37,6 +37,12 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ---
 
+## What's New in v1.0.8
+
+- **Highlight flicker fix** — with keyword/search highlighting on, newly received data at the bottom no longer flashes fully highlighted for a moment (the highlight selection no longer extends with appended text).
+
+---
+
 ## What's New in v1.0.7
 
 - **Stability** — closing the port now disconnects the reader thread's signals before stopping it, eliminating duplicate error toasts / re-entry on the error-close path; the reader thread's exit wait margin was increased so it never hangs on device faults.

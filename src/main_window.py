@@ -937,6 +937,7 @@ class SerialTool(QMainWindow):
                                 cur = QTextCursor(doc)
                                 cur.setPosition(base + idx)
                                 cur.setPosition(base + idx + len(pat), QTextCursor.KeepAnchor)
+                                cur.setKeepPositionOnInsert(True)   # 防末尾追加新数据时该选区延伸把新行也高亮
                                 sel.cursor = cur
                                 sels.append(sel)
                                 start = idx + len(pat)
@@ -981,6 +982,7 @@ class SerialTool(QMainWindow):
                     cur = doc.find(self._search_term, pos)
                     if cur.isNull():
                         break
+                    cur.setKeepPositionOnInsert(True)   # 同上：防选区随末尾插入延伸
                     self._search_matches.append(cur)
                     pos = cur.selectionEnd()
                 if not (0 <= self._search_idx < len(self._search_matches)):
