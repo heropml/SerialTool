@@ -7,4 +7,4 @@ build_installer.bat → findstr 解析此文件, 传给 ISCC /DMyAppVersion=...
 
 只在这里改版本号，重新打包即可全部同步。
 """
-__version__ = "1.0.7"
+__version__ = "1.0.8"

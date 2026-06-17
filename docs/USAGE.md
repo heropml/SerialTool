@@ -37,6 +37,12 @@ An iOS-style network debugging tool (TCP/UDP), designed for embedded development
 
 ---
 
+## What's New in v1.0.8
+
+- **Highlight flicker fix** — with keyword/search highlighting on, newly received data at the bottom no longer flashes fully highlighted for a moment (the highlight selection no longer extends with appended text).
+
+---
+
 ## What's New in v1.0.7
 
 - **Stability** — the TCP Client connection now has a timeout: connecting to an unreachable address no longer waits the OS default ~20 s before reporting failure (a 10 s timeout shows "Connection timed out"); UDP clears its last-peer cache on close, so a reused connection never replies to the previous session's stale peer address.
