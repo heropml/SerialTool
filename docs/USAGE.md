@@ -37,6 +37,23 @@ An iOS-style serial port debugging tool, designed for embedded development and p
 
 ---
 
+## What's New in v1.0.7
+
+- **Stability** — closing the port now disconnects the reader thread's signals before stopping it, eliminating duplicate error toasts / re-entry on the error-close path; the reader thread's exit wait margin was increased so it never hangs on device faults.
+- **Search experience** — ▲/▼ search navigation no longer stutters on large buffers; when using **search only** (Ctrl+F without any keyword-highlight rules), matches in newly received live data are now highlighted, counted and included in ▲/▼ navigation in real time.
+- **Other** — version-string parsing now handles pre-release suffixes (e.g. `1.0.7-rc1`) correctly; added boundary guards to the search bar.
+
+---
+
+## What's New in v1.0.6
+
+- **Data-area search (Ctrl+F)** — press Ctrl+F in the Data area to open the find bar: type a keyword to **highlight all matches**, use **▲/▼ to jump** between them, with a live "current/total" counter; ESC closes it.
+- **Multi-monitor fixes** — fixes to status-bar rendering, window dragging and taskbar minimize on multi-display setups (maximize/minimize align to the correct monitor work area).
+- **Dark-theme contrast** — improved text/background contrast for search and keyword highlights under dark themes.
+- **Tray single-click toggle** — single-clicking the tray icon toggles show/hide of the window.
+
+---
+
 ## What's New in v1.0.5
 
 - **Online Update** — the tray icon's right-click menu gains an **About** entry that opens an **About** dialog (app icon, name, version, a short description, and a **Check for Updates** button). Click **Check for Updates** to fetch the latest version from the update source and compare it with the one you're running. If a newer version exists, the dialog shows the new version number, the release notes, and a **Download and Update** button: click it to download (with a live progress percentage), and when the download finishes the **regular install wizard** launches so you finish the upgrade yourself by clicking **Next / Install** (it is not a silent install). If you're already on the latest version, the dialog just tells you so. The update source tries the intranet mirror first and automatically falls back to the public one; each source has an 8-second timeout, so it never hangs for long even on an external network. The downloaded file is integrity-checked, and closing the dialog mid-download cancels the download automatically. (See [Online Update](#online-update).)

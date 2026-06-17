@@ -1,5 +1,6 @@
 {
-  "version": "1.0.6",
-  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.6/SerialTool_Setup_v1.0.6.exe",
-  "notes": "v1.0.6：数据区搜索（Ctrl+F，高亮 + 上下跳转 + 实时计数）、多屏状态栏/拖拽/最小化修复、深色主题高亮对比优化、托盘点击 toggle。"
+  "version": "1.0.7",
+  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.7/SerialTool_Setup_v1.0.7.exe",
+  "url_intranet": "http://192.168.50.40/pengml/SerialTool/uploads/002c1aa0f5446eeaf8c57e9b2053d3f6/SerialTool_Setup_v1.0.7.exe",
+  "notes": "v1.0.7：稳定性与代码审查修复 —— 关闭串口先断开读取线程信号再停止(消除重复错误提示/重入)、SerialReader 退出等待余量加大；搜索导航改 O(1)(大文档点▲/▼不卡)、消除打开搜索双重扫描、纯搜索时实时新数据的匹配/计数跟随更新、查找栏守卫；版本号预发布解析修正。"
 }
