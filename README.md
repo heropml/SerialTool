@@ -4,7 +4,7 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 
 > 本分支由原串口版改造而来：仅把左上角「串口」连接区换成「网络」，数据区/发送/高亮/日志/多条发送/主题/语言等其余功能完全复用。产品（窗口标题、Python 类、打包产物 exe/安装包/`dist` 目录、`%APPDATA%` 配置目录）已统一更名为 **NetworkTool**。
 
-![iOS 风格 UI](./icon_preview.png)
+![iOS 风格 UI](./assets/icon_preview.png)
 
 ---
 
@@ -142,7 +142,7 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（`● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 字节计数
-  - 右下：版本号 `v1.0.4`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.0.7`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -249,7 +249,7 @@ NetworkTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.0.4")
+│   └── version.py          版本号单点真源 (__version__ = "1.0.7")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -534,3 +534,5 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v16 (v1.0.3)**: 工程结构重构（无用户可见功能变化）—— 原 ~4500 行单文件 `main.py` 按模块拆分为 `main_window / dialogs / widgets / serial_io / theme / i18n / app_icon / icon_data` 等独立文件；目录分类整理为 `src/`（源码）、`docs/`（文档）、`scripts/`（构建/启动脚本 + .iss）、`assets/`（图标资源），根目录只留 README + requirements + 打包产物；所有脚本与 .iss 路径同步更新（脚本内部 `cd` 回根目录，双击即用），打包统一改用 `py -3 -m PyInstaller`
 - **NetworkTool 分支（网络版）**: 产品更名 **NetworkTool**，左上角「串口」连接区整体改为「网络」—— 支持 **UDP / UDP Multicast（组播）/ TCP Server / TCP Client** 四种协议，基于 **QtNetwork** 事件驱动（新增 `net_io.py`，移除 `serial_io.py` 与 pyserial 依赖）；UDP 可选「指定远程」开关（关=回复对端）、TCP Server 多客户端「目标」下拉（含全部广播）、组播地址校验、禁用输入框变灰；数据区/发送/高亮/日志/多条发送/主题/语言等其余功能完全复用。产品与全部打包产物（exe/安装包/`dist` 目录、`.iss`、`%APPDATA%` 配置目录）统一更名 **NetworkTool**
 - **v17 (v1.0.4)**: 在线更新 —— 托盘「关于」对话框新增「检查更新」，从版本清单（内网优先、回退 GitHub 上 NetworkTool 分支 raw）比对最新版，一键下载并弹出安装向导手动升级；更新源 8 秒超时回退（外网不卡）、下载魔数（MZ）校验防错误页误执行、关闭对话框中止在途下载、启动清理 `%TEMP%` 残留安装包、版本号解析容错；基于 Qt 自带 QtNetwork 无新依赖；新增一键发版脚本 `scripts/release.ps1`
+- **v18 (v1.0.5)**: 数据区搜索（Ctrl+F：高亮全部匹配 + ▲/▼ 上下跳转 + 实时「N/总数」计数）+ 多屏下状态栏/窗口拖拽/任务栏最小化修复（WM_GETMINMAXINFO 多显示器对齐）+ 深色主题搜索/高亮对比优化 + 系统托盘单击 toggle 显示/隐藏
+- **v19 (v1.0.7)**: 稳定性与代码审查修复 —— TCP Client 连接新增超时保护（不可达地址不再卡约 20 秒）、UDP 断开后清理最近对端缓存（复用连接不再回复到旧地址）；搜索导航改 O(1) 着色（大文档点 ▲/▼ 不再全文重扫）、打开搜索消除双重扫描、查找栏 viewport/计数标签加守卫、_parse_version 修正预发布版本号比较；修复纯搜索（未配关键字规则）时实时新数据的搜索匹配/计数停更

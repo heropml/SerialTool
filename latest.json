@@ -1,5 +1,6 @@
 {
-  "version": "1.0.5",
-  "url": "https://github.com/heropml/SerialTool/releases/download/net-v1.0.5/NetworkTool_Setup_v1.0.5.exe",
-  "notes": "v1.0.5：数据区搜索（Ctrl+F：高亮 + 上下跳转 + 实时计数）、多屏状态栏/拖拽/最小化修复、深色主题高亮对比优化、托盘点击 toggle。"
+  "version": "1.0.7",
+  "url": "https://github.com/heropml/SerialTool/releases/download/net-v1.0.7/NetworkTool_Setup_v1.0.7.exe",
+  "url_intranet": "http://192.168.50.40/pengml/SerialTool/uploads/86e0dba383206ea08feed2b7eb7eebc5/NetworkTool_Setup_v1.0.7.exe",
+  "notes": "v1.0.7：稳定性与代码审查修复 —— TCP Client 连接超时保护(不可达地址不再卡约20秒)、UDP 断开清理对端缓存；搜索导航改 O(1)(大文档点▲/▼不卡)、消除打开搜索双重扫描、纯搜索时实时新数据的匹配/计数跟随更新、查找栏守卫；版本号预发布解析修正。"
 }

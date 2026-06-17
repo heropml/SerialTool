@@ -46,6 +46,9 @@ $Tag         = "net-v$Version"                          # Release tag，net- 前
 $SetupName   = "NetworkTool_Setup_v$Version.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$SetupName"
+# 内网 GitLab Release 永久链接（发版时把同名安装包传到内网 GitLab 的 Release $Tag，
+# 加 link 时 Direct asset path 设为 /$SetupName，即可用此固定地址下载）
+$IntranetUrl = "http://192.168.50.40/pengml/SerialTool/-/releases/$Tag/downloads/$SetupName"
 
 Write-Host "==== 发版 NetworkTool $Tag ====" -ForegroundColor Cyan
 
@@ -66,7 +69,7 @@ $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$V
 
 # ---- 2. 更新 latest.json ----
 Write-Host "② 更新 latest.json → $Version（url 指向 Release $Tag）"
-$manifest = [ordered]@{ version = $Version; url = $DownloadUrl; notes = $Notes }
+$manifest = [ordered]@{ version = $Version; url = $DownloadUrl; url_intranet = $IntranetUrl; notes = $Notes }
 $json = $manifest | ConvertTo-Json -Depth 3
 [IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json)
 
@@ -115,10 +118,17 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "   （Release $Tag 已存在 → 覆盖安装包资产）"
     & $Gh release upload $Tag --repo $Repo --clobber $SetupPath
 } else {
-    & $Gh release create $Tag --repo $Repo --target $Branch --title "NetworkTool $Tag" --notes $Notes $SetupPath
+    # --latest=false：网络版与串口版共用同一仓库，Release 不能抢走主产品 SerialTool 的
+    # 「Latest」标记（gh 默认会把最后创建的 release 设为 latest，这里显式关掉）。
+    & $Gh release create $Tag --repo $Repo --target $Branch --title "NetworkTool $Tag" --notes $Notes --latest=false $SetupPath
 }
 if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 
 Write-Host "==== 发版完成 NetworkTool $Tag ====" -ForegroundColor Green
-Write-Host "下载地址：$DownloadUrl"
+Write-Host "下载地址(外网)：$DownloadUrl"
+Write-Host "下载地址(内网)：$IntranetUrl"
+Write-Host "⚠ 内网用户要能自动更新，需两步：" -ForegroundColor Yellow
+Write-Host "   1) 把 installer\$SetupName 上传到内网 GitLab 的 Release $Tag（发布资产 → 添加链接）"
+Write-Host "   2) 有「直接资产路径」就填 /$SetupName（上面内网地址即可用）；没有该字段，则把上传后的真实"
+Write-Host "      地址（…/uploads/<hash>/$SetupName）填进 latest.json 的 url_intranet，再 push 内网"
 Write-Host "app「关于 → 检查更新」现在即可检测到 $Version 并升级。"
