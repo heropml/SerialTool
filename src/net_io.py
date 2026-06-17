@@ -13,7 +13,7 @@
     state_changed(bool)    True=已连接/监听中；False=对端断开/停止
     clients_changed(list)  TCP Server 专用，已连接客户端 [(key, label)]
 """
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtNetwork import (
     QTcpServer, QTcpSocket, QUdpSocket, QHostAddress, QAbstractSocket,
     QNetworkInterface,
@@ -26,6 +26,10 @@ PROTO_UDP_MULTICAST = "UDP Multicast"
 PROTOCOLS = [PROTO_UDP, PROTO_UDP_MULTICAST, PROTO_TCP_SERVER, PROTO_TCP_CLIENT]
 
 SEND_NO_TARGET = -1   # send() 软错误：没有可发送的目标（UDP 无对端 / TCP Server 无客户端）
+
+# TCP Client 连接超时(毫秒)：异步 connectToHost 对不可达地址默认要等 OS ~20s 才报
+# errorOccurred，这里主动设上限，超时即 abort 并提示，避免界面长时间无反馈卡在「连接中」。
+_TCP_CONNECT_TIMEOUT_MS = 10000
 
 
 def local_ipv4_list():
@@ -189,6 +193,9 @@ class TcpClientConn(NetConn):
         self._port = port
         self._sock = None
         self._connected = False
+        self._conn_timer = QTimer(self)
+        self._conn_timer.setSingleShot(True)
+        self._conn_timer.timeout.connect(self._on_conn_timeout)
 
     def open(self):
         self._sock = QTcpSocket(self)
@@ -198,9 +205,11 @@ class TcpClientConn(NetConn):
         if hasattr(self._sock, "errorOccurred"):
             self._sock.errorOccurred.connect(lambda _e: self._on_error())
         self._sock.connectToHost(QHostAddress(self._ip), self._port)
+        self._conn_timer.start(_TCP_CONNECT_TIMEOUT_MS)   # 超时保护：不可达地址不再干等 ~20s
         return True   # 异步连接，结果由 connected / error 信号通知
 
     def _on_connected(self):
+        self._conn_timer.stop()
         self._connected = True
         self.state_changed.emit(True)
 
@@ -216,8 +225,24 @@ class TcpClientConn(NetConn):
             self.state_changed.emit(False)   # 连接后被对端断开
 
     def _on_error(self):
+        self._conn_timer.stop()
         if not self._connected and self._sock:
             self.error_occurred.emit(self._sock.errorString())
+
+    def _on_conn_timeout(self):
+        # 连接超时(对端不可达/被防火墙丢包)：abort 底层连接并报错，让主窗口走
+        # _on_conn_error →「连接失败」提示并断开，不再干等 OS 默认 ~20s。
+        # 注意此处不 emit state_changed(False)，否则会被主窗口误读成「对端已断开」。
+        if self._connected or not self._sock:
+            return
+        sock = self._sock
+        self._sock = None
+        try:
+            sock.abort()
+            sock.deleteLater()
+        except Exception:
+            pass
+        self.error_occurred.emit("连接超时")
 
     def send(self, data, target=None):
         if self._sock and self._sock.state() == QAbstractSocket.ConnectedState:
@@ -227,6 +252,7 @@ class TcpClientConn(NetConn):
     def close(self):
         # 先置 _connected=False + 解绑 _sock，再 abort()：abort 可能触发 errorOccurred，
         # 此时 _on_error 的 `self._sock` 已为 None，杜绝虚假错误通知（不再仅依赖外层 blockSignals）
+        self._conn_timer.stop()
         self._connected = False
         sock = self._sock
         self._sock = None
@@ -297,6 +323,9 @@ class UdpConn(NetConn):
             except Exception:
                 pass
             self._sock = None
+        # 清理对端缓存：否则复用本对象重开后，首次「回复最近对端」会发给上一会话的旧地址
+        self._last_peer = None
+        self._last_peer_key = None
         self.state_changed.emit(False)
 
     @property
