@@ -46,9 +46,6 @@ $Tag         = "v$Version"
 $SetupName   = "SerialTool_Setup_$Tag.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$SetupName"
-# 内网 GitLab Release 永久链接（发版时把同名安装包传到内网 GitLab 的 Release $Tag，
-# 加 link 时 Direct asset path 设为 /$SetupName，即可用此固定地址下载）
-$IntranetUrl = "http://192.168.50.40/pengml/SerialTool/-/releases/$Tag/downloads/$SetupName"
 
 Write-Host "==== 发版 $Tag ====" -ForegroundColor Cyan
 
@@ -69,7 +66,7 @@ $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$V
 
 # ---- 2. 更新 latest.json ----
 Write-Host "② 更新 latest.json → $Version（url 指向 Release $Tag）"
-$manifest = [ordered]@{ version = $Version; url = $DownloadUrl; url_intranet = $IntranetUrl; notes = $Notes }
+$manifest = [ordered]@{ version = $Version; url = $DownloadUrl; notes = $Notes }
 $json = $manifest | ConvertTo-Json -Depth 3   # PowerShell 7 默认保留中文，不转义
 [IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json)
 
@@ -124,10 +121,5 @@ if ($LASTEXITCODE -eq 0) {
 if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 
 Write-Host "==== 发版完成 $Tag ====" -ForegroundColor Green
-Write-Host "下载地址(外网)：$DownloadUrl"
-Write-Host "下载地址(内网)：$IntranetUrl"
-Write-Host "⚠ 内网用户要能自动更新，需两步：" -ForegroundColor Yellow
-Write-Host "   1) 把 installer\$SetupName 上传到内网 GitLab 的 Release $Tag（发布资产 → 添加链接）"
-Write-Host "   2) 有「直接资产路径」就填 /$SetupName（上面内网地址即可用）；没有该字段，则把上传后的真实"
-Write-Host "      地址（…/uploads/<hash>/$SetupName）填进 latest.json 的 url_intranet，再 push 内网"
+Write-Host "下载地址：$DownloadUrl"
 Write-Host "app「关于 → 检查更新」现在即可检测到 $Version 并升级。"

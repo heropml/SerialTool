@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""在线更新：检查最新版本（内网优先，回退 GitHub）+ 下载安装包并运行。
+"""在线更新：检查最新版本（GitHub raw）+ 下载安装包并运行。
 
 更新源是一份「版本清单」JSON：
     {"version": "1.0.5", "url": "<安装包下载地址>", "notes": "本次更新内容…"}
-按 UPDATE_MANIFEST_URLS 的顺序逐个尝试，第一个成功拿到的为准（所以把内网放前面）。
+按 UPDATE_MANIFEST_URLS 的顺序逐个尝试，第一个成功拿到的为准。
 基于 Qt 自带 QtNetwork，无需额外依赖。
 
 发版流程：打好安装包传到下载地址 → 更新各源上的 latest.json 的 version/url/notes。
@@ -18,13 +18,12 @@ import tempfile
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl, QTimer
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
-# 版本清单地址（内网优先，回退 GitHub）。按需改成你实际托管 latest.json 的地址。
+# 版本清单地址（GitHub raw）。按需改成你实际托管 latest.json 的地址。
 UPDATE_MANIFEST_URLS = [
-    "http://192.168.50.40/pengml/SerialTool/-/raw/master/latest.json",          # 内网 GitLab raw
-    "https://raw.githubusercontent.com/heropml/SerialTool/master/latest.json",  # GitHub raw 回退
+    "https://raw.githubusercontent.com/heropml/SerialTool/master/latest.json",  # GitHub raw
 ]
 
-# 超时（毫秒）：每个更新源连不上就尽快轮到下一个，避免外网用户卡在内网 IP 上。
+# 超时（毫秒）：每个更新源连不上就尽快轮到下一个。
 _CHECK_TIMEOUT_MS = 8000      # 单个更新源的响应超时
 _DOWNLOAD_STALL_MS = 30000    # 下载“停滞”超时：这么久没有新数据就判失败
 
@@ -130,15 +129,9 @@ class UpdateChecker(QObject):
         except Exception:
             self._try_next()
             return
-        # 下载地址按"清单从哪个源读到"来选：内网源读到 → 用内网地址(url_intranet)，
-        # 公网源读到 → 用 GitHub 地址(url)。各自回退到另一个，防某字段缺失时下不了。
-        url_pub = str(m.get("url", ""))
-        url_lan = str(m.get("url_intranet", ""))
-        from_intranet = "github" not in url   # 清单源不是 GitHub → 视为内网
-        download_url = (url_lan or url_pub) if from_intranet else (url_pub or url_lan)
         info = {
             "version": ver,
-            "url": download_url,
+            "url": str(m.get("url", "")),
             "notes": str(m.get("notes", "")),
             "newer": is_newer(ver, self._cur),
             "source": url,

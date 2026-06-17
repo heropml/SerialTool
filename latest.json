@@ -1,6 +1,5 @@
 {
-  "version": "1.0.8",
-  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.8/SerialTool_Setup_v1.0.8.exe",
-  "url_intranet": "http://192.168.50.40/pengml/SerialTool/uploads/7d988517db5fdd456828660bc4a67c68/SerialTool_Setup_v1.0.8.exe",
-  "notes": "v1.0.8：修复关键字/搜索高亮时，底部新接收的数据会整批闪一下高亮的问题（高亮选区不再随末尾插入延伸）。"
+  "version": "1.0.9",
+  "url": "https://github.com/heropml/SerialTool/releases/download/v1.0.9/SerialTool_Setup_v1.0.9.exe",
+  "notes": "v1.0.9：在线更新优化——更新源精简为仅 GitHub。"
 }
