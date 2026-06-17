@@ -780,7 +780,10 @@ class SerialTool(QMainWindow):
             return
         sel = self.txt_recv.textCursor().selectedText()
         if sel and " " not in sel:
+            # block 掉 textChanged：否则 setText 先触发一次 _do_search，下面又显式搜一次（双重全文扫描）
+            self.ed_search.blockSignals(True)
             self.ed_search.setText(sel)
+            self.ed_search.blockSignals(False)
         self._style_search_bar()
         self._search_bar.show()
         self._reposition_search_bar()
@@ -801,6 +804,8 @@ class SerialTool(QMainWindow):
             self._goto_match(self._search_idx)
 
     def _update_search_count(self):
+        if not hasattr(self, "lbl_search_cnt"):
+            return
         if self._search_matches:
             self.lbl_search_cnt.setText(
                 f"{self._search_idx + 1}/{len(self._search_matches)}")
@@ -817,16 +822,15 @@ class SerialTool(QMainWindow):
             return
         self._search_idx = (self._search_idx + 1) % len(self._search_matches)
         self._goto_match(self._search_idx)
-        self._update_search_count()
-        self._refresh_extra_selections()
+        # 导航不改变文档，匹配列表不变：只重新着色当前匹配(内部含计数刷新)，免去全文 doc.find 重建
+        self._refresh_extra_selections(rebuild_search=False)
 
     def _search_prev(self):
         if not self._search_matches:
             return
         self._search_idx = (self._search_idx - 1) % len(self._search_matches)
         self._goto_match(self._search_idx)
-        self._update_search_count()
-        self._refresh_extra_selections()
+        self._refresh_extra_selections(rebuild_search=False)
 
     def _goto_match(self, idx):
         if not (0 <= idx < len(self._search_matches)):
@@ -849,6 +853,8 @@ class SerialTool(QMainWindow):
             return
         self._search_bar.adjustSize()
         vp = self.txt_recv.viewport()
+        if vp is None:   # 极早期(showEvent 之前)viewport 可能尚未就绪，避免 AttributeError
+            return
         bw = self._search_bar.width()
         x = vp.width() - bw - 12
         y = 12
@@ -870,13 +876,15 @@ class SerialTool(QMainWindow):
         self._refresh_extra_selections()
 
     def _schedule_keyword_rebuild(self):
-        """收到新数据时调用：生效分组有规则才启动节流定时器重扫"""
-        if self._active_rules() and not self._kw_timer.isActive():
+        """收到新数据时调用：生效分组有规则 或 搜索栏活跃 → 启动节流定时器重扫"""
+        if self._kw_timer.isActive():
+            return
+        if self._active_rules() or getattr(self, "_search_term", ""):
             self._kw_timer.start()
 
     _KW_MAX_SELECTIONS = 2000  # 安全上限，避免像 '00' 这种在 HEX 流里匹配出上万条
 
-    def _refresh_extra_selections(self):
+    def _refresh_extra_selections(self, rebuild_search=True):
         """统一构建数据区叠加高亮：关键字着色(背景/文字，分收/发范围) + 单击行高亮(最上层)；
         若开启「只显高亮行」过滤，则隐藏未命中关键字的行(块可见性折叠)。"""
         if not hasattr(self, "txt_recv"):
@@ -964,24 +972,27 @@ class SerialTool(QMainWindow):
                 self._recv_highlight_line = -1
         # 3. 搜索高亮（叠加在最上层）：所有匹配淡黄，当前匹配橙色
         if getattr(self, "_search_term", ""):
-            # 顺便重新收集匹配 + 刷新计数：实时接收新数据时上面的「N/总数」会自动更新
-            self._search_matches = []
-            pos = 0
-            while True:
-                cur = doc.find(self._search_term, pos)
-                if cur.isNull():
-                    break
+            if rebuild_search:
+                # 文档可能已变(实时接收新数据 / 搜索词变化)：全文 doc.find 重建匹配列表。
+                # 导航(上一个/下一个)不改文档，走 rebuild_search=False 跳过这段，避免大文档每次点击都全文扫描。
+                self._search_matches = []
+                pos = 0
+                while True:
+                    cur = doc.find(self._search_term, pos)
+                    if cur.isNull():
+                        break
+                    self._search_matches.append(cur)
+                    pos = cur.selectionEnd()
+                if not (0 <= self._search_idx < len(self._search_matches)):
+                    self._search_idx = 0 if self._search_matches else -1
+            # 用(已缓存或刚重建的)匹配列表着色：当前匹配橙色、其余淡黄
+            for i, cur in enumerate(self._search_matches):
                 sel = QTextEdit.ExtraSelection()
-                i = len(self._search_matches)
                 col = QColor("#FFA940") if i == self._search_idx else QColor("#FFE58F")
                 sel.format.setBackground(col)
                 sel.format.setForeground(QColor("#1C1C1E"))  # 深色文字配亮黄/橙底，深色主题也看得清
                 sel.cursor = cur
                 sels.append(sel)
-                self._search_matches.append(cur)
-                pos = cur.selectionEnd()
-            if not (0 <= self._search_idx < len(self._search_matches)):
-                self._search_idx = 0 if self._search_matches else -1
             self._update_search_count()
         self.txt_recv.setExtraSelections(sels)
 
@@ -1595,6 +1606,13 @@ class SerialTool(QMainWindow):
         if self.sw_log_file.isChecked():
             self.sw_log_file.setChecked(False)
         if self.reader:
+            # 先断开信号再 stop：避免 stop 期间线程已 emit 的 error_occurred 排在
+            # 事件队列里，稍后在 reader 已置 None 时重入 close_serial（重复弹错误 toast）。
+            try:
+                self.reader.data_received.disconnect(self.on_data_received)
+                self.reader.error_occurred.disconnect(self.on_reader_error)
+            except (TypeError, RuntimeError):
+                pass
             self.reader.stop()
             self.reader = None
         if self.ser:

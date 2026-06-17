@@ -30,16 +30,24 @@ _DOWNLOAD_STALL_MS = 30000    # 下载“停滞”超时：这么久没有新数
 
 
 def _parse_version(v):
-    """'v1.0.5' / '1.0.5' / '1.0.5-beta' -> (1,0,5)；非法返回 (0,)。
-    遇到非数字段（如 -beta / rc）就截断，不抛异常。"""
+    """'v1.0.5' / '1.0.5' / '1.0.5-rc1' -> 可比较元组；非法返回 (0,)。
+    主版本补齐到 3 段(避免 '1.0' 与 '1.0.0' 因长度不同误判)，末位附加预发布标记
+    (正式版 1 > 预发布 0)，于是 1.0.5 > 1.0.5-rc1，不再把 '-rc1' 整段截断成等同正式版。"""
     try:
+        s = str(v).strip().lstrip("vV")
+        main, _, pre = s.partition("-")   # 拆出主版本与可选预发布后缀(-rc1/-beta…)
         nums = []
-        for part in str(v).strip().lstrip("vV").split("."):
+        for part in main.split("."):
             m = re.match(r"\d+", part)
             if not m:
                 break
             nums.append(int(m.group()))
-        return tuple(nums) if nums else (0,)
+        if not nums:
+            return (0,)
+        while len(nums) < 3:              # 补齐 3 段：1.0 → (1,0,0)
+            nums.append(0)
+        nums.append(0 if pre else 1)      # 预发布排在同号正式版之前
+        return tuple(nums)
     except (ValueError, AttributeError, TypeError):
         return (0,)
 
@@ -122,9 +130,15 @@ class UpdateChecker(QObject):
         except Exception:
             self._try_next()
             return
+        # 下载地址按"清单从哪个源读到"来选：内网源读到 → 用内网地址(url_intranet)，
+        # 公网源读到 → 用 GitHub 地址(url)。各自回退到另一个，防某字段缺失时下不了。
+        url_pub = str(m.get("url", ""))
+        url_lan = str(m.get("url_intranet", ""))
+        from_intranet = "github" not in url   # 清单源不是 GitHub → 视为内网
+        download_url = (url_lan or url_pub) if from_intranet else (url_pub or url_lan)
         info = {
             "version": ver,
-            "url": str(m.get("url", "")),
+            "url": download_url,
             "notes": str(m.get("notes", "")),
             "newer": is_newer(ver, self._cur),
             "source": url,

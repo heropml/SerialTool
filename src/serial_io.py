@@ -34,7 +34,11 @@ class SerialReader(QThread):
 
     def stop(self):
         self._running = False
-        self.wait(1000)
+        # in_waiting 不阻塞、read 仅在有数据时调用，run 循环最多 50ms 就检查一次
+        # _running，正常 1s 内必退出；给足 3s 余量应对设备异常时底层调用偶发卡顿。
+        # 万一仍未退出，此后 ser 已被上层 close()，run 里 is_open=False 只会空转
+        # msleep 并在下一轮 _running=False 自行结束，不会再访问已关闭的串口句柄。
+        self.wait(3000)
 
 
 # ============== 后台串口扫描线程 ==============
