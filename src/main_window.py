@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""主窗口 NetworkTool。"""
+"""主窗口 CommTool（统一串口/网络调试工具）。"""
 import codecs
 import json
 import os
 import sys
 import time
+import serial
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QSettings, QEvent
 from PyQt5.QtGui import (QFont, QColor, QTextCursor, QTextCharFormat,
@@ -24,33 +25,40 @@ from app_icon import get_app_icon
 from widgets import make_label, IOSSwitch, TitleBar, Card
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
-                    PROTOCOLS, SEND_NO_TARGET, local_ipv4_list, is_multicast_ipv4,
+                    PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip)
+from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog
+
+# 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
+# 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
+PROTO_SERIAL = "Serial"
+CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
 
 
 # ============== 主窗口 ==============
-class NetworkTool(QMainWindow):
+class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
-        self.conn = None          # 当前网络连接 (TcpServerConn/TcpClientConn/UdpConn)
+        self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
+        self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
         self.rx_bytes = 0
         self.tx_bytes = 0
+
+        # 串口端口扫描（仅串口模式用）：后台轮询线程避免 comports() 卡 GUI
+        self._last_port_list = []
+        self._oneshot_scan = None
+        self.port_scanner = None
+        self._pending_restore_port = None   # 启动时待恢复的上次串口设备名
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self.do_send)
 
-        self._last_recv_time = 0.0
-        self._last_direction = None
-        self._pending_line_break = False
-        self._rx_decode_buffer = b""
-        self._rx_pending_cr = False
-        self._inc_decoder = None  # 重置增量解码器（None → _decode_rx 首次调用时按当前 codec 重建）
-        self._txt_ends_with_nl = True
+        self._reset_recv_state()   # 接收解析状态（方向/缓冲/增量解码器/换行）统一初始化
         self._log_file = None
         self._log_file_path = ""
         self._log_limit = 0       # 分包字节上限，0=不分包
@@ -67,9 +75,14 @@ class NetworkTool(QMainWindow):
         self._tray = None
 
         self.init_ui()
+        self.refresh_ports()       # 启动即扫一次串口，cb_port 立刻有内容供恢复上次选择
         self.apply_style()
         self._load_settings()
         self._setup_tray()
+
+        self.port_scanner = PortScannerThread(interval_ms=1500)
+        self.port_scanner.scan_complete.connect(self._on_port_scan_complete)
+        self.port_scanner.start()
 
     def _t(self, key, **kwargs) -> str:
         s = self._L.get(key, key)
@@ -101,7 +114,8 @@ class NetworkTool(QMainWindow):
         """网络设置左侧标签列宽：按当前语言下各标签的最大实测文本宽度自适应，
         避免英文单词(如 Remote Port)被输入框遮挡。"""
         keys = ("protocol_type", "local_ip", "local_port", "group_addr",
-                "remote_ip", "remote_port", "target_client", "use_remote")
+                "remote_ip", "remote_port", "target_client", "use_remote",
+                "port", "baud_rate", "data_bits", "parity", "stop_bits")
         fm = QFontMetrics(QFont("Segoe UI", 11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
         return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
@@ -261,7 +275,7 @@ class NetworkTool(QMainWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(6)
-        layout.addWidget(self._tr_label("network_settings", 12, bold=True))
+        layout.addWidget(self._tr_label("conn_settings", 12, bold=True))
 
         def make_row(label_key, field):
             """一行：固定宽标签 + 字段，整行包成 QWidget 便于按协议显隐。"""
@@ -277,11 +291,50 @@ class NetworkTool(QMainWindow):
             layout.addWidget(row)
             return row
 
-        # 协议类型
+        # 连接类型：串口 + 网络协议，统一进一个下拉
         self.cb_proto = QComboBox()
-        self.cb_proto.addItems(PROTOCOLS)
+        self.cb_proto.addItems(CONN_TYPES)
         self.cb_proto.currentIndexChanged.connect(lambda _: self._update_net_fields())
         make_row("protocol_type", self.cb_proto)
+
+        # ===== 串口字段（仅 Serial 类型显示）=====
+        # 端口：下拉 + ⟳ 刷新按钮，包成一个容器塞进 make_row 的字段位
+        port_box = QWidget()
+        pbl = QHBoxLayout(port_box)
+        pbl.setContentsMargins(0, 0, 0, 0)
+        pbl.setSpacing(6)
+        self.cb_port = QComboBox()
+        self.cb_port.setMinimumWidth(100)
+        pbl.addWidget(self.cb_port, 1)
+        self.btn_refresh = QPushButton("⟳")
+        self.btn_refresh.setObjectName("IconBtn")
+        self.btn_refresh.setFixedSize(30, 26)
+        self.btn_refresh.clicked.connect(self.refresh_ports)
+        pbl.addWidget(self.btn_refresh)
+        self.row_port = make_row("port", port_box)
+
+        self.cb_baud = QComboBox()
+        self.cb_baud.setEditable(True)
+        for b in ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
+                  "115200", "230400", "256000", "460800", "500000", "512000",
+                  "600000", "750000", "921600", "1000000", "1500000", "2000000"]:
+            self.cb_baud.addItem(b)
+        self.cb_baud.setCurrentText("115200")
+        self.row_baud = make_row("baud_rate", self.cb_baud)
+
+        self.cb_databits = QComboBox()
+        self.cb_databits.addItems(["5", "6", "7", "8"])
+        self.cb_databits.setCurrentText("8")
+        self.row_databits = make_row("data_bits", self.cb_databits)
+
+        self.cb_parity = QComboBox()
+        self.cb_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        self.row_parity = make_row("parity", self.cb_parity)
+
+        self.cb_stopbits = QComboBox()
+        self.cb_stopbits.addItems(["1", "1.5", "2"])
+        self.cb_stopbits.setCurrentText("1")
+        self.row_stopbits = make_row("stop_bits", self.cb_stopbits)
 
         # 本地 IP（TCP Server / UDP）— 下拉本机网卡 IP，可编辑
         self.cb_local_ip = QComboBox()
@@ -337,13 +390,26 @@ class NetworkTool(QMainWindow):
         return card
 
     def _update_net_fields(self):
-        """按当前协议类型 + 连接状态，显隐字段行并刷新动作按钮文案。"""
+        """按当前连接类型 + 连接状态，显隐字段行并刷新动作按钮文案。"""
         proto = self.cb_proto.currentText()
         engaged = self.conn is not None
+        is_serial = proto == PROTO_SERIAL
         is_srv = proto == PROTO_TCP_SERVER
         is_cli = proto == PROTO_TCP_CLIENT
         is_udp = proto == PROTO_UDP
         is_grp = proto == PROTO_UDP_MULTICAST
+        # 串口字段：仅串口类型显示
+        for row in (self.row_port, self.row_baud, self.row_databits,
+                    self.row_parity, self.row_stopbits):
+            row.setVisible(is_serial)
+        if is_serial:
+            # 串口类型下网络行全部隐藏，按钮文案走串口键，提前返回
+            for row in (self.row_local_ip, self.row_group, self.row_local_port,
+                        self.row_udp_remote, self.row_remote_ip, self.row_remote_port,
+                        self.row_target):
+                row.setVisible(False)
+            self.btn_open.setText(self._t("btn_serial_close" if engaged else "btn_serial_open"))
+            return
         self.row_local_ip.setVisible(is_srv or is_udp or is_grp)   # 组播时=出网卡
         self.row_group.setVisible(is_grp)
         self.row_local_port.setVisible(is_srv or is_udp or is_grp)
@@ -409,8 +475,10 @@ class NetworkTool(QMainWindow):
 
         row = 0
         self.sw_rx_hex = IOSSwitch(False)
-        # 切 HEX/文本 显示时复位增量解码状态：否则文本模式残留的半个多字节
-        # 在切回文本时会和新数据拼接错误解码 → 乱码
+        # 切 HEX/文本 显示时复位增量解码状态。HEX 分支的字节不进文本解码流(见
+        # _on_data_received_impl)，若不复位，文本模式残留的半个多字节会和切回文本后的
+        # 新数据错位拼接 → 整段乱码。代价仅是丢掉那个正好跨切换点、注定要被劈开的字符
+        # ——两害取其轻，是有意行为，勿当 bug 移除（移除会把"丢一字符"换成"乱码一片"）。
         self.sw_rx_hex.toggled.connect(lambda _=False: self._on_encoding_changed())
         sw_row(row, "hex_display", self.sw_rx_hex); row += 1
 
@@ -1534,6 +1602,11 @@ class NetworkTool(QMainWindow):
             self.open_conn()
 
     @staticmethod
+    def _bytes_to_hex(data):
+        """字节序列 → 'AA BB CC' 十六进制串（不含尾随空格，调用方按需自加）。"""
+        return " ".join(f"{b:02X}" for b in data)
+
+    @staticmethod
     def _parse_port(text):
         try:
             p = int(str(text).strip())
@@ -1543,7 +1616,27 @@ class NetworkTool(QMainWindow):
 
     def open_conn(self):
         proto = self.cb_proto.currentText()
-        if proto == PROTO_TCP_SERVER:
+        if proto == PROTO_SERIAL:
+            port = self.cb_port.currentData()   # cb_port 不可编辑，currentData 即设备名；无串口/未扫描时为空
+            if not port:
+                self.toast(self._t("err_no_port"), error=True)
+                return
+            try:
+                baud = int(self.cb_baud.currentText())
+            except ValueError:
+                self.toast(self._t("err_bad_baud"), error=True)
+                return
+            parity_map = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
+                          "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
+                          "Space": serial.PARITY_SPACE}
+            stopbits_map = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
+                            "2": serial.STOPBITS_TWO}
+            databits_map = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
+                            "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
+            conn = SerialConn(port, baud, databits_map[self.cb_databits.currentText()],
+                              parity_map[self.cb_parity.currentText()],
+                              stopbits_map[self.cb_stopbits.currentText()])
+        elif proto == PROTO_TCP_SERVER:
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
                 self.toast(self._t("err_bad_port"), error=True)
@@ -1591,8 +1684,11 @@ class NetworkTool(QMainWindow):
         conn.data_received.connect(self.on_data_received)
         conn.error_occurred.connect(self._on_conn_error)
         conn.state_changed.connect(self._on_conn_state_changed)
-        conn.clients_changed.connect(self._on_clients_changed)
-        conn.peer_changed.connect(self._on_udp_peer_changed)
+        # clients_changed / peer_changed 是网络连接专有信号；SerialConn 没有，按需连接
+        if hasattr(conn, "clients_changed"):
+            conn.clients_changed.connect(self._on_clients_changed)
+        if hasattr(conn, "peer_changed"):
+            conn.peer_changed.connect(self._on_udp_peer_changed)
 
         # 先赋值再 open()：TCP Server / UDP / 组播的 open() 会**同步**发出 state_changed(True)，
         # 此时 self.conn 必须已指向 conn，否则 _on_conn_state_changed 看到 None、状态栏先跑一次「未连接」
@@ -1610,13 +1706,29 @@ class NetworkTool(QMainWindow):
         self._update_net_fields()
         self._update_conn_status()
 
+    def _reset_recv_state(self):
+        """统一重置接收解析状态：连接打开/关闭、清空数据区时调用，保证三处一致。"""
+        self._last_recv_time = 0.0
+        self._last_direction = None
+        self._pending_line_break = False
+        self._rx_decode_buffer = b""
+        self._rx_pending_cr = False
+        self._inc_decoder = None
+        self._txt_ends_with_nl = True
+
     def _on_conn_error(self, msg):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
         proto = self.cb_proto.currentText() if hasattr(self, "cb_proto") else ""
-        key = {PROTO_TCP_SERVER: "err_listen_failed",
+        key = {PROTO_SERIAL: "err_open_failed",
+               PROTO_TCP_SERVER: "err_listen_failed",
                PROTO_TCP_CLIENT: "err_connect_failed",
                PROTO_UDP: "err_bind_failed",
                PROTO_UDP_MULTICAST: "err_bind_failed"}.get(proto, "err_connect_failed")
+        # 串口已打开成功后 reader 运行时报错(拔出/掉线等)：文案用"连接中断"而非"打开失败"
+        if proto == PROTO_SERIAL and self._conn_engaged:
+            key = "err_serial_runtime"
+        if msg == ERR_CONN_TIMEOUT:   # net_io 超时哨兵 → 按当前语言翻译（避免硬编码中文）
+            msg = self._t("err_conn_timeout")
         self.toast(self._t(key, e=msg), error=True)
         if self.conn is not None:
             self.close_conn()
@@ -1625,6 +1737,7 @@ class NetworkTool(QMainWindow):
         """已连接/监听(up=True) 或 对端断开(up=False)。
         主动 close_conn() 会先 blockSignals，断开的 False 不会回到这里。"""
         if up:
+            self._conn_engaged = True   # 已成功建立 → 此后的 error 属"运行时"而非"打开失败"
             self._update_conn_status()
             self._update_net_fields()   # TCP Server 连上后显示「目标」行
         elif self.conn is not None:
@@ -1662,6 +1775,11 @@ class NetworkTool(QMainWindow):
             self._set_state_color(opened=False)
             return
         proto = self.cb_proto.currentText()
+        if proto == PROTO_SERIAL:
+            port = self.cb_port.currentData() or ""
+            self.lbl_state.setText(f"● {port} @ {self.cb_baud.currentText()}")
+            self._set_state_color(opened=True)
+            return
         if proto == PROTO_TCP_SERVER:
             addr = f"{self.cb_local_ip.currentText().strip()}:{self.ed_local_port.text().strip()}"
             self.lbl_state.setText(self._t("net_listening", proto="TCP", addr=addr))
@@ -1714,6 +1832,7 @@ class NetworkTool(QMainWindow):
             self.sw_log_file.setChecked(False)
         conn = self.conn
         self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
+        self._conn_engaged = False
         if conn:
             try:
                 conn.blockSignals(True)
@@ -1722,11 +1841,7 @@ class NetworkTool(QMainWindow):
                 pass
             conn.deleteLater()
 
-        self._last_recv_time = 0.0
-        self._last_direction = None
-        self._pending_line_break = False
-        self._rx_decode_buffer = b""
-        self._rx_pending_cr = False
+        self._reset_recv_state()   # 顺带补齐原先漏掉的 _inc_decoder / _txt_ends_with_nl
 
         self.btn_open.setProperty("state", "")
         self.btn_open.style().unpolish(self.btn_open)
@@ -1738,11 +1853,72 @@ class NetworkTool(QMainWindow):
             self.cb_target.clear()
         self._update_net_fields()
 
+    # ----- 串口端口扫描 -----
+    def refresh_ports(self):
+        """点 ⟳ 时调用 — 用一次性后台线程，避免慢驱动卡 GUI。
+        结果通过 _on_port_scan_complete 回 GUI 线程（和后台轮询线程共用处理逻辑）。
+        线程**不挂 parent**：万一退出时 wait 超时 comports() 还卡住，线程对象不会跟着
+        主窗口一起销毁；finished 后 deleteLater 自清，_clear_oneshot_scan 置 None 避免悬空。
+        """
+        if getattr(self, "_oneshot_scan", None) and self._oneshot_scan.isRunning():
+            return  # 节流：上一次还在跑就忽略
+        scan = OneShotPortScanner()  # 故意无 parent
+        self._oneshot_scan = scan
+        scan.scan_complete.connect(self._on_port_scan_complete)
+        scan.finished.connect(lambda: self._clear_oneshot_scan(scan))
+        scan.finished.connect(scan.deleteLater)
+        scan.start()
+
+    def _clear_oneshot_scan(self, scan):
+        """deleteLater 之后清掉 Python 属性引用，避免下次 isRunning() 访问已删 C++ 对象。
+        `is scan` 守卫：如果期间已经创建了新 scan，不清新的。"""
+        if getattr(self, "_oneshot_scan", None) is scan:
+            self._oneshot_scan = None
+
+    def _populate_port_combo(self, port_list, keep_device=None):
+        self.cb_port.blockSignals(True)
+        self.cb_port.clear()
+        for device, label in port_list:
+            self.cb_port.addItem(label, device)
+        if keep_device:
+            for i in range(self.cb_port.count()):
+                if self.cb_port.itemData(i) == keep_device:
+                    self.cb_port.setCurrentIndex(i)
+                    break
+        self.cb_port.blockSignals(False)
+
+    def _on_port_scan_complete(self, port_list):
+        if not port_list:
+            port_list = [("", self._t("no_ports"))]
+        # 串口已连接时不动 cb_port：端口占用中，也别打断用户的当前选择
+        if self.conn is not None and self.cb_proto.currentText() == PROTO_SERIAL:
+            return
+        if self.cb_port.view().isVisible():   # 下拉正展开时不刷，避免选项跳动
+            return
+        if port_list == self._last_port_list:
+            return
+        # 优先保留用户当前选择；启动恢复时 cb_port 还空，则用待恢复端口选回上次设备
+        keep = self.cb_port.currentData() or getattr(self, "_pending_restore_port", None)
+        self._last_port_list = port_list
+        self._populate_port_combo(port_list, keep)
+        # 待恢复端口确实匹配上了才清除；没插上时保留，等设备出现的那次扫描再选回
+        if (getattr(self, "_pending_restore_port", None)
+                and self.cb_port.currentData() == self._pending_restore_port):
+            self._pending_restore_port = None
+
+    def _wait_oneshot_scan(self):
+        """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running。"""
+        scan = getattr(self, "_oneshot_scan", None)
+        if scan and scan.isRunning():
+            scan.wait(2000)
+
     def set_settings_enabled(self, enabled):
         # 远程框(ed_remote_*)启用由 _update_net_fields 统管(TCP恒开/UDP看开关)；
         # 目标客户端下拉(cb_target)连接期间要可切换发送目标，不锁
         for w in (self.cb_proto, self.cb_local_ip, self.ed_local_port,
-                  self.ed_group, self.sw_udp_remote):
+                  self.ed_group, self.sw_udp_remote,
+                  self.cb_port, self.cb_baud, self.cb_databits,
+                  self.cb_parity, self.cb_stopbits, self.btn_refresh):
             w.setEnabled(enabled)
 
     # ----- 主题 -----
@@ -1789,6 +1965,9 @@ class NetworkTool(QMainWindow):
             self.title_bar.title_label.setStyleSheet(
                 f"color: {c['text_sec']}; background: transparent;")
         self._update_legend_label(c)
+        # iOS 开关是 custom-paint、不走 QSS，切主题时手动让关态色跟随主题（开态恒用绿）
+        for sw in self.findChildren(IOSSwitch):
+            sw.set_theme_colors(c["separator"], "#FFFFFF")
         # 数据区历史文字按角色重涂成新主题色 + 行高亮换色（否则浅↔深切换后文字看不见）
         if hasattr(self, "txt_recv"):
             self._recolor_history()
@@ -1873,7 +2052,7 @@ class NetworkTool(QMainWindow):
         now = time.monotonic()
 
         if use_hex:
-            text = " ".join(f"{b:02X}" for b in data) + " "
+            text = self._bytes_to_hex(data) + " "
         else:
             text = self._decode_rx(data)
 
@@ -2120,16 +2299,23 @@ class NetworkTool(QMainWindow):
         self._save_ms_groups()
         self._rebuild_ms_group_combo()
         self._rebuild_ms_quick_bar()
+        # 循环运行中编辑了条目：实时刷新发送序列，下一轮即用新数据（序列变空则下一步自停）
+        if self._ms_cycle_timer.isActive():
+            self._ms_cycle_seq = self._build_ms_cycle_seq()
 
     # ----- 多条发送：循环（按每行延时）-----
+    def _build_ms_cycle_seq(self):
+        """当前分组里勾选且非空的条目 → 循环发送序列 (data, hex, nl, cs, delay)。"""
+        return [(it.get("data", ""), bool(it.get("hex", False)), int(it.get("nl", 0)),
+                 int(it.get("cs", 0)), max(1, int(it.get("delay", 1000))))
+                for it in self._ms_active_items()
+                if it.get("checked") and str(it.get("data", "")).strip()]
+
     def _ms_toggle_cycle(self):
         if self._ms_cycle_timer.isActive():
             self._ms_stop_cycle()
             return
-        seq = [(it.get("data", ""), bool(it.get("hex", False)), int(it.get("nl", 0)),
-                int(it.get("cs", 0)), max(1, int(it.get("delay", 1000))))
-               for it in self._ms_active_items()
-               if it.get("checked") and str(it.get("data", "")).strip()]
+        seq = self._build_ms_cycle_seq()
         if not seq:
             self.toast(self._t("ms_none_checked"), error=True)
             return
@@ -2293,7 +2479,7 @@ class NetworkTool(QMainWindow):
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
         if self.sw_rx_hex.isChecked():
-            display = " ".join(f"{b:02X}" for b in data) + " "
+            display = self._bytes_to_hex(data) + " "
         else:
             display = data.decode(self._send_codec(), errors="replace")
         self._append_block_data(display, direction="tx", force_new_block=True)
@@ -2523,7 +2709,7 @@ class NetworkTool(QMainWindow):
             with open(path, "rb") as f:
                 data = f.read()
             if self.sw_tx_hex.isChecked():
-                self.txt_send.setPlainText(" ".join(f"{b:02X}" for b in data))
+                self.txt_send.setPlainText(self._bytes_to_hex(data))
             else:
                 # 按选定编码读取（默认 utf-8），lossy 容错避免文件偶有坏字节就报错
                 self.txt_send.setPlainText(data.decode(self._send_codec(), errors="replace"))
@@ -2539,12 +2725,7 @@ class NetworkTool(QMainWindow):
         self.tx_bytes = 0
         self.lbl_rx_stat.setText("RX: 0 B")
         self.lbl_tx_stat.setText("TX: 0 B")
-        self._last_direction = None
-        self._pending_line_break = False
-        self._rx_decode_buffer = b""
-        self._rx_pending_cr = False
-        self._inc_decoder = None  # 重置增量解码器（None → _decode_rx 首次调用时按当前 codec 重建）
-        self._txt_ends_with_nl = True
+        self._reset_recv_state()
 
     # ----- 工具 -----
     @staticmethod
@@ -2672,7 +2853,7 @@ class NetworkTool(QMainWindow):
     @staticmethod
     def _settings_file() -> str:
         """
-        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\NetworkTool\\。
+        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
         """
         if getattr(sys, "frozen", False):
@@ -2711,12 +2892,18 @@ class NetworkTool(QMainWindow):
 
         # 回退用户配置目录
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-        cfg_dir = os.path.join(appdata, "NetworkTool")
+        cfg_dir = os.path.join(appdata, "CommTool")
+        new_ini = os.path.join(cfg_dir, "settings.ini")
+        # 向后兼容：旧版 NetworkTool 的配置在 %APPDATA%\NetworkTool\。新目录尚无配置、
+        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（读写都走旧路径）。
+        old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
+        if not os.path.exists(new_ini) and os.path.exists(old_ini):
+            return old_ini
         try:
             os.makedirs(cfg_dir, exist_ok=True)
         except Exception:
             pass
-        return os.path.join(cfg_dir, "settings.ini")
+        return new_ini
 
     def _save_settings(self):
         try:
@@ -2749,6 +2936,12 @@ class NetworkTool(QMainWindow):
             s.setValue("net_remote_port", self.ed_remote_port.text())
             s.setValue("net_use_remote", self.sw_udp_remote.isChecked())
             s.setValue("net_group_addr", self.ed_group.text())
+            # 串口设置
+            s.setValue("ser_port", self.cb_port.currentData() or "")
+            s.setValue("ser_baud", self.cb_baud.currentText())
+            s.setValue("ser_databits", self.cb_databits.currentText())
+            s.setValue("ser_parity", self.cb_parity.currentText())
+            s.setValue("ser_stopbits", self.cb_stopbits.currentText())
             s.sync()
         except Exception:
             pass
@@ -2793,7 +2986,7 @@ class NetworkTool(QMainWindow):
 
         legacy_ts = s.value("timestamp", None)
         show_ts_raw = s.value("show_timestamp", legacy_ts if legacy_ts is not None else False)
-        pkt_split_raw = s.value("packet_split", legacy_ts if legacy_ts is not None else False)
+        pkt_split_raw = s.value("packet_split", False)   # 不继承旧 timestamp 键：分包与时间戳互相独立，老用户升级不该被强制开分包
         self.sw_rx_hex.setChecked(to_bool(s.value("rx_hex", False)), animate=False)
         self.sw_wrap.setChecked(to_bool(s.value("wrap", True)), animate=False)
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)
@@ -2862,7 +3055,7 @@ class NetworkTool(QMainWindow):
                 self.cb_checksum.setCurrentIndex(ck_idx)
         except (ValueError, TypeError):
             pass
-        # 网络设置恢复
+        # 连接设置恢复（类型下拉含串口+网络协议）
         restore_combo(self.cb_proto, "net_proto")
         v = s.value("net_local_ip", None)
         if v:
@@ -2880,7 +3073,15 @@ class NetworkTool(QMainWindow):
         v = s.value("net_group_addr", None)
         if v:
             self.ed_group.setText(str(v))
-        self._update_net_fields()   # 按恢复的协议+开关刷新字段显隐/启用 + 按钮文案
+        # 串口设置恢复
+        restore_combo(self.cb_baud, "ser_baud")
+        restore_combo(self.cb_databits, "ser_databits")
+        restore_combo(self.cb_parity, "ser_parity")
+        restore_combo(self.cb_stopbits, "ser_stopbits")
+        # cb_port 由后台扫描异步填充，此刻多半还空 → 记下待恢复端口，
+        # 首次扫描结果到达时(_on_port_scan_complete)再按设备名选回上次端口。
+        self._pending_restore_port = (s.value("ser_port", "") or None)
+        self._update_net_fields()   # 按恢复的类型+开关刷新字段显隐/启用 + 按钮文案
 
     # ----- 系统托盘 -----
     def _setup_tray(self):
@@ -3069,6 +3270,9 @@ class NetworkTool(QMainWindow):
             self._save_settings()
             self.close_conn()
             self._close_log_file()
+            if self.port_scanner:
+                self.port_scanner.stop()
+            self._wait_oneshot_scan()
             if self._tray:
                 self._tray.hide()
             e.accept()
@@ -3101,6 +3305,9 @@ class NetworkTool(QMainWindow):
             self._save_settings()
             self.close_conn()
             self._close_log_file()
+            if self.port_scanner:
+                self.port_scanner.stop()
+            self._wait_oneshot_scan()
             self._tray.hide()
             e.accept()
         else:

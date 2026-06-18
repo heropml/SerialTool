@@ -1,25 +1,25 @@
-; Inno Setup 脚本 — NetworkTool 安装程序
+; Inno Setup 脚本 — CommTool 安装程序
 ; 用法：
-;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" NetworkTool.iss
+;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" CommTool.iss
 ;   或 双击 .iss 用 Inno Setup IDE 打开 → Build → Compile
 
-#define MyAppName "NetworkTool"
-#define MyAppNameCN "网络调试工具"
+#define MyAppName "CommTool"
+#define MyAppNameCN "通信调试工具"
 ; MyAppVersion 优先从命令行 /DMyAppVersion=x.y.z 传入；否则用此默认值
 ; build_installer.bat 会自动从 version.py 读出来传过来，保持与 main.py 同步
 #ifndef MyAppVersion
 #  define MyAppVersion "1.0.0"
 #endif
 #define MyAppPublisher "MG_Project"
-#define MyAppExeName "NetworkTool.exe"
+#define MyAppExeName "CommTool.exe"
 ; 路径相对本 .iss 所在目录(scripts\)，用 ..\ 指回项目根
-#define MyAppSourceDir "..\dist\NetworkTool"
+#define MyAppSourceDir "..\dist\CommTool"
 
 [Setup]
 ; 安装程序基本信息
-; AppId 是 NetworkTool 自己的独立身份(与串口版 SerialTool 不同的 GUID)，
-; 这样默认装到 {autopf}\NetworkTool、独立卸载项，不会被当成 SerialTool 的升级而沿用旧目录
-AppId={{F9742F8B-9C46-44ED-AB28-A5FB1035953E}
+; AppId 是 CommTool 自己的独立身份(与串口版 SerialTool 不同的 GUID)，
+; 这样默认装到 {autopf}\CommTool、独立卸载项，不会被当成 SerialTool 的升级而沿用旧目录
+AppId={{19AE0DAF-53F0-4695-8EE2-9FE8A091B225}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -32,7 +32,7 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 ; 输出目录和文件名
 OutputDir=..\installer
-OutputBaseFilename=NetworkTool_Setup_v{#MyAppVersion}
+OutputBaseFilename=CommTool_Setup_v{#MyAppVersion}
 
 ; 压缩
 Compression=lzma2/ultra
@@ -69,7 +69,7 @@ Name: "chinesetrad"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; 把整个 dist\NetworkTool 目录搬进 {app}
+; 把整个 dist\CommTool 目录搬进 {app}
 Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 用户向使用说明 — 按安装语言条件装对应文档
@@ -90,16 +90,16 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [INI]
-; 首次安装时根据安装语言 seed settings.ini，让 NetworkTool 第一次启动就用对应语言
-; - 写两份（{app} 和 {userappdata}\NetworkTool）兼容两种 settings 落地路径：
+; 首次安装时根据安装语言 seed settings.ini，让 CommTool 第一次启动就用对应语言
+; - 写两份（{app} 和 {userappdata}\CommTool）兼容两种 settings 落地路径：
 ;   per-user 装 → 走 {app}；all-users 装到 Program Files + 非管理员运行 → 走 %APPDATA% fallback
 ; - 用 Check 函数确保只在文件还不存在时 seed，不覆盖已有用户配置
 Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedApp
 Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedApp
 Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedApp
-Filename: "{userappdata}\NetworkTool\settings.ini"; Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedAppData
-Filename: "{userappdata}\NetworkTool\settings.ini"; Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedAppData
-Filename: "{userappdata}\NetworkTool\settings.ini"; Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedAppData
+Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedAppData
+Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedAppData
+Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedAppData
 
 [Code]
 function ShouldSeedApp: Boolean;
@@ -110,7 +110,7 @@ end;
 
 function ShouldSeedAppData: Boolean;
 begin
-  Result := not FileExists(ExpandConstant('{userappdata}\NetworkTool\settings.ini'));
+  Result := not FileExists(ExpandConstant('{userappdata}\CommTool\settings.ini'));
 end;
 
 [Run]

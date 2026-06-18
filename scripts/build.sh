@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "============================================"
-echo " Building NetworkTool (Linux) with PyInstaller"
+echo " Building CommTool (Linux) with PyInstaller"
 echo "============================================"
 echo
 
@@ -23,14 +23,14 @@ echo "[2/3] Installing deps ..."
 # 国内用户可用清华镜像加速；海外/已配 pip.conf 的话删掉 -i 参数即可
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 pip install --upgrade pip -i "$PIP_INDEX"
-pip install -i "$PIP_INDEX" PyQt5 pyinstaller
+pip install -i "$PIP_INDEX" PyQt5 pyserial pyinstaller
 
 echo "[3/3] Running PyInstaller ..."
 pyinstaller \
     --noconfirm \
     --clean \
     --windowed \
-    --name NetworkTool \
+    --name CommTool \
     --exclude-module PyQt5.QtBluetooth \
     --exclude-module PyQt5.QtDBus \
     --exclude-module PyQt5.QtDesigner \
@@ -58,11 +58,11 @@ pyinstaller \
     src/main.py
 
 echo
-if [ -x "./dist/NetworkTool/NetworkTool" ]; then
+if [ -x "./dist/CommTool/CommTool" ]; then
     echo "============================================"
     echo " Build OK"
-    echo " Output:  ./dist/NetworkTool/"
-    echo " Run:     ./dist/NetworkTool/NetworkTool"
+    echo " Output:  ./dist/CommTool/"
+    echo " Run:     ./dist/CommTool/CommTool"
     echo "============================================"
 else
     echo "============================================"

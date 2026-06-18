@@ -1,8 +1,8 @@
-# NetworkTool
+# CommTool
 
-iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持 UDP / UDP 组播 / TCP Server / TCP Client 四种协议、中英文动态切换、无边框窗口 + 自绘标题栏、QSplitter 可拖拽布局、Xshell 风格日志、10 种校验算法、关闭确认 + 系统托盘、在线更新（关于 → 检查更新）、图标固化在源码内（防替换）。
+iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyserial）与 TCP / UDP（QtNetwork）共用同一套数据区 / 发送 / 高亮 / 日志，「类型」下拉一键切换。支持 串口 / UDP / UDP 组播 / TCP Server / TCP Client 五种连接、中英文动态切换、无边框窗口 + 自绘标题栏、QSplitter 可拖拽布局、Xshell 风格日志、10 种校验算法、关闭确认 + 系统托盘、在线更新（关于 → 检查更新）、图标固化在源码内（防替换）。
 
-> 本分支由原串口版改造而来：仅把左上角「串口」连接区换成「网络」，数据区/发送/高亮/日志/多条发送/主题/语言等其余功能完全复用。产品（窗口标题、Python 类、打包产物 exe/安装包/`dist` 目录、`%APPDATA%` 配置目录）已统一更名为 **NetworkTool**。
+> 本分支（CommTool）由串口版 SerialTool 与网络版 NetworkTool 合并而来：左上角连接区的「类型」下拉统一了 **串口 + 网络**（串口走 `serial_io.SerialConn`、网络走 `net_io`，对外同一套 `open()/close()/send()/is_open` + 信号接口）；数据区/发送/高亮/日志/多条发送/主题/语言等其余功能两版共用。产品（窗口标题、Python 类、打包产物 exe/安装包/`dist` 目录、`%APPDATA%` 配置目录）统一命名为 **CommTool / 通信调试工具**。
 
 ![iOS 风格 UI](./assets/icon_preview.png)
 
@@ -11,7 +11,7 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 ## 目录
 
 - **1. [功能总览](#1-功能总览)**
-  - 1.1 [网络连接](#11-网络连接)
+  - 1.1 [连接设置（串口 / 网络）](#11-连接设置串口--网络)
   - 1.2 [数据区](#12-数据区接收--发送日志)
   - 1.3 [发送区](#13-发送区)
   - 1.4 [界面](#14-界面)
@@ -52,10 +52,11 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 
 ## 1. 功能总览
 
-### 1.1 网络连接
+### 1.1 连接设置（串口 / 网络）
 
-- **协议类型**下拉：**UDP / UDP Multicast（组播）/ TCP Server / TCP Client**（默认 UDP）
-- 字段随协议动态显隐：
+- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client**（新装默认 Serial）
+- **串口（Serial）**：端口（下拉本机串口 + ⟳ 刷新）+ 波特率（可编辑，1200~2000000）+ 数据位（5/6/7/8）+ 校验位（None/Even/Odd/Mark/Space）+ 停止位（1/1.5/2）→「打开串口」；后台线程定时扫描串口热插拔
+- 网络类型字段随协议动态显隐：
   - **UDP**：本地IP（下拉本机网卡，0.0.0.0=所有）+ 本地端口 +「指定远程」开关（关=回复最近对端，开=固定发往远程IP/端口）；关闭时收到数据自动把灰显的远程框刷成最近对端地址（显示当前对端，打开开关即预填）
   - **UDP Multicast**：本地IP（出/入网卡）+ 组播地址（224.0.0.0~239.255.255.255）+ 本地端口
   - **TCP Server**：本地IP + 本地端口 →「开始监听」；连入后「目标」下拉可选某客户端或「全部」广播
@@ -137,12 +138,12 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
   - 主按钮 / 幽灵按钮 / 图标按钮三套样式
   - 默认 Accent `#007AFF` iOS 蓝、`#34C759` 绿、`#FF3B30` 红（其他主题各自有自己的 accent / danger）
 - **左侧 sidebar + 右侧数据区**
-  - 左：网络设置 / 数据区设置 / 发送区设置 三张卡片，`QGridLayout` 让所有右侧控件右对齐
+  - 左：连接设置 / 数据区设置 / 发送区设置 三张卡片，`QGridLayout` 让所有右侧控件右对齐
   - 右：数据日志区 + 发送输入框（垂直可拖）
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
-  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（`● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 字节计数
-  - 右下：版本号 `v1.0.7`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
+  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 字节计数
+  - 右下：版本号 `v1.0.9`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -179,7 +180,7 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 128×128 PNG 图标用 **base64 编码写死在独立的 `icon_data.py` 文件**里（`ICON_B64` 常量），`main.py` 通过 `from icon_data import ICON_B64 as _APP_ICON_B64` 导入，运行时由 `get_app_icon()` 解码加载。带来的好处：
 
 - 别人**没法通过替换 `icon.ico`** 来改窗口/任务栏/托盘里显示的图标
-- 打包出的 `dist\NetworkTool\_internal\` 里**完全没有 `icon.ico` 文件**
+- 打包出的 `dist\CommTool\_internal\` 里**完全没有 `icon.ico` 文件**
 - 资源管理器里 exe 文件的图标仍然来自 PyInstaller 的 `--icon` 嵌入资源（这是 Windows 资源段，跟运行时图标分开）
 
 ### 1.7 持久化
@@ -193,7 +194,7 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 - 发送框内容
 - 字号、最大行数
 
-**位置**：`NetworkTool.exe` 同级目录的 `settings.ini`，整个 `dist\NetworkTool\` 文件夹可以连配置一起复制到其他机器。
+**位置**：`CommTool.exe` 同级目录的 `settings.ini`，整个 `dist\CommTool\` 文件夹可以连配置一起复制到其他机器。
 
 ### 1.8 在线更新
 
@@ -202,9 +203,9 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 - 点「检查更新」自动从更新源读取版本清单（`latest.json`），与当前版本比对
   - **有新版** → 显示版本号 + 更新说明 + 「下载并更新」→ 下载（带进度）→ 下载完弹出**正常安装向导**，手动点「下一步 / 安装」完成升级（非静默）
   - **已是最新** → 提示当前已是最新版本
-- 更新源**内网优先、回退公网**（GitHub 上 NetworkTool 分支的 `latest.json`），每个源 8 秒超时（外网不卡）
+- 更新源**内网优先、回退公网**（GitHub 上 CommTool 分支的 `latest.json`），每个源 8 秒超时（外网不卡）
 - 下载后校验文件头魔数（`MZ`）防错误页误执行；关闭对话框 / ESC 自动中止在途下载并删半成品；启动时清理 `%TEMP%` 残留安装包；版本号解析容错
-- 基于 Qt 自带 **QtNetwork**（NetworkTool 本就用 QtNetwork），无新依赖；更新源地址在 `src/updater.py` 的 `UPDATE_MANIFEST_URLS` 配置，版本清单格式见根目录 `latest.json`
+- 网络类型基于 Qt 自带 **QtNetwork**（CommTool 网络侧本就用 QtNetwork），无新依赖；更新源地址在 `src/updater.py` 的 `UPDATE_MANIFEST_URLS` 配置，版本清单格式见根目录 `latest.json`
 
 ---
 
@@ -213,10 +214,10 @@ iOS 风格的网络调试工具（TCP/UDP），基于 PyQt5 + QtNetwork。支持
 ### 2.1 独立 exe（推荐，无需 Python）
 
 ```
-dist\NetworkTool\NetworkTool.exe
+dist\CommTool\CommTool.exe
 ```
 
-整个 `dist\NetworkTool\` 文件夹（约 98 MB）可以复制到任意 Windows 10/11 64 位电脑直接运行，**目标机器无需安装 Python、PyQt5**。
+整个 `dist\CommTool\` 文件夹（约 98 MB）可以复制到任意 Windows 10/11 64 位电脑直接运行，**目标机器无需安装 Python、PyQt5**。
 
 ### 2.2 静默启动源码版（已装 Python）
 
@@ -233,23 +234,24 @@ dist\NetworkTool\NetworkTool.exe
 > 代码已按模块拆分，并把源码 / 文档 / 脚本 / 资源分类到子目录。所有脚本内部用 `cd %~dp0..`（或 `dirname/..`）切回项目根再执行，双击即用，无需手动 cd。
 
 ```
-NetworkTool/
+CommTool/
 ├── README.md               开发者文档（本文件，留在根目录）
 ├── requirements.txt        Python 依赖
 ├── latest.json             在线更新版本清单（version / url / notes）
 │
 ├── src/                    Python 源码（按模块拆分）
-│   ├── main.py             入口：HiDPI + QApplication + 启动 NetworkTool
-│   ├── main_window.py      主窗口 NetworkTool 主体类（最大模块）
+│   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
+│   ├── main_window.py      主窗口 CommTool 主体类（最大模块）
 │   ├── dialogs.py          多条发送 / 关键字高亮 / 关闭确认 弹窗
 │   ├── widgets.py          自定义控件（IOSSwitch / TitleBar / Card）
+│   ├── serial_io.py        串口连接层（SerialConn + SerialReader 读线程 + 端口扫描）
 │   ├── net_io.py           网络连接层（TCP Server/Client、UDP、UDP 组播）
 │   ├── theme.py            主题配色表 + 角色着色（ROLE_*）
 │   ├── i18n.py             三语翻译表（简 / 英 / 繁）
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.0.7")
+│   └── version.py          版本号单点真源 (__version__ = "1.0.9")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -266,7 +268,7 @@ NetworkTool/
 │   ├── build.sh            Linux 打包脚本（venv + 国内镜像）
 │   ├── build_installer.bat 编译 Inno Setup 安装包（自动从 version.py 取版本号）
 │   ├── release.ps1         一键发版（改版本→改 latest.json→打包→push→建 Release）
-│   └── NetworkTool.iss      Inno Setup 脚本（多语言 EN/简/繁，路径可选）
+│   └── CommTool.iss      Inno Setup 脚本（多语言 EN/简/繁，路径可选）
 │
 ├── assets/                 图标资源
 │   ├── icon.ico            多分辨率 ICO（16/32/48/64/128/256 px，透明背景）
@@ -275,14 +277,14 @@ NetworkTool/
 │
 ├── build/  build_onefile/  PyInstaller 中间产物（gitignore）
 ├── dist/                   PyInstaller 文件夹版输出
-│   └── NetworkTool/         【独立可执行版本 — 把这个文件夹拷走就能用】
-│       ├── NetworkTool.exe   图标已嵌入 exe 资源段
+│   └── CommTool/         【独立可执行版本 — 把这个文件夹拷走就能用】
+│       ├── CommTool.exe   图标已嵌入 exe 资源段
 │       └── _internal/       Python + Qt DLL（不含 icon.ico — 图标在源码里 base64）
-├── dist_onefile/           PyInstaller --onefile 输出 NetworkTool_onefile_v*.exe
-└── installer/              Inno Setup 输出 NetworkTool_Setup_v*.exe
+├── dist_onefile/           PyInstaller --onefile 输出 CommTool_onefile_v*.exe
+└── installer/              Inno Setup 输出 CommTool_Setup_v*.exe
 ```
 
-> 运行时用户配置 `settings.ini`：打包版落在 exe 同级（装不进 Program Files 时回退 `%APPDATA%\NetworkTool\`）；开发模式落在源码同级（已 gitignore）。
+> 运行时用户配置 `settings.ini`：打包版落在 exe 同级（装不进 Program Files 时回退 `%APPDATA%\CommTool\`）；开发模式落在源码同级（已 gitignore）。
 
 ---
 
@@ -310,13 +312,13 @@ py -3 src\main.py
 scripts\build.bat
 ```
 
-输出 `dist\NetworkTool\` (约 98 MB 整个文件夹，含 NetworkTool.exe + _internal/)。整个文件夹可拷贝携带使用。
+输出 `dist\CommTool\` (约 98 MB 整个文件夹，含 CommTool.exe + _internal/)。整个文件夹可拷贝携带使用。
 
 构建命令（简化版，从项目根执行）：
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed ^
-    --name NetworkTool --icon assets\icon.ico ^
+    --name CommTool --icon assets\icon.ico ^
     src\main.py
 ```
 
@@ -332,13 +334,13 @@ py -3 -m PyInstaller --noconfirm --clean --windowed ^
 scripts\build_onefile.bat
 ```
 
-自动从 `src\version.py` 读版本号，输出 `dist_onefile\NetworkTool_onefile_v<版本>.exe`（~38 MB 单文件，文件名带版本号，与安装包一致）。首次启动稍慢 1~2 秒（自解压到 `%TEMP%`），之后跟文件夹版无差。
+自动从 `src\version.py` 读版本号，输出 `dist_onefile\CommTool_onefile_v<版本>.exe`（~38 MB 单文件，文件名带版本号，与安装包一致）。首次启动稍慢 1~2 秒（自解压到 `%TEMP%`），之后跟文件夹版无差。
 
 等价命令（`v%VER%` 由脚本从 version.py 注入到 `--name`）：
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name NetworkTool_onefile_v1.0.4 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.0.9 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -351,11 +353,11 @@ py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
 scripts\build_installer.bat
 ```
 
-自动从 `src\version.py` 读 `__version__`，传给 ISCC 编译 `scripts\NetworkTool.iss`，输出 `installer\NetworkTool_Setup_v<版本>.exe` (~28 MB)。
+自动从 `src\version.py` 读 `__version__`，传给 ISCC 编译 `scripts\CommTool.iss`，输出 `installer\CommTool_Setup_v<版本>.exe` (~28 MB)。
 
 安装包特性：
 - 多语言（英 / 简中 / 繁中，第一步选）
-- 路径可选（默认 `%LocalAppData%\Programs\NetworkTool\`，可改任意盘）
+- 路径可选（默认 `%LocalAppData%\Programs\CommTool\`，可改任意盘）
 - per-user 安装无需管理员；选"为所有用户"自动提权装到 Program Files
 - 自动创建开始菜单 + 桌面快捷方式（可选）+ 控制面板卸载条目
 
@@ -371,9 +373,9 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.0.4"
+__version__ = "1.0.9"
 ```
-然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `NetworkTool_Setup_vX.X.X.exe` 同时同步。`NetworkTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
+然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
 ---
 
@@ -407,6 +409,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 | 包 | 版本 | 用途 |
 |----|------|------|
 | PyQt5 | ≥ 5.15 | GUI 框架 + 网络（QtNetwork，随 PyQt5 自带，无需单独装） |
+| pyserial | ≥ 3.5 | 串口收发（Serial 连接类型） |
 | pyinstaller | ≥ 6.0 | 打包 exe（仅开发时需要） |
 | Pillow | ≥ 10.0 | 图标转换（仅 `icon_convert.py` 用）|
 
@@ -429,9 +432,11 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 
 `IOSSwitch` 继承 `QWidget`，重写 `paintEvent` 自绘轨道 + 圆点。通过 `QPropertyAnimation` 配合 `pyqtProperty` 实现圆点位置的缓动动画（160ms `OutCubic`）。加了 `animate=False` 参数让启动恢复状态时不触发动画。
 
-### 9.2 网络连接层
+### 9.2 连接层（串口 + 网络）
 
 `net_io.py` 定义统一基类 `NetConn(QObject)`，对外暴露与原串口一致的语义：`open()/close()/send(data,target)/is_open` + `data_received(bytes)/error_occurred/state_changed/clients_changed` 信号。三个实现 `TcpServerConn / TcpClientConn / UdpConn`（组播子类 `UdpGroupConn`）全部基于 **QtNetwork**（`QTcpServer/QTcpSocket/QUdpSocket`），靠 `readyRead` 等信号事件驱动，**不需要自己起轮询线程**。主窗口只认 `NetConn` 接口，因此数据区/发送/高亮/日志等上层逻辑无感。`send()` 返回写出字节数，`SEND_NO_TARGET(-1)` 表示无可发送目标（UDP 无对端 / TCP Server 无客户端）。
+
+串口侧 `serial_io.py` 的 `SerialConn` 镜像同一套接口（内部封装后台读线程 `SerialReader`）。主窗口 `open_conn()` 按「类型」下拉构造 `SerialConn` 或某个 `NetConn`，赋给同一个 `self.conn`，上层对串口 / 网络无感；`clients_changed` / `peer_changed` 是网络专有信号，串口连接不发，主窗口按 `hasattr` 守卫连接。
 
 ### 9.3 编码兼容
 
@@ -537,3 +542,4 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v18 (v1.0.5)**: 数据区搜索（Ctrl+F：高亮全部匹配 + ▲/▼ 上下跳转 + 实时「N/总数」计数）+ 多屏下状态栏/窗口拖拽/任务栏最小化修复（WM_GETMINMAXINFO 多显示器对齐）+ 深色主题搜索/高亮对比优化 + 系统托盘单击 toggle 显示/隐藏
 - **v19 (v1.0.7)**: 稳定性与代码审查修复 —— TCP Client 连接新增超时保护（不可达地址不再卡约 20 秒）、UDP 断开后清理最近对端缓存（复用连接不再回复到旧地址）；搜索导航改 O(1) 着色（大文档点 ▲/▼ 不再全文重扫）、打开搜索消除双重扫描、查找栏 viewport/计数标签加守卫、_parse_version 修正预发布版本号比较；修复纯搜索（未配关键字规则）时实时新数据的搜索匹配/计数停更
 - **v20 (v1.0.8)**: 修复关键字 / 搜索高亮时，底部新接收的数据会「整批闪一下高亮」的问题（高亮选区不再随末尾插入延伸）
+- **CommTool 分支（统一版）**: 串口版 SerialTool 与网络版 NetworkTool 合并为一个产品 **CommTool / 通信调试工具**。「类型」下拉统一 串口 + 网络五种连接（串口 `SerialConn` 与网络 `net_io` 共用 `open()/close()/send()/is_open` + 信号接口，主窗口同一个 `self.conn`）；恢复 `serial_io.py` 与 pyserial 依赖；品牌、类名、AppUserModelID、`%APPDATA%` 配置目录、安装包 / dist / .iss 全部更名 CommTool（新独立安装 GUID，不覆盖旧版；旧 NetworkTool 配置自动回退读取）；发布走 CommTool 分支、tag 前缀 `comm-v`

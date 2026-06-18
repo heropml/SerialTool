@@ -21,6 +21,15 @@ class IOSSwitch(QWidget):
         self._anim = QPropertyAnimation(self, b"circle_pos", self)
         self._anim.setDuration(160)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        # 关态轨道 / 旋钮颜色可被主题覆盖（默认 iOS 浅色作 fallback）；开态恒用 COLOR_GREEN
+        self._track_off = QColor("#E5E5EA")
+        self._knob = QColor("#FFFFFF")
+
+    def set_theme_colors(self, track_off, knob):
+        """主窗口切主题时调用：让关态开关跟随主题深浅（开态仍用通用绿）。"""
+        self._track_off = QColor(track_off)
+        self._knob = QColor(knob)
+        self.update()
 
     def isChecked(self):
         return self._checked
@@ -55,14 +64,14 @@ class IOSSwitch(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        track_color = QColor(COLOR_GREEN) if self._checked else QColor("#E5E5EA")
+        track_color = QColor(COLOR_GREEN) if self._checked else self._track_off
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(track_color))
         p.drawRoundedRect(0, 0, 40, 24, 12, 12)
         shadow = QColor(0, 0, 0, 40)
         p.setBrush(QBrush(shadow))
         p.drawEllipse(self._circle_pos, 3, 20, 20)
-        p.setBrush(QBrush(QColor("#FFFFFF")))
+        p.setBrush(QBrush(self._knob))
         p.drawEllipse(self._circle_pos, 2, 20, 20)
 
 

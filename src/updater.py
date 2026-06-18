@@ -20,12 +20,21 @@ from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 
 # 版本清单地址（GitHub raw）。按需改成你实际托管 latest.json 的地址。
 UPDATE_MANIFEST_URLS = [
-    "https://raw.githubusercontent.com/heropml/SerialTool/NetworkTool/latest.json",  # GitHub raw
+    "https://raw.githubusercontent.com/heropml/SerialTool/CommTool/latest.json",  # GitHub raw
 ]
 
 # 超时（毫秒）：每个更新源连不上就尽快轮到下一个。
 _CHECK_TIMEOUT_MS = 8000      # 单个更新源的响应超时
 _DOWNLOAD_STALL_MS = 30000    # 下载“停滞”超时：这么久没有新数据就判失败
+
+# i18n 翻译钩子：main 启动时用 set_translator(主窗口._t) 注入；未注入时回退返回 key 本身。
+# updater 是独立模块、不持有语言状态，故用此钩子把少量用户可见错误文案接入多语言。
+_translate = lambda key: key
+
+
+def set_translator(fn):
+    global _translate
+    _translate = fn
 
 
 def _parse_version(v):
@@ -57,10 +66,10 @@ def is_newer(remote, local):
 
 
 def cleanup_temp_installers():
-    """清理上次更新残留在 %TEMP% 的安装包（NetworkTool_Setup_*.exe）。
+    """清理上次更新残留在 %TEMP% 的安装包（CommTool_Setup_*.exe）。
     启动时调用一次；删不掉（可能仍被占用）就跳过，不影响启动。"""
     try:
-        pattern = os.path.join(tempfile.gettempdir(), "NetworkTool_Setup_*.exe")
+        pattern = os.path.join(tempfile.gettempdir(), "CommTool_Setup_*.exe")
         for f in glob.glob(pattern):
             try:
                 os.remove(f)
@@ -94,7 +103,7 @@ class UpdateChecker(QObject):
         if self._stopped:
             return
         if self._idx >= len(self._urls):
-            self.finished.emit(None, "所有更新源都连不上")
+            self.finished.emit(None, _translate("updater_no_source"))
             return
         url = self._urls[self._idx]
         self._idx += 1
@@ -167,6 +176,10 @@ class UpdateDownloader(QObject):
         self._timer.timeout.connect(self._on_timeout)
 
     def start(self):
+        # 只允许 https 下载源：防清单被改成 http/file 等降级或本地路径
+        if not str(self._url).lower().startswith("https://"):
+            self.finished.emit("", _translate("updater_bad_url"))
+            return
         name = os.path.basename(QUrl(self._url).path()) or "Setup.exe"
         self._path = os.path.join(tempfile.gettempdir(), name)
         try:
@@ -203,7 +216,7 @@ class UpdateDownloader(QObject):
         reply = self._reply
         self._reply = None
         err = reply.error() if reply is not None else QNetworkReply.OperationCanceledError
-        msg = reply.errorString() if reply is not None else "已取消"
+        msg = reply.errorString() if reply is not None else _translate("updater_cancelled")
         if reply is not None:
             reply.deleteLater()
         if self._fp:
@@ -228,7 +241,7 @@ class UpdateDownloader(QObject):
             return
         if head != b"MZ":
             self._remove_path()
-            self.finished.emit("", "下载内容不是有效安装包（可能是错误页面）")
+            self.finished.emit("", _translate("updater_bad_installer"))
             return
         self.finished.emit(self._path, "")
 

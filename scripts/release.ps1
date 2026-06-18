@@ -1,10 +1,10 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    NetworkTool（网络版）一键发版脚本。
+    CommTool（网络版）一键发版脚本。
 
     一条命令完成：改版本号 → 改 latest.json → 打包(folder + 安装包) →
-    git 提交 → push 到 GitHub 的 NetworkTool 分支 → 建 Release 并上传安装包。
+    git 提交 → push 到 GitHub 的 CommTool 分支 → 建 Release 并上传安装包。
     app 的「关于 → 检查更新」随后即可检测到新版本并升级。
 
 .PARAMETER Version
@@ -21,9 +21,9 @@
 
 .NOTES
     依赖：Python(py) + PyInstaller、Inno Setup 6、GitHub CLI(gh，需已 gh auth login)。
-    NetworkTool 与串口版 SerialTool 共用同一个 GitHub 仓库，所以 Release tag 用
-    「net-v 前缀」区分（net-v1.0.5），避免和串口版的 v1.0.x tag 冲突。
-    版本清单 latest.json 在 NetworkTool 分支，更新源也指向 NetworkTool 分支。
+    CommTool 与串口版 SerialTool 共用同一个 GitHub 仓库，所以 Release tag 用
+    「comm-v 前缀」区分（comm-v1.0.9），避免和串口版 v1.0.x、网络版 net-v1.0.x 的 tag 冲突。
+    版本清单 latest.json 在 CommTool 分支，更新源也指向 CommTool 分支。
 #>
 [CmdletBinding()]
 param(
@@ -34,7 +34,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Repo   = 'heropml/SerialTool'
-$Branch = 'NetworkTool'
+$Branch = 'CommTool'
 
 # ---- 0. 定位项目根 + 校验 ----
 $Root = Split-Path $PSScriptRoot -Parent
@@ -42,12 +42,12 @@ Set-Location $Root
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "版本号格式应为 X.Y.Z（如 1.0.5），你给的是 '$Version'"
 }
-$Tag         = "net-v$Version"                          # Release tag，net- 前缀区分串口版
-$SetupName   = "NetworkTool_Setup_v$Version.exe"
+$Tag         = "comm-v$Version"                          # Release tag，comm- 前缀，区分串口版/网络版
+$SetupName   = "CommTool_Setup_v$Version.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$SetupName"
 
-Write-Host "==== 发版 NetworkTool $Tag ====" -ForegroundColor Cyan
+Write-Host "==== 发版 CommTool $Tag ====" -ForegroundColor Cyan
 
 # ---- 工具路径 ----
 $Iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
@@ -70,7 +70,7 @@ $manifest = [ordered]@{ version = $Version; url = $DownloadUrl; notes = $Notes }
 $json = $manifest | ConvertTo-Json -Depth 3
 [IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json)
 
-# ---- 3. PyInstaller 打包 folder 版（网络版无需 pyserial）----
+# ---- 3. PyInstaller 打包 folder 版（统一版，含 pyserial 串口支持）----
 Write-Host "③ PyInstaller 打包 folder 版（约 1 分钟）…"
 $excludes = @(
     'PyQt5.QtBluetooth','PyQt5.QtDBus','PyQt5.QtDesigner','PyQt5.QtHelp','PyQt5.QtLocation',
@@ -80,7 +80,7 @@ $excludes = @(
     'PyQt5.QtWebEngineCore','PyQt5.QtWebEngineWidgets','PyQt5.QtWebSockets','PyQt5.QtXmlPatterns'
 )
 $pyargs = @('-3','-m','PyInstaller','--noconfirm','--clean','--windowed',
-            '--name','NetworkTool','--icon','assets/icon.ico')
+            '--name','CommTool','--icon','assets/icon.ico')
 foreach ($e in $excludes) { $pyargs += '--exclude-module'; $pyargs += $e }
 $pyargs += 'src/main.py'
 & py @pyargs
@@ -88,7 +88,7 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败" }
 
 # ---- 4. Inno Setup 编译安装包 ----
 Write-Host "④ Inno Setup 编译安装包…"
-& $Iscc "/DMyAppVersion=$Version" "scripts\NetworkTool.iss"
+& $Iscc "/DMyAppVersion=$Version" "scripts\CommTool.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
 if (-not (Test-Path $SetupPath)) { throw "未生成安装包：$SetupPath" }
 
@@ -103,7 +103,7 @@ if ($Local) {
     return
 }
 
-# ---- 6. push NetworkTool 分支 ----
+# ---- 6. push CommTool 分支 ----
 Write-Host "⑥ push 到 github/$Branch（让 latest.json 上线）…"
 git push github $Branch
 if ($LASTEXITCODE -ne 0) { throw "git push 失败" }
@@ -117,10 +117,10 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     # --latest=false：网络版与串口版共用同一仓库，Release 不能抢走主产品 SerialTool 的
     # 「Latest」标记（gh 默认会把最后创建的 release 设为 latest，这里显式关掉）。
-    & $Gh release create $Tag --repo $Repo --target $Branch --title "NetworkTool $Tag" --notes $Notes --latest=false $SetupPath
+    & $Gh release create $Tag --repo $Repo --target $Branch --title "CommTool $Tag" --notes $Notes --latest=false $SetupPath
 }
 if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 
-Write-Host "==== 发版完成 NetworkTool $Tag ====" -ForegroundColor Green
+Write-Host "==== 发版完成 CommTool $Tag ====" -ForegroundColor Green
 Write-Host "下载地址：$DownloadUrl"
 Write-Host "app「关于 → 检查更新」现在即可检测到 $Version 并升级。"

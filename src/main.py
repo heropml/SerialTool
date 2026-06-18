@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""NetworkTool 入口。"""
+"""CommTool 入口。"""
 import sys
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication
 from app_icon import get_app_icon
-from main_window import NetworkTool
-from updater import cleanup_temp_installers
+from main_window import CommTool
+from updater import cleanup_temp_installers, set_translator
 
 
 def main():
@@ -14,7 +14,7 @@ def main():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "Tools.NetworkTool.1.0")
+                "Tools.CommTool.1.0")
         except Exception:
             pass
 
@@ -41,7 +41,8 @@ def main():
             break
 
     cleanup_temp_installers()   # 清理上次更新残留在 %TEMP% 的安装包
-    w = NetworkTool()
+    w = CommTool()
+    set_translator(w._t)   # 把 updater 的用户可见错误文案接入主窗口多语言
     w.setWindowIcon(get_app_icon())
     w.show()
     sys.exit(app.exec_())

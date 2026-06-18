@@ -1,7 +1,7 @@
 @echo off
 setlocal
 REM 单文件版 (onefile) 打包脚本
-REM 输出 dist_onefile\NetworkTool_onefile_v<版本>.exe (文件名带版本号, 与安装包一致)
+REM 输出 dist_onefile\CommTool_onefile_v<版本>.exe (文件名带版本号, 与安装包一致)
 REM 版本号从 src\version.py 读, 保持单点真源
 
 cd /d %~dp0..
@@ -11,20 +11,20 @@ set VER=1.0.0
 for /f "delims=" %%v in ('py -3 -c "import sys; sys.path.insert(0,'src'); from version import __version__; print(__version__)" 2^>nul') do set VER=%%v
 
 echo ============================================
-echo  Building NetworkTool onefile (PyInstaller)
+echo  Building CommTool onefile (PyInstaller)
 echo  Version: %VER%   (from src\version.py)
 echo ============================================
 echo.
 
 REM 清掉旧版本的单文件 exe, 只保留本次输出
-if exist "dist_onefile\NetworkTool_onefile*.exe" del /q "dist_onefile\NetworkTool_onefile*.exe"
+if exist "dist_onefile\CommTool_onefile*.exe" del /q "dist_onefile\CommTool_onefile*.exe"
 
 py -3 -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
   --onefile ^
-  --name NetworkTool_onefile_v%VER% ^
+  --name CommTool_onefile_v%VER% ^
   --icon assets\icon.ico ^
   --distpath dist_onefile ^
   --workpath build_onefile ^
@@ -55,10 +55,10 @@ py -3 -m PyInstaller ^
   src\main.py
 
 echo.
-if exist "dist_onefile\NetworkTool_onefile_v%VER%.exe" (
+if exist "dist_onefile\CommTool_onefile_v%VER%.exe" (
   echo ============================================
   echo  Onefile Build OK
-  echo  Output: dist_onefile\NetworkTool_onefile_v%VER%.exe
+  echo  Output: dist_onefile\CommTool_onefile_v%VER%.exe
   echo ============================================
 ) else (
   echo ============================================

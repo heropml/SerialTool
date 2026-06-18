@@ -1,5 +1,5 @@
 {
   "version": "1.0.9",
-  "url": "https://github.com/heropml/SerialTool/releases/download/net-v1.0.9/NetworkTool_Setup_v1.0.9.exe",
-  "notes": "v1.0.9：在线更新优化——更新源精简为仅 GitHub。"
+  "url": "https://github.com/heropml/SerialTool/releases/download/comm-v1.0.9/CommTool_Setup_v1.0.9.exe",
+  "notes": "CommTool 统一版：串口 + 网络（TCP/UDP）合一。"
 }

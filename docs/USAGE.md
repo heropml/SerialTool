@@ -1,6 +1,6 @@
-# NetworkTool Usage Guide
+# CommTool Usage Guide
 
-An iOS-style network debugging tool (TCP/UDP), designed for embedded development and protocol debugging.
+An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one app, designed for embedded development and protocol debugging.
 
 ![UI preview](./icon_preview.png)
 
@@ -10,7 +10,7 @@ An iOS-style network debugging tool (TCP/UDP), designed for embedded development
 
 - [Quick Start](#quick-start)
 - [Features](#features)
-  - [Network](#network)
+  - [Connection](#connection)
   - [Receiving Data](#receiving-data)
   - [Sending Data](#sending-data)
   - [Keyword Highlighting](#keyword-highlighting)
@@ -31,9 +31,19 @@ An iOS-style network debugging tool (TCP/UDP), designed for embedded development
 
 ## Quick Start
 
-1. Double-click the **NetworkTool** icon on your desktop
-2. In the left **Network** panel, pick a **Protocol**, fill in the address / port, then click **Open** / **Connect** / **Listen** (depending on protocol)
+1. Double-click the **CommTool** icon on your desktop
+2. In the left **Connection** panel, pick a **Type** (serial or network), fill in the serial parameters / network address & port, then click **Open Serial** / **Open** / **Connect** / **Listen** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
+
+---
+
+## What's New in v1.0.9 (Unified)
+
+Merged from the serial-only SerialTool and the network-only NetworkTool — one tool now does **both serial and network**:
+
+- **Serial support** — the **Type** dropdown in the Connection card gains **Serial**, alongside UDP / UDP Multicast / TCP Server / TCP Client; serial params (port / baud / data bits / parity / stop bits) + hot-plug port scanning. See [Connection](#connection).
+- **Unified branding** — renamed to **CommTool**, with its own install identity; the old NetworkTool config is reused automatically on first launch.
+- All other features (RX/TX, checksums, highlighting, logging, multi-send, themes, trilingual UI) are unchanged.
 
 ---
 
@@ -62,7 +72,7 @@ An iOS-style network debugging tool (TCP/UDP), designed for embedded development
 
 ## What's New in v1.0.4
 
-- **Online Update** — the tray icon's right-click menu gains an **About** entry that opens an **About** dialog (app icon, name, version, a short description, and a **Check for Updates** button). Click **Check for Updates** to fetch the latest version from the update source and compare it with the one you're running. If a newer version exists, the dialog shows the new version number, the release notes, and a **Download and Update** button: click it to download (with a live progress percentage), and when the download finishes the **regular install wizard** launches so you finish the upgrade yourself by clicking **Next / Install** (it is not a silent install). If you're already on the latest version, the dialog just tells you so. The update source tries the intranet mirror first and automatically falls back to the public one (the NetworkTool branch on GitHub); each source has an 8-second timeout, so it never hangs for long even on an external network. The downloaded file is integrity-checked, and closing the dialog mid-download cancels the download automatically. (See [Online Update](#online-update).)
+- **Online Update** — the tray icon's right-click menu gains an **About** entry that opens an **About** dialog (app icon, name, version, a short description, and a **Check for Updates** button). Click **Check for Updates** to fetch the latest version from the update source and compare it with the one you're running. If a newer version exists, the dialog shows the new version number, the release notes, and a **Download and Update** button: click it to download (with a live progress percentage), and when the download finishes the **regular install wizard** launches so you finish the upgrade yourself by clicking **Next / Install** (it is not a silent install). If you're already on the latest version, the dialog just tells you so. The update source tries the intranet mirror first and automatically falls back to the public one (the CommTool branch on GitHub); each source has an 8-second timeout, so it never hangs for long even on an external network. The downloaded file is integrity-checked, and closing the dialog mid-download cancels the download automatically. (See [Online Update](#online-update).)
 
 ---
 
@@ -89,23 +99,30 @@ An iOS-style network debugging tool (TCP/UDP), designed for embedded development
 - **Keyword Highlighting** — opened from the **Highlight** button in the Data-area title bar; color-highlight lines that match your keyword rules
 - **Matches only** filter — show only the lines that match a keyword, hiding the rest
 - **Themed dialog title bars** — dialog native title bars now follow the dark/light theme
-- **Auto-sizing Network labels** — English labels in the Network settings are no longer clipped
+- **Auto-sizing connection labels** — English labels in the Connection settings are no longer clipped
 - **Consistent HEX display** — the Data area's HEX vs text view is now governed solely by the **HEX View** switch, so RX and TX always display the same way (independent of **HEX Send**)
 
 ---
 
 ## Features
 
-### Network
+### Connection
 
-The top-left **Network** card configures the connection. The first row is a **Protocol** dropdown with 4 options (**UDP** is the default):
+The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with 5 options — serial plus network (**Serial** is the default on a fresh install):
 
+- **Serial**
 - **UDP**
 - **UDP Multicast**
 - **TCP Server**
 - **TCP Client**
 
-The fields below change to match the selected protocol:
+The fields below change to match the selected type:
+
+- **Serial**
+  - **Port** — dropdown of detected COM ports, with a **⟳** button to refresh manually (a background thread also rescans for hot-plug)
+  - **Baud** — editable dropdown (common 1200–2000000)
+  - **Data bits** (5/6/7/8, default 8), **Parity** (None/Even/Odd/Mark/Space), **Stop bits** (1/1.5/2)
+  - click **Open Serial** to connect
 
 - **UDP**
   - **Local IP** — dropdown of your local NIC IPs (`0.0.0.0` = all NICs)
@@ -124,8 +141,9 @@ The fields below change to match the selected protocol:
 
 **Action button** — its text depends on the protocol and state:
 
-| Protocol | Button |
+| Type | Button |
 |----------|--------|
+| Serial | Open Serial / Close Serial |
 | UDP | Open / Close |
 | UDP Multicast | Open / Close |
 | TCP Server | Listen / Stop |
@@ -234,7 +252,7 @@ Click the **Multi-Send** button in the Send area to open the multi-send dialog:
 ### Interface
 
 - **Frameless window** + **iOS-style rounded cards** with soft shadows
-- Left sidebar (network / data / send settings) + right data area; the divider is **draggable**
+- Left sidebar (connection / data / send settings) + right data area; the divider is **draggable**
 - Drag the title bar to move; double-click it to maximise
 - Native edge resize (feels identical to a system window)
 
@@ -290,7 +308,7 @@ Right-click the tray icon and choose **About** to open the **About** dialog. It 
 - **Check for Updates** — fetches the latest version from the update source and compares it with the one you're running:
   - **A newer version is available** → the dialog shows the new version number, the **release notes**, and a **Download and Update** button. Click it to download (a **progress percentage** is shown). When the download completes, the **regular install wizard** opens — finish the upgrade yourself by clicking **Next / Install** (this is **not** a silent install).
   - **Already up to date** → the dialog simply tells you you're on the latest version.
-- **Update sources** — the **intranet mirror** is tried first and the tool automatically **falls back to the public one** (the NetworkTool branch on GitHub); each source has an **8-second timeout**, so it never hangs for long even on an external network.
+- **Update sources** — the **intranet mirror** is tried first and the tool automatically **falls back to the public one** (the CommTool branch on GitHub); each source has an **8-second timeout**, so it never hangs for long even on an external network.
 - **Integrity check** — the downloaded file is verified for integrity before the wizard runs.
 - **Cancel anytime** — closing the dialog while a download is in progress cancels the download automatically.
 
@@ -304,7 +322,7 @@ On exit, settings are written to `settings.ini` in the install directory; on nex
 - All switches / input fields / dropdown selections
 - Send box content, font size, max line count
 
-If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\NetworkTool\settings.ini` automatically.
+If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\CommTool\settings.ini` automatically.
 
 ---
 
@@ -326,6 +344,7 @@ Bottom-left:
 
 - Connection state (red / green dot), one of:
   - `● Disconnected`
+  - `● COM3 @ 115200` (serial)
   - `● UDP addr:port`
   - `● Multicast addr:port`
   - `● TCP listening addr:port`
@@ -337,7 +356,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.0.4`)
+- current **version** (`v1.0.9`)
 
 ---
 

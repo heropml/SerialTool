@@ -1,7 +1,7 @@
 @echo off
 cd /d %~dp0..
 echo ============================================
-echo  Building NetworkTool.exe with PyInstaller
+echo  Building CommTool.exe with PyInstaller
 echo ============================================
 echo.
 
@@ -9,7 +9,7 @@ py -3 -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
-  --name NetworkTool ^
+  --name CommTool ^
   --icon assets\icon.ico ^
   --exclude-module PyQt5.QtBluetooth ^
   --exclude-module PyQt5.QtDBus ^
@@ -38,11 +38,11 @@ py -3 -m PyInstaller ^
   src\main.py
 
 echo.
-if exist "dist\NetworkTool\NetworkTool.exe" (
+if exist "dist\CommTool\CommTool.exe" (
   echo ============================================
   echo  Build OK
-  echo  Output: dist\NetworkTool\
-  echo  Run:    dist\NetworkTool\NetworkTool.exe
+  echo  Output: dist\CommTool\
+  echo  Run:    dist\CommTool\CommTool.exe
   echo ============================================
 ) else (
   echo ============================================

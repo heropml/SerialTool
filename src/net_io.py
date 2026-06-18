@@ -27,6 +27,9 @@ PROTOCOLS = [PROTO_UDP, PROTO_UDP_MULTICAST, PROTO_TCP_SERVER, PROTO_TCP_CLIENT]
 
 SEND_NO_TARGET = -1   # send() 软错误：没有可发送的目标（UDP 无对端 / TCP Server 无客户端）
 
+# TCP Client 连接超时的错误哨兵：emit 它而非硬编码中文，由主窗口按 i18n 翻译成当前语言
+ERR_CONN_TIMEOUT = "__conn_timeout__"
+
 # TCP Client 连接超时(毫秒)：异步 connectToHost 对不可达地址默认要等 OS ~20s 才报
 # errorOccurred，这里主动设上限，超时即 abort 并提示，避免界面长时间无反馈卡在「连接中」。
 _TCP_CONNECT_TIMEOUT_MS = 10000
@@ -130,6 +133,10 @@ class TcpServerConn(NetConn):
             self._clients.append(sock)
             sock.readyRead.connect(lambda s=sock: self._on_read(s))
             sock.disconnected.connect(lambda s=sock: self._on_disc(s))
+            # socket 出错(RST/超时等)兜底清理：多数情况 Qt 随后也会发 disconnected，
+            # 这里防"只发 error 不发 disconnected"的罕见路径残留死 socket
+            if hasattr(sock, "errorOccurred"):
+                sock.errorOccurred.connect(lambda _e, s=sock: self._on_disc(s))
         self._emit_clients()
 
     def _on_read(self, sock):
@@ -242,7 +249,7 @@ class TcpClientConn(NetConn):
             sock.deleteLater()
         except Exception:
             pass
-        self.error_occurred.emit("连接超时")
+        self.error_occurred.emit(ERR_CONN_TIMEOUT)
 
     def send(self, data, target=None):
         if self._sock and self._sock.state() == QAbstractSocket.ConnectedState:
@@ -366,6 +373,8 @@ class UdpGroupConn(NetConn):
             self._sock.close()
             self._sock = None
             return False
+        # 组播 TTL：默认 1 仅限本子网，设大些以便跨网段/经路由器转发（按需可调）
+        self._sock.setSocketOption(QAbstractSocket.MulticastTtlOption, 16)
         self._sock.readyRead.connect(self._on_read)
         self.state_changed.emit(True)
         return True

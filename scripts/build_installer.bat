@@ -2,7 +2,7 @@
 setlocal
 REM Inno Setup 安装包构建脚本
 REM 前置: 安装 Inno Setup 6 (winget install JRSoftware.InnoSetup)
-REM 前置: dist\NetworkTool\ 已经由 build.bat 打好
+REM 前置: dist\CommTool\ 已经由 build.bat 打好
 
 cd /d %~dp0..
 
@@ -21,9 +21,9 @@ if "%ISCC%"=="" (
     exit /b 1
 )
 
-if not exist "dist\NetworkTool\NetworkTool.exe" (
+if not exist "dist\CommTool\CommTool.exe" (
     echo ============================================
-    echo  dist\NetworkTool\NetworkTool.exe NOT FOUND
+    echo  dist\CommTool\CommTool.exe NOT FOUND
     echo  Run build.bat first to build the app folder.
     echo ============================================
     pause
@@ -38,13 +38,13 @@ echo ============================================
 echo  Building installer with Inno Setup...
 echo  Version: %VER%   (from version.py)
 echo ============================================
-%ISCC% /DMyAppVersion=%VER% scripts\NetworkTool.iss
+%ISCC% /DMyAppVersion=%VER% scripts\CommTool.iss
 
-if exist "installer\NetworkTool_Setup_v%VER%.exe" (
+if exist "installer\CommTool_Setup_v%VER%.exe" (
     echo.
     echo ============================================
     echo  Installer Build OK
-    echo  Output: installer\NetworkTool_Setup_v%VER%.exe
+    echo  Output: installer\CommTool_Setup_v%VER%.exe
     echo ============================================
 ) else (
     echo.
