@@ -1613,7 +1613,7 @@ class CommTool(QMainWindow):
         QToolTip {{
             background-color: {tooltip_bg};
             color: {tooltip_fg};
-            border: 0px;
+            border: 1px solid {tooltip_bg};
             border-radius: 6px;
             padding: 4px 8px;
         }}
