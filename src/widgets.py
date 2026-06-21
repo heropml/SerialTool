@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """iOS 风格控件：IOSSwitch / TitleBar / Card / make_label。"""
+import sys
 from PyQt5.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QPoint,
                           pyqtSignal, pyqtProperty)
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QIcon
+from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
                              QComboBox, QGraphicsDropShadowEffect, QMainWindow)
 from theme import COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_GREEN
+from fonts import ui_font
 
 
 # ============== iOS 风格滑动开关 ==============
@@ -96,7 +98,7 @@ class TitleBar(QWidget):
         layout.addWidget(self.icon_label)
 
         self.title_label = QLabel("")
-        self.title_label.setFont(QFont("Segoe UI", 10))
+        self.title_label.setFont(ui_font(10))
         self.title_label.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; background: transparent;")
         layout.addWidget(self.title_label)
@@ -159,6 +161,15 @@ class TitleBar(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            # 非 Windows 且未最大化：用原生系统移动（拖动更跟手，避免手动 move 的脱节感）
+            if sys.platform != "win32" and not self._win.isMaximized():
+                wh = self._win.windowHandle()
+                if wh is not None:
+                    self._drag_pos = None
+                    wh.startSystemMove()
+                    event.accept()
+                    return
+            # Windows 或已最大化：沿用手动拖动（含最大化时拖动→还原的逻辑）
             if self._win.isMaximized():
                 self._drag_pos = None
             else:
@@ -207,9 +218,7 @@ class Card(QFrame):
 # ============== 标签 ==============
 def make_label(text, size=11, bold=False, color=COLOR_TEXT):
     lbl = QLabel(text)
-    f = QFont("Segoe UI", size)
-    if bold:
-        f.setWeight(QFont.DemiBold)
+    f = ui_font(size, bold)
     lbl.setFont(f)
     if color == COLOR_TEXT_SECONDARY:
         lbl.setProperty("theme_color_role", "secondary")

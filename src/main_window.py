@@ -8,12 +8,12 @@ import time
 import serial
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QSettings, QEvent
-from PyQt5.QtGui import (QFont, QColor, QTextCursor, QTextCharFormat,
+from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
                          QFontMetrics, QTextFormat)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
-                             QSystemTrayIcon, QMenu)
+                             QSystemTrayIcon, QMenu, QApplication)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -22,6 +22,7 @@ from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, 
                    chrome_for, COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_BLUE)
 from i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
+from fonts import ui_font, mono_font, localize_qss
 from widgets import make_label, IOSSwitch, TitleBar, Card
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
@@ -43,6 +44,12 @@ class CommTool(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+
+        # 无边框窗口的边缘缩放：Windows 走下面的 nativeEvent(WM_NCHITTEST)；macOS / Linux
+        # 没有等价的原生命中测试，改用 Qt 5.15 的 startSystemResize —— 装一个应用级事件
+        # 过滤器，在窗口边缘 RESIZE_MARGIN 内按下时发起系统缩放（缩放光标由系统在拖拽时给出）。
+        if sys.platform != "win32":
+            QApplication.instance().installEventFilter(self)
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
         self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
@@ -116,7 +123,7 @@ class CommTool(QMainWindow):
         keys = ("protocol_type", "local_ip", "local_port", "group_addr",
                 "remote_ip", "remote_port", "target_client", "use_remote",
                 "port", "baud_rate", "data_bits", "parity", "stop_bits")
-        fm = QFontMetrics(QFont("Segoe UI", 11))
+        fm = QFontMetrics(ui_font(11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
         return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
 
@@ -210,12 +217,12 @@ class CommTool(QMainWindow):
         self.lbl_state = QLabel(self._t("state_closed"))
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
-            lbl.setFont(QFont("Segoe UI", 10))
+            lbl.setFont(ui_font(10))
 
         def _sep():
             """竖线分隔符（无自带色 → 跟随状态栏 text_sec，主题自适应）"""
             s = QLabel("│")
-            s.setFont(QFont("Segoe UI", 10))
+            s.setFont(ui_font(10))
             s.setObjectName("StatusSep")
             return s
 
@@ -229,7 +236,7 @@ class CommTool(QMainWindow):
 
         # 实时记录文件路径 — 右下角(版本号左侧)，仅记录时显示，太长中间省略+悬停看全路径
         self.lbl_log_path = QLabel("")
-        self.lbl_log_path.setFont(QFont("Segoe UI", 9))
+        self.lbl_log_path.setFont(ui_font(9))
         self.lbl_log_path.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
         self._log_path_elide_w = 560
         self.status_bar.addPermanentWidget(self.lbl_log_path)
@@ -239,7 +246,7 @@ class CommTool(QMainWindow):
 
         # 版本号 — 右下角 (addPermanentWidget 走右边)
         self.lbl_version = QLabel(f"v{APP_VERSION}")
-        self.lbl_version.setFont(QFont("Segoe UI", 10))
+        self.lbl_version.setFont(ui_font(10))
         self.lbl_version.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
         self.status_bar.addPermanentWidget(self.lbl_version)
 
@@ -644,7 +651,7 @@ class CommTool(QMainWindow):
             f'&nbsp;&nbsp;'
             f'<span style="color:{COLOR_BLUE};">{self._t("legend_tx")}</span>'
         )
-        self.legend_label.setFont(QFont("Segoe UI", 10))
+        self.legend_label.setFont(ui_font(10))
         self.legend_label.setStyleSheet("background: transparent;")
         title_row.addWidget(self.legend_label)
         title_row.addStretch(1)
@@ -693,7 +700,7 @@ class CommTool(QMainWindow):
         self.txt_recv = QTextEdit()
         self.txt_recv.setReadOnly(True)
         self.txt_recv.setObjectName("RecvBox")
-        self.txt_recv.setFont(QFont("Consolas", self._recv_font_size))
+        self.txt_recv.setFont(mono_font(self._recv_font_size))
         self.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
@@ -1343,7 +1350,7 @@ class CommTool(QMainWindow):
 
         self.txt_send = QTextEdit()
         self.txt_send.setObjectName("SendBox")
-        self.txt_send.setFont(QFont("Consolas", 10))
+        self.txt_send.setFont(mono_font(10))
         # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
         self.txt_send.setFixedHeight(64)
         self.txt_send.setProperty("tr_placeholder", "send_placeholder")
@@ -1581,7 +1588,7 @@ class CommTool(QMainWindow):
             background: transparent;
         }}
         """
-        self.setStyleSheet(qss)
+        self.setStyleSheet(localize_qss(qss))
         # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
         # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
         for w in self.findChildren(QWidget):
@@ -2670,7 +2677,7 @@ class CommTool(QMainWindow):
         if new_size == self._recv_font_size:
             return
         self._recv_font_size = new_size
-        self.txt_recv.setFont(QFont("Consolas", new_size))
+        self.txt_recv.setFont(mono_font(new_size))
         self.toast(self._t("font_size_msg", size=new_size))
 
     def _on_max_lines_changed(self):
@@ -2855,7 +2862,23 @@ class CommTool(QMainWindow):
         """
         优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
+        macOS：不走绿色版逻辑（绝不写进 .app 包内 —— 会破坏签名、重装即丢），
+        固定用 ~/Library/Application Support/CommTool/。
         """
+        if sys.platform == "darwin":
+            cfg_dir = os.path.join(
+                os.path.expanduser("~/Library/Application Support"), "CommTool")
+            new_ini = os.path.join(cfg_dir, "settings.ini")
+            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失。
+            legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
+            if not os.path.exists(new_ini) and os.path.exists(legacy):
+                return legacy
+            try:
+                os.makedirs(cfg_dir, exist_ok=True)
+            except Exception:
+                pass
+            return new_ini
+
         if getattr(sys, "frozen", False):
             base = os.path.dirname(sys.executable)
         else:
@@ -2980,7 +3003,7 @@ class CommTool(QMainWindow):
         try:
             size = int(s.value("recv_font_size", 10))
             self._recv_font_size = max(7, min(28, size))
-            self.txt_recv.setFont(QFont("Consolas", self._recv_font_size))
+            self.txt_recv.setFont(mono_font(self._recv_font_size))
         except (ValueError, TypeError):
             pass
 
@@ -3262,6 +3285,42 @@ class CommTool(QMainWindow):
             except Exception:
                 pass
         return super().nativeEvent(event_type, message)
+
+    # ----- 无边框窗口缩放（macOS / Linux：startSystemResize）-----
+    def _edges_at(self, pos):
+        """鼠标点相对窗口的边缘命中，返回 Qt.Edges（无命中则为 0）。"""
+        m = self.RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edges = Qt.Edges()
+        if x <= m:
+            edges |= Qt.LeftEdge
+        elif x >= w - m:
+            edges |= Qt.RightEdge
+        if y <= m:
+            edges |= Qt.TopEdge
+        elif y >= h - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def eventFilter(self, obj, event):
+        # 仅 macOS / Linux 的无边框缩放（Windows 由 nativeEvent 处理）。应用级过滤器，故须
+        # 严格自限：事件须是本窗口（或其子控件）上的左键按下，本窗口活动、未最大化，且落点
+        # 在窗口边缘 RESIZE_MARGIN 内 —— 排除弹出菜单/对话框上、恰好压在主窗口边缘的误触。
+        if (sys.platform != "win32"
+                and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton
+                and (obj is self or (isinstance(obj, QWidget) and self.isAncestorOf(obj)))
+                and self.isActiveWindow() and not self.isMaximized() and self.isVisible()):
+            pos = self.mapFromGlobal(event.globalPos())
+            if self.rect().contains(pos):
+                edges = self._edges_at(pos)
+                if edges:
+                    wh = self.windowHandle()
+                    if wh is not None:
+                        wh.startSystemResize(edges)
+                        return True
+        return super().eventFilter(obj, event)
 
     def closeEvent(self, e):
         if self._closing_real or not self._tray:

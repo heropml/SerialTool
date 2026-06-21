@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """对话框：CloseDialog / MultiSendDialog / KeywordHighlightDialog + 共享样式 helper。"""
 import sys
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
                              QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea,
                              QGraphicsDropShadowEffect, QColorDialog,
                              QListWidget, QListWidgetItem)
 from theme import chrome_for, THEME_DEFAULT
 from i18n import CHECKSUM_KEYS
+from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
 
 
@@ -48,9 +49,7 @@ class CloseDialog(QDialog):
         # 标题文本 (居中) — 颜色按主题来
         c = chrome_for(theme_id)
         self.lbl_title = QLabel(title_text)
-        f = QFont("Segoe UI", 14)
-        f.setWeight(QFont.DemiBold)
-        self.lbl_title.setFont(f)
+        self.lbl_title.setFont(ui_font(14, bold=True))
         self.lbl_title.setAlignment(Qt.AlignCenter)
         self.lbl_title.setStyleSheet(f"color: {c['text']}; background: transparent;")
         v.addWidget(self.lbl_title)
@@ -80,7 +79,7 @@ class CloseDialog(QDialog):
         v.addLayout(h)
         outer.addWidget(self._card)
 
-        self.setStyleSheet(self._build_qss())
+        self.setStyleSheet(localize_qss(self._build_qss()))
         self.setMinimumWidth(380)
 
     def _build_qss(self):
@@ -183,9 +182,7 @@ class AboutDialog(QDialog):
             v.addWidget(li)
 
         ln = QLabel(app_name)
-        fn = QFont("Segoe UI", 16)
-        fn.setWeight(QFont.DemiBold)
-        ln.setFont(fn)
+        ln.setFont(ui_font(16, bold=True))
         ln.setAlignment(Qt.AlignCenter)
         ln.setStyleSheet(f"color: {c['text']}; background: transparent;")
         v.addWidget(ln)
@@ -229,7 +226,7 @@ class AboutDialog(QDialog):
         v.addLayout(h)
 
         outer.addWidget(self._card)
-        self.setStyleSheet(CloseDialog._build_qss(self))
+        self.setStyleSheet(localize_qss(CloseDialog._build_qss(self)))
         self.setMinimumWidth(340)
 
     def _set_status(self, text):
@@ -265,12 +262,28 @@ class AboutDialog(QDialog):
     def _download(self):
         if not self._dl_url:
             return
+        # macOS / Linux 没有对应安装包（latest.json 仅 Windows .exe）：不下载无用的 .exe，
+        # 改为在浏览器打开 GitHub releases 页，让用户自行下载对应平台的版本。
+        if sys.platform != "win32":
+            QDesktopServices.openUrl(QUrl(self._releases_page_url()))
+            self._set_status(self._tr("update_open_page"))
+            return
         self.btn_action.setEnabled(False)
         self._set_status(self._tr("update_downloading", pct=0))
         self._downloader = UpdateDownloader(self._dl_url, self)
         self._downloader.progress.connect(self._on_progress)
         self._downloader.finished.connect(self._on_downloaded)
         self._downloader.start()
+
+    def _releases_page_url(self):
+        """从下载直链推导 GitHub releases 的 tag 页；推导失败则退回原始链接。"""
+        url = self._dl_url or ""
+        marker = "/releases/download/"
+        if marker in url:
+            base, rest = url.split(marker, 1)
+            tag = rest.split("/", 1)[0]
+            return f"{base}/releases/tag/{tag}"
+        return url
 
     def _on_progress(self, rec, total):
         pct = int(rec * 100 / total) if total > 0 else 0
@@ -695,7 +708,7 @@ class MultiSendDialog(QDialog):
     def refresh_theme(self):
         self._apply_titlebar_theme()
         c = chrome_for(self.app._theme_id())
-        self.setStyleSheet(_dialog_list_qss(c) + f"""
+        self.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
         QPushButton#MsPrimaryBtn {{
             background-color: {c['accent']}; color: white; border: 0px;
             border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px; font-weight: 600;
@@ -721,7 +734,7 @@ class MultiSendDialog(QDialog):
             border: 1px solid {c['accent']}; border-radius: 4px; padding: 1px 4px;
             selection-background-color: {c['accent']}; selection-color: #FFFFFF;
         }}
-        """)
+        """))
         for r in getattr(self, "_rows", []):
             for key in ("nl", "cs"):
                 popup = r[key].view().window()
@@ -1029,7 +1042,7 @@ class KeywordHighlightDialog(QDialog):
         self._apply_titlebar_theme()
         c = chrome_for(self.app._theme_id())
         # 公共列表样式 + 左侧分组列表(QListWidget)样式
-        self.setStyleSheet(_dialog_list_qss(c) + f"""
+        self.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
         QListWidget#KwGroupList {{
             background-color: {c['input_bg']};
             border: 1px solid {c['separator']};
@@ -1053,7 +1066,7 @@ class KeywordHighlightDialog(QDialog):
             selection-background-color: {c['accent']};
             selection-color: #FFFFFF;
         }}
-        """)
+        """))
         for r in self._rows:                       # 颜色按钮保持各自底色
             self._paint_color_btn(r)
             for key in ("mode", "scope"):
