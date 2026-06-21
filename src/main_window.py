@@ -63,6 +63,16 @@ class CommTool(QMainWindow):
         self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
         self.rx_bytes = 0
         self.tx_bytes = 0
+        self.rx_packets = 0       # 收发包计数：RX=每次到达一块、TX=每次成功发送
+        self.tx_packets = 0
+        self.rx_errors = 0        # RX 错误：接收处理异常 + 连接/链路错误
+        self.tx_errors = 0        # TX 错误：发送失败（无对端 / 写失败 / 异常）
+        self._rx_rate = 0         # 当前速率 B/s（每秒采样一次的字节增量）
+        self._tx_rate = 0
+        self._rx_peak = 0         # 峰值速率 B/s
+        self._tx_peak = 0
+        self._rx_bytes_mark = 0   # 上次采样时的累计字节，用于算每秒增量
+        self._tx_bytes_mark = 0
 
         # 串口端口扫描（仅串口模式用）：后台轮询线程避免 comports() 卡 GUI
         self._last_port_list = []
@@ -72,6 +82,11 @@ class CommTool(QMainWindow):
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self.do_send)
+
+        # 收发速率采样：1Hz 取字节增量近似 B/s + 记录峰值，并刷新状态栏统计
+        self._rate_timer = QTimer(self)
+        self._rate_timer.timeout.connect(self._tick_rate)
+        self._rate_timer.start(1000)
 
         self._reset_recv_state()   # 接收解析状态（方向/缓冲/增量解码器/换行）统一初始化
         self._log_file = None
@@ -226,8 +241,8 @@ class CommTool(QMainWindow):
         self.status_bar.setContentsMargins(20, 0, 20, 0)
         self.status_bar.setSizeGripEnabled(False)
         self.setStatusBar(self.status_bar)
-        self.lbl_rx_stat = QLabel("RX: 0 B")
-        self.lbl_tx_stat = QLabel("TX: 0 B")
+        self.lbl_rx_stat = QLabel("RX 0 B")
+        self.lbl_tx_stat = QLabel("TX 0 B")
         self.lbl_state = QLabel(self._t("state_closed"))
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
@@ -248,6 +263,10 @@ class CommTool(QMainWindow):
         self.status_bar.addWidget(_sep())
         self.status_bar.addWidget(self.lbl_tx_stat)
 
+        # 状态栏右键 → 重置统计
+        self.status_bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.status_bar.customContextMenuRequested.connect(self._stat_context_menu)
+
         # 实时记录文件路径 — 右下角(版本号左侧)，仅记录时显示，太长中间省略+悬停看全路径
         self.lbl_log_path = QLabel("")
         self.lbl_log_path.setFont(ui_font(9))
@@ -266,6 +285,7 @@ class CommTool(QMainWindow):
 
         # 同步最大行数
         self._on_max_lines_changed()
+        self._refresh_stat_labels()   # 状态栏 RX/TX 统计初始文案 + tooltip
 
     def build_sidebar(self):
         host = QWidget()
@@ -1788,6 +1808,8 @@ class CommTool(QMainWindow):
             key = "err_serial_runtime"
         if msg == ERR_CONN_TIMEOUT:   # net_io 超时哨兵 → 按当前语言翻译（避免硬编码中文）
             msg = self._t("err_conn_timeout")
+        self.rx_errors += 1           # 连接/链路错误计入 RX 侧错误统计
+        self._refresh_stat_labels(with_tooltip=False)
         self.toast(self._t(key, e=msg), error=True)
         if self.conn is not None:
             self.close_conn()
@@ -2100,11 +2122,14 @@ class CommTool(QMainWindow):
         try:
             self._on_data_received_impl(data)
         except Exception as e:
+            self.rx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
 
     def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
-        self.lbl_rx_stat.setText(f"RX: {self.fmt_bytes(self.rx_bytes)}")
+        self.rx_packets += 1
+        self._refresh_stat_labels(with_tooltip=False)
 
         use_hex = self.sw_rx_hex.isChecked()
         use_line_split = self.sw_line_split.isChecked() and not use_hex
@@ -2523,17 +2548,24 @@ class CommTool(QMainWindow):
         try:
             sent = self.conn.send(data, self._send_target())
         except Exception as e:
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_send_failed", e=e), error=True)
             return False
         if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return False
         if sent <= 0:                # 底层 write/writeDatagram 失败（对端断开/网络不可达等）
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_send_failed"), error=True)
             return False
 
         self.tx_bytes += len(data)
-        self.lbl_tx_stat.setText(f"TX: {self.fmt_bytes(self.tx_bytes)}")
+        self.tx_packets += 1
+        self._refresh_stat_labels(with_tooltip=False)
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
@@ -2780,10 +2812,7 @@ class CommTool(QMainWindow):
         self._recv_highlight_line = -1
         self.txt_recv.setExtraSelections([])
         self.btn_to_bottom.hide()
-        self.rx_bytes = 0
-        self.tx_bytes = 0
-        self.lbl_rx_stat.setText("RX: 0 B")
-        self.lbl_tx_stat.setText("TX: 0 B")
+        self._reset_stats()
         self._reset_recv_state()
 
     # ----- 工具 -----
@@ -2794,6 +2823,82 @@ class CommTool(QMainWindow):
         if n < 1024 * 1024:
             return f"{n/1024:.1f} KB"
         return f"{n/1024/1024:.2f} MB"
+
+    # ----- 收发速率 / 包统计 -----
+    def _fmt_rate(self, bps):
+        return self.fmt_bytes(int(bps)) + "/s"
+
+    def _tick_rate(self):
+        """1Hz 采样：用本秒字节增量近似 B/s，并记录峰值，再刷新状态栏。"""
+        self._rx_rate = max(0, self.rx_bytes - self._rx_bytes_mark)
+        self._tx_rate = max(0, self.tx_bytes - self._tx_bytes_mark)
+        self._rx_bytes_mark = self.rx_bytes
+        self._tx_bytes_mark = self.tx_bytes
+        if self._rx_rate > self._rx_peak:
+            self._rx_peak = self._rx_rate
+        if self._tx_rate > self._tx_peak:
+            self._tx_peak = self._tx_rate
+        self._refresh_stat_labels()
+
+    def _refresh_stat_labels(self, with_tooltip=True):
+        """刷新状态栏 RX/TX 统计：字节 · 包数 · 速率（错误 >0 时追加 ⚠）。
+        高频收发路径传 with_tooltip=False 跳过 tooltip 重建，tooltip 走 1Hz 采样刷新。"""
+        if not hasattr(self, "lbl_rx_stat"):
+            return
+        unit = self._t("stat_pkt_unit")
+        rx = f"RX {self.fmt_bytes(self.rx_bytes)} · {self.rx_packets} {unit} · {self._fmt_rate(self._rx_rate)}"
+        if self.rx_errors:
+            rx += f" · ⚠{self.rx_errors}"
+        tx = f"TX {self.fmt_bytes(self.tx_bytes)} · {self.tx_packets} {unit} · {self._fmt_rate(self._tx_rate)}"
+        if self.tx_errors:
+            tx += f" · ⚠{self.tx_errors}"
+        self.lbl_rx_stat.setText(rx)
+        self.lbl_tx_stat.setText(tx)
+        if with_tooltip:
+            self.lbl_rx_stat.setToolTip(self._stat_tooltip("rx"))
+            self.lbl_tx_stat.setToolTip(self._stat_tooltip("tx"))
+
+    def _stat_tooltip(self, direction):
+        if direction == "rx":
+            head, b, p, r, pk, e = (self._t("stat_tip_rx"), self.rx_bytes,
+                                    self.rx_packets, self._rx_rate, self._rx_peak, self.rx_errors)
+        else:
+            head, b, p, r, pk, e = (self._t("stat_tip_tx"), self.tx_bytes,
+                                    self.tx_packets, self._tx_rate, self._tx_peak, self.tx_errors)
+        total = self.fmt_bytes(b) + (f" ({b:,} B)" if b >= 1024 else "")
+        return "\n".join([
+            head,
+            f"{self._t('stat_total')}: {total}",
+            f"{self._t('stat_packets')}: {p:,}",
+            f"{self._t('stat_rate')}: {self._fmt_rate(r)}",
+            f"{self._t('stat_peak')}: {self._fmt_rate(pk)}",
+            f"{self._t('stat_errors')}: {e:,}",
+        ])
+
+    def _reset_stats(self):
+        """清零收发统计（字节/包/错误/速率/峰值），不动数据区内容。"""
+        self.rx_bytes = self.tx_bytes = 0
+        self.rx_packets = self.tx_packets = 0
+        self.rx_errors = self.tx_errors = 0
+        self._rx_rate = self._tx_rate = 0
+        self._rx_peak = self._tx_peak = 0
+        self._rx_bytes_mark = self._tx_bytes_mark = 0
+        self._refresh_stat_labels()
+
+    def _stat_context_menu(self, pos):
+        """状态栏右键：重置统计（文字跟随语言、配色跟随主题）。"""
+        menu = QMenu(self.status_bar)
+        c = chrome_for(self._theme_id())
+        menu.setStyleSheet(f"""
+            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
+                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
+            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+        """)
+        act_reset = menu.addAction(self._t("stat_reset"))
+        chosen = menu.exec_(self.status_bar.mapToGlobal(pos))
+        if chosen is act_reset:
+            self._reset_stats()
 
     def toast(self, msg, error=False):
         if error:
@@ -2877,6 +2982,9 @@ class CommTool(QMainWindow):
                 self._update_conn_status()
             else:
                 self.lbl_state.setText(self._t("state_closed"))
+
+        # 状态栏 RX/TX 统计的包单位 + tooltip 随语言刷新
+        self._refresh_stat_labels()
 
         # 「目标」下拉里的「全部」项随语言刷新
         if hasattr(self, "cb_target") and self.cb_target.count() > 0:
