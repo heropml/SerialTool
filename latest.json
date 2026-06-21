@@ -1,5 +1,5 @@
 {
-  "version": "1.0.9",
-  "url": "https://github.com/heropml/SerialTool/releases/download/comm-v1.0.9/CommTool_Setup_v1.0.9.exe",
-  "notes": "CommTool 统一版：串口 + 网络（TCP/UDP）合一。"
+  "version": "1.1.0",
+  "url": "https://github.com/heropml/SerialTool/releases/download/comm-v1.1.0/CommTool_Setup_v1.1.0.exe",
+  "notes": "状态栏收发速率/包统计：RX/TX 显示字节·包数·实时速率(B/s)，悬停看明细（峰值速率/错误数），右键可重置统计。"
 }
