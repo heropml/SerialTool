@@ -9,7 +9,7 @@ import serial
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
 from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
-                         QFontMetrics, QTextFormat)
+                         QFontMetrics, QTextFormat, QPalette)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
@@ -37,6 +37,57 @@ PROTO_SERIAL = "Serial"
 CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
 
 
+class ThemedToolTip(QLabel):
+    """不透明主题化 tooltip（仅 macOS 用）。
+
+    macOS 上 Qt 给原生 QToolTip 套样式表后会把它设为半透明窗口，背景不绘制，
+    文字直接叠在底层控件上看不清。这里自绘一个：用 autoFillBackground + palette
+    上色（基于调色板的填充一定不透明，不走会触发半透明的 QSS 背景），边框用
+    QFrame.Box（颜色取前景色）。Windows 仍用原生圆角 tooltip。"""
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAutoFillBackground(True)
+        self.setContentsMargins(9, 6, 9, 6)
+        self.setFrameShape(QFrame.Box)
+        self.setFrameShadow(QFrame.Plain)
+        self.setLineWidth(1)
+        self.setFont(ui_font(10))
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+
+    def show_text(self, gpos, text, bg, fg):
+        if not text:
+            self.hide()
+            return
+        self.setText(text)
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(bg))
+        pal.setColor(QPalette.WindowText, QColor(fg))
+        self.setPalette(pal)
+        self.adjustSize()
+        self._place(gpos)
+        self.show()
+        self.raise_()
+        self._hide_timer.start(15000)   # 兜底自动隐藏（鼠标点击/移动也会触发隐藏）
+
+    def _place(self, gpos):
+        screen = QApplication.screenAt(gpos) or QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 99999, 99999)
+        w, h = self.width(), self.height()
+        x = gpos.x() + 14
+        y = gpos.y() + 18
+        if x + w > geo.right():
+            x = max(geo.left(), gpos.x() - w - 6)
+        if y + h > geo.bottom():
+            y = max(geo.top(), gpos.y() - h - 6)
+        self.move(x, y)
+
+
 # ============== 主窗口 ==============
 class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
@@ -56,7 +107,11 @@ class CommTool(QMainWindow):
         self._resize_start_geo = None
         self._resize_start_mouse = None
         self._hover_cursor_shape = None
-        if self._manual_resize:
+        # macOS：原生 QToolTip 加样式后背景透明，改用自绘不透明 tooltip，需 app 级
+        # 事件过滤器拦截 ToolTip 事件（Windows/Linux 原生 tooltip 正常，不拦截）。
+        self._mac_tooltip = sys.platform == "darwin"
+        self._tooltip_popup = None
+        if self._manual_resize or self._mac_tooltip:
             QApplication.instance().installEventFilter(self)
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
@@ -809,6 +864,16 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # macOS：拦截 ToolTip → 自绘不透明 tooltip（原生加样式后背景透明看不清）
+        if self._mac_tooltip:
+            et0 = event.type()
+            if et0 == QEvent.ToolTip:
+                return self._show_mac_tooltip(obj, event)
+            # 鼠标点击 / 滚轮 → 收起已显示的自绘 tooltip（贴近原生行为）
+            elif (self._tooltip_popup is not None and self._tooltip_popup.isVisible()
+                  and et0 in (QEvent.MouseButtonPress, QEvent.Wheel)):
+                self._tooltip_popup.hide()
+
         # 无边框窗口的手动缩放（仅 Linux：Windows 用 nativeEvent、macOS 用原生边框）：
         # 边缘左键按下→抓鼠标记起点，拖动→改几何，松开→释放；悬停→切换缩放光标。
         if self._manual_resize:
@@ -873,6 +938,23 @@ class CommTool(QMainWindow):
                       and event.button() == Qt.LeftButton):
                     self._highlight_recv_line(event.pos())
         return super().eventFilter(obj, event)
+
+    def _show_mac_tooltip(self, obj, event):
+        """macOS：取目标部件 toolTip 文本，按当前主题不透明显示自绘 tooltip。
+        有文本则返回 True 消费事件（阻止透明的原生 tooltip）；无文本交还默认。"""
+        text = obj.toolTip() if isinstance(obj, QWidget) else ""
+        if not text:
+            if self._tooltip_popup is not None:
+                self._tooltip_popup.hide()
+            return False
+        tid = self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT
+        t = THEMES.get(tid, THEMES[THEME_DEFAULT])
+        bg = "#F2F2F7" if t.get("mode") == "dark" else "#1C1C1E"
+        fg = "#1C1C1E" if t.get("mode") == "dark" else "#FFFFFF"
+        if self._tooltip_popup is None:
+            self._tooltip_popup = ThemedToolTip()
+        self._tooltip_popup.show_text(event.globalPos(), text, bg, fg)
+        return True
 
     def _recv_at_bottom(self, slack: int = 4) -> bool:
         sb = self.txt_recv.verticalScrollBar()
@@ -1613,7 +1695,7 @@ class CommTool(QMainWindow):
         QToolTip {{
             background-color: {tooltip_bg};
             color: {tooltip_fg};
-            border: 1px solid {tooltip_bg};
+            border: 0px;
             border-radius: 6px;
             padding: 4px 8px;
         }}
