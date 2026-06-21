@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """iOS 风格控件：IOSSwitch / TitleBar / Card / make_label。"""
+import sys
 from PyQt5.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QPoint,
                           pyqtSignal, pyqtProperty)
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QIcon
+from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
-                             QComboBox, QGraphicsDropShadowEffect, QMainWindow)
+                             QComboBox, QGraphicsDropShadowEffect, QMainWindow,
+                             QApplication)
 from theme import COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_GREEN
+from fonts import ui_font
 
 
 # ============== iOS 风格滑动开关 ==============
@@ -83,6 +86,7 @@ class TitleBar(QWidget):
         super().__init__(parent)
         self._win = parent
         self._drag_pos = None
+        self._sysmove_origin = None   # 非 Windows：按下点，拖动超阈值才发起原生系统移动
         self.setObjectName("TitleBar")
         self.setFixedHeight(self.HEIGHT)
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -96,7 +100,7 @@ class TitleBar(QWidget):
         layout.addWidget(self.icon_label)
 
         self.title_label = QLabel("")
-        self.title_label.setFont(QFont("Segoe UI", 10))
+        self.title_label.setFont(ui_font(10))
         self.title_label.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; background: transparent;")
         layout.addWidget(self.title_label)
@@ -133,6 +137,12 @@ class TitleBar(QWidget):
         self.btn_max.clicked.connect(self._toggle_max)
         self.btn_close.clicked.connect(self._win.close)
 
+        if sys.platform == "darwin":
+            # macOS 用系统原生红黄绿交通灯 → 隐藏自定义的最小化/最大化/关闭按钮
+            self.btn_min.hide()
+            self.btn_max.hide()
+            self.btn_close.hide()
+
     def _mk_btn(self, text):
         btn = QPushButton(text)
         btn.setFixedSize(46, self.HEIGHT)
@@ -158,7 +168,20 @@ class TitleBar(QWidget):
         self.update_max_icon()
 
     def mousePressEvent(self, event):
+        # macOS：标准原生标题栏由系统接管窗口拖动/缩放/双击，自定义栏不处理（避免冲突与卡死）
+        if sys.platform == "darwin":
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.LeftButton:
+            # 仅 Linux 用原生 startSystemMove（且延迟到真正拖动超阈值再发起，避免双击触发）。
+            # Windows 走「手动 move」——逐帧 move() 且检查按键，绝不会卡死。
+            if sys.platform != "win32" and not self._win.isMaximized():
+                self._sysmove_origin = event.globalPos()
+                self._drag_pos = None
+                event.accept()
+                return
+            # Windows / macOS / 已最大化：手动拖动（含最大化时拖动→还原的逻辑）
+            self._sysmove_origin = None
             if self._win.isMaximized():
                 self._drag_pos = None
             else:
@@ -166,7 +189,25 @@ class TitleBar(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event):
+        if sys.platform == "darwin":
+            super().mouseMoveEvent(event)
+            return
+        # 兜底：实际左键已松开就结束拖动并清状态。event.buttons() 可能因 showNormal/最大化切换
+        # 变陈旧，导致「鼠标不按、窗口却一直跟手移动」；用 QApplication 查真实按键状态最可靠。
+        if not (QApplication.mouseButtons() & Qt.LeftButton):
+            self._drag_pos = None
+            self._sysmove_origin = None
+            return
         if event.buttons() == Qt.LeftButton:
+            # Linux：移动超过阈值才发起原生系统移动（双击无位移 → 不触发）
+            if self._sysmove_origin is not None:
+                if (event.globalPos() - self._sysmove_origin).manhattanLength() > 6:
+                    self._sysmove_origin = None
+                    wh = self._win.windowHandle()
+                    if wh is not None:
+                        wh.startSystemMove()
+                event.accept()
+                return
             if self._win.isMaximized():
                 ratio = event.x() / max(self.width(), 1)
                 # 先取还原后的宽度（normalGeometry 不受最大化状态影响）。否则 showNormal()
@@ -184,12 +225,16 @@ class TitleBar(QWidget):
             event.accept()
 
     def mouseDoubleClickEvent(self, event):
+        if sys.platform == "darwin":
+            super().mouseDoubleClickEvent(event)
+            return
         if event.button() == Qt.LeftButton:
             self._toggle_max()
             event.accept()
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+        self._sysmove_origin = None
 
 
 # ============== 带阴影的卡片 ==============
@@ -207,9 +252,7 @@ class Card(QFrame):
 # ============== 标签 ==============
 def make_label(text, size=11, bold=False, color=COLOR_TEXT):
     lbl = QLabel(text)
-    f = QFont("Segoe UI", size)
-    if bold:
-        f.setWeight(QFont.DemiBold)
+    f = ui_font(size, bold)
     lbl.setFont(f)
     if color == COLOR_TEXT_SECONDARY:
         lbl.setProperty("theme_color_role", "secondary")

@@ -7,13 +7,13 @@ import sys
 import time
 import serial
 from datetime import datetime
-from PyQt5.QtCore import Qt, QTimer, QPoint, QSettings, QEvent
-from PyQt5.QtGui import (QFont, QColor, QTextCursor, QTextCharFormat,
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
+from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
                          QFontMetrics, QTextFormat)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
-                             QSystemTrayIcon, QMenu)
+                             QSystemTrayIcon, QMenu, QApplication)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -22,6 +22,7 @@ from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, 
                    chrome_for, COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_BLUE)
 from i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
+from fonts import ui_font, mono_font, localize_qss
 from widgets import make_label, IOSSwitch, TitleBar, Card
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
@@ -42,7 +43,21 @@ class CommTool(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        # macOS 用原生窗口边框（红黄绿交通灯 + 系统原生缩放）；Windows/Linux 仍是自定义无边框
+        if sys.platform == "darwin":
+            self.setWindowFlags(Qt.Window)
+        else:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+
+        # 边缘缩放：Windows 走下面的 nativeEvent(WM_NCHITTEST)；macOS 由原生边框处理；
+        # 其它（Linux）无边框又无原生缩放 → 应用级事件过滤器手动实现（悬停光标 + 拖拽改几何）。
+        self._manual_resize = sys.platform not in ("win32", "darwin")
+        self._resize_edges = Qt.Edges()
+        self._resize_start_geo = None
+        self._resize_start_mouse = None
+        self._hover_cursor_shape = None
+        if self._manual_resize:
+            QApplication.instance().installEventFilter(self)
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
         self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
@@ -75,6 +90,12 @@ class CommTool(QMainWindow):
         self._tray = None
 
         self.init_ui()
+        # 鼠标跟踪：仅手动缩放（Linux）需要——悬停时也产生 MouseMove 以实时切换缩放光标。
+        if self._manual_resize:
+            self.setMouseTracking(True)
+            self.centralWidget().setMouseTracking(True)
+            if hasattr(self, "title_bar"):
+                self.title_bar.setMouseTracking(True)
         self.refresh_ports()       # 启动即扫一次串口，cb_port 立刻有内容供恢复上次选择
         self.apply_style()
         self._load_settings()
@@ -116,7 +137,7 @@ class CommTool(QMainWindow):
         keys = ("protocol_type", "local_ip", "local_port", "group_addr",
                 "remote_ip", "remote_port", "target_client", "use_remote",
                 "port", "baud_rate", "data_bits", "parity", "stop_bits")
-        fm = QFontMetrics(QFont("Segoe UI", 11))
+        fm = QFontMetrics(ui_font(11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
         return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
 
@@ -210,12 +231,12 @@ class CommTool(QMainWindow):
         self.lbl_state = QLabel(self._t("state_closed"))
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
-            lbl.setFont(QFont("Segoe UI", 10))
+            lbl.setFont(ui_font(10))
 
         def _sep():
             """竖线分隔符（无自带色 → 跟随状态栏 text_sec，主题自适应）"""
             s = QLabel("│")
-            s.setFont(QFont("Segoe UI", 10))
+            s.setFont(ui_font(10))
             s.setObjectName("StatusSep")
             return s
 
@@ -229,7 +250,7 @@ class CommTool(QMainWindow):
 
         # 实时记录文件路径 — 右下角(版本号左侧)，仅记录时显示，太长中间省略+悬停看全路径
         self.lbl_log_path = QLabel("")
-        self.lbl_log_path.setFont(QFont("Segoe UI", 9))
+        self.lbl_log_path.setFont(ui_font(9))
         self.lbl_log_path.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
         self._log_path_elide_w = 560
         self.status_bar.addPermanentWidget(self.lbl_log_path)
@@ -239,7 +260,7 @@ class CommTool(QMainWindow):
 
         # 版本号 — 右下角 (addPermanentWidget 走右边)
         self.lbl_version = QLabel(f"v{APP_VERSION}")
-        self.lbl_version.setFont(QFont("Segoe UI", 10))
+        self.lbl_version.setFont(ui_font(10))
         self.lbl_version.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
         self.status_bar.addPermanentWidget(self.lbl_version)
 
@@ -644,7 +665,7 @@ class CommTool(QMainWindow):
             f'&nbsp;&nbsp;'
             f'<span style="color:{COLOR_BLUE};">{self._t("legend_tx")}</span>'
         )
-        self.legend_label.setFont(QFont("Segoe UI", 10))
+        self.legend_label.setFont(ui_font(10))
         self.legend_label.setStyleSheet("background: transparent;")
         title_row.addWidget(self.legend_label)
         title_row.addStretch(1)
@@ -693,7 +714,7 @@ class CommTool(QMainWindow):
         self.txt_recv = QTextEdit()
         self.txt_recv.setReadOnly(True)
         self.txt_recv.setObjectName("RecvBox")
-        self.txt_recv.setFont(QFont("Consolas", self._recv_font_size))
+        self.txt_recv.setFont(mono_font(self._recv_font_size))
         self.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
@@ -768,6 +789,44 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # 无边框窗口的手动缩放（仅 Linux：Windows 用 nativeEvent、macOS 用原生边框）：
+        # 边缘左键按下→抓鼠标记起点，拖动→改几何，松开→释放；悬停→切换缩放光标。
+        if self._manual_resize:
+            et = event.type()
+            if (et == QEvent.MouseButtonPress and event.button() == Qt.LeftButton
+                    and not self._resize_edges
+                    and (obj is self or (isinstance(obj, QWidget) and self.isAncestorOf(obj)))
+                    and self.isActiveWindow() and not self.isMaximized() and self.isVisible()):
+                pos = self.mapFromGlobal(event.globalPos())
+                if self.rect().contains(pos):
+                    edges = self._edges_at(pos)
+                    if edges:
+                        self._resize_edges = edges
+                        self._resize_start_geo = self.geometry()
+                        self._resize_start_mouse = event.globalPos()
+                        # 应用级覆盖光标：整个拖动期间稳定显示缩放光标，不受 setGeometry 影响
+                        QApplication.setOverrideCursor(self._resize_cursor(edges))
+                        self.grabMouse()
+                        return True
+            elif et == QEvent.MouseMove and self._resize_edges:
+                if QApplication.mouseButtons() & Qt.LeftButton:
+                    self._perform_resize(event.globalPos())
+                else:
+                    # 没收到释放事件（grab 丢失等）→ 主动收尾，避免覆盖光标卡死
+                    self._end_resize()
+                return True
+            elif et == QEvent.MouseButtonRelease and self._resize_edges:
+                self._end_resize()
+                return True
+            elif (et == QEvent.MouseMove and not self._resize_edges
+                    and not (event.buttons() & Qt.LeftButton)
+                    and (obj is self or (isinstance(obj, QWidget) and self.isAncestorOf(obj)))):
+                # 悬停（未按键）在边缘 → 切换缩放光标，让用户一眼看出可拖拽缩放
+                if self.isActiveWindow() and not self.isMaximized():
+                    pos = self.mapFromGlobal(event.globalPos())
+                    self._update_hover_cursor(
+                        self._edges_at(pos) if self.rect().contains(pos) else Qt.Edges())
+
         if hasattr(self, "txt_recv"):
             # 接收区尺寸变化 → 重定位浮动「回到底部」按钮 + 查找栏
             if obj is self.txt_recv and event.type() == QEvent.Resize:
@@ -1343,7 +1402,7 @@ class CommTool(QMainWindow):
 
         self.txt_send = QTextEdit()
         self.txt_send.setObjectName("SendBox")
-        self.txt_send.setFont(QFont("Consolas", 10))
+        self.txt_send.setFont(mono_font(10))
         # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
         self.txt_send.setFixedHeight(64)
         self.txt_send.setProperty("tr_placeholder", "send_placeholder")
@@ -1581,7 +1640,7 @@ class CommTool(QMainWindow):
             background: transparent;
         }}
         """
-        self.setStyleSheet(qss)
+        self.setStyleSheet(localize_qss(qss))
         # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
         # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
         for w in self.findChildren(QWidget):
@@ -2670,7 +2729,7 @@ class CommTool(QMainWindow):
         if new_size == self._recv_font_size:
             return
         self._recv_font_size = new_size
-        self.txt_recv.setFont(QFont("Consolas", new_size))
+        self.txt_recv.setFont(mono_font(new_size))
         self.toast(self._t("font_size_msg", size=new_size))
 
     def _on_max_lines_changed(self):
@@ -2855,7 +2914,23 @@ class CommTool(QMainWindow):
         """
         优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
+        macOS：不走绿色版逻辑（绝不写进 .app 包内 —— 会破坏签名、重装即丢），
+        固定用 ~/Library/Application Support/CommTool/。
         """
+        if sys.platform == "darwin":
+            cfg_dir = os.path.join(
+                os.path.expanduser("~/Library/Application Support"), "CommTool")
+            new_ini = os.path.join(cfg_dir, "settings.ini")
+            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失。
+            legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
+            if not os.path.exists(new_ini) and os.path.exists(legacy):
+                return legacy
+            try:
+                os.makedirs(cfg_dir, exist_ok=True)
+            except Exception:
+                pass
+            return new_ini
+
         if getattr(sys, "frozen", False):
             base = os.path.dirname(sys.executable)
         else:
@@ -2980,7 +3055,7 @@ class CommTool(QMainWindow):
         try:
             size = int(s.value("recv_font_size", 10))
             self._recv_font_size = max(7, min(28, size))
-            self.txt_recv.setFont(QFont("Consolas", self._recv_font_size))
+            self.txt_recv.setFont(mono_font(self._recv_font_size))
         except (ValueError, TypeError):
             pass
 
@@ -3262,6 +3337,76 @@ class CommTool(QMainWindow):
             except Exception:
                 pass
         return super().nativeEvent(event_type, message)
+
+    # ----- 无边框窗口缩放（macOS / Linux：手动实现，不依赖 startSystemResize）-----
+    def _edges_at(self, pos):
+        """鼠标点相对窗口的边缘命中，返回 Qt.Edges（无命中则为 0）。"""
+        m = self.RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edges = Qt.Edges()
+        if x <= m:
+            edges |= Qt.LeftEdge
+        elif x >= w - m:
+            edges |= Qt.RightEdge
+        if y <= m:
+            edges |= Qt.TopEdge
+        elif y >= h - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def _resize_cursor(self, edges):
+        """命中边缘对应的缩放光标（仅在拖拽期间用 grabMouse 设置）。"""
+        if edges in (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge):
+            return Qt.SizeFDiagCursor
+        if edges in (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge):
+            return Qt.SizeBDiagCursor
+        if edges & (Qt.LeftEdge | Qt.RightEdge):
+            return Qt.SizeHorCursor
+        if edges & (Qt.TopEdge | Qt.BottomEdge):
+            return Qt.SizeVerCursor
+        return Qt.ArrowCursor
+
+    def _perform_resize(self, gpos):
+        """按拖拽位移调整窗口几何，遵守最小尺寸。"""
+        g = QRect(self._resize_start_geo)
+        dx = gpos.x() - self._resize_start_mouse.x()
+        dy = gpos.y() - self._resize_start_mouse.y()
+        minw, minh = self.minimumWidth(), self.minimumHeight()
+        e = self._resize_edges
+        if e & Qt.LeftEdge:
+            g.setLeft(min(g.left() + dx, g.right() - minw + 1))
+        elif e & Qt.RightEdge:
+            g.setRight(max(g.right() + dx, g.left() + minw - 1))
+        if e & Qt.TopEdge:
+            g.setTop(min(g.top() + dy, g.bottom() - minh + 1))
+        elif e & Qt.BottomEdge:
+            g.setBottom(max(g.bottom() + dy, g.top() + minh - 1))
+        self.setGeometry(g)
+
+    def _end_resize(self):
+        """结束缩放：清状态、释放鼠标、还原覆盖光标。"""
+        self._resize_edges = Qt.Edges()
+        self.releaseMouse()
+        QApplication.restoreOverrideCursor()
+
+    def _update_hover_cursor(self, edges):
+        """悬停边缘时设置/复位缩放光标（带状态去抖，避免反复 set/unset）。"""
+        shape = self._resize_cursor(edges) if edges else None
+        if shape == self._hover_cursor_shape:
+            return
+        self._hover_cursor_shape = shape
+        if shape is not None:
+            self.setCursor(shape)
+        else:
+            self.unsetCursor()
+
+    def leaveEvent(self, e):
+        # 鼠标离开窗口 → 复位悬停缩放光标；缩放进行中不动，避免拖拽时光标被清成箭头
+        if not self._resize_edges and self._hover_cursor_shape is not None:
+            self._hover_cursor_shape = None
+            self.unsetCursor()
+        super().leaveEvent(e)
 
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
