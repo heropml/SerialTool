@@ -37,6 +37,22 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.1
+
+Two data-analysis tools, both opened from the title bar:
+
+- **Waveform plot** (title bar **Plot**) — parses numbers out of incoming RX data and draws them as live multi-channel scrolling curves (oscilloscope-style).
+  - Three parse modes: **delimiter** (comma/space/Tab/semicolon/auto — one curve per column), **regex** (one per capture group), and **HEX byte fields** (for binary protocols — pick values by `offset:type` + header filter);
+  - per-channel show/hide & color, window size (points), X axis by sample index or time, pause/clear/export CSV; the window can be minimized/maximized/resized.
+- **Protocol frame parser** (title bar **Frames**) — decodes each received frame into a "name = value" table.
+  - **Multiple frames / rules**: each rule row is "header | field definition"; each frame matches the first rule whose header prefix fits;
+  - an **All** tab for the mixed frame stream plus one column-split tab per rule; index column + raw-frame column;
+  - field types are numeric + `hexN`/`strN`; append `x` to a numeric type to show it in hex;
+  - Ctrl+C / right-click copy & select-all, export CSV, pause, draggable column widths, scroll-lock + "↓ latest".
+- The plot and the frame parser share one set of header/field definitions; new deps pyqtgraph + numpy (bundled in the installer). Trilingual UI kept in sync.
+
+---
+
 ## What's New in v1.1.0
 
 The status-bar RX/TX counters are upgraded from plain byte counts to **bytes · packets · live rate**:
@@ -368,7 +384,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.0`)
+- current **version** (`v1.1.1`)
 
 ---
 

@@ -32,17 +32,17 @@ CommTool 同时发布 **Windows** 和 **macOS** 两个安装包,共用同一个 
 
 ### 1. Windows 机器上
 ```powershell
-.\scripts\release.ps1 1.1.0 "本次更新说明"
+.\scripts\release.ps1 1.1.1 "本次更新说明"
 ```
 自动完成：改版本号 → 改 `latest.json` → 打包 `.exe` → git 提交 → push →
-建 Release `comm-v1.1.0` 上传 `.exe`。
+建 Release `comm-v1.1.1` 上传 `.exe`。
 
 ### 2. macOS 机器上
 ```bash
 git pull
-bash scripts/release_macos.sh 1.1.0
+bash scripts/release_macos.sh 1.1.1
 ```
-自动完成：版本号对齐 → 打包 `.dmg` → 把 `.dmg` 上传到**同一个** Release `comm-v1.1.0`。
+自动完成：版本号对齐 → 打包 `.dmg` → 把 `.dmg` 上传到**同一个** Release `comm-v1.1.1`。
 
 完成后该 Release 同时挂着 `.exe` 和 `.dmg`，`latest.json` 也已是新版，
 两平台用户在 app 内「关于 → 检查更新」都能收到提示：
@@ -68,7 +68,7 @@ bash scripts/release_macos.sh 1.1.0
 
 ## 四、试打包（不发布）
 
-- Windows：`.\scripts\release.ps1 1.1.0 "说明" -Local`（只本地打包+提交，跳过 push/Release）
+- Windows：`.\scripts\release.ps1 1.1.1 "说明" -Local`（只本地打包+提交，跳过 push/Release）
 - macOS：`bash scripts/build_macos.sh --dmg`（只打包 `.app` + `.dmg`，不碰 git/Release）
 
 ---
@@ -78,7 +78,7 @@ bash scripts/release_macos.sh 1.1.0
 | 项 | 值 |
 |----|----|
 | 版本号来源 | `src/version.py` 的 `__version__`（X.Y.Z） |
-| Release tag | `comm-v<版本>`（如 `comm-v1.1.0`） |
+| Release tag | `comm-v<版本>`（如 `comm-v1.1.1`） |
 | Windows 包名 | `CommTool_Setup_v<版本>.exe` |
 | macOS 包名 | `CommTool_v<版本>.dmg` |
 | 分支 | `CommTool` |

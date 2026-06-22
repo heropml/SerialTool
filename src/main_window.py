@@ -128,6 +128,7 @@ class CommTool(QMainWindow):
         self._tx_peak = 0
         self._rx_bytes_mark = 0   # 上次采样时的累计字节，用于算每秒增量
         self._tx_bytes_mark = 0
+        self._rate_time_mark = time.monotonic()  # 实际采样时刻，避免 GUI 延迟扭曲 B/s
 
         # 串口端口扫描（仅串口模式用）：后台轮询线程避免 comports() 卡 GUI
         self._last_port_list = []
@@ -767,6 +768,22 @@ class CommTool(QMainWindow):
         self.btn_filter_hl.setProperty("tr_text", "filter_highlight")
         self.btn_filter_hl.toggled.connect(self._on_filter_hl_toggled)
         title_row.addWidget(self.btn_filter_hl)
+        title_row.addSpacing(6)
+
+        # 波形图：放在高亮按钮组右侧（与「关键字高亮 / 只显高亮行」分开）
+        self.btn_plot = QPushButton(self._t("plot_open"))
+        self.btn_plot.setObjectName("GhostBtn")
+        self.btn_plot.setProperty("tr_text", "plot_open")
+        self.btn_plot.clicked.connect(self.open_plot)
+        title_row.addWidget(self.btn_plot)
+        title_row.addSpacing(6)
+
+        # 帧解析表：把每帧按模板（帧头 + 名称=偏移:类型）解析成字段表格
+        self.btn_frame = QPushButton(self._t("frame_open"))
+        self.btn_frame.setObjectName("GhostBtn")
+        self.btn_frame.setProperty("tr_text", "frame_open")
+        self.btn_frame.clicked.connect(self.open_frame_parse)
+        title_row.addWidget(self.btn_frame)
         title_row.addSpacing(8)
 
         self.btn_font_dec = QPushButton("A−")
@@ -2146,6 +2163,10 @@ class CommTool(QMainWindow):
             self._multi_send_dlg.refresh_theme()
         if getattr(self, "_keyword_dlg", None) is not None:
             self._keyword_dlg.refresh_theme()
+        if getattr(self, "_plot_dlg", None) is not None:
+            self._plot_dlg.refresh_theme()
+        if getattr(self, "_frame_dlg", None) is not None:
+            self._frame_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -2211,6 +2232,20 @@ class CommTool(QMainWindow):
             self.rx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
+        # 波形图（若已打开）：用同一份原始数据自行缓冲/解析/绘曲线，与显示区解耦；
+        # 自带异常兜底，绘图侧的问题不影响数据接收主流程
+        dlg = getattr(self, "_plot_dlg", None)
+        if dlg is not None and dlg.isVisible():
+            try:
+                dlg.feed(data)
+            except Exception:
+                pass
+        fdlg = getattr(self, "_frame_dlg", None)
+        if fdlg is not None and fdlg.isVisible():
+            try:
+                fdlg.feed(data)
+            except Exception:
+                pass
 
     def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
@@ -2551,6 +2586,35 @@ class CommTool(QMainWindow):
         dlg.retranslate()
         dlg._reload_group_list()    # 复用时同步最新分组
         dlg._reload_rows()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_plot(self):
+        """打开数据波形图（单实例，复用并刷新主题/语言）。
+        pyqtgraph 懒导入：缺库时只提示、不影响主程序其余功能。"""
+        if getattr(self, "_plot_dlg", None) is None:
+            try:
+                from plot_dialog import PlotDialog
+            except Exception as e:
+                self.toast(self._t("plot_need_lib", e=e), error=True)
+                return
+            self._plot_dlg = PlotDialog(self)
+        dlg = self._plot_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_frame_parse(self):
+        """打开协议帧解析表（单实例，复用并刷新主题/语言）。"""
+        if getattr(self, "_frame_dlg", None) is None:
+            from frame_dialog import FrameParseDialog
+            self._frame_dlg = FrameParseDialog(self)
+        dlg = self._frame_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -2916,11 +2980,14 @@ class CommTool(QMainWindow):
         return self.fmt_bytes(int(bps)) + "/s"
 
     def _tick_rate(self):
-        """1Hz 采样：用本秒字节增量近似 B/s，并记录峰值，再刷新状态栏。"""
-        self._rx_rate = max(0, self.rx_bytes - self._rx_bytes_mark)
-        self._tx_rate = max(0, self.tx_bytes - self._tx_bytes_mark)
+        """1Hz 采样：按真实时间间隔换算 B/s，并记录峰值。"""
+        now = time.monotonic()
+        elapsed = max(0.001, now - self._rate_time_mark)
+        self._rx_rate = max(0, int((self.rx_bytes - self._rx_bytes_mark) / elapsed))
+        self._tx_rate = max(0, int((self.tx_bytes - self._tx_bytes_mark) / elapsed))
         self._rx_bytes_mark = self.rx_bytes
         self._tx_bytes_mark = self.tx_bytes
+        self._rate_time_mark = now
         if self._rx_rate > self._rx_peak:
             self._rx_peak = self._rx_rate
         if self._tx_rate > self._tx_peak:
@@ -2970,6 +3037,7 @@ class CommTool(QMainWindow):
         self._rx_rate = self._tx_rate = 0
         self._rx_peak = self._tx_peak = 0
         self._rx_bytes_mark = self._tx_bytes_mark = 0
+        self._rate_time_mark = time.monotonic()
         self._refresh_stat_labels()
 
     def _stat_context_menu(self, pos):
@@ -3103,6 +3171,10 @@ class CommTool(QMainWindow):
             self._multi_send_dlg.retranslate()
         if getattr(self, "_keyword_dlg", None) is not None:
             self._keyword_dlg.retranslate()
+        if getattr(self, "_plot_dlg", None) is not None:
+            self._plot_dlg.retranslate()
+        if getattr(self, "_frame_dlg", None) is not None:
+            self._frame_dlg.retranslate()
 
     # ----- 持久化 -----
     @staticmethod
@@ -3656,4 +3728,3 @@ class CommTool(QMainWindow):
             e.accept()
         else:
             e.ignore()
-

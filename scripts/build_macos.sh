@@ -28,11 +28,12 @@ echo "[1/4] 使用虚拟环境: $VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 
-# [2/4] 安装依赖（国内可用清华镜像加速；海外删掉 -i 参数或设 PIP_INDEX 为空）
+# [2/4] 安装依赖（从 requirements.txt 装，避免漏装运行时依赖如 pyqtgraph/numpy）
+#       国内可用清华镜像加速；海外可 export PIP_INDEX=https://pypi.org/simple
 echo "[2/4] 安装依赖 ..."
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 python -m pip install --upgrade pip -i "$PIP_INDEX" >/dev/null
-python -m pip install -i "$PIP_INDEX" PyQt5 pyserial pyinstaller Pillow >/dev/null
+python -m pip install -i "$PIP_INDEX" -r requirements.txt >/dev/null
 
 # [3/4] 生成 .icns 图标
 echo "[3/4] 生成 .icns 图标 ..."
@@ -89,6 +90,14 @@ if [ -n "$VER" ]; then
     plutil -replace CFBundleVersion -string "$VER" "$APP/Contents/Info.plist"
     echo " 版本号写入 Info.plist: $VER"
 fi
+
+# 不跟随 macOS 系统暗色：本 app 用自带 QSS 主题统一上色。若跟随系统暗色，QTableWidget /
+# QHeaderView / QScrollArea 视口等原生控件在暗色下不认 QSS 背景，会变黑底，叠上浅色主题的
+# 深色文字 → 帧解析 / 波形图等弹窗黑底看不清（主窗口不用这些控件所以正常）。强制 Aqua(浅)
+# 系统外观后，原生控件回到浅底，9 套 QSS 主题(浅/深)照常生效。
+plutil -replace NSRequiresAquaSystemAppearance -bool true "$APP/Contents/Info.plist" 2>/dev/null \
+    || plutil -insert NSRequiresAquaSystemAppearance -bool true "$APP/Contents/Info.plist"
+echo " 禁用系统暗色外观跟随: NSRequiresAquaSystemAppearance=true"
 
 echo
 echo "============================================"

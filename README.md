@@ -143,7 +143,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.1.0`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.1.1`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -251,7 +251,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.1.0")
+│   └── version.py          版本号单点真源 (__version__ = "1.1.1")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -340,7 +340,7 @@ scripts\build_onefile.bat
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name CommTool_onefile_v1.1.0 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.1.1 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -373,7 +373,7 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 ```
 然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
@@ -544,3 +544,4 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v20 (v1.0.8)**: 修复关键字 / 搜索高亮时，底部新接收的数据会「整批闪一下高亮」的问题（高亮选区不再随末尾插入延伸）
 - **CommTool 分支（统一版）**: 串口版 SerialTool 与网络版 NetworkTool 合并为一个产品 **CommTool / 通信调试工具**。「类型」下拉统一 串口 + 网络五种连接（串口 `SerialConn` 与网络 `net_io` 共用 `open()/close()/send()/is_open` + 信号接口，主窗口同一个 `self.conn`）；恢复 `serial_io.py` 与 pyserial 依赖；品牌、类名、AppUserModelID、`%APPDATA%` 配置目录、安装包 / dist / .iss 全部更名 CommTool（新独立安装 GUID，不覆盖旧版；旧 NetworkTool 配置自动回退读取）；发布走 CommTool 分支、tag 前缀 `comm-v`
 - **v21 (v1.1.0)**: **收发速率 / 包统计**——底部状态栏的 RX/TX 由「纯字节数」升级为「字节 · 包数 · 实时速率(B/s)」：包计数（RX = 每次到达一块、TX = 每次成功发送）、1Hz 采样的实时速率、错误数 >0 时追加 ⚠ 标记；鼠标悬停 RX/TX 标签弹出 tooltip 看完整明细（总量 / 包数 / 当前速率 / **峰值速率** / 错误数）；状态栏**右键「重置统计」**清零计数器（不动数据区，跟随语言/主题）；速率采样常驻、断开后自然归零；三语 i18n 同步、无新依赖、无新文件
+- **v22 (v1.1.1)**: **数据波形图 + 协议帧解析**两大数据分析功能（标题栏「波形图」「帧解析」）。波形图（pyqtgraph）从 RX 解析数值实时绘多通道滚动曲线，三种解析（分隔符 / 正则 / HEX 字节字段 + 帧头过滤），通道显隐配色、窗口点数、X 轴样本/时间、暂停/清空/导出 CSV、窗口可缩放。帧解析表多帧多规则（规则列表「帧头 | 字段定义」，按帧头前缀匹配），「全部」+ 分规则标签、序号列 + 原始帧列、数值 x 后缀十六进制、hexN/strN、复制/导出、滚动锁定 +「↓最新」回底。二者共用 `binproto` 字段定义。新增依赖 pyqtgraph + numpy（安装包内置）；三语 i18n
