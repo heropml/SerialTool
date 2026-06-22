@@ -15,7 +15,10 @@ from updater import UpdateChecker, UpdateDownloader, run_installer
 
 # ============== 无边框对话框「按住空白处拖动」混入 ==============
 class _DragFramelessMixin:
-    """无边框对话框没有标题栏 → 默认拖不动。按住卡片空白处即可拖动（按钮各自吃掉点击，不受影响）。"""
+    """无边框对话框没有标题栏 → 默认拖不动。按住卡片空白处即可拖动（按钮各自吃掉点击，不受影响）。
+    注意：只有「会消费鼠标事件」的控件（按钮/输入框/下拉等）点击时不触发拖动；若日后在卡片里放了
+    QLabel 等不消费事件的控件，点它也会拖动——届时给该控件设 setAttribute(WA_TransparentForMouseEvents)
+    或在此判断 childAt() 排除。当前 CloseDialog/AboutDialog 只有按钮+标签且标签区域可拖动是预期行为。"""
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._drag_off = event.globalPos() - self.frameGeometry().topLeft()

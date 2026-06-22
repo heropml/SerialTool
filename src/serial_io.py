@@ -5,6 +5,18 @@ import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 
+def _scan_ports():
+    """枚举可用串口 → [(device, label), ...]，label 形如 'COM3  USB-SERIAL CH340'。
+    后台轮询(PortScannerThread)与手动一次性扫描(OneShotPortScanner)共用，
+    避免两处各写一份 label 拼接逻辑、改一处漏另一处导致显示格式漂移。"""
+    result = []
+    for p in serial.tools.list_ports.comports():
+        desc = p.description.replace(p.device, "").strip(" ()-")
+        label = f"{p.device}  {desc}" if desc else p.device
+        result.append((p.device, label))
+    return result
+
+
 # ============== 串口读取线程 ==============
 class SerialReader(QThread):
     data_received = pyqtSignal(bytes)
@@ -128,13 +140,7 @@ class PortScannerThread(QThread):
     def run(self):
         while self._running:
             try:
-                ports = list(serial.tools.list_ports.comports())
-                result = []
-                for p in ports:
-                    desc = p.description.replace(p.device, "").strip(" ()-")
-                    label = f"{p.device}  {desc}" if desc else p.device
-                    result.append((p.device, label))
-                self.scan_complete.emit(result)
+                self.scan_complete.emit(_scan_ports())
             except Exception:
                 pass
             self.msleep(self._interval)
@@ -150,13 +156,7 @@ class OneShotPortScanner(QThread):
 
     def run(self):
         try:
-            ports = list(serial.tools.list_ports.comports())
-            result = []
-            for p in ports:
-                desc = p.description.replace(p.device, "").strip(" ()-")
-                label = f"{p.device}  {desc}" if desc else p.device
-                result.append((p.device, label))
-            self.scan_complete.emit(result)
+            self.scan_complete.emit(_scan_ports())
         except Exception:
             self.scan_complete.emit([])
 

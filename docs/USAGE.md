@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.0
+
+The status-bar RX/TX counters are upgraded from plain byte counts to **bytes · packets · live rate**:
+
+- **Packet counts** — RX counts one packet per arriving chunk; TX counts one per successful send.
+- **Live rate** — current RX/TX throughput (B/s), sampled at 1 Hz; always running, decays to zero after disconnect.
+- **Hover for details** — hovering the RX/TX label shows a tooltip with total / packets / current rate / **peak rate** / error count (a ⚠ marker is appended to the label when errors > 0).
+- **Reset stats** — **right-click the status bar → "Reset stats"** to zero all counters (data area untouched; follows language/theme).
+- **macOS fix** — fixed transparent tooltip backgrounds on macOS that made hover text unreadable (now drawn as an opaque popup).
+
+---
+
 ## What's New in v1.0.9 (Unified)
 
 Merged from the serial-only SerialTool and the network-only NetworkTool — one tool now does **both serial and network**:
@@ -356,7 +368,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.0.9`)
+- current **version** (`v1.1.0`)
 
 ---
 

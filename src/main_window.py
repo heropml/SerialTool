@@ -9,7 +9,7 @@ import serial
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
 from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
-                         QFontMetrics, QTextFormat)
+                         QFontMetrics, QTextFormat, QPalette)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
@@ -37,6 +37,57 @@ PROTO_SERIAL = "Serial"
 CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
 
 
+class ThemedToolTip(QLabel):
+    """不透明主题化 tooltip（仅 macOS 用）。
+
+    macOS 上 Qt 给原生 QToolTip 套样式表后会把它设为半透明窗口，背景不绘制，
+    文字直接叠在底层控件上看不清。这里自绘一个：用 autoFillBackground + palette
+    上色（基于调色板的填充一定不透明，不走会触发半透明的 QSS 背景），边框用
+    QFrame.Box（颜色取前景色）。Windows 仍用原生圆角 tooltip。"""
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAutoFillBackground(True)
+        self.setContentsMargins(9, 6, 9, 6)
+        self.setFrameShape(QFrame.Box)
+        self.setFrameShadow(QFrame.Plain)
+        self.setLineWidth(1)
+        self.setFont(ui_font(10))
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+
+    def show_text(self, gpos, text, bg, fg):
+        if not text:
+            self.hide()
+            return
+        self.setText(text)
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(bg))
+        pal.setColor(QPalette.WindowText, QColor(fg))
+        self.setPalette(pal)
+        self.adjustSize()
+        self._place(gpos)
+        self.show()
+        self.raise_()
+        self._hide_timer.start(15000)   # 兜底自动隐藏（鼠标点击/移动也会触发隐藏）
+
+    def _place(self, gpos):
+        screen = QApplication.screenAt(gpos) or QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 99999, 99999)
+        w, h = self.width(), self.height()
+        x = gpos.x() + 14
+        y = gpos.y() + 18
+        if x + w > geo.right():
+            x = max(geo.left(), gpos.x() - w - 6)
+        if y + h > geo.bottom():
+            y = max(geo.top(), gpos.y() - h - 6)
+        self.move(x, y)
+
+
 # ============== 主窗口 ==============
 class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
@@ -56,13 +107,27 @@ class CommTool(QMainWindow):
         self._resize_start_geo = None
         self._resize_start_mouse = None
         self._hover_cursor_shape = None
-        if self._manual_resize:
+        # macOS：原生 QToolTip 加样式后背景透明，改用自绘不透明 tooltip，需 app 级
+        # 事件过滤器拦截 ToolTip 事件（Windows/Linux 原生 tooltip 正常，不拦截）。
+        self._mac_tooltip = sys.platform == "darwin"
+        self._tooltip_popup = None
+        if self._manual_resize or self._mac_tooltip:
             QApplication.instance().installEventFilter(self)
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
         self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
         self.rx_bytes = 0
         self.tx_bytes = 0
+        self.rx_packets = 0       # 收发包计数：RX=每次到达一块、TX=每次成功发送
+        self.tx_packets = 0
+        self.rx_errors = 0        # RX 错误：接收处理异常 + 连接/链路错误
+        self.tx_errors = 0        # TX 错误：发送失败（无对端 / 写失败 / 异常）
+        self._rx_rate = 0         # 当前速率 B/s（每秒采样一次的字节增量）
+        self._tx_rate = 0
+        self._rx_peak = 0         # 峰值速率 B/s
+        self._tx_peak = 0
+        self._rx_bytes_mark = 0   # 上次采样时的累计字节，用于算每秒增量
+        self._tx_bytes_mark = 0
 
         # 串口端口扫描（仅串口模式用）：后台轮询线程避免 comports() 卡 GUI
         self._last_port_list = []
@@ -72,6 +137,11 @@ class CommTool(QMainWindow):
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self.do_send)
+
+        # 收发速率采样：1Hz 取字节增量近似 B/s + 记录峰值，并刷新状态栏统计
+        # （start 推迟到 init_ui 之后，确保首个 tick 触发时 lbl_rx_stat 已创建）
+        self._rate_timer = QTimer(self)
+        self._rate_timer.timeout.connect(self._tick_rate)
 
         self._reset_recv_state()   # 接收解析状态（方向/缓冲/增量解码器/换行）统一初始化
         self._log_file = None
@@ -90,6 +160,7 @@ class CommTool(QMainWindow):
         self._tray = None
 
         self.init_ui()
+        self._rate_timer.start(1000)   # init_ui 后再启动统计采样，保证首 tick 时 lbl_rx_stat 已存在
         # 鼠标跟踪：仅手动缩放（Linux）需要——悬停时也产生 MouseMove 以实时切换缩放光标。
         if self._manual_resize:
             self.setMouseTracking(True)
@@ -226,8 +297,8 @@ class CommTool(QMainWindow):
         self.status_bar.setContentsMargins(20, 0, 20, 0)
         self.status_bar.setSizeGripEnabled(False)
         self.setStatusBar(self.status_bar)
-        self.lbl_rx_stat = QLabel("RX: 0 B")
-        self.lbl_tx_stat = QLabel("TX: 0 B")
+        self.lbl_rx_stat = QLabel("RX 0 B")
+        self.lbl_tx_stat = QLabel("TX 0 B")
         self.lbl_state = QLabel(self._t("state_closed"))
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
@@ -248,6 +319,10 @@ class CommTool(QMainWindow):
         self.status_bar.addWidget(_sep())
         self.status_bar.addWidget(self.lbl_tx_stat)
 
+        # 状态栏右键 → 重置统计
+        self.status_bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.status_bar.customContextMenuRequested.connect(self._stat_context_menu)
+
         # 实时记录文件路径 — 右下角(版本号左侧)，仅记录时显示，太长中间省略+悬停看全路径
         self.lbl_log_path = QLabel("")
         self.lbl_log_path.setFont(ui_font(9))
@@ -266,6 +341,7 @@ class CommTool(QMainWindow):
 
         # 同步最大行数
         self._on_max_lines_changed()
+        self._refresh_stat_labels()   # 状态栏 RX/TX 统计初始文案 + tooltip
 
     def build_sidebar(self):
         host = QWidget()
@@ -789,6 +865,16 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # macOS：拦截 ToolTip → 自绘不透明 tooltip（原生加样式后背景透明看不清）
+        if self._mac_tooltip:
+            et0 = event.type()
+            if et0 == QEvent.ToolTip:
+                return self._show_mac_tooltip(obj, event)
+            # 鼠标点击 / 滚轮 → 收起已显示的自绘 tooltip（贴近原生行为）
+            elif (self._tooltip_popup is not None and self._tooltip_popup.isVisible()
+                  and et0 in (QEvent.MouseButtonPress, QEvent.Wheel)):
+                self._tooltip_popup.hide()
+
         # 无边框窗口的手动缩放（仅 Linux：Windows 用 nativeEvent、macOS 用原生边框）：
         # 边缘左键按下→抓鼠标记起点，拖动→改几何，松开→释放；悬停→切换缩放光标。
         if self._manual_resize:
@@ -853,6 +939,25 @@ class CommTool(QMainWindow):
                       and event.button() == Qt.LeftButton):
                     self._highlight_recv_line(event.pos())
         return super().eventFilter(obj, event)
+
+    def _show_mac_tooltip(self, obj, event):
+        """macOS：取目标部件 toolTip 文本，按当前主题不透明显示自绘 tooltip。
+        有文本则返回 True 消费事件（阻止透明的原生 tooltip）；无文本交还默认。"""
+        text = obj.toolTip() if isinstance(obj, QWidget) else ""
+        if not text:
+            if self._tooltip_popup is not None:
+                self._tooltip_popup.hide()
+            return False
+        tid = self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT
+        t = THEMES.get(tid, THEMES[THEME_DEFAULT])
+        # 配色刻意与 QSS 里的 QToolTip 一致（见 apply_style 的 tooltip_bg/fg）：dark 模式
+        # 用浅底深字、light 用深底白字——这是有意的反差 tooltip（非写反），改这里要同步 QSS。
+        bg = "#F2F2F7" if t.get("mode") == "dark" else "#1C1C1E"
+        fg = "#1C1C1E" if t.get("mode") == "dark" else "#FFFFFF"
+        if self._tooltip_popup is None:
+            self._tooltip_popup = ThemedToolTip()
+        self._tooltip_popup.show_text(event.globalPos(), text, bg, fg)
+        return True
 
     def _recv_at_bottom(self, slack: int = 4) -> bool:
         sb = self.txt_recv.verticalScrollBar()
@@ -1662,8 +1767,9 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _bytes_to_hex(data):
-        """字节序列 → 'AA BB CC' 十六进制串（不含尾随空格，调用方按需自加）。"""
-        return " ".join(f"{b:02X}" for b in data)
+        """字节序列 → 'AA BB CC' 十六进制串（不含尾随空格，调用方按需自加）。
+        data 两处调用方都是 bytes（接收信号 / do_send 构造），直接用 bytes.hex。"""
+        return data.hex(" ").upper()   # C 级实现，大块数据明显快于逐字节 f-string
 
     @staticmethod
     def _parse_port(text):
@@ -1788,6 +1894,8 @@ class CommTool(QMainWindow):
             key = "err_serial_runtime"
         if msg == ERR_CONN_TIMEOUT:   # net_io 超时哨兵 → 按当前语言翻译（避免硬编码中文）
             msg = self._t("err_conn_timeout")
+        self.rx_errors += 1           # 连接/链路错误计入 RX 侧错误统计
+        self._refresh_stat_labels(with_tooltip=False)
         self.toast(self._t(key, e=msg), error=True)
         if self.conn is not None:
             self.close_conn()
@@ -2100,11 +2208,15 @@ class CommTool(QMainWindow):
         try:
             self._on_data_received_impl(data)
         except Exception as e:
+            self.rx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
 
     def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
-        self.lbl_rx_stat.setText(f"RX: {self.fmt_bytes(self.rx_bytes)}")
+        self.rx_packets += 1
+        # 标签刷新交给 1Hz 的 _rate_timer：高频收包路径只累加整数计数器，
+        # 不每包重建文案 + setText（会触发状态栏重排），高吞吐下避免无谓的 GUI 线程开销。
 
         use_hex = self.sw_rx_hex.isChecked()
         use_line_split = self.sw_line_split.isChecked() and not use_hex
@@ -2523,17 +2635,24 @@ class CommTool(QMainWindow):
         try:
             sent = self.conn.send(data, self._send_target())
         except Exception as e:
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_send_failed", e=e), error=True)
             return False
         if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return False
         if sent <= 0:                # 底层 write/writeDatagram 失败（对端断开/网络不可达等）
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_send_failed"), error=True)
             return False
 
         self.tx_bytes += len(data)
-        self.lbl_tx_stat.setText(f"TX: {self.fmt_bytes(self.tx_bytes)}")
+        self.tx_packets += 1
+        # 同收包路径：成功发送只累加计数器，标签刷新交 1Hz 定时器（多帧连发时不每帧重排状态栏）。
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
@@ -2780,10 +2899,7 @@ class CommTool(QMainWindow):
         self._recv_highlight_line = -1
         self.txt_recv.setExtraSelections([])
         self.btn_to_bottom.hide()
-        self.rx_bytes = 0
-        self.tx_bytes = 0
-        self.lbl_rx_stat.setText("RX: 0 B")
-        self.lbl_tx_stat.setText("TX: 0 B")
+        self._reset_stats()
         self._reset_recv_state()
 
     # ----- 工具 -----
@@ -2794,6 +2910,83 @@ class CommTool(QMainWindow):
         if n < 1024 * 1024:
             return f"{n/1024:.1f} KB"
         return f"{n/1024/1024:.2f} MB"
+
+    # ----- 收发速率 / 包统计 -----
+    def _fmt_rate(self, bps):
+        return self.fmt_bytes(int(bps)) + "/s"
+
+    def _tick_rate(self):
+        """1Hz 采样：用本秒字节增量近似 B/s，并记录峰值，再刷新状态栏。"""
+        self._rx_rate = max(0, self.rx_bytes - self._rx_bytes_mark)
+        self._tx_rate = max(0, self.tx_bytes - self._tx_bytes_mark)
+        self._rx_bytes_mark = self.rx_bytes
+        self._tx_bytes_mark = self.tx_bytes
+        if self._rx_rate > self._rx_peak:
+            self._rx_peak = self._rx_rate
+        if self._tx_rate > self._tx_peak:
+            self._tx_peak = self._tx_rate
+        self._refresh_stat_labels()
+
+    def _refresh_stat_labels(self, with_tooltip=True):
+        """刷新状态栏 RX/TX 统计：字节 · 包数 · 速率（错误 >0 时追加 ⚠）。
+        高频收发路径传 with_tooltip=False 跳过 tooltip 重建，tooltip 走 1Hz 采样刷新。"""
+        if not hasattr(self, "lbl_rx_stat"):
+            return
+        unit = self._t("stat_pkt_unit")
+        rx = f"RX {self.fmt_bytes(self.rx_bytes)} · {self.rx_packets} {unit} · {self._fmt_rate(self._rx_rate)}"
+        if self.rx_errors:
+            rx += f" · ⚠{self.rx_errors}"
+        tx = f"TX {self.fmt_bytes(self.tx_bytes)} · {self.tx_packets} {unit} · {self._fmt_rate(self._tx_rate)}"
+        if self.tx_errors:
+            tx += f" · ⚠{self.tx_errors}"
+        self.lbl_rx_stat.setText(rx)
+        self.lbl_tx_stat.setText(tx)
+        if with_tooltip:
+            self.lbl_rx_stat.setToolTip(self._stat_tooltip("rx"))
+            self.lbl_tx_stat.setToolTip(self._stat_tooltip("tx"))
+
+    def _stat_tooltip(self, direction):
+        if direction == "rx":
+            head, b, p, r, pk, e = (self._t("stat_tip_rx"), self.rx_bytes,
+                                    self.rx_packets, self._rx_rate, self._rx_peak, self.rx_errors)
+        else:
+            head, b, p, r, pk, e = (self._t("stat_tip_tx"), self.tx_bytes,
+                                    self.tx_packets, self._tx_rate, self._tx_peak, self.tx_errors)
+        total = self.fmt_bytes(b) + (f" ({b:,} B)" if b >= 1024 else "")
+        return "\n".join([
+            head,
+            f"{self._t('stat_total')}: {total}",
+            f"{self._t('stat_packets')}: {p:,}",
+            f"{self._t('stat_rate')}: {self._fmt_rate(r)}",
+            f"{self._t('stat_peak')}: {self._fmt_rate(pk)}",
+            f"{self._t('stat_errors')}: {e:,}",
+        ])
+
+    def _reset_stats(self):
+        """清零收发统计（字节/包/错误/速率/峰值），不动数据区内容。"""
+        self.rx_bytes = self.tx_bytes = 0
+        self.rx_packets = self.tx_packets = 0
+        self.rx_errors = self.tx_errors = 0
+        self._rx_rate = self._tx_rate = 0
+        self._rx_peak = self._tx_peak = 0
+        self._rx_bytes_mark = self._tx_bytes_mark = 0
+        self._refresh_stat_labels()
+
+    def _stat_context_menu(self, pos):
+        """状态栏右键：重置统计（文字跟随语言、配色跟随主题）。"""
+        menu = QMenu(self.status_bar)
+        c = chrome_for(self._theme_id())
+        menu.setStyleSheet(f"""
+            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
+                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
+            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+        """)
+        act_reset = menu.addAction(self._t("stat_reset"))
+        chosen = menu.exec_(self.status_bar.mapToGlobal(pos))
+        menu.deleteLater()   # 每次右键新建、挂在 status_bar 下；exec_ 后主动回收，避免累积为常驻子对象
+        if chosen is act_reset:
+            self._reset_stats()
 
     def toast(self, msg, error=False):
         if error:
@@ -2877,6 +3070,9 @@ class CommTool(QMainWindow):
                 self._update_conn_status()
             else:
                 self.lbl_state.setText(self._t("state_closed"))
+
+        # 状态栏 RX/TX 统计的包单位 + tooltip 随语言刷新
+        self._refresh_stat_labels()
 
         # 「目标」下拉里的「全部」项随语言刷新
         if hasattr(self, "cb_target") and self.cb_target.count() > 0:
@@ -3408,18 +3604,29 @@ class CommTool(QMainWindow):
             self.unsetCursor()
         super().leaveEvent(e)
 
+    def _shutdown(self):
+        """退出前统一清理。closeEvent 的两条退出路径（直接退出 / 选「退出」）共用：
+        以前两段逐行复制，加清理步骤极易漏改其中一条导致线程/定时器泄漏，故抽成一处。"""
+        if hasattr(self, "_ms_cycle_timer"):
+            self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
+        if hasattr(self, "_rate_timer"):
+            self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
+        self._save_settings()
+        self.close_conn()
+        self._close_log_file()
+        if self.port_scanner:
+            self.port_scanner.stop()
+        self._wait_oneshot_scan()
+        if self._tooltip_popup is not None:   # macOS 自绘 tooltip 是独立顶层窗，主动收掉避免退出瞬间残留屏上
+            self._tooltip_popup.hide()
+            self._tooltip_popup.deleteLater()
+            self._tooltip_popup = None
+        if self._tray:
+            self._tray.hide()
+
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
-            if hasattr(self, "_ms_cycle_timer"):
-                self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
-            self._save_settings()
-            self.close_conn()
-            self._close_log_file()
-            if self.port_scanner:
-                self.port_scanner.stop()
-            self._wait_oneshot_scan()
-            if self._tray:
-                self._tray.hide()
+            self._shutdown()
             e.accept()
             return
 
@@ -3445,15 +3652,7 @@ class CommTool(QMainWindow):
             )
         elif choice == CloseDialog.RESULT_QUIT:
             self._closing_real = True
-            if hasattr(self, "_ms_cycle_timer"):
-                self._ms_cycle_timer.stop()   # 与直接退出路径一致，避免销毁中触发 toast
-            self._save_settings()
-            self.close_conn()
-            self._close_log_file()
-            if self.port_scanner:
-                self.port_scanner.stop()
-            self._wait_oneshot_scan()
-            self._tray.hide()
+            self._shutdown()
             e.accept()
         else:
             e.ignore()

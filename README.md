@@ -122,7 +122,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 
 - 读取文件 → 把文件内容塞进发送框（HEX 模式自动转 hex 字符串）
 - 清空发送框
-- 发送按钮 + 实时 TX 字节数统计（B / KB / MB 自动单位）
+- 发送按钮 + 状态栏 **收发速率 / 包统计**（v1.1.0）— 底部状态栏 RX/TX 显示「字节 · 包数 · 实时速率(B/s)」，悬停看完整明细（含峰值速率、错误数），右键「重置统计」清零
 - **多条发送**（v1.0.1）— 「多条发送」按钮打开弹窗：每行一条数据 + 复选框，**每行可独立设 HEX / 换行 / 校验**；条目持久化
 - **多条发送分组 + 主界面快捷栏**（v1.0.2）— 弹窗左侧分组列表 + 每行加「名称 / 延时(ms)」；发送区上方快捷栏 `[多条发送][▶循环][分组下拉] + 命令平铺按钮`，**点按钮直接发**、不用开弹窗；循环发送**按每行各自延时**依次轮发
 
@@ -142,8 +142,8 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
   - 右：数据日志区 + 发送输入框（垂直可拖）
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
-  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 字节计数
-  - 右下：版本号 `v1.0.9`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
+  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
+  - 右下：版本号 `v1.1.0`（从 `version.py` 同步），左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -251,7 +251,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.0.9")
+│   └── version.py          版本号单点真源 (__version__ = "1.1.0")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -340,7 +340,7 @@ scripts\build_onefile.bat
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name CommTool_onefile_v1.0.9 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.1.0 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -373,7 +373,7 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.0.9"
+__version__ = "1.1.0"
 ```
 然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
@@ -543,3 +543,4 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v19 (v1.0.7)**: 稳定性与代码审查修复 —— TCP Client 连接新增超时保护（不可达地址不再卡约 20 秒）、UDP 断开后清理最近对端缓存（复用连接不再回复到旧地址）；搜索导航改 O(1) 着色（大文档点 ▲/▼ 不再全文重扫）、打开搜索消除双重扫描、查找栏 viewport/计数标签加守卫、_parse_version 修正预发布版本号比较；修复纯搜索（未配关键字规则）时实时新数据的搜索匹配/计数停更
 - **v20 (v1.0.8)**: 修复关键字 / 搜索高亮时，底部新接收的数据会「整批闪一下高亮」的问题（高亮选区不再随末尾插入延伸）
 - **CommTool 分支（统一版）**: 串口版 SerialTool 与网络版 NetworkTool 合并为一个产品 **CommTool / 通信调试工具**。「类型」下拉统一 串口 + 网络五种连接（串口 `SerialConn` 与网络 `net_io` 共用 `open()/close()/send()/is_open` + 信号接口，主窗口同一个 `self.conn`）；恢复 `serial_io.py` 与 pyserial 依赖；品牌、类名、AppUserModelID、`%APPDATA%` 配置目录、安装包 / dist / .iss 全部更名 CommTool（新独立安装 GUID，不覆盖旧版；旧 NetworkTool 配置自动回退读取）；发布走 CommTool 分支、tag 前缀 `comm-v`
+- **v21 (v1.1.0)**: **收发速率 / 包统计**——底部状态栏的 RX/TX 由「纯字节数」升级为「字节 · 包数 · 实时速率(B/s)」：包计数（RX = 每次到达一块、TX = 每次成功发送）、1Hz 采样的实时速率、错误数 >0 时追加 ⚠ 标记；鼠标悬停 RX/TX 标签弹出 tooltip 看完整明细（总量 / 包数 / 当前速率 / **峰值速率** / 错误数）；状态栏**右键「重置统计」**清零计数器（不动数据区，跟随语言/主题）；速率采样常驻、断开后自然归零；三语 i18n 同步、无新依赖、无新文件
