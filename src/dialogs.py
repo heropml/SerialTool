@@ -374,6 +374,96 @@ def _set_win_titlebar_dark(widget, is_dark):
         pass
 
 
+# ============== 通用信息/错误提示框 (iOS 风格，无边框圆角) ==============
+class InfoDialog(_DragFramelessMixin, QDialog):
+    """themed info/error popup —— 替代 QMessageBox，与 CloseDialog/AboutDialog 风格统一。
+    icon=✓(accent) 信息 / icon=✕(danger) 错误；标题 + 正文 + 单 OK 按钮，点击或 Esc 关闭。"""
+
+    def __init__(self, title_text: str, body_text: str, ok_text: str = "OK",
+                 is_error: bool = False, theme_id: str = THEME_DEFAULT, parent=None):
+        super().__init__(parent)
+        _flags = Qt.Dialog | Qt.FramelessWindowHint
+        if sys.platform == "darwin":
+            _flags |= Qt.NoDropShadowWindowHint
+        self.setWindowFlags(_flags)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._theme_id = theme_id
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        self._card = QFrame()
+        self._card.setObjectName("DialogCard")
+        sh = QGraphicsDropShadowEffect(self._card)
+        sh.setBlurRadius(28)
+        sh.setColor(QColor(0, 0, 0, 80))
+        sh.setOffset(0, 4)
+        self._card.setGraphicsEffect(sh)
+
+        v = QVBoxLayout(self._card)
+        v.setContentsMargins(24, 22, 24, 18)
+        v.setSpacing(14)
+
+        c = chrome_for(theme_id)
+        # 大圆形图标（居中、视觉锚点）
+        ic = QLabel("✕" if is_error else "✓")
+        ic_bg = c['danger'] if is_error else c['accent']
+        ic.setFixedSize(44, 44)
+        ic.setAlignment(Qt.AlignCenter)
+        ic.setStyleSheet(
+            f"background-color: {ic_bg}; color: white; border-radius: 22px;"
+            f"font-family: 'Segoe UI'; font-size: 22px; font-weight: bold;")
+        ic_row = QHBoxLayout()
+        ic_row.addStretch(1); ic_row.addWidget(ic); ic_row.addStretch(1)
+        v.addLayout(ic_row)
+
+        # 标题（居中）
+        self.lbl_title = QLabel(title_text)
+        self.lbl_title.setFont(ui_font(14, bold=True))
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        self.lbl_title.setStyleSheet(f"color: {c['text']}; background: transparent;")
+        v.addWidget(self.lbl_title)
+
+        # 正文（居中、可选中复制；长路径换行）
+        self.lbl_body = QLabel(body_text)
+        self.lbl_body.setWordWrap(True)
+        self.lbl_body.setAlignment(Qt.AlignCenter)
+        self.lbl_body.setStyleSheet(
+            f"color: {c['text_sec']}; background: transparent;"
+            f"font-family: 'Segoe UI'; font-size: 12px;")
+        self.lbl_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(self.lbl_body)
+
+        # OK 按钮（居中，单按钮对话框的对称做法）
+        self.btn_ok = QPushButton(ok_text)
+        self.btn_ok.setObjectName("DialogPrimaryBtn")
+        self.btn_ok.setMinimumHeight(36)
+        self.btn_ok.setMinimumWidth(120)
+        self.btn_ok.setDefault(True)
+        self.btn_ok.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1); btn_row.addWidget(self.btn_ok); btn_row.addStretch(1)
+        v.addLayout(btn_row)
+
+        outer.addWidget(self._card)
+        self.setStyleSheet(localize_qss(self._build_qss()))
+        self.setMinimumWidth(360)
+        self.setMaximumWidth(520)
+
+    def _build_qss(self):
+        c = chrome_for(self._theme_id)
+        return f"""
+        QFrame#DialogCard {{ background-color: {c['card_bg']}; border-radius: 14px; }}
+        QPushButton#DialogPrimaryBtn {{
+            background-color: {c['accent']}; color: white; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px;
+            font-weight: 600; padding: 6px 14px;
+        }}
+        QPushButton#DialogPrimaryBtn:hover  {{ background-color: {c['accent_hover']}; }}
+        QPushButton#DialogPrimaryBtn:pressed{{ background-color: {c['accent_pressed']}; }}
+        """
+
+
 def _make_list_scroll():
     """列表型弹窗共用：建滚动区 + 内部容器(底栏 stretch)，并关掉 viewport/host 的
     autoFillBackground(否则深色主题下默认白底盖住对话框)。返回 (scroll, host, vbox)。"""
@@ -445,10 +535,14 @@ class MultiSendDialog(QDialog):
     可逐条点「发送」，也可勾选多条后「循环发送」按每行延时依次轮发。分组与命令持久化。"""
 
     def __init__(self, app):
-        super().__init__(app)
+        # parent=None：与主窗 Qt 父子链断开，避免 Qt 在 Windows 上和无边框主窗的 WM_NCHITTEST
+        # 处理产生干扰（症状：打开此弹窗后主窗边缘 resize 失效，关掉也不恢复）。生命周期改在
+        # 主窗 _shutdown 显式收（同 AutoReplyDialog）。
+        super().__init__(None)
         self.app = app
         self.setWindowTitle(app._t("multi_send_title"))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(900, 400)
         self.resize(1040, 480)
         self._rows = []
@@ -779,10 +873,13 @@ class KeywordHighlightDialog(QDialog):
     PRESET_COLORS = ["#FFD60A", "#FF453A", "#32D74B", "#0A84FF", "#BF5AF2", "#FF9F0A"]
 
     def __init__(self, app):
-        super().__init__(app)
+        # parent=None：避免干扰主窗 WM_NCHITTEST（详见 MultiSendDialog 同位置注释）。
+        # 用户报告过：开关此弹窗后主窗边缘 resize 失效。
+        super().__init__(None)
         self.app = app
         self.setWindowTitle(app._t("kw_title"))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(720, 380)
         self.resize(860, 460)
         self._rows = []

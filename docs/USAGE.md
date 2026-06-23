@@ -37,6 +37,32 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.2
+
+Major **Auto-reply** upgrade and several developer-productivity additions.
+
+**Auto-reply** (top-right `?` opens a help window with 6 worked examples):
+- **Multi-frame reply**: split reply with `|` (e.g. `06 | 04 03 02 01`) — segments sent sequentially with Delay (great for ACK + DATA protocols)
+- **HEX wildcard `??`**: `54 ?? 03` matches "starts with 54, byte-2 is 03, anything in between" — fewer rules
+- **Reply placeholders**: `{rN}` `{rN-M}` echo bytes / `{rN+K}` `{rN^K}` arithmetic / `{seq}` counter / `{ts}` ms timestamp
+- **Four timing controls**: Frame gap (Modbus de-framing) / RX checksum / reply Delay (turnaround) / Cooldown (anti-storm)
+- **Double-click the "Auto-reply" button** toggles the master switch; the button highlights when enabled
+
+**Send box**:
+- **Command history** with ↑/↓ (FIFO 100, persisted across sessions). Up at first line / Down at last line.
+- **Dynamic fields**: `{count}` 1-byte counter (rolls back on send failure) / `{ts}` 4-byte ms timestamp / `{randN}` N random bytes (N=1..256). Hover for full syntax tooltip.
+
+**Connection**: **Auto-reconnect** for unexpected disconnects (runtime drop / peer closed / TCP connect fail), with 1/2/4/8/16/30s backoff. Manual open failures don't loop.
+
+**Session config import/export** (data area right-click → "Import/Export Config", or Ctrl+Shift+S / Ctrl+Shift+O): one JSON file with 35+ settings (connection, theme/lang, multi-send, keyword highlight, auto-reply, frame parser, plot config). Applied immediately on import.
+
+**Misc**:
+- **Ctrl+F** global shortcut — focus from anywhere
+- Plot and Frame Parser get `?` help buttons with 5 worked examples each
+- Replaced QMessageBox with themed `InfoDialog` (rounded card + ✓/✕ icon)
+
+---
+
 ## What's New in v1.1.1
 
 Two data-analysis tools, both opened from the title bar:
@@ -384,7 +410,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.1`)
+- current **version** (`v1.1.2`)
 
 ---
 

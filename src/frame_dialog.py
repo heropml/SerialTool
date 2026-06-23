@@ -183,11 +183,13 @@ class _CopyTable(QTableWidget):
 
 class FrameParseDialog(QDialog):
     def __init__(self, app):
-        super().__init__(app)
+        # parent=None：避免干扰主窗 WM_NCHITTEST（同 AutoReplyDialog 等）。主窗 _shutdown 显式收。
+        super().__init__(None)
         self.app = app
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
                             | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
                             | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(620, 420)
         self.resize(900, 580)
 
@@ -209,12 +211,19 @@ class FrameParseDialog(QDialog):
         topv = QVBoxLayout(top)
         topv.setContentsMargins(0, 0, 0, 0)
         topv.setSpacing(6)
+        # 顶行：「解析规则」标题 + 右上角「?」按钮（点开看完整说明 + 例子，原 lbl_help 太挤）
+        head = QHBoxLayout()
+        head.setSpacing(6)
         self.lbl_rules = QLabel()
-        topv.addWidget(self.lbl_rules)
-        self.lbl_help = QLabel()
-        self.lbl_help.setObjectName("MsHint")
-        self.lbl_help.setWordWrap(True)
-        topv.addWidget(self.lbl_help)
+        head.addWidget(self.lbl_rules)
+        head.addStretch(1)
+        self.btn_help = QPushButton("?")
+        self.btn_help.setObjectName("FrameHelpBtn")
+        self.btn_help.setFixedSize(26, 26)
+        self.btn_help.setCursor(Qt.PointingHandCursor)
+        self.btn_help.clicked.connect(self._show_help_dlg)
+        head.addWidget(self.btn_help)
+        topv.addLayout(head)
 
         self._rows_host = QWidget()
         self._rows_v = QVBoxLayout(self._rows_host)
@@ -310,6 +319,66 @@ class FrameParseDialog(QDialog):
             self._rule_rows.remove(rec)
         self._renumber_rules()
         self._apply_rules()      # 删除立即生效：移除该规则并停掉其数据（删空则全部停）
+
+    def _show_help_dlg(self):
+        """弹独立窗口看帮助文档（富文本 + 多例子；原 lbl_help 占顶部太挤，挪到按需查看）。
+        与 auto_reply_dialog._show_help_dlg 同形制：可滚动、可选中复制例子里的字符串。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.app._t("frame_help_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(760, 540)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        lbl = QLabel(self.app._t("frame_help"))
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setAlignment(Qt.AlignTop)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        scroll = QScrollArea()
+        scroll.setWidget(lbl)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(scroll, 1)
+        btn_close = QPushButton(
+            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+        btn_close.setObjectName("PlotGhostBtn")
+        btn_close.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1); row.addWidget(btn_close)
+        v.addLayout(row)
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(f"""
+            QDialog {{ background-color: {c['window_bg']}; }}
+            QLabel {{ color: {c['text']}; background: transparent;
+                      font-family: 'Segoe UI'; font-size: 12px; }}
+            QScrollArea {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{
+                background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: 'Segoe UI'; font-size: 12px; padding: 5px 16px;
+            }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
+        dlg.exec_()
+
+    def reload_cfg(self):
+        """从 QSettings 重新读 frame_rules → 清空当前规则行 → 重建。供配置导入后刷新。
+        注意：_add_rule_row 会 connect textChanged → _save_cfg，构建期间临时改 _ar_rules 写回是按
+        当前 widget 状态走，不会读 settings；清空+重建过程中 _save_cfg 会被频繁触发但结果就是当前内存
+        状态写回 settings，对刚导入的值无破坏（用户接下来编辑也按新内存）。"""
+        # 静默删除所有旧行（不触发 _apply_rules 的中间态）
+        for rec in list(self._rule_rows):
+            rec["w"].setParent(None)
+            rec["w"].deleteLater()
+        self._rule_rows.clear()
+        self._load_cfg()
+        self._renumber_rules()
+        self._apply_rules()
 
     def _renumber_rules(self):
         for i, rec in enumerate(self._rule_rows):
@@ -461,6 +530,12 @@ class FrameParseDialog(QDialog):
             border: 1px solid {c['separator']}; border-radius: 6px; font-size: 13px;
         }}
         QPushButton#FrameDelBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['danger']}; }}
+        QPushButton#FrameHelpBtn {{
+            background-color: transparent; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; border-radius: 13px;
+            font-family: 'Segoe UI'; font-size: 13px; font-weight: bold;
+        }}
+        QPushButton#FrameHelpBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
         QPushButton#PlotToBottom {{
             background-color: {c['accent']}; color: white; border: 0px;
             border-radius: 13px; padding: 4px 12px; font-family: 'Segoe UI'; font-size: 11px;
@@ -499,7 +574,7 @@ class FrameParseDialog(QDialog):
         t = self.app._t
         self.setWindowTitle(t("frame_title"))
         self.lbl_rules.setText(t("frame_rules"))
-        self.lbl_help.setText(t("frame_rules_help"))
+        self.btn_help.setToolTip(t("frame_help_btn"))
         self.btn_add.setText(t("frame_add_rule"))
         self.btn_apply.setText(t("frame_apply"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
