@@ -17,6 +17,10 @@ installer/
 # 运行时用户配置（每台机器不同）
 settings.ini
 
+# Gitee 发版长期令牌（release_gitee.py 读它）—— 绝不入库
+scripts/.gitee_token
+.gitee_token
+
 # pycdc Python 反编译器（恢复 main.py 时临时用过，SerialTool 编译/运行不需要）
 tools/
 

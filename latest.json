@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
-  "url": "https://github.com/heropml/SerialTool/releases/download/comm-v1.1.1/CommTool_Setup_v1.1.1.exe",
-  "notes": "新增数据波形图（从 RX 解析数值实时绘多通道曲线，支持分隔符/正则/HEX 字节字段）与协议帧解析表（多帧多规则，按帧头匹配解析成字段表，可导出/复制）。"
+  "version": "1.1.2",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.2/CommTool_Setup_v1.1.2.exe",
+  "notes": "自动应答全面增强：多帧应答（| 分段）、HEX 通配 ??、占位符 {seq}/{ts}/{rN+K}/{rN^K}、收包校验/整包超时/冷却/延时四种时序、双击按钮一键开关。发送区：命令历史 ↑↓、动态字段 {count}/{ts}/{randN}。连接：非主动断开自动重连（1/2/4/8/16/30s 退避）。会话配置档导入/导出。Ctrl+F 全局搜索。波形图/帧解析加使用说明窗。InfoDialog 替代 QMessageBox。"
 }

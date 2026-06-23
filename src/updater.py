@@ -18,9 +18,13 @@ import tempfile
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl, QTimer
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
-# 版本清单地址（GitHub raw）。按需改成你实际托管 latest.json 的地址。
+# 版本清单地址，按顺序逐个尝试，第一个成功的为准。
+# Gitee 在前（用户绝大多数是国内嵌入式开发者，gitee.com 国内直连、秒回）；GitHub 在后做回退
+# （海外/能直连 GitHub 的环境，Gitee 万一抽风时兜底）。两源 latest.json 内容一致，url 都指向
+# Gitee Release 下载（Gitee 全球可达，国内国外都下得到）。
 UPDATE_MANIFEST_URLS = [
-    "https://raw.githubusercontent.com/heropml/SerialTool/CommTool/latest.json",  # GitHub raw
+    "https://gitee.com/heropml/SerialTool/raw/CommTool/latest.json",              # Gitee raw（国内优先）
+    "https://raw.githubusercontent.com/heropml/SerialTool/CommTool/latest.json",  # GitHub raw（回退）
 ]
 
 # 超时（毫秒）：每个更新源连不上就尽快轮到下一个。

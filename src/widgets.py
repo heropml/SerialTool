@@ -3,7 +3,7 @@
 import sys
 from PyQt5.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QPoint,
                           pyqtSignal, pyqtProperty)
-from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon
+from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon, QPen, QPalette
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
                              QComboBox, QGraphicsDropShadowEffect, QMainWindow,
                              QApplication)
@@ -78,6 +78,62 @@ class IOSSwitch(QWidget):
         p.drawEllipse(self._circle_pos, 2, 20, 20)
 
 
+# ============== 窗口控制按钮（自绘，不依赖系统字体） ==============
+class _CtrlBtn(QPushButton):
+    """最小化/最大化/还原/关闭：QPainter 手画图标，跨主题色（QSS color → palette）+ 跨平台稳定。
+    用自绘是因为 Segoe Fluent Icons / MDL2 Assets 在部分 Win11 上 Qt 字体匹配挂掉（X 字形空白）。"""
+    KIND_MIN, KIND_MAX, KIND_RESTORE, KIND_CLOSE = range(4)
+
+    def __init__(self, kind, parent=None):
+        super().__init__("", parent)      # 空文本：图标全靠 paintEvent 画
+        self._kind = kind
+        self._hover = False
+        self.setFixedSize(46, 36)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setObjectName("CloseBtn" if kind == self.KIND_CLOSE else "CtrlBtn")
+
+    def set_kind(self, k):
+        if k != self._kind:
+            self._kind = k
+            self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)            # 让 QSS 画底色（含 :hover 红底）
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, False)  # 像素对齐 → 线条清爽
+        # 关闭悬停 = 白笔（背景已是红）；其它走 QSS color: 同步过来的 palette.ButtonText
+        if self._kind == self.KIND_CLOSE and self._hover:
+            col = QColor("#FFFFFF")
+        else:
+            col = self.palette().color(QPalette.ButtonText)
+        p.setPen(QPen(col, 1.0))
+        s = 10                            # 图标边长（Win11 标准 ~10px）
+        cx, cy = self.width() // 2, self.height() // 2
+        x, y = cx - s // 2, cy - s // 2
+        if self._kind == self.KIND_MIN:
+            p.drawLine(x, cy, x + s - 1, cy)
+        elif self._kind == self.KIND_MAX:
+            p.drawRect(x, y, s - 1, s - 1)
+        elif self._kind == self.KIND_RESTORE:
+            sz = s - 3
+            p.drawRect(x, y + 2, sz, sz)         # 后框（左下）
+            p.drawRect(x + 2, y, sz, sz)         # 前框（右上）
+        elif self._kind == self.KIND_CLOSE:
+            p.drawLine(x, y, x + s - 1, y + s - 1)
+            p.drawLine(x, y + s - 1, x + s - 1, y)
+        p.end()
+
+
 # ============== 自定义标题栏 ==============
 class TitleBar(QWidget):
     HEIGHT = 36
@@ -119,16 +175,9 @@ class TitleBar(QWidget):
 
         layout.addStretch(1)
 
-        # 用 Segoe UI 里可靠的 Unicode 字符
-        self._ch_min = "−"
-        self._ch_max = "□"
-        self._ch_restore = "❐"
-        self._ch_close = "×"
-
-        self.btn_min = self._mk_btn(self._ch_min)
-        self.btn_max = self._mk_btn(self._ch_max)
-        self.btn_close = self._mk_btn(self._ch_close)
-        self.btn_close.setObjectName("CloseBtn")
+        self.btn_min = _CtrlBtn(_CtrlBtn.KIND_MIN, self)
+        self.btn_max = _CtrlBtn(_CtrlBtn.KIND_MAX, self)
+        self.btn_close = _CtrlBtn(_CtrlBtn.KIND_CLOSE, self)
         layout.addWidget(self.btn_min)
         layout.addWidget(self.btn_max)
         layout.addWidget(self.btn_close)
@@ -143,13 +192,6 @@ class TitleBar(QWidget):
             self.btn_max.hide()
             self.btn_close.hide()
 
-    def _mk_btn(self, text):
-        btn = QPushButton(text)
-        btn.setFixedSize(46, self.HEIGHT)
-        btn.setObjectName("CtrlBtn")
-        btn.setFocusPolicy(Qt.NoFocus)
-        return btn
-
     def set_app_icon(self, qicon: QIcon):
         if qicon and not qicon.isNull():
             self.icon_label.setPixmap(qicon.pixmap(16, 16))
@@ -158,7 +200,7 @@ class TitleBar(QWidget):
         self.title_label.setText(text)
 
     def update_max_icon(self):
-        self.btn_max.setText(self._ch_restore if self._win.isMaximized() else self._ch_max)
+        self.btn_max.set_kind(_CtrlBtn.KIND_RESTORE if self._win.isMaximized() else _CtrlBtn.KIND_MAX)
 
     def _toggle_max(self):
         if self._win.isMaximized():

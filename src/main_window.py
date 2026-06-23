@@ -3,17 +3,18 @@
 import codecs
 import json
 import os
+import re
 import sys
 import time
 import serial
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
 from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
-                         QFontMetrics, QTextFormat, QPalette)
+                         QFontMetrics, QTextFormat, QPalette, QKeySequence)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
-                             QSystemTrayIcon, QMenu, QApplication)
+                             QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -29,7 +30,7 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
-from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog
+from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
@@ -153,6 +154,31 @@ class CommTool(QMainWindow):
         self._recv_font_size = 10
 
         self.settings = QSettings(self._settings_file(), QSettings.IniFormat)
+        self._ar_rules = self._load_ar_rules()       # 自动应答规则
+        self._ar_on = self.settings.value("autoreply_on", False, type=bool)
+        self._ar_buf = b""                           # 整包组装缓冲
+        self._ar_gap_timer = QTimer(self)            # 整包静默超时
+        self._ar_gap_timer.setSingleShot(True)
+        self._ar_gap_timer.timeout.connect(self._ar_flush)
+        self._ar_gap = 0     # 整包静默(ms)：取所有启用规则中的最大值（分帧在匹配前、整条串口共用一个）
+        self._ar_seq = 0     # 应答 {seq} 占位符的自增计数（每次替换 +1，wrap 0..255）
+        self._send_count = 0 # 发送区 {count} 占位符的自增计数（每次成功 do_send/多条发送 +1，wrap）
+        self._send_hist = []         # 发送命令历史(FIFO max 100)，启动从 QSettings 恢复
+        self._send_hist_idx = -1     # 当前导航位置：-1=未在导航态，0..len-1=正在看历史第 N 条
+        self._send_hist_pending = "" # 进入历史前的草稿，↓ 翻回最新时复原
+        # 自动重连：连接非主动断开时按退避序列(1/2/4/8/16/30s)重连；用户点关闭/退出时跳过
+        self._user_closing = False
+        self._reconnect_attempts = 0
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._try_reconnect)
+        self._recompute_ar_gap()
+        # 自动应答按钮：单击延时打开对话框、双击翻转总开关。Qt 一次双击会发 click→dblclick→click
+        # 三个信号，故单击启 timer 延后打开；双击 cancel timer；第二个 click 因距上次过近被忽略。
+        self._ar_click_timer = QTimer(self)
+        self._ar_click_timer.setSingleShot(True)
+        self._ar_click_timer.timeout.connect(self.open_auto_reply)
+        self._ar_last_click = 0.0
         saved_lang = self.settings.value("language", "zh")
         self._lang = saved_lang if saved_lang in TR else "zh"
         self._L = TR[self._lang]
@@ -172,6 +198,11 @@ class CommTool(QMainWindow):
         self.apply_style()
         self._load_settings()
         self._setup_tray()
+        # Ctrl+F 全局快捷键：从任何控件按下都打开搜索栏（_open_search 内会自动聚焦输入框）
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self._open_search)
+        # 配置导入/导出快捷键（避开 Ctrl+S=保存数据区、Ctrl+O 占用）
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=self.export_config)
+        QShortcut(QKeySequence("Ctrl+Shift+O"), self, activated=self.import_config)
 
         self.port_scanner = PortScannerThread(interval_ms=1500)
         self.port_scanner.scan_complete.connect(self._on_port_scan_complete)
@@ -259,6 +290,18 @@ class CommTool(QMainWindow):
         self.cb_theme.setToolTip(self._t("theme_tip"))
         self.cb_theme.currentIndexChanged.connect(lambda _: self._on_theme_changed())
 
+        # 「帮助」下拉按钮：放在 stretch 后、min/max/close 前；点开弹菜单含「关于」
+        # （复用 open_about，里面有 检查更新/升级 功能，对应右下角版本号那边的入口）
+        self.btn_titlebar_help = QPushButton(self._t("help"))
+        self.btn_titlebar_help.setObjectName("TbHelpBtn")
+        self.btn_titlebar_help.setProperty("tr_text", "help")
+        self.btn_titlebar_help.setCursor(Qt.PointingHandCursor)
+        self.btn_titlebar_help.setFixedHeight(26)
+        self.btn_titlebar_help.clicked.connect(self._show_titlebar_help_menu)
+        self.title_bar.layout().insertWidget(
+            self.title_bar.layout().indexOf(self.title_bar.btn_min),
+            self.btn_titlebar_help)
+
         root.addWidget(self.title_bar)
 
         # 内容
@@ -343,6 +386,27 @@ class CommTool(QMainWindow):
         # 同步最大行数
         self._on_max_lines_changed()
         self._refresh_stat_labels()   # 状态栏 RX/TX 统计初始文案 + tooltip
+        self._align_send_card_cols()  # 发送卡片两行三按钮等列宽对齐（语言切换后还要再调）
+
+    def _align_send_card_cols(self):
+        """对齐发送卡片两行的三列控件：每列取上下两行 sizeHint().width() 的最大值并 setFixedWidth。
+        语言切换后必须重新调用——不同语言下文字自然宽度变化，需重算等列宽。
+        col 3 设置 floor=110，保证群组下拉再小也不会被压窄到看不清。"""
+        if not hasattr(self, "btn_autoreply"):
+            return
+        triples = [
+            (self.btn_multi,    self.btn_load,       0),
+            (self.btn_ms_cycle, self.btn_clear_tx,   0),
+            (self.cb_ms_group,  self.btn_autoreply, 110),
+        ]
+        BIG = 16777215
+        for top, bot, floor in triples:
+            # 撤回先前 fixed（min=max=N）→ 让 sizeHint 反映新文本的自然宽度
+            top.setMinimumWidth(0); top.setMaximumWidth(BIG)
+            bot.setMinimumWidth(0); bot.setMaximumWidth(BIG)
+            w = max(floor, top.sizeHint().width(), bot.sizeHint().width())
+            top.setFixedWidth(w)
+            bot.setFixedWidth(w)
 
     def build_sidebar(self):
         host = QWidget()
@@ -868,9 +932,16 @@ class CommTool(QMainWindow):
         act_clear.setEnabled(has_text)
         act_save = menu.addAction(self._t("save"))
         act_save.setEnabled(has_text)
+        menu.addSeparator()
+        act_export = menu.addAction(self._t("cfg_export"))
+        act_import = menu.addAction(self._t("cfg_import"))
         chosen = menu.exec_(global_pos)
         if chosen is act_search:
             self._open_search()
+        elif chosen is act_export:
+            self.export_config()
+        elif chosen is act_import:
+            self.import_config()
         elif chosen is act_copy:
             self.txt_recv.copy()
         elif chosen is act_all:
@@ -882,6 +953,34 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # 自动应答按钮：双击 → 翻转总开关（吃掉事件，不让 QPushButton 默认处理再发 clicked）
+        if obj is getattr(self, "btn_autoreply", None) and event.type() == QEvent.MouseButtonDblClick:
+            self._ar_btn_dbl_clicked()
+            return True
+        # 发送区 tooltip：用 QToolTip.showText + 超长 msecShowTime + widget rect → 鼠标停留时
+        # 不超时消失（默认 10s 会消失），移出 rect 时立刻收起，避免长文案没看完就没了。
+        # macOS 不走此分支 → 让下面 _show_mac_tooltip 用 ThemedToolTip 自绘（原生 QToolTip
+        # 加 QSS 后背景透明看不清，已知 Mac Qt 问题）
+        if (obj is getattr(self, "txt_send", None) and event.type() == QEvent.ToolTip
+                and not self._mac_tooltip):
+            tip = self.txt_send.toolTip()
+            if tip:
+                QToolTip.showText(event.globalPos(), tip, self.txt_send,
+                                  self.txt_send.rect(), 600000)   # 10 min 上限
+            return True
+        # 发送区 ↑↓ 历史导航：仅在 cursor 在首行(↑)/末行(↓)时拦截，否则让 QTextEdit 走默认行内移动
+        if obj is getattr(self, "txt_send", None) and event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key == Qt.Key_Up:
+                cur = self.txt_send.textCursor()
+                if cur.blockNumber() == 0:
+                    self._send_hist_prev()
+                    return True
+            elif key == Qt.Key_Down:
+                cur = self.txt_send.textCursor()
+                if cur.blockNumber() == self.txt_send.document().blockCount() - 1:
+                    self._send_hist_next()
+                    return True
         # macOS：拦截 ToolTip → 自绘不透明 tooltip（原生加样式后背景透明看不清）
         if self._mac_tooltip:
             et0 = event.type()
@@ -1501,6 +1600,9 @@ class CommTool(QMainWindow):
         ms_bar.addWidget(self.btn_ms_cycle)
         self.cb_ms_group = QComboBox()
         self.cb_ms_group.setMinimumWidth(110)
+        # 高度跟左右 GhostBtn 等高：用 setFixedHeight 而非 setMinimumHeight——后者会被 QComboBox 在
+        # styleSheet apply 期间的内部 sizePolicy 计算覆盖回默认 (~22px)
+        self.cb_ms_group.setFixedHeight(28)
         self.cb_ms_group.currentIndexChanged.connect(self._on_ms_group_changed)
         ms_bar.addWidget(self.cb_ms_group)
         self._ms_quick_host = QWidget()
@@ -1528,10 +1630,15 @@ class CommTool(QMainWindow):
         # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
         self.txt_send.setFixedHeight(64)
         self.txt_send.setProperty("tr_placeholder", "send_placeholder")
+        self.txt_send.installEventFilter(self)   # ↑↓ 历史导航（在 eventFilter 里处理）
         self.txt_send.setPlaceholderText(self._t("send_placeholder"))
+        # 悬浮提示：动态字段语法 + ↑↓ 历史；语言切换由 _apply_language 通过 tr_tooltip 刷新
+        self.txt_send.setProperty("tr_tooltip", "send_box_tip")
+        self.txt_send.setToolTip(self._t("send_box_tip"))
         layout.addWidget(self.txt_send)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)        # 与上一行 ms_bar 同 spacing → 两行同列按钮右边缘对齐
         self.btn_load = QPushButton(self._t("read_file"))
         self.btn_load.setObjectName("GhostBtn")
         self.btn_load.setProperty("tr_text", "read_file")
@@ -1543,6 +1650,19 @@ class CommTool(QMainWindow):
         self.btn_clear_tx.setProperty("tr_text", "clear")
         self.btn_clear_tx.clicked.connect(lambda: self.txt_send.clear())
         btn_row.addWidget(self.btn_clear_tx)
+
+        # 自动应答（紧挨清空；启用时按钮高亮：动态属性 arActive 配 QSS [arActive="true"]）
+        # 单击 → _ar_btn_clicked 延时打开对话框；双击（eventFilter 捕获）→ 翻转总开关。
+        self.btn_autoreply = QPushButton(self._t("ar_open"))
+        self.btn_autoreply.setObjectName("GhostBtn")
+        self.btn_autoreply.setProperty("tr_text", "ar_open")
+        self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
+        self.btn_autoreply.setToolTip(self._t("ar_btn_tip"))
+        self.btn_autoreply.setProperty("tr_tooltip", "ar_btn_tip")   # 语言切换时由 _apply_language 刷新
+        self.btn_autoreply.clicked.connect(self._ar_btn_clicked)
+        self.btn_autoreply.installEventFilter(self)
+        btn_row.addWidget(self.btn_autoreply)
+        # 注：两行三按钮的等列宽对齐由 _align_send_card_cols() 在 init_ui 末尾 + 语言切换后调用
 
         btn_row.addStretch(1)
 
@@ -1643,6 +1763,8 @@ class CommTool(QMainWindow):
         QPushButton#GhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QPushButton#GhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
         QPushButton#GhostBtn:checked {{ background-color: {c['accent']}; color: white; }}
+        QPushButton#GhostBtn[arActive="true"] {{ background-color: {c['accent']}; color: white; }}
+        QPushButton#GhostBtn[arActive="true"]:hover {{ background-color: {c['accent_hover']}; }}
         QPushButton#IconBtn {{
             background-color: {c['ghost_bg']};
             color: {c['text_sec']};
@@ -1723,18 +1845,23 @@ class CommTool(QMainWindow):
             background-color: {c['window_bg']};
             border-bottom: 1px solid {c['separator']};
         }}
-        QPushButton#CtrlBtn {{
+        QPushButton#CtrlBtn, QPushButton#CloseBtn {{
             background-color: transparent;
-            color: {c['text']};
-            border: 0px;
-            font-size: 14px;
-            font-family: 'Segoe UI';
+            color: {c['text']};       /* 自绘 paintEvent 读 palette.ButtonText 取此色 */
+            border: 0px;              /* 必须两个 objectName 都覆盖，否则 CloseBtn 留默认边框 */
         }}
         QPushButton#CtrlBtn:hover {{ background-color: {c['title_btn_hover']}; }}
         QPushButton#CloseBtn:hover {{
             background-color: {c['danger']};
             color: #FFFFFF;
         }}
+        QPushButton#TbHelpBtn {{
+            background-color: transparent; color: {c['text']};
+            border: 1px solid transparent; border-radius: 4px;
+            padding: 1px 10px; font-family: 'Segoe UI'; font-size: 12px;
+        }}
+        QPushButton#TbHelpBtn:hover {{ background-color: {c['title_combo_hover']};
+                                       border: 1px solid {c['separator']}; }}
         QWidget#TitleBar QComboBox {{
             background-color: transparent;
             border: 1px solid transparent;
@@ -1778,8 +1905,13 @@ class CommTool(QMainWindow):
     # ----- 连接 打开/关闭 -----
     def toggle_conn(self):
         if self.conn is not None:
+            self._user_closing = True       # 主动断开：跳过自动重连
+            self._cancel_reconnect()        # 也取消已排队的重连
             self.close_conn()
+            self._user_closing = False
         else:
+            self._cancel_reconnect()        # 手动重新打开 → 撤销可能在排队的重连
+            self._reconnect_attempts = 0
             self.open_conn()
 
     @staticmethod
@@ -1914,19 +2046,60 @@ class CommTool(QMainWindow):
         self.rx_errors += 1           # 连接/链路错误计入 RX 侧错误统计
         self._refresh_stat_labels(with_tooltip=False)
         self.toast(self._t(key, e=msg), error=True)
+        # 关键：close_conn 会把 _conn_engaged 清零，所以要先捕获状态
+        was_engaged = self._conn_engaged
+        in_retry = self._reconnect_attempts > 0
         if self.conn is not None:
             self.close_conn()
+        # 只在「曾连上又断了」(运行时掉线) 或「正在重连周期内」时自动重连。
+        # 手动打开失败（端口占用/服务器离线/绑定失败）不该陷入无限重试。
+        if was_engaged or in_retry:
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self):
+        """非主动断开 → 按 1/2/4/8/16/30s 退避排队重连。用户主动断开/退出时跳过。"""
+        if self._user_closing:
+            return
+        if not self.settings.value("auto_reconnect", True, type=bool):
+            return
+        if self._reconnect_timer.isActive():
+            return     # 已排队 → 同事件被 state_changed 和 error_occurred 同时触发也只算一次，
+                       # 否则会跳过本级退避（attempts 多加 1、delay 直接翻倍）
+        n = self._reconnect_attempts
+        delay = min(30000, 1000 * (2 ** n))    # 1s→2s→4s→...→cap 30s
+        self._reconnect_attempts = n + 1
+        self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
+        self._reconnect_timer.start(delay)
+
+    def _cancel_reconnect(self):
+        if self._reconnect_timer.isActive():
+            self._reconnect_timer.stop()
+
+    def _try_reconnect(self):
+        if self.conn is not None or self._user_closing:
+            return     # 期间已连上 / 用户主动关，撤销
+        if not self.settings.value("auto_reconnect", True, type=bool):
+            return
+        self.toast(self._t("auto_reconnect_try", n=self._reconnect_attempts))
+        self.open_conn()
+        # open_conn 同步失败(端口不存在/baud非法/绑定失败)：conn 仍为 None 且无 state_changed
+        # 触发，需手动再排队；若是异步失败(如 TcpClient 连不上)会另走 _on_conn_state_changed 路径
+        if self.conn is None and not self._user_closing:
+            self._schedule_reconnect()
 
     def _on_conn_state_changed(self, up):
         """已连接/监听(up=True) 或 对端断开(up=False)。
         主动 close_conn() 会先 blockSignals，断开的 False 不会回到这里。"""
         if up:
             self._conn_engaged = True   # 已成功建立 → 此后的 error 属"运行时"而非"打开失败"
+            self._reconnect_attempts = 0  # 连上 → 重置退避，下次掉线从 1s 起
+            self._cancel_reconnect()
             self._update_conn_status()
             self._update_net_fields()   # TCP Server 连上后显示「目标」行
         elif self.conn is not None:
             self.toast(self._t("net_peer_closed"))
             self.close_conn()
+            self._schedule_reconnect()  # 非主动断开 → 走自动重连
 
     def _on_clients_changed(self, clients):
         """TCP Server 客户端列表变化 → 刷新「目标」下拉（含「全部」）。"""
@@ -2026,6 +2199,7 @@ class CommTool(QMainWindow):
             conn.deleteLater()
 
         self._reset_recv_state()   # 顺带补齐原先漏掉的 _inc_decoder / _txt_ends_with_nl
+        self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
 
         self.btn_open.setProperty("state", "")
         self.btn_open.style().unpolish(self.btn_open)
@@ -2167,6 +2341,8 @@ class CommTool(QMainWindow):
             self._plot_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
+        if getattr(self, "_ar_dlg", None) is not None:
+            self._ar_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -2246,6 +2422,11 @@ class CommTool(QMainWindow):
                 fdlg.feed(data)
             except Exception:
                 pass
+        # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）
+        try:
+            self._auto_reply(data)
+        except Exception:
+            pass
 
     def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
@@ -2451,10 +2632,11 @@ class CommTool(QMainWindow):
         return []
 
     def _send_ms_item(self, item):
-        self._send_text(item.get("data", ""),
-                        hex_mode=bool(item.get("hex", False)),
-                        newline=int(item.get("nl", 0)),
-                        checksum=int(item.get("cs", 0)))
+        hx = bool(item.get("hex", False))
+        # 多条发送每条独立 hex_mode；走 _send_with_subst 让 {count} 在失败时回滚
+        self._send_with_subst(item.get("data", ""), hex_mode=hx,
+                              newline=int(item.get("nl", 0)),
+                              checksum=int(item.get("cs", 0)))
 
     def _rebuild_ms_group_combo(self):
         if not hasattr(self, "cb_ms_group"):
@@ -2542,9 +2724,10 @@ class CommTool(QMainWindow):
             self._ms_stop_cycle()
             return
         data, hx, nl, cs, delay = self._ms_cycle_seq[self._ms_cycle_idx % len(self._ms_cycle_seq)]
+        # 循环路径走 _send_with_subst：替换 + 失败回滚 {count}
         # 发送失败(坏数据/写异常等)立即停止，避免每轮都刷错误 toast
         # (空命令在 _ms_toggle_cycle 构建序列时已过滤，这里的 False 都是真失败)
-        if not self._send_text(data, hex_mode=hx, newline=nl, checksum=cs):
+        if not self._send_with_subst(data, hex_mode=hx, newline=nl, checksum=cs):
             self._ms_stop_cycle()
             return
         self._ms_cycle_idx += 1
@@ -2619,15 +2802,557 @@ class CommTool(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
-    def do_send(self):
-        raw = self.txt_send.toPlainText()
-        if not raw:
+    # ----- 自动应答 -----
+    def open_auto_reply(self):
+        """打开自动应答配置（单实例，复用并刷新主题/语言）。"""
+        if getattr(self, "_ar_dlg", None) is None:
+            from auto_reply_dialog import AutoReplyDialog
+            self._ar_dlg = AutoReplyDialog(self)
+        dlg = self._ar_dlg
+        if dlg._save_timer.isActive():
+            dlg._commit()
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _ar_btn_clicked(self):
+        """自动应答按钮单击：延 doubleClickInterval 后打开对话框；若双击则被取消。
+        Qt 双击会发 click→dblclick→click 三个信号，第二个 clicked 距上次过近时忽略，
+        避免双击触发后又重启 timer 导致 dialog 还是被打开。"""
+        now = time.monotonic()
+        iv = QApplication.doubleClickInterval() / 1000.0
+        if now - self._ar_last_click < iv:
             return
-        ok = self._send_text(raw)
+        self._ar_last_click = now
+        self._ar_click_timer.start(QApplication.doubleClickInterval())
+
+    def _ar_btn_dbl_clicked(self):
+        """自动应答按钮双击：cancel 延时 timer + 翻转总开关（不打开对话框）。"""
+        self._ar_click_timer.stop()
+        self._toggle_ar_on()
+
+    def _toggle_ar_on(self):
+        """翻转自动应答总开关：落盘 + 按钮高亮刷新 + 同步对话框 checkbox（若开着）+ toast。"""
+        self._ar_on = not self._ar_on
+        self.settings.setValue("autoreply_on", self._ar_on)
+        self._ar_reset_buf()        # 切换瞬间清掉半截组装缓冲，防止下次开启时旧字节被新规则吃
+        self._update_autoreply_btn()
+        if getattr(self, "_ar_dlg", None) is not None:
+            cb = self._ar_dlg.cb_enable
+            cb.blockSignals(True)
+            cb.setChecked(self._ar_on)
+            cb.blockSignals(False)
+        self.toast(self._t("ar_toast_on" if self._ar_on else "ar_toast_off"))
+
+    def _update_autoreply_btn(self):
+        """自动应答开启时高亮「自动应答」按钮（动态属性 arActive + 重新 polish 生效）。"""
+        if not hasattr(self, "btn_autoreply"):
+            return
+        self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
+        self.btn_autoreply.style().unpolish(self.btn_autoreply)
+        self.btn_autoreply.style().polish(self.btn_autoreply)
+
+    def _load_ar_rules(self):
+        raw = self.settings.value("autoreply_rules", "")
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    return [r for r in data if isinstance(r, dict)]
+            except Exception:
+                pass
+        return []
+
+    def _set_ar_rules(self, rules):
+        """对话框编辑后回调：更新内存规则并落盘（_last 运行态不持久化）。"""
+        self._ar_rules = rules
+        self._recompute_ar_gap()
+        self._ar_reset_buf()       # 规则变了 → 旧的整包缓冲不能再被新规则吃，必须清掉
+        self.settings.setValue("autoreply_rules", json.dumps(rules, ensure_ascii=False))
+        self.settings.sync()
+
+    def _ar_reset_buf(self):
+        """停整包静默 timer + 清缓冲。规则改 / 总开关切 / 关闭连接 都得调，
+        否则半截缓冲会以新状态被当成新帧头匹配（误响应）。"""
+        if hasattr(self, "_ar_gap_timer"):
+            self._ar_gap_timer.stop()
+        self._ar_buf = b""
+
+    @staticmethod
+    def _ar_to_int(v, default=0):
+        """容错 int：ini/json 被手改成非数字时不让启动崩。"""
+        try:
+            return int(v or 0)
+        except (ValueError, TypeError):
+            return default
+
+    def _recompute_ar_gap(self):
+        """整包静默取所有启用规则中的最大 gap（分帧在匹配前、整条串口共用一个值）。"""
+        self._ar_gap = max((self._ar_to_int(r.get("gap", 0)) for r in self._ar_rules
+                            if r.get("on", True)), default=0)
+
+    def _auto_reply(self, data: bytes):
+        """收到数据 → (可选)整包组装 → 匹配规则 → (可选延时)自动发应答。仅连接且总开关开时生效。
+        整包超时>0 时累积字节、静默该时长视作一整帧再匹配（Modbus 等帧间静默分帧协议需要）。"""
+        if not self._ar_on or not self._ar_rules or not self._is_open():
+            return
+        if self._ar_gap <= 0:
+            self._ar_match(bytes(data))            # 每包即时匹配
+        else:
+            self._ar_buf += bytes(data)            # 累积；静默 _ar_gap ms 后视作整帧
+            self._ar_gap_timer.start(self._ar_gap)
+
+    def _ar_flush(self):
+        """整包静默超时：把累积缓冲当一整帧匹配。"""
+        buf, self._ar_buf = self._ar_buf, b""
+        if buf and self._ar_on and self._is_open():
+            self._ar_match(buf)
+
+    def _ar_match(self, data: bytes):
+        text_cache = None
+        for rule in self._ar_rules:
+            if not rule.get("on", True):
+                continue
+            m = (rule.get("match") or "").strip()
+            if not m:
+                continue
+            mode = self._ar_to_int(rule.get("mode", 0))     # 0=包含 1=相等 2=前缀
+            if mode not in (0, 1, 2):
+                mode = 0       # 配置坏掉时退回到「包含」而不是吞掉整条规则
+            if rule.get("match_hex", True):
+                pat = self._ar_parse_hex_pat(m)
+                if not pat:
+                    continue
+                n = len(pat)
+                if mode == 2:        # 前缀
+                    hit = self._ar_hex_at(pat, data, 0)
+                elif mode == 1:      # 相等
+                    hit = len(data) == n and self._ar_hex_at(pat, data, 0)
+                else:                # 包含：扫各起点
+                    hit = any(self._ar_hex_at(pat, data, i) for i in range(len(data) - n + 1))
+            else:
+                if text_cache is None:
+                    codec = self._get_codec()
+                    try:
+                        text_cache = data.decode("utf-8" if codec == "auto" else codec, errors="replace")
+                    except Exception:
+                        text_cache = ""
+                hit = (m in text_cache) if mode == 0 else (text_cache.strip() == m if mode == 1 else text_cache.startswith(m))
+            if not hit:
+                continue
+            # 长度过滤（⑤）：min_len/max_len 任一>0 时启用；用于剔除毛刺/超长帧。配置无 UI，
+            # 走 ini/json 手填。0=不限。
+            min_len = self._ar_to_int(rule.get("min_len", 0))
+            max_len = self._ar_to_int(rule.get("max_len", 0))
+            if min_len > 0 and len(data) < min_len:
+                continue
+            if max_len > 0 and len(data) > max_len:
+                continue
+            if not self._ar_frame_ok(data, self._ar_to_int(rule.get("verify", 0))):
+                return       # 命中规则但收包校验不过 → 不应答（命中即停）
+            # 冷却（rate-limit）：同一规则在冷却窗口内不再触发。delay 是 turnaround 输出延时，
+            # 跟冷却是两回事——delay=200 表示「200ms 后回」、cooldown=200 表示「200ms 内不再触发」。
+            cooldown = self._ar_to_int(rule.get("cooldown", 0))
+            now = time.monotonic()
+            if cooldown > 0 and (now - rule.get("_last", 0.0)) * 1000 < cooldown:
+                return
+            rule["_last"] = now      # 运行态，不持久化
+            hexmode = bool(rule.get("reply_hex", True))
+            # 多帧应答（④）：reply 用 | 分段，每段独立替换占位符 + 独立校验，间隔 delay ms 顺次发。
+            # 单段（无 |）退化到原逻辑。
+            raw = rule.get("reply", "")
+            segs = [s.strip() for s in raw.split("|")]
+            segs = [s for s in segs if s]
+            if not segs:
+                return
+            parts = [self._ar_subst_reply(s, data, hexmode) for s in segs]
+            cs = self._ar_to_int(rule.get("cs", 0))
+            delay = self._ar_to_int(rule.get("delay", 0))
+            self._ar_schedule_send(parts, hexmode, cs, delay)
+            return      # 命中即停：一帧最多回一条（按规则顺序取第一条命中的）
+
+    def _ar_schedule_send(self, parts, hexmode, cs, delay):
+        """逐段发送 parts；首段在 delay ms 后发，之后每段间隔 max(delay,1) ms 顺次发。
+        单段时与原 _ar_send 等价；多段为 ACK+DATA 类协议留口。"""
+        def fire(idx):
+            if not self._ar_on or not self._is_open() or idx >= len(parts):
+                return
+            try:
+                self._send_text(parts[idx], hex_mode=hexmode, newline=0, checksum=cs)
+            except Exception:
+                pass
+            if idx + 1 < len(parts):
+                QTimer.singleShot(max(delay, 1), lambda: fire(idx + 1))
+        if delay > 0:
+            QTimer.singleShot(delay, lambda: fire(0))
+        else:
+            fire(0)
+
+    def _ar_send(self, reply, hexmode, cs):
+        """保留：单帧应答（无 | 分段时的快路径不再走这里，但若外部代码或测试直接调仍可用）。"""
+        if not self._ar_on or not self._is_open():
+            return
+        try:
+            self._send_text(reply, hex_mode=hexmode, newline=0, checksum=cs)
+        except Exception:
+            pass
+
+    def _ar_frame_ok(self, frame: bytes, idx: int) -> bool:
+        """收包校验：尾部 N 字节应等于前面内容按算法 idx 算出的校验。idx<=0 不校验直接放行。
+        帧太短或校验不符 → False（不应答）。"""
+        if idx <= 0:
+            return True
+        try:
+            n = len(self.compute_checksum(b"\x00", idx))   # 该算法校验字节数(MOBUS=1, CRC16=2…)
+        except Exception:
+            return True
+        if n == 0 or len(frame) <= n:
+            return False
+        try:
+            return self.compute_checksum(frame[:-n], idx) == frame[-n:]
+        except Exception:
+            return False
+
+    @staticmethod
+    def _ar_parse_hex_pat(s):
+        """解析 HEX 匹配 pattern，支持 ?? / XX 通配单字节。
+        返回 list[int|None]（None=通配），格式错误时返回 None（整条规则跳过）。"""
+        s = s.replace(" ", "").upper()
+        if not s or len(s) % 2:
+            return None
+        out = []
+        for i in range(0, len(s), 2):
+            ch = s[i:i+2]
+            if ch in ("??", "XX"):
+                out.append(None)
+            else:
+                try:
+                    out.append(int(ch, 16))
+                except ValueError:
+                    return None
+        return out
+
+    @staticmethod
+    def _ar_hex_at(pat, data, off):
+        """带通配的 HEX pattern 是否在 data 偏移 off 处命中。pat 元素为 None 表示通配。"""
+        if off < 0 or off + len(pat) > len(data):
+            return False
+        for i, p in enumerate(pat):
+            if p is not None and data[off + i] != p:
+                return False
+        return True
+
+    def _ar_subst_reply(self, reply, data, hex_mode):
+        """应答占位符替换。占位符：
+          {rN}      第 N 字节(0 基)
+          {rN-M}    第 N..M 字节
+          {rN+K}    第 N 字节 + K (mod 256)，K 可为十进制或 0xHH
+          {rN^K}    第 N 字节 XOR K
+          {seq}     1 字节自增计数（每次替换 +1，wrap 0..255）
+          {ts}      当前毫秒时间戳低 4 字节 BE
+        HEX 模式替成两位十六进制(空格分隔)，文本模式替成原字符；越界/越界 K 替成空。"""
+        sep = " " if hex_mode else ""
+
+        def byte_s(b):
+            return f"{b & 0xFF:02X}" if hex_mode else chr(b & 0xFF)
+
+        def bytes_s(bs):
+            return sep.join(byte_s(b) for b in bs)
+
+        def parse_k(s):
+            return int(s, 16) if s.lower().startswith("0x") else int(s)
+
+        # {ts}：当前 ms 时间戳低 4 字节 BE
+        ts_ms = int(time.time() * 1000) & 0xFFFFFFFF
+        ts_bytes = bytes([(ts_ms >> 24) & 0xFF, (ts_ms >> 16) & 0xFF,
+                          (ts_ms >> 8) & 0xFF, ts_ms & 0xFF])
+        out = reply.replace("{ts}", bytes_s(ts_bytes))
+        # {seq}：仅在 reply 实际含 {seq} 时才推进，避免不用 {seq} 的规则白白消耗序号
+        # （多帧应答里每段独立调本函数，按段消耗 seq —— 这是符合直觉的，每段=一帧）
+        if "{seq}" in out:
+            self._ar_seq = (self._ar_seq + 1) & 0xFF
+            out = out.replace("{seq}", byte_s(self._ar_seq))
+
+        def repl(m):
+            n = int(m.group(1))
+            op = m.group(2)         # '+' 或 '^' 或 None
+            arg = m.group(3)        # 算术操作数 K
+            rng = m.group(4)        # 范围终点 M
+            if rng is not None:
+                # {rN-M} 范围
+                m_ = int(rng)
+                lo, hi = (n, m_) if n <= m_ else (m_, n)
+                return bytes_s([data[i] for i in range(lo, hi + 1) if 0 <= i < len(data)])
+            if op is not None:
+                # {rN+K} / {rN^K} 算术
+                if not (0 <= n < len(data)):
+                    return ""
+                try:
+                    k = parse_k(arg)
+                except ValueError:
+                    return ""
+                return byte_s((data[n] + k) & 0xFF if op == "+" else data[n] ^ k)
+            # {rN} 单字节
+            return byte_s(data[n]) if 0 <= n < len(data) else ""
+
+        # 同时匹配 {rN}/{rN-M}/{rN+K}/{rN^K}：K 可十进制或 0xHH
+        return re.sub(r"\{r(\d+)(?:([+^])(0x[0-9A-Fa-f]+|\d+)|-(\d+))?\}", repl, out)
+
+    def _info_dlg(self, title, body, is_error=False):
+        """与主界面同主题的信息/错误模态对话框（替代风格不一致的 QMessageBox）。
+        parent=None：避免 Qt 父子链对无边框主窗 WM_NCHITTEST 的干扰（modal 由 setModal(True)
+        ApplicationModal 提供，与 parent 无关）。dialog exec_() 完即弃、不会泄漏。"""
+        ok = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK")
+        InfoDialog(title, body, ok_text=ok, is_error=is_error,
+                   theme_id=self._theme_id(), parent=None).exec_()
+
+    # ----- 会话配置档 导入/导出 -----
+    # 包含的 QSettings 键（实际 _save_settings 写入的 key 名，已对齐）：
+    #   连接（网络/串口）+ 数据区显示 + 发送区 + 主题/语言 + 多条发送/关键字/帧解析/绘图 + 自动应答 + 自动重连
+    # 不含：geometry / h_splitter（窗口位置布局不跨机器搬）、send_history（个人命令历史不导出）
+    _CFG_KEYS = (
+        # 网络连接
+        "net_proto", "net_local_ip", "net_local_port",
+        "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
+        # 串口连接
+        "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
+        # 数据区显示
+        "rx_hex", "wrap", "show_timestamp", "packet_split", "packet_timeout",
+        "line_split", "line_nl_mode", "encoding", "max_lines",
+        "log_split", "filter_highlight", "recv_font_size",
+        # 发送区
+        "tx_hex", "append_newline", "append_nl_mode", "period_ms",
+        "checksum_idx", "send_text",
+        # 主题/语言
+        "theme", "language",
+        # 多条发送 / 关键字 / 帧解析 / 绘图
+        "multi_send_groups", "multi_send_group_idx",
+        "keyword_groups", "keyword_active",
+        "frame_rules",
+        "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
+        "plot_hex_header", "plot_maxpts", "plot_xaxis",
+        # 自动应答
+        "autoreply_rules", "autoreply_on",
+        # 杂项
+        "auto_reconnect",
+    )
+
+    def export_config(self):
+        """导出当前配置为 JSON：QFileDialog 选保存路径，写入 _CFG_KEYS 里所有非空值。"""
+        path, _ = QFileDialog.getSaveFileName(self, self._t("cfg_export"), "CommTool_config.json",
+                                              "JSON (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        # 主界面很多值（发送框文本、HEX 开关、串口/网络字段等）只在退出 _shutdown 时落盘；
+        # 用户刚改完立即导出会拿到旧值。先强制落一次盘保证导出是当前最新状态。
+        self._save_settings()
+        s = self.settings
+        payload = {"_app": "CommTool", "_version": APP_VERSION, "settings": {}}
+        for k in self._CFG_KEYS:
+            v = s.value(k, None)
+            if v is None:
+                continue
+            # QSettings 在 ini 里把 bool 存为 'true'/'false' 字符串，原样写入即可；list/json 字符串透传
+            payload["settings"][k] = v
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            self._info_dlg(self._t("cfg_export"), self._t("cfg_exported", path=path))
+        except Exception as e:
+            self._info_dlg(self._t("cfg_export"), self._t("cfg_export_fail", err=str(e)), is_error=True)
+
+    def import_config(self):
+        """导入 JSON 配置：批量 setValue 到 QSettings + 立刻刷新 UI。
+        能即时生效：主题/语言/显示选项/发送框文本/连接字段(UI 显示，未重连)/自动应答规则与状态。
+        需手动操作：当前已开的连接（用户得手动断开重连），其它弹窗(多条/关键字/帧解析/绘图)若打开下次重开生效。"""
+        path, _ = QFileDialog.getOpenFileName(self, self._t("cfg_import"), "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            data = payload.get("settings", payload)
+            if not isinstance(data, dict):
+                raise ValueError("invalid format")
+        except Exception as e:
+            self._info_dlg(self._t("cfg_import"), self._t("cfg_import_fail", err=str(e)), is_error=True)
+            return
+        s = self.settings
+        n = 0
+        for k, v in data.items():
+            if k in self._CFG_KEYS:
+                s.setValue(k, v)
+                n += 1
+        s.sync()
+        # 立刻刷 UI（兜底 try：刷新失败不该让导入本身报错）
+        try:
+            # 语言不在 _load_settings 里恢复，得单独读 + _set_language 触发完整 retranslate
+            new_lang = s.value("language", self._lang)
+            if new_lang != self._lang and new_lang in TR:
+                self._set_language(new_lang)
+            # _load_settings 覆盖：geometry/recv_font/显示开关/编码/主题/发送选项/连接字段...
+            # (geometry/h_splitter 不在 _CFG_KEYS 导入集里，原 QSettings 值不变，restore 等于 no-op)
+            self._load_settings()
+            # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
+            self._ar_rules = self._load_ar_rules()
+            self._recompute_ar_gap()
+            self._ar_reset_buf()
+            # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
+            # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
+            self._ar_on = s.value("autoreply_on", False, type=bool)
+            self._update_autoreply_btn()
+            # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
+            # 后续编辑（commit 走旧内存）把导入的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
+            self._ms_groups, _ = self._load_ms_groups()
+            try:
+                self._ms_group_idx = int(s.value("multi_send_group_idx", 0))
+            except (ValueError, TypeError):
+                self._ms_group_idx = 0
+            if not (0 <= self._ms_group_idx < len(self._ms_groups)):
+                self._ms_group_idx = 0
+            self._rebuild_ms_group_combo()
+            self._rebuild_ms_quick_bar()
+            self._keyword_groups, self._keyword_active, _ = self._load_keyword_groups()
+            self._rebuild_kw_group_combo()
+            self._refresh_extra_selections()    # 高亮规则变了 → 重画数据区 extra selections
+            # 已打开的对话框同步刷新（_ar_rules 改了对话框内 _rows 仍是旧的，会反写覆盖）
+            if getattr(self, "_ar_dlg", None) is not None:
+                self._ar_dlg.reload_rows()
+            if getattr(self, "_multi_send_dlg", None) is not None:
+                self._multi_send_dlg._reload_group_list()
+                self._multi_send_dlg._reload_rows()
+            if getattr(self, "_keyword_dlg", None) is not None:
+                self._keyword_dlg._reload_group_list()
+                self._keyword_dlg._reload_rows()
+            # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
+            # 避免新配置和老缓冲数据/旧规则混在一起。
+            if getattr(self, "_plot_dlg", None) is not None:
+                self._plot_dlg.reload_cfg()
+            if getattr(self, "_frame_dlg", None) is not None:
+                self._frame_dlg.reload_cfg()
+        except Exception:
+            pass
+        self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
+
+    def _send_subst(self, raw, hex_mode):
+        """发送区动态字段替换：
+          {count}   1B 计数（每次替换 +1，wrap 0..255）
+          {ts}      当前 ms 时间戳低 4B BE
+          {rand}    1B 随机
+          {randN}   N 字节随机（N=1..256；{rand}=={rand1}）
+        HEX 模式替成两位十六进制(空格分隔)，文本模式替成原字符。与自动应答的 {seq}/{ts} 独立计数。"""
+        import random
+        sep = " " if hex_mode else ""
+        def bs(b): return f"{b & 0xFF:02X}" if hex_mode else chr(b & 0xFF)
+        def bytes_s(bs_list): return sep.join(bs(b) for b in bs_list)
+        if "{count}" in raw:
+            self._send_count = (self._send_count + 1) & 0xFF
+            raw = raw.replace("{count}", bs(self._send_count))
+        if "{ts}" in raw:
+            ts = int(time.time() * 1000) & 0xFFFFFFFF
+            raw = raw.replace("{ts}", bytes_s([(ts >> 24) & 0xFF, (ts >> 16) & 0xFF,
+                                               (ts >> 8) & 0xFF, ts & 0xFF]))
+        # {randN}/{rand}：N 可省略=1，上限 256（防 {rand9999} 这种）
+        def _rand_repl(m):
+            n = int(m.group(1)) if m.group(1) else 1
+            n = max(1, min(n, 256))
+            return bytes_s([random.randint(0, 255) for _ in range(n)])
+        raw = re.sub(r"\{rand(\d*)\}", _rand_repl, raw)
+        return raw
+
+    def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None) -> bool:
+        """替换动态字段 → 发送 → 失败回滚 {count}（避免未连接/格式错等失败消耗计数）。
+        ({ts}/{rand} 是纯函数无副作用，不用回滚；只有 {count} 有持久状态)"""
+        prev_count = self._send_count
+        subbed = self._send_subst(raw, hex_mode=hex_mode)
+        ok = self._send_text(subbed, hex_mode=hex_mode, newline=newline, checksum=checksum)
+        if not ok:
+            self._send_count = prev_count
+        return ok
+
+    def do_send(self):
+        raw_orig = self.txt_send.toPlainText()
+        if not raw_orig:
+            return
+        # 动态字段在发送前替换；不在 _send_text 入口替，避免与自动应答(已自行 subst)双重处理
+        ok = self._send_with_subst(raw_orig, hex_mode=self.sw_tx_hex.isChecked())
+        if ok:
+            self._push_send_hist(raw_orig)   # 存入历史的是「占位符未替换」的原文，重发可保留 {ts} 等语义
         # 定时发送时任何发送失败(数据格式错误/未连接/无目标/写失败)都关掉定时器，
         # 避免格式错误等确定性失败每周期刷一次 toast 形成轰炸
         if not ok and self.sw_period.isChecked():
             self.sw_period.setChecked(False)
+
+    # ----- 发送命令历史 -----
+    def _push_send_hist(self, text):
+        """成功发送后入栈：去重相邻、cap 100、落盘。重置导航态以便下次 ↑ 从最新开始。"""
+        text = text.rstrip("\r\n")
+        if not text:
+            return
+        if self._send_hist and self._send_hist[-1] == text:
+            self._send_hist_idx = -1
+            self._send_hist_pending = ""
+            return
+        self._send_hist.append(text)
+        if len(self._send_hist) > 100:
+            self._send_hist.pop(0)
+        self._send_hist_idx = -1
+        self._send_hist_pending = ""
+        try:
+            self.settings.setValue("send_history", json.dumps(self._send_hist, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _load_send_hist(self):
+        raw = self.settings.value("send_history", "")
+        if not raw:
+            return
+        try:
+            v = json.loads(raw)
+            if isinstance(v, list):
+                self._send_hist = [str(x) for x in v][-100:]
+        except Exception:
+            pass
+
+    def _show_hist_at(self, idx):
+        """加载历史第 idx 条到 txt_send，光标移末尾。idx=-1 时复原 _send_hist_pending（草稿）。"""
+        text = self._send_hist_pending if idx < 0 else self._send_hist[idx]
+        # blockSignals 防止 textChanged 联动（如果以后挂联动信号）
+        self.txt_send.blockSignals(True)
+        self.txt_send.setPlainText(text)
+        self.txt_send.blockSignals(False)
+        cur = self.txt_send.textCursor()
+        cur.movePosition(QTextCursor.End)
+        self.txt_send.setTextCursor(cur)
+
+    def _send_hist_prev(self):
+        """↑：进入历史 / 往前翻。空历史无动作。"""
+        if not self._send_hist:
+            return
+        if self._send_hist_idx == -1:
+            # 进入导航：保存当前草稿，跳到最新一条
+            self._send_hist_pending = self.txt_send.toPlainText()
+            self._send_hist_idx = len(self._send_hist) - 1
+        elif self._send_hist_idx > 0:
+            self._send_hist_idx -= 1
+        else:
+            return    # 已到最早一条
+        self._show_hist_at(self._send_hist_idx)
+
+    def _send_hist_next(self):
+        """↓：往后翻。到末尾后回到原草稿、退出导航态。"""
+        if self._send_hist_idx == -1:
+            return
+        if self._send_hist_idx < len(self._send_hist) - 1:
+            self._send_hist_idx += 1
+            self._show_hist_at(self._send_hist_idx)
+        else:
+            self._send_hist_idx = -1
+            self._show_hist_at(-1)
 
     def _send_text(self, raw, hex_mode=None, newline=None, checksum=None) -> bool:
         """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
@@ -3166,6 +3891,8 @@ class CommTool(QMainWindow):
         # 多条发送循环按钮文字随语言变
         if hasattr(self, "btn_ms_cycle"):
             self._set_ms_cycle_btn(self._ms_cycle_timer.isActive())
+        # 发送卡片两行三列等列宽：必须在 btn_ms_cycle 文字更新之后，否则取的是旧语言的 sizeHint
+        self._align_send_card_cols()
         # 多条发送/关键字高亮弹窗若开着也跟着切语言
         if getattr(self, "_multi_send_dlg", None) is not None:
             self._multi_send_dlg.retranslate()
@@ -3175,6 +3902,8 @@ class CommTool(QMainWindow):
             self._plot_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
+        if getattr(self, "_ar_dlg", None) is not None:
+            self._ar_dlg.retranslate()
 
     # ----- 持久化 -----
     @staticmethod
@@ -3291,6 +4020,7 @@ class CommTool(QMainWindow):
 
     def _load_settings(self):
         s = self.settings
+        self._load_send_hist()      # 发送命令历史(↑↓ 导航)
 
         def to_bool(v, default=False):
             if isinstance(v, bool):
@@ -3338,8 +4068,8 @@ class CommTool(QMainWindow):
         self.btn_filter_hl.blockSignals(True)
         self.btn_filter_hl.setChecked(to_bool(s.value("filter_highlight", False)))
         self.btn_filter_hl.blockSignals(False)
-        log_split = s.value("log_split", "")
-        if log_split:
+        log_split = s.value("log_split", None)
+        if log_split is not None:
             self.cb_log_split.setCurrentText(str(log_split))
         try:
             nl_idx = int(s.value("line_nl_mode", 0))
@@ -3378,18 +4108,20 @@ class CommTool(QMainWindow):
             pass
         self.on_wrap_toggled(self.sw_wrap.isChecked())
 
+        # 数字字段也用 is not None：导入空串场景下要能清字段（后续编辑/打开走默认逻辑兜底）
         v = s.value("packet_timeout")
-        if v:
+        if v is not None:
             self.ed_packet_timeout.setText(str(v))
         v = s.value("max_lines")
-        if v:
+        if v is not None:
             self.ed_max_lines.setText(str(v))
             self._on_max_lines_changed()
         v = s.value("period_ms")
-        if v:
+        if v is not None:
             self.ed_period_ms.setText(str(v))
+        # 用 is not None：空串也写入（清空导入场景）；只 None=未设过该 key 时才跳
         v = s.value("send_text")
-        if v:
+        if v is not None:
             self.txt_send.setPlainText(str(v))
 
         try:
@@ -3398,23 +4130,23 @@ class CommTool(QMainWindow):
                 self.cb_checksum.setCurrentIndex(ck_idx)
         except (ValueError, TypeError):
             pass
-        # 连接设置恢复（类型下拉含串口+网络协议）
+        # 连接设置恢复（类型下拉含串口+网络协议）。同样用 is not None 支持空串导入清空
         restore_combo(self.cb_proto, "net_proto")
         v = s.value("net_local_ip", None)
-        if v:
+        if v is not None:
             self.cb_local_ip.setCurrentText(str(v))
         v = s.value("net_local_port", None)
-        if v:
+        if v is not None:
             self.ed_local_port.setText(str(v))
         v = s.value("net_remote_ip", None)
-        if v:
+        if v is not None:
             self.ed_remote_ip.setText(str(v))
         v = s.value("net_remote_port", None)
-        if v:
+        if v is not None:
             self.ed_remote_port.setText(str(v))
         self.sw_udp_remote.setChecked(to_bool(s.value("net_use_remote", False)), animate=False)
         v = s.value("net_group_addr", None)
-        if v:
+        if v is not None:
             self.ed_group.setText(str(v))
         # 串口设置恢复
         restore_combo(self.cb_baud, "ser_baud")
@@ -3463,8 +4195,27 @@ class CommTool(QMainWindow):
         self._closing_real = True
         self.close()
 
+    def _show_titlebar_help_menu(self):
+        """标题栏「帮助」按钮下拉：当前含「关于」一项（含检查更新），后续可继续加文档链接等。
+        菜单使用项目主题色，弹在按钮正下方。"""
+        menu = QMenu(self)
+        c = chrome_for(self._theme_id())
+        menu.setStyleSheet(f"""
+            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
+                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
+            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+        """)
+        act = menu.addAction(self._t("about") + "…")
+        act.triggered.connect(self.open_about)
+        # 弹在按钮正下方
+        from PyQt5.QtCore import QPoint
+        menu.exec_(self.btn_titlebar_help.mapToGlobal(
+            QPoint(0, self.btn_titlebar_help.height())))
+
     def open_about(self):
-        """打开「关于 + 检查更新」对话框（托盘菜单触发）。"""
+        """打开「关于 + 检查更新」对话框（托盘菜单触发）。
+        parent=None：与其它子对话框一致，避免干扰主窗 WM_NCHITTEST。modal 由 setModal(True) 保证。"""
         dlg = AboutDialog(
             tr=self._t,
             app_name=self._t("app_title"),
@@ -3472,7 +4223,7 @@ class CommTool(QMainWindow):
             icon=get_app_icon(),
             theme_id=self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT,
             on_quit=self._real_quit,
-            parent=self,
+            parent=None,
         )
         dlg.exec_()
 
@@ -3679,6 +4430,8 @@ class CommTool(QMainWindow):
     def _shutdown(self):
         """退出前统一清理。closeEvent 的两条退出路径（直接退出 / 选「退出」）共用：
         以前两段逐行复制，加清理步骤极易漏改其中一条导致线程/定时器泄漏，故抽成一处。"""
+        self._user_closing = True             # 退出 → 跳过自动重连
+        self._cancel_reconnect()
         if hasattr(self, "_ms_cycle_timer"):
             self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
         if hasattr(self, "_rate_timer"):
@@ -3693,6 +4446,16 @@ class CommTool(QMainWindow):
             self._tooltip_popup.hide()
             self._tooltip_popup.deleteLater()
             self._tooltip_popup = None
+        # 5 个子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
+        # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
+        for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg"):
+            dlg = getattr(self, attr, None)
+            if dlg is not None:
+                try:
+                    dlg.close(); dlg.deleteLater()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         if self._tray:
             self._tray.hide()
 
@@ -3708,7 +4471,7 @@ class CommTool(QMainWindow):
             self._t("close_quit"),
             self._t("close_cancel"),
             theme_id=self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT,
-            parent=self,
+            parent=None,    # 与其它对话框一致，避免干扰主窗 WM_NCHITTEST
         )
         dlg.exec_()
         choice = dlg.result_value()

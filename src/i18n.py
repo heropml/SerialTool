@@ -85,10 +85,19 @@ TR = {
         "updater_bad_installer": "下载内容不是有效安装包（可能是错误页面）",
         "updater_bad_url": "更新源地址不安全（仅允许 https）",
         "net_peer_closed": "对端已断开",
+        "auto_reconnect_in": "将在 {sec}s 后自动重连…",
+        "auto_reconnect_try": "尝试重连 #{n}…",
+        "cfg_export": "导出配置…",
+        "cfg_import": "导入配置…",
+        "cfg_exported": "✓ 配置已成功导出到：{path}",
+        "cfg_export_fail": "导出失败: {err}",
+        "cfg_imported": "✓ 配置导入成功（{n} 项），主题/语言/规则已即时生效；当前已开的连接需手动重连",
+        "cfg_import_fail": "导入失败: {err}",
         "net_no_target": "无可发送目标",
         "net_not_open": "未连接",
         "net_send_failed": "发送失败",
         "about": "关于",
+        "help": "帮助",
         "about_desc": "iOS 风格的串口 / 网络调试工具（串口 + TCP/UDP）",
         "check_update": "检查更新",
         "update_checking": "正在检查…",
@@ -125,7 +134,23 @@ TR = {
         "ck_crc32": "CRC32",
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
-        "send_placeholder": "在这里输入要发送的内容...   HEX 模式示例: AA BB CC 01 02 (空格可省)",
+        "send_placeholder": "在这里输入要发送的内容...   HEX 示例: AA BB CC 01 02   动态字段: {count} {ts} {randN}",
+        "send_box_tip": (
+            "动态字段（发送时自动替换，HEX 模式输出 2 位十六进制）：\n"
+            "  {count}  序号自增 1 字节，每次发 +1（0..FF 回绕）\n"
+            "  {ts}     当前毫秒时间戳 4 字节（高位在前）\n"
+            "  {rand}   随机 1 字节（= {rand1}）\n"
+            "  {randN}  随机 N 字节，N=1..256（如 {rand4}、{rand16}）\n"
+            "\n"
+            "示例（HEX 模式）：在框里输入\n"
+            "  54 {count} 00 03 FF\n"
+            "第 1 次发实际发出：54 01 00 03 FF\n"
+            "第 2 次：54 02 00 03 FF……\n"
+            "\n"
+            "发送命令历史（↑↓）：\n"
+            "  光标在首行按 ↑ 取上一条发过的命令\n"
+            "  光标在末行按 ↓ 往后翻 / 回到当前草稿"
+        ),
         "multi_send": "多条发送",
         "multi_send_title": "多条发送",
         "ms_add": "＋ 添加一条",
@@ -172,9 +197,103 @@ TR = {
         "stat_rate": "当前速率",
         "stat_peak": "峰值速率",
         "stat_errors": "错误数",
+        "ar_open": "自动应答",
+        "ar_title": "自动应答",
+        "ar_enable": "启用自动应答",
+        "ar_add": "添加规则",
+        "ar_help_btn": "使用说明",
+        "ar_help_title": "自动应答 — 使用说明",
+        "ar_match": "收到",
+        "ar_reply": "回复",
+        "ar_mode_contains": "包含",
+        "ar_mode_equals": "相等",
+        "ar_mode_prefix": "前缀",
+        "ar_cooldown": "冷却",
+        "ar_delay": "延时",
+        "ar_gap": "整包超时",
+        "ar_gap_tip": "整包：累积收到的字节、静默这么久(ms)视作一整帧再匹配(Modbus 等分帧)；0=每包即时。注意分帧在匹配前进行、整条串口共用，实际取所有启用规则中的最大值。",
+        "ar_verify": "收包校验",
+        "ar_verify_tip": "对收到的整帧做校验：尾部按所选算法校验通过才应答，不通过(坏帧)不回。选「无」=不校验。本设备=MOBUS。",
+        "ar_match_ph": "匹配（HEX 可用 ?? 通配，如 54 ?? 03）",
+        "ar_reply_ph": "应答（{r3}=第3字节 {r1+1}=加1 {r1^FF}=异或 {seq}=自增 {ts}=时间戳 | 分多帧）",
+        "ar_btn_tip": "单击=打开配置，双击=切换开关",
+        "ar_toast_on": "自动应答已开启",
+        "ar_toast_off": "自动应答已关闭",
+        "ar_cooldown_tip": "冷却(ms)：同一规则在此窗口内只响一次，防止匹配帧连续高频到达造成应答风暴。延时是 turnaround、冷却是限流，是两回事。",
+        "ar_help": (
+            "<b>用法</b>：收到数据按规则匹配 → 自动发应答。多条规则按顺序，命中第一条即停（一帧最多回一条）。仅在已连接 + 总开关开启时生效。<br>"
+            "<b>匹配</b>：HEX/文本 × 包含/相等/<b>前缀</b>。HEX 模式 <code>??</code> 通配单字节（如 <code>54 ?? 03</code>）。按帧首字节区分类型 <b>请用「前缀」别用「包含」</b>（避免别帧数据里同字节误命中）。<br>"
+            "<b>应答占位符</b>（在「回复」框写）："
+            "<code>{rN}</code>=收到帧第 N 字节(0基) &nbsp; "
+            "<code>{rN-M}</code>=第 N..M 字节 &nbsp; "
+            "<code>{rN+K}</code>=加 K(mod256) &nbsp; "
+            "<code>{rN^K}</code>=XOR K &nbsp; "
+            "<code>{seq}</code>=自增 1B &nbsp; "
+            "<code>{ts}</code>=毫秒时间戳 4B BE。"
+            "用 <code>|</code> 分多帧（如 <code>06 | 04 03 02 01</code> 先回 06、隔延时再回 04 03 02 01）。<br>"
+            "<b>时序</b>：<b>整包超时</b>=静默 N ms 视作整帧再匹配（Modbus 分帧）；<b>延时</b>=匹配后等待 N ms 再回（从机 turnaround）；<b>冷却</b>=同一规则 N ms 内只响一次（防风暴）。<br>"
+            "<br><b>例 1（MOBUS 设备，回包带回收到帧字节 + 自动补 CRC）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = 54     HEX ✓  模式=前缀   收校验 = MOBUS\n"
+            "回复 = 03 {r2} {r1} 00   HEX ✓  校验 = MOBUS\n"
+            "收: 54 03 01 02 ... CRC  →  回: 03 01 03 00 ... CRC（CRC 自动补）</pre>"
+            "<b>例 2（心跳应答带本机序号 + 时间戳）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓  模式=相等\n"
+            "回复 = 55 {ts} {seq}   HEX ✓\n"
+            "收: AA  →  回: 55 F4 50 38 17 01（4B 时戳 + 自增序号）</pre>"
+            "<b>例 3（HEX 通配 + 多帧 ACK+DATA）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = 54 ?? 03   模式=包含    回复 = 06 | 04 03 02 01    延时 = 10 ms\n"
+            "任何形如 54 X 03 的帧都触发：先回 06，10ms 后再回 04 03 02 01</pre>"
+            "<b>例 4（AT 命令 — 文本模式）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AT+VER?   文本（HEX 不勾）   模式=相等\n"
+            "回复 = +VER:1.2.3\\r\\nOK\\r\\n   文本   校验=无\n"
+            "收: AT+VER?  →  回: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
+            "<b>例 5（多规则按帧类型分流 — 命中即停）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>设备协议多种帧类型，每种一条规则按顺序排：\n"
+            "  规则 1: 匹配 = 54   模式=前缀   →   回 03 {r2} {r1} 00   校验=MOBUS\n"
+            "  规则 2: 匹配 = 02   模式=前缀   →   回 03 {r1} 00 00     校验=MOBUS\n"
+            "  规则 3: 匹配 = 04   模式=前缀   →   回 03 {r1} {r2} {r3} 校验=MOBUS\n"
+            "首字节决定走哪条；前缀模式按字节对齐，绝不会因别帧数据里含 02 误触发</pre>"
+            "<b>例 6（字节范围 + 算术 + 限流，{r1-4} {r1+1} {r2^FF}）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓   模式=相等   冷却 = 200 ms\n"
+            "回复 = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "收: AA 10 20 30 40 50  →  回: 10 20 30 40 50 11 DF\n"
+            "  ({r1-4}=回填第1..4字节  {r1+1}=10+1=11  {r2^FF}=20 XOR FF = DF)\n"
+            "即使设备 10ms 发一帧，每 200ms 才回一次（冷却把中间的吃掉）</pre>"
+        ),
         "plot_open": "波形图",
         "plot_need_lib": "波形图需要 pyqtgraph 库：{e}",
         "plot_title": "数据波形图",
+        "plot_help_btn": "使用说明",
+        "plot_help_title": "数据波形图 — 使用说明",
+        "plot_help": (
+            "<b>用法</b>：从 RX 数据里解析数值，按通道实时绘曲线。三种解析模式按设备协议选——文本流走「分隔符/正则」，二进制 HEX 帧走「HEX 字节字段」。<br>"
+            "<b>分隔符模式</b>：逐行按选定分隔符切，每列 = 一条曲线。<br>"
+            "<b>正则模式</b>：每行用正则匹配，每个 <b>捕获组</b> = 一条曲线（非捕获组用 <code>(?:…)</code>）。<br>"
+            "<b>HEX 字节字段模式</b>：把每个收到包视作一帧（按数据区「时间分包」切），按「<code>名称=偏移:类型</code>」从指定偏移取数。可选「帧头」过滤：填 hex 帧头只解析以它开头的帧。<br>"
+            "<br><b>例 1（分隔符模式 — CSV 文本流）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>设备输出：<code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
+            "模式 = 分隔符   分隔符 = 逗号\n"
+            "→ 3 条曲线（CH0/CH1/CH2），每行一组采样</pre>"
+            "<b>例 2（正则模式 — 带标签的文本）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>设备输出：<code>T=23.4 H=56.7 P=1013\\n</code>\n"
+            "模式 = 正则   正则 = <code>T=([\\d.]+)\\s+H=([\\d.]+)\\s+P=([\\d.]+)</code>\n"
+            "→ 3 条曲线（温度/湿度/气压），分别取 3 个捕获组的数</pre>"
+            "<b>例 3（HEX 字节字段 — 二进制协议）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>设备每帧：<code>54 00 0A 04 7F …</code>（4 字节 i16le 后跟 i16le）\n"
+            "模式 = HEX 字节字段   字段 = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "收: 54 00 0A 04 7F → X=0x0A00=2560 (le)  Y=0x047F=1151\n"
+            "→ 2 条曲线（X/Y），按帧绘点</pre>"
+            "<b>例 4（HEX 模式 + 帧头过滤 — 多帧类型只画一类）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>设备混发多种帧（54 类、02 类、04 类），只想看 54 类：\n"
+            "模式 = HEX 字节字段   <b>帧头 = 54</b>   字段 = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "其它帧（02xx…/04xx…）被过滤掉，只解析 54 开头的</pre>"
+            "<b>例 5（浮点数据 — 加速度计/陀螺仪等）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>每帧 12 字节：3 个 f32le 浮点（X/Y/Z 加速度）\n"
+            "模式 = HEX 字节字段   字段 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
+            "→ 3 条加速度曲线，每帧一个采样点</pre>"
+            "<br><b>X 轴</b>可切「样本序号」或「时间」；<b>窗口</b>下拉控制最多保留点数（超出滚动丢弃，长跑不爆内存）；右上角<b>暂停/清空/导出 CSV</b>。<br>"
+            "<b>⚠️ HEX 字节字段模式按接收块分帧</b>（一块=一帧，不拆粘包）。串口/TCP 请配合数据区<b>「时间分包」</b>让每帧单独成块。"
+        ),
         "plot_mode": "解析",
         "plot_mode_delim": "分隔符",
         "plot_mode_regex": "正则",
@@ -194,7 +313,36 @@ TR = {
         "frame_col_fields": "字段",
         "frame_rules": "解析规则",
         "frame_add_rule": "添加规则",
-        "frame_rules_help": "每条规则 = 帧头 + 字段。帧头填 hex（如 02；留空=匹配前面规则没命中的帧）；字段「名称=偏移:类型」逗号分隔，偏移从 0 数起。类型：u8/i16le… 数值，数值后加 x 显示十六进制（u8x），hexN=N字节HEX、strN=N字节文本。改完点「应用」。\n⚠️ 按接收块分帧：一个数据块 = 一帧，不做跨块粘包拆分（半帧会缺字段、粘连帧只解析第一帧、帧头不在块首则整帧丢弃）。串口/TCP 请在数据区开启「时间分包」，让每帧单独成块。",
+        "frame_help_btn": "使用说明",
+        "frame_help_title": "协议帧解析 — 使用说明",
+        "frame_help": (
+            "<b>用法</b>：填好「帧头 + 字段」规则后点「应用」。收到的每个数据块按帧头前缀匹配规则解析，命中第一条即停。<br>"
+            "<b>规则字段</b>：<br>"
+            "&nbsp;&nbsp;<b>帧头</b>：hex 串如 <code>02</code>；留空 = 兜底匹配前面规则未命中的帧<br>"
+            "&nbsp;&nbsp;<b>字段定义</b>：<code>名称=偏移:类型</code> 多个用逗号分隔，偏移从 0 数起<br>"
+            "<b>类型表</b>：<br>"
+            "&nbsp;&nbsp;数值：<code>u8 i8 u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be f64le f64be</code><br>"
+            "&nbsp;&nbsp;数值后加 <code>x</code> = HEX 显示（如 <code>u8x</code> 显示 0x1F 而不是 31）<br>"
+            "&nbsp;&nbsp;<code>hexN</code> = N 字节原始 HEX 串；<code>strN</code> = N 字节 ASCII 文本<br>"
+            "<br><b>例 1（最简单 — 单字节字段）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>帧头 = 02   字段 = 序号=1:u8, 长度=2:u8, 类型=3:u8\n"
+            "收: 02 0A 04 7F → 序号=10  长度=4  类型=127</pre>"
+            "<b>例 2（多字节数值，含端序）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>帧头 = 54   字段 = ID=1:u16le, 温度=3:i16le, 时间=5:u32be\n"
+            "收: 54 34 12 5C FF 00 00 04 D2 → ID=0x1234=4660  温度=-164  时间=1234</pre>"
+            "<b>例 3（HEX 显示 + 原始字节）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>帧头 = AA   字段 = 状态=1:u8x, MAC=2:hex6, 名称=8:str8\n"
+            "收: AA 1F 00 11 22 33 44 55 CommTool → 状态=0x1F  MAC=00 11 22 33 44 55  名称=CommTool</pre>"
+            "<b>例 4（HEX 数值，便于按位看寄存器）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>帧头 = 06   字段 = 状态=1:u8x, 故障=2:u16lex\n"
+            "收: 06 80 34 12 → 状态=0x80  故障=0x1234</pre>"
+            "<b>例 5（多规则按帧头分流 — 命中即停）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>规则 1: 帧头=54  字段=序号=1:u8, 类型=2:u8\n"
+            "规则 2: 帧头=02  字段=应答=1:u8\n"
+            "规则 3: 帧头=（空） 字段=类型=0:u8x          ← 兜底\n"
+            "首字节决定走哪条；54/02 分别有专属解析，其它帧走兜底规则</pre>"
+            "<br><b>⚠️ 按接收块分帧</b>：一个数据块 = 一帧，不做跨块粘包拆分（半帧会缺字段、粘连帧只解析第一帧、帧头不在块首则整帧丢弃）。串口/TCP 请在<b>数据区开启「时间分包」</b>，让每帧单独成块。"
+        ),
         "frame_rules_ph": "每行一条：帧头 | 字段。例： 02 | 序号L=1:u8, 序号H=3:u8x",
         "frame_apply": "应用",
         "frame_tab_all": "全部",
@@ -347,10 +495,19 @@ TR = {
         "updater_bad_installer": "Downloaded file is not a valid installer (maybe an error page)",
         "updater_bad_url": "Unsafe update URL (https only)",
         "net_peer_closed": "Peer disconnected",
+        "auto_reconnect_in": "Auto-reconnect in {sec}s…",
+        "auto_reconnect_try": "Reconnect attempt #{n}…",
+        "cfg_export": "Export config…",
+        "cfg_import": "Import config…",
+        "cfg_exported": "✓ Config exported successfully to: {path}",
+        "cfg_export_fail": "Export failed: {err}",
+        "cfg_imported": "✓ Config imported ({n} keys); theme/language/rules applied; reconnect manually if a connection is currently open",
+        "cfg_import_fail": "Import failed: {err}",
         "net_no_target": "No send target",
         "net_not_open": "Not connected",
         "net_send_failed": "Send failed",
         "about": "About",
+        "help": "Help",
         "about_desc": "An iOS-style serial & network debugging tool (Serial + TCP/UDP)",
         "check_update": "Check for Updates",
         "update_checking": "Checking…",
@@ -387,7 +544,23 @@ TR = {
         "ck_crc32": "CRC32",
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
-        "send_placeholder": "Type data to send...   HEX example: AA BB CC 01 02 (spaces optional)",
+        "send_placeholder": "Type data to send...   HEX example: AA BB CC 01 02   Dynamic fields: {count} {ts} {randN}",
+        "send_box_tip": (
+            "Dynamic fields (auto-replaced on send; HEX mode outputs 2-digit hex):\n"
+            "  {count}  auto-increment counter, 1 byte, +1 per send (0..FF wraps)\n"
+            "  {ts}     current ms timestamp, 4 bytes (big-endian)\n"
+            "  {rand}   1 random byte (= {rand1})\n"
+            "  {randN}  N random bytes, N=1..256 (e.g. {rand4}, {rand16})\n"
+            "\n"
+            "Example (HEX mode): type in box\n"
+            "  54 {count} 00 03 FF\n"
+            "1st send produces: 54 01 00 03 FF\n"
+            "2nd: 54 02 00 03 FF, etc.\n"
+            "\n"
+            "Send history (Up/Down):\n"
+            "  Up at first line  -> previous sent command\n"
+            "  Down at last line -> next command / back to draft"
+        ),
         "multi_send": "Multi-Send",
         "multi_send_title": "Multi-Send",
         "ms_add": "＋ Add Row",
@@ -434,9 +607,103 @@ TR = {
         "stat_rate": "Current rate",
         "stat_peak": "Peak rate",
         "stat_errors": "Errors",
+        "ar_open": "Auto-reply",
+        "ar_title": "Auto-reply",
+        "ar_enable": "Enable auto-reply",
+        "ar_add": "Add rule",
+        "ar_help_btn": "Help",
+        "ar_help_title": "Auto-reply — Help",
+        "ar_match": "On",
+        "ar_reply": "Reply",
+        "ar_mode_contains": "contains",
+        "ar_mode_equals": "equals",
+        "ar_mode_prefix": "prefix",
+        "ar_cooldown": "Cooldown",
+        "ar_delay": "Delay",
+        "ar_gap": "Frame gap",
+        "ar_gap_tip": "Frame gap: buffer bytes and treat them as one frame after this idle time (ms) before matching (Modbus framing); 0 = per-chunk. Note: framing happens before matching and is shared by the connection, so the LARGEST value among enabled rules is used.",
+        "ar_verify": "RX checksum",
+        "ar_verify_tip": "Verify the whole received frame's trailing checksum with this algorithm; reply only if it passes (bad frames get no reply). 'None' = no check. This device = MOBUS.",
+        "ar_match_ph": "match (HEX may use ?? wildcards, e.g. 54 ?? 03)",
+        "ar_reply_ph": "reply ({r3}=byte 3 {r1+1}=add {r1^FF}=xor {seq}=counter {ts}=timestamp; | splits into multiple frames)",
+        "ar_btn_tip": "Click = open config, double-click = toggle on/off",
+        "ar_toast_on": "Auto-reply enabled",
+        "ar_toast_off": "Auto-reply disabled",
+        "ar_cooldown_tip": "Cooldown (ms): a single rule fires at most once per window — prevents reply storms when matching frames arrive in rapid succession. Different from Delay (turnaround); cooldown is rate-limiting, delay is output timing.",
+        "ar_help": (
+            "<b>How it works</b>: incoming data is matched against rules → auto-sends the reply. Rules checked in order, first match wins (at most one reply per frame). Active only when connected and master switch is on.<br>"
+            "<b>Match</b>: HEX/text × contains/equals/<b>prefix</b>. In HEX, <code>??</code> is a single-byte wildcard (e.g. <code>54 ?? 03</code>). To distinguish frame types by the first byte, <b>use prefix, not contains</b> (else that byte inside other frames' data causes false matches).<br>"
+            "<b>Reply placeholders</b> (in the Reply field): "
+            "<code>{rN}</code>=received byte N (0-based) &nbsp; "
+            "<code>{rN-M}</code>=range &nbsp; "
+            "<code>{rN+K}</code>=add K (mod256) &nbsp; "
+            "<code>{rN^K}</code>=XOR K &nbsp; "
+            "<code>{seq}</code>=auto-increment 1B &nbsp; "
+            "<code>{ts}</code>=ms timestamp 4B BE. "
+            "Use <code>|</code> for multi-frame (e.g. <code>06 | 04 03 02 01</code> sends 06, then 04 03 02 01 after Delay).<br>"
+            "<b>Timing</b>: <b>Frame gap</b>=treat bytes as one frame after N ms idle (Modbus-style framing); <b>Delay</b>=wait N ms before replying (slave turnaround); <b>Cooldown</b>=same rule fires at most once per N ms (anti-storm).<br>"
+            "<br><b>Example 1 (MOBUS device, echo received bytes + auto CRC):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Match = 54     HEX ✓  mode=prefix   RX checksum = MOBUS\n"
+            "Reply = 03 {r2} {r1} 00   HEX ✓  Checksum = MOBUS\n"
+            "RX: 54 03 01 02 ... CRC  →  TX: 03 01 03 00 ... CRC (CRC appended)</pre>"
+            "<b>Example 2 (heartbeat reply with counter + timestamp):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Match = AA   HEX ✓  mode=equals\n"
+            "Reply = 55 {ts} {seq}   HEX ✓\n"
+            "RX: AA  →  TX: 55 F4 50 38 17 01 (4B ts + auto-inc seq)</pre>"
+            "<b>Example 3 (HEX wildcard + multi-frame ACK+DATA):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Match = 54 ?? 03   mode=contains   Reply = 06 | 04 03 02 01   Delay = 10 ms\n"
+            "Any 54 X 03 frame triggers: TX 06, then 04 03 02 01 after 10 ms</pre>"
+            "<b>Example 4 (AT command — text mode):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Match = AT+VER?   text (HEX unchecked)   mode=equals\n"
+            "Reply = +VER:1.2.3\\r\\nOK\\r\\n   text   Checksum = none\n"
+            "RX: AT+VER?  →  TX: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
+            "<b>Example 5 (multi-rule dispatch by frame type — first match wins):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Device has multiple frame types; one rule per type, in order:\n"
+            "  Rule 1: Match = 54   mode=prefix   →   Reply 03 {r2} {r1} 00   Checksum=MOBUS\n"
+            "  Rule 2: Match = 02   mode=prefix   →   Reply 03 {r1} 00 00     Checksum=MOBUS\n"
+            "  Rule 3: Match = 04   mode=prefix   →   Reply 03 {r1} {r2} {r3} Checksum=MOBUS\n"
+            "First byte selects which rule; prefix mode is byte-aligned — no false match from 02 inside other frames' data</pre>"
+            "<b>Example 6 (range echo + arithmetic + rate-limit; {r1-4} {r1+1} {r2^FF}):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Match = AA   HEX ✓   mode=equals   Cooldown = 200 ms\n"
+            "Reply = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "RX: AA 10 20 30 40 50  →  TX: 10 20 30 40 50 11 DF\n"
+            "  ({r1-4}=bytes 1..4   {r1+1}=10+1=11   {r2^FF}=20 XOR FF = DF)\n"
+            "Even if device sends every 10 ms, reply only fires every 200 ms (cooldown drops the in-between)</pre>"
+        ),
         "plot_open": "Plot",
         "plot_need_lib": "Plot requires the pyqtgraph package: {e}",
         "plot_title": "Data Plot",
+        "plot_help_btn": "Help",
+        "plot_help_title": "Data Plot — Help",
+        "plot_help": (
+            "<b>How it works</b>: parse numbers out of RX data and plot per-channel curves in real-time. Three parse modes — pick by protocol: text streams → delimiter/regex, binary HEX frames → HEX byte field.<br>"
+            "<b>Delimiter mode</b>: split each line by the chosen separator; one column = one curve.<br>"
+            "<b>Regex mode</b>: match each line; each <b>capture group</b> = one curve (use <code>(?:…)</code> for non-capturing).<br>"
+            "<b>HEX byte field mode</b>: each received block = one frame (split by data area 'Packet Split'); fields use <code>name=offset:type</code>. Optional <b>Header</b> filter: fill hex header to only parse frames starting with it.<br>"
+            "<br><b>Example 1 (Delimiter — CSV text stream):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Device output: <code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
+            "Mode = Delimiter   Sep = comma\n"
+            "→ 3 curves (CH0/CH1/CH2), one sample per line</pre>"
+            "<b>Example 2 (Regex — labelled text):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Device output: <code>T=23.4 H=56.7 P=1013\\n</code>\n"
+            "Mode = Regex   Pattern = <code>T=([\\d.]+)\\s+H=([\\d.]+)\\s+P=([\\d.]+)</code>\n"
+            "→ 3 curves (temp/humidity/pressure), one capture group each</pre>"
+            "<b>Example 3 (HEX byte field — binary protocol):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Device frame: <code>54 00 0A 04 7F …</code> (i16le, then i16le)\n"
+            "Mode = HEX byte field   Fields = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "RX: 54 00 0A 04 7F → X=0x0A00=2560 (le)  Y=0x047F=1151\n"
+            "→ 2 curves (X/Y), one point per frame</pre>"
+            "<b>Example 4 (HEX + header filter — pick one frame type):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Device emits multiple frame types (54/02/04); only plot 54-frames:\n"
+            "Mode = HEX byte field   <b>Header = 54</b>   Fields = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "Other frames (02xx…/04xx…) are filtered out, only 54-prefixed frames are parsed</pre>"
+            "<b>Example 5 (Floats — accelerometer/gyro):</b>"
+            "<pre style='margin:2px 0 2px 16px'>12-byte frame: 3× f32le (X/Y/Z accel)\n"
+            "Mode = HEX byte field   Fields = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
+            "→ 3 acceleration curves, one sample per frame</pre>"
+            "<br><b>X axis</b> can switch to 'sample index' or 'time'; <b>Window</b> caps max points (older drops, prevents memory blow-up); <b>Pause/Clear/Export CSV</b> on the top-right.<br>"
+            "<b>⚠️ HEX byte field mode splits per received block</b> (one block = one frame, no de-framing). For serial/TCP, pair with data area's <b>'Packet Split'</b>."
+        ),
         "plot_mode": "Parse",
         "plot_mode_delim": "Delimiter",
         "plot_mode_regex": "Regex",
@@ -456,7 +723,36 @@ TR = {
         "frame_col_fields": "Fields",
         "frame_rules": "Rules",
         "frame_add_rule": "Add rule",
-        "frame_rules_help": "Each rule = header + fields. Header is hex (e.g. 02; empty = matches frames not caught by earlier rules). Fields: name=offset:type, comma-separated, offset from 0. Types: u8/i16le… numeric, add x for hex (u8x), hexN = N raw bytes, strN = N ASCII bytes. Click Apply when done.\n⚠️ Frames are split per received block (one block = one frame); no cross-block de-framing — a half frame loses fields, concatenated frames parse only the first, and a frame whose header isn't at the block start is dropped. For serial/TCP, enable 'Packet Split' in the data area so each frame arrives as its own block.",
+        "frame_help_btn": "Help",
+        "frame_help_title": "Frame Parser — Help",
+        "frame_help": (
+            "<b>How it works</b>: fill in 'Header + Fields' rules then click Apply. Each received block is matched against rule headers (prefix) — first match wins.<br>"
+            "<b>Rule columns</b>:<br>"
+            "&nbsp;&nbsp;<b>Header</b>: hex string like <code>02</code>; empty = catch-all for frames not matched by earlier rules<br>"
+            "&nbsp;&nbsp;<b>Fields</b>: <code>name=offset:type</code> comma-separated; offset is 0-based<br>"
+            "<b>Types</b>:<br>"
+            "&nbsp;&nbsp;Numeric: <code>u8 i8 u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be f64le f64be</code><br>"
+            "&nbsp;&nbsp;Append <code>x</code> for HEX display (e.g. <code>u8x</code> shows 0x1F instead of 31)<br>"
+            "&nbsp;&nbsp;<code>hexN</code> = N raw bytes as HEX; <code>strN</code> = N bytes as ASCII text<br>"
+            "<br><b>Example 1 (simplest — single-byte fields):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Header = 02   Fields = seq=1:u8, len=2:u8, type=3:u8\n"
+            "RX: 02 0A 04 7F → seq=10  len=4  type=127</pre>"
+            "<b>Example 2 (multi-byte numerics + endianness):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Header = 54   Fields = ID=1:u16le, temp=3:i16le, time=5:u32be\n"
+            "RX: 54 34 12 5C FF 00 00 04 D2 → ID=0x1234=4660  temp=-164  time=1234</pre>"
+            "<b>Example 3 (HEX display + raw bytes + ASCII):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Header = AA   Fields = status=1:u8x, MAC=2:hex6, name=8:str8\n"
+            "RX: AA 1F 00 11 22 33 44 55 CommTool → status=0x1F  MAC=00 11 22 33 44 55  name=CommTool</pre>"
+            "<b>Example 4 (HEX numeric — bit-level register view):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Header = 06   Fields = status=1:u8x, fault=2:u16lex\n"
+            "RX: 06 80 34 12 → status=0x80  fault=0x1234</pre>"
+            "<b>Example 5 (multi-rule dispatch — first match wins):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Rule 1: Header=54  Fields=seq=1:u8, type=2:u8\n"
+            "Rule 2: Header=02  Fields=ack=1:u8\n"
+            "Rule 3: Header=(empty)  Fields=type=0:u8x      ← catch-all\n"
+            "First byte routes to a rule; 54/02 have dedicated parsing, others go to the catch-all</pre>"
+            "<br><b>⚠️ Per-block framing</b>: one received block = one frame; no cross-block de-framing — a half frame loses fields, concatenated frames parse only the first, and a frame whose header isn't at the block start is dropped. For serial/TCP, enable <b>'Packet Split'</b> in the data area so each frame arrives as its own block."
+        ),
         "frame_rules_ph": "one rule per line: header | fields. e.g.  02 | seqL=1:u8, seqH=3:u8x",
         "frame_apply": "Apply",
         "frame_tab_all": "All",
@@ -608,10 +904,19 @@ TR = {
         "updater_bad_installer": "下載內容不是有效安裝包（可能是錯誤頁面）",
         "updater_bad_url": "更新來源位址不安全（僅允許 https）",
         "net_peer_closed": "對端已中斷",
+        "auto_reconnect_in": "將在 {sec}s 後自動重連…",
+        "auto_reconnect_try": "嘗試重連 #{n}…",
+        "cfg_export": "匯出設定…",
+        "cfg_import": "匯入設定…",
+        "cfg_exported": "✓ 設定已成功匯出到：{path}",
+        "cfg_export_fail": "匯出失敗: {err}",
+        "cfg_imported": "✓ 設定匯入成功（{n} 項），主題/語言/規則已即時生效；當前已開的連線需手動重連",
+        "cfg_import_fail": "匯入失敗: {err}",
         "net_no_target": "無可發送目標",
         "net_not_open": "未連線",
         "net_send_failed": "發送失敗",
         "about": "關於",
+        "help": "幫助",
         "about_desc": "iOS 風格的串口 / 網路偵錯工具（串口 + TCP/UDP）",
         "check_update": "檢查更新",
         "update_checking": "正在檢查…",
@@ -648,7 +953,23 @@ TR = {
         "ck_crc32": "CRC32",
         "ck_add16": "ADD16",
         "ck_mobus": "MOBUS",
-        "send_placeholder": "在這裡輸入要發送的內容...   HEX 模式範例: AA BB CC 01 02 (空格可省)",
+        "send_placeholder": "在這裡輸入要發送的內容...   HEX 範例: AA BB CC 01 02   動態欄位: {count} {ts} {randN}",
+        "send_box_tip": (
+            "動態欄位（發送時自動替換，HEX 模式輸出 2 位十六進位）：\n"
+            "  {count}  序號自增 1 位元組，每次發 +1（0..FF 迴繞）\n"
+            "  {ts}     當前毫秒時間戳 4 位元組（高位在前）\n"
+            "  {rand}   隨機 1 位元組（= {rand1}）\n"
+            "  {randN}  隨機 N 位元組，N=1..256（如 {rand4}、{rand16}）\n"
+            "\n"
+            "範例（HEX 模式）：在框裡輸入\n"
+            "  54 {count} 00 03 FF\n"
+            "第 1 次發實際發出：54 01 00 03 FF\n"
+            "第 2 次：54 02 00 03 FF……\n"
+            "\n"
+            "發送命令歷史（↑↓）：\n"
+            "  游標在首行按 ↑ 取上一條發過的命令\n"
+            "  游標在末行按 ↓ 往後翻 / 回到當前草稿"
+        ),
         "multi_send": "多條發送",
         "multi_send_title": "多條發送",
         "ms_add": "＋ 新增一條",
@@ -695,9 +1016,103 @@ TR = {
         "stat_rate": "目前速率",
         "stat_peak": "峰值速率",
         "stat_errors": "錯誤數",
+        "ar_open": "自動應答",
+        "ar_title": "自動應答",
+        "ar_enable": "啟用自動應答",
+        "ar_add": "新增規則",
+        "ar_help_btn": "使用說明",
+        "ar_help_title": "自動應答 — 使用說明",
+        "ar_match": "收到",
+        "ar_reply": "回覆",
+        "ar_mode_contains": "包含",
+        "ar_mode_equals": "相等",
+        "ar_mode_prefix": "前綴",
+        "ar_cooldown": "冷卻",
+        "ar_delay": "延時",
+        "ar_gap": "整包逾時",
+        "ar_gap_tip": "整包：累積收到的位元組、靜默這麼久(ms)視作一整幀再匹配(Modbus 等分幀)；0=每包即時。注意分幀在匹配前進行、整條串口共用，實際取所有啟用規則中的最大值。",
+        "ar_verify": "收包校驗",
+        "ar_verify_tip": "對收到的整幀做校驗：尾部按所選演算法校驗通過才應答，不通過(壞幀)不回。選「無」=不校驗。本裝置=MOBUS。",
+        "ar_match_ph": "匹配（HEX 可用 ?? 通配，如 54 ?? 03）",
+        "ar_reply_ph": "應答（{r3}=第3位元組 {r1+1}=加1 {r1^FF}=異或 {seq}=自增 {ts}=時間戳 | 分多幀）",
+        "ar_btn_tip": "單擊=開啟配置，雙擊=切換開關",
+        "ar_toast_on": "自動應答已開啟",
+        "ar_toast_off": "自動應答已關閉",
+        "ar_cooldown_tip": "冷卻(ms)：同一規則在此視窗內只響一次，防止匹配幀連續高頻到達造成應答風暴。延時是 turnaround、冷卻是限流，是兩回事。",
+        "ar_help": (
+            "<b>用法</b>：收到資料按規則匹配 → 自動發應答。多條規則按順序，命中第一條即停（一幀最多回一條）。僅在已連線 + 總開關開啟時生效。<br>"
+            "<b>匹配</b>：HEX/文字 × 包含/相等/<b>前綴</b>。HEX 模式 <code>??</code> 通配單位元組（如 <code>54 ?? 03</code>）。按幀首位元組區分類型 <b>請用「前綴」別用「包含」</b>。<br>"
+            "<b>應答佔位符</b>（在「回覆」框寫）："
+            "<code>{rN}</code>=收到幀第 N 位元組(0基) &nbsp; "
+            "<code>{rN-M}</code>=第 N..M 位元組 &nbsp; "
+            "<code>{rN+K}</code>=加 K(mod256) &nbsp; "
+            "<code>{rN^K}</code>=XOR K &nbsp; "
+            "<code>{seq}</code>=自增 1B &nbsp; "
+            "<code>{ts}</code>=毫秒時間戳 4B BE。"
+            "用 <code>|</code> 分多幀。<br>"
+            "<b>時序</b>：<b>整包逾時</b>=靜默 N ms 視作整幀再匹配；<b>延時</b>=匹配後等待 N ms 再回；<b>冷卻</b>=同一規則 N ms 內只響一次（防風暴）。<br>"
+            "<br><b>例 1（MOBUS 裝置）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = 54     HEX ✓  模式=前綴   收校驗 = MOBUS\n"
+            "回覆 = 03 {r2} {r1} 00   HEX ✓  校驗 = MOBUS\n"
+            "收: 54 03 01 02 ... CRC  →  回: 03 01 03 00 ... CRC（CRC 自動補）</pre>"
+            "<b>例 2（心跳應答帶序號 + 時間戳）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓  模式=相等\n"
+            "回覆 = 55 {ts} {seq}   HEX ✓\n"
+            "收: AA  →  回: 55 F4 50 38 17 01</pre>"
+            "<b>例 3（HEX 通配 + 多幀 ACK+DATA）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = 54 ?? 03   模式=包含    回覆 = 06 | 04 03 02 01    延時 = 10 ms\n"
+            "任何形如 54 X 03 的幀都觸發：先回 06，10ms 後再回 04 03 02 01</pre>"
+            "<b>例 4（AT 命令 — 文字模式）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AT+VER?   文字（HEX 不勾）   模式=相等\n"
+            "回覆 = +VER:1.2.3\\r\\nOK\\r\\n   文字   校驗=無\n"
+            "收: AT+VER?  →  回: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
+            "<b>例 5（多規則按幀類型分流 — 命中即停）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>裝置協議多種幀類型，每種一條規則按順序排：\n"
+            "  規則 1: 匹配 = 54   模式=前綴   →   回 03 {r2} {r1} 00   校驗=MOBUS\n"
+            "  規則 2: 匹配 = 02   模式=前綴   →   回 03 {r1} 00 00     校驗=MOBUS\n"
+            "  規則 3: 匹配 = 04   模式=前綴   →   回 03 {r1} {r2} {r3} 校驗=MOBUS\n"
+            "首位元組決定走哪條；前綴模式按位元組對齊，絕不會因別幀資料裡含 02 誤觸發</pre>"
+            "<b>例 6（位元組範圍 + 算術 + 限流，{r1-4} {r1+1} {r2^FF}）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓   模式=相等   冷卻 = 200 ms\n"
+            "回覆 = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "收: AA 10 20 30 40 50  →  回: 10 20 30 40 50 11 DF\n"
+            "  ({r1-4}=回填第1..4位元組  {r1+1}=10+1=11  {r2^FF}=20 XOR FF = DF)\n"
+            "即使裝置 10ms 發一幀，每 200ms 才回一次（冷卻把中間的吃掉）</pre>"
+        ),
         "plot_open": "波形圖",
         "plot_need_lib": "波形圖需要 pyqtgraph 套件：{e}",
         "plot_title": "數據波形圖",
+        "plot_help_btn": "使用說明",
+        "plot_help_title": "數據波形圖 — 使用說明",
+        "plot_help": (
+            "<b>用法</b>：從 RX 資料裡解析數值，按通道即時繪曲線。三種解析模式按裝置協議選——文字流走「分隔符/正則」，二進位 HEX 幀走「HEX 位元組欄位」。<br>"
+            "<b>分隔符模式</b>：逐行按選定分隔符切，每列 = 一條曲線。<br>"
+            "<b>正則模式</b>：每行用正則匹配，每個 <b>捕獲組</b> = 一條曲線（非捕獲組用 <code>(?:…)</code>）。<br>"
+            "<b>HEX 位元組欄位模式</b>：把每個收到包視作一幀（按資料區「時間分包」切），按「<code>名稱=偏移:類型</code>」從指定偏移取數。可選「幀頭」過濾：填 hex 幀頭只解析以它開頭的幀。<br>"
+            "<br><b>例 1（分隔符模式 — CSV 文字流）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>裝置輸出：<code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
+            "模式 = 分隔符   分隔符 = 逗號\n"
+            "→ 3 條曲線（CH0/CH1/CH2），每行一組取樣</pre>"
+            "<b>例 2（正則模式 — 帶標籤的文字）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>裝置輸出：<code>T=23.4 H=56.7 P=1013\\n</code>\n"
+            "模式 = 正則   正則 = <code>T=([\\d.]+)\\s+H=([\\d.]+)\\s+P=([\\d.]+)</code>\n"
+            "→ 3 條曲線（溫度/濕度/氣壓），分別取 3 個捕獲組的數</pre>"
+            "<b>例 3（HEX 位元組欄位 — 二進位協議）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>裝置每幀：<code>54 00 0A 04 7F …</code>（4 位元組 i16le 後跟 i16le）\n"
+            "模式 = HEX 位元組欄位   欄位 = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "收: 54 00 0A 04 7F → X=0x0A00=2560 (le)  Y=0x047F=1151\n"
+            "→ 2 條曲線（X/Y），按幀繪點</pre>"
+            "<b>例 4（HEX 模式 + 幀頭過濾 — 多幀類型只畫一類）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>裝置混發多種幀（54 類、02 類、04 類），只想看 54 類：\n"
+            "模式 = HEX 位元組欄位   <b>幀頭 = 54</b>   欄位 = <code>X=1:i16le, Y=3:i16le</code>\n"
+            "其它幀（02xx…/04xx…）被過濾掉，只解析 54 開頭的</pre>"
+            "<b>例 5（浮點資料 — 加速度計/陀螺儀等）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>每幀 12 位元組：3 個 f32le 浮點（X/Y/Z 加速度）\n"
+            "模式 = HEX 位元組欄位   欄位 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
+            "→ 3 條加速度曲線，每幀一個取樣點</pre>"
+            "<br><b>X 軸</b>可切「樣本序號」或「時間」；<b>視窗</b>下拉控制最多保留點數（超出捲動丟棄，長跑不爆記憶體）；右上角<b>暫停/清空/匯出 CSV</b>。<br>"
+            "<b>⚠️ HEX 位元組欄位模式按接收區塊分幀</b>（一塊=一幀，不拆黏包）。串口/TCP 請配合資料區<b>「時間分包」</b>讓每幀單獨成塊。"
+        ),
         "plot_mode": "解析",
         "plot_mode_delim": "分隔符",
         "plot_mode_regex": "正則",
@@ -717,7 +1132,36 @@ TR = {
         "frame_col_fields": "欄位",
         "frame_rules": "解析規則",
         "frame_add_rule": "新增規則",
-        "frame_rules_help": "每條規則 = 幀頭 + 欄位。幀頭填 hex（如 02；留空=匹配前面規則沒命中的幀）；欄位「名稱=偏移:類型」逗號分隔，偏移從 0 數起。類型：u8/i16le… 數值，數值後加 x 顯示十六進制（u8x），hexN=N位元組HEX、strN=N位元組文字。改完點「套用」。\n⚠️ 按接收區塊分幀：一個資料區塊 = 一幀，不做跨區塊黏包拆分（半幀會缺欄位、黏連幀只解析第一幀、幀頭不在塊首則整幀丟棄）。串口/TCP 請在資料區開啟「時間分包」，讓每幀單獨成塊。",
+        "frame_help_btn": "使用說明",
+        "frame_help_title": "協議幀解析 — 使用說明",
+        "frame_help": (
+            "<b>用法</b>：填好「幀頭 + 欄位」規則後點「套用」。收到的每個資料區塊按幀頭前綴匹配規則解析，命中第一條即停。<br>"
+            "<b>規則欄位</b>：<br>"
+            "&nbsp;&nbsp;<b>幀頭</b>：hex 串如 <code>02</code>；留空 = 兜底匹配前面規則未命中的幀<br>"
+            "&nbsp;&nbsp;<b>欄位定義</b>：<code>名稱=偏移:類型</code> 多個用逗號分隔，偏移從 0 數起<br>"
+            "<b>類型表</b>：<br>"
+            "&nbsp;&nbsp;數值：<code>u8 i8 u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be f64le f64be</code><br>"
+            "&nbsp;&nbsp;數值後加 <code>x</code> = HEX 顯示（如 <code>u8x</code> 顯示 0x1F 而不是 31）<br>"
+            "&nbsp;&nbsp;<code>hexN</code> = N 位元組原始 HEX 串；<code>strN</code> = N 位元組 ASCII 文字<br>"
+            "<br><b>例 1（最簡單 — 單位元組欄位）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>幀頭 = 02   欄位 = 序號=1:u8, 長度=2:u8, 類型=3:u8\n"
+            "收: 02 0A 04 7F → 序號=10  長度=4  類型=127</pre>"
+            "<b>例 2（多位元組數值，含端序）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>幀頭 = 54   欄位 = ID=1:u16le, 溫度=3:i16le, 時間=5:u32be\n"
+            "收: 54 34 12 5C FF 00 00 04 D2 → ID=0x1234=4660  溫度=-164  時間=1234</pre>"
+            "<b>例 3（HEX 顯示 + 原始位元組）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>幀頭 = AA   欄位 = 狀態=1:u8x, MAC=2:hex6, 名稱=8:str8\n"
+            "收: AA 1F 00 11 22 33 44 55 CommTool → 狀態=0x1F  MAC=00 11 22 33 44 55  名稱=CommTool</pre>"
+            "<b>例 4（HEX 數值，便於按位看暫存器）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>幀頭 = 06   欄位 = 狀態=1:u8x, 故障=2:u16lex\n"
+            "收: 06 80 34 12 → 狀態=0x80  故障=0x1234</pre>"
+            "<b>例 5（多規則按幀頭分流 — 命中即停）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>規則 1: 幀頭=54  欄位=序號=1:u8, 類型=2:u8\n"
+            "規則 2: 幀頭=02  欄位=應答=1:u8\n"
+            "規則 3: 幀頭=（空） 欄位=類型=0:u8x          ← 兜底\n"
+            "首位元組決定走哪條；54/02 分別有專屬解析，其它幀走兜底規則</pre>"
+            "<br><b>⚠️ 按接收區塊分幀</b>：一個資料區塊 = 一幀，不做跨區塊黏包拆分（半幀會缺欄位、黏連幀只解析第一幀、幀頭不在塊首則整幀丟棄）。串口/TCP 請在<b>資料區開啟「時間分包」</b>，讓每幀單獨成塊。"
+        ),
         "frame_rules_ph": "每行一條：幀頭 | 欄位。例： 02 | 序號L=1:u8, 序號H=3:u8x",
         "frame_apply": "套用",
         "frame_tab_all": "全部",

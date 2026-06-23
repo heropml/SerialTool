@@ -46,13 +46,16 @@ _MODE_DELIM, _MODE_REGEX, _MODE_HEX = 0, 1, 2
 
 class PlotDialog(QDialog):
     def __init__(self, app):
-        super().__init__(app)
+        # parent=None：避免干扰主窗 WM_NCHITTEST（同 AutoReplyDialog/MultiSendDialog）。
+        # 主窗 _shutdown 显式收。
+        super().__init__(None)
         self.app = app
         # 独立窗口 + 最小化/最大化/关闭按钮；原生边框可拖动移动 + 拖边缩放
         # （波形是数据视图，常需放大/最大化看细节）
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
                             | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
                             | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(640, 380)
         self.resize(880, 540)
 
@@ -110,6 +113,12 @@ class PlotDialog(QDialog):
         self.btn_export = QPushButton()
         self.btn_export.setObjectName("PlotGhostBtn")
         self.btn_export.clicked.connect(self._export_csv)
+        # 使用说明：右上角 26×26 「?」icon button，弹独立窗口（与帧解析/自动应答同形制）
+        self.btn_help = QPushButton("?")
+        self.btn_help.setObjectName("PlotHelpBtn")
+        self.btn_help.setFixedSize(26, 26)
+        self.btn_help.setCursor(Qt.PointingHandCursor)
+        self.btn_help.clicked.connect(self._show_help_dlg)
 
         bar.addWidget(self.lbl_mode)
         bar.addWidget(self.cb_mode)
@@ -125,6 +134,7 @@ class PlotDialog(QDialog):
         bar.addWidget(self.btn_pause)
         bar.addWidget(self.btn_clear)
         bar.addWidget(self.btn_export)
+        bar.addWidget(self.btn_help)
         root.addLayout(bar)
 
         # ===== 绘图区 =====
@@ -188,6 +198,12 @@ class PlotDialog(QDialog):
             self._on_mode_changed(save=False)
         finally:
             self._loading_cfg = False
+
+    def reload_cfg(self):
+        """配置导入后调用：先清掉所有曲线数据 + 通道，再按新设置重建。
+        否则旧解析模式/字段下采集的数据点会跟新配置的曲线混在一起绘制。"""
+        self._clear()
+        self._load_cfg()
 
     def _save_cfg(self):
         if self._loading_cfg:
@@ -411,6 +427,51 @@ class PlotDialog(QDialog):
             self.app.toast(self.app._t("err_save_failed", e=e), error=True)
 
     # ---------------- 主题 / 语言 ----------------
+    def _show_help_dlg(self):
+        """弹独立窗口看波形图用法 + 例子（同帧解析/自动应答形制：富文本+滚动+可复制）。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.app._t("plot_help_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(760, 540)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        lbl = QLabel(self.app._t("plot_help"))
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setAlignment(Qt.AlignTop)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        scroll = QScrollArea()
+        scroll.setWidget(lbl)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(scroll, 1)
+        btn_close = QPushButton(
+            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+        btn_close.setObjectName("PlotGhostBtn")
+        btn_close.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1); row.addWidget(btn_close)
+        v.addLayout(row)
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(f"""
+            QDialog {{ background-color: {c['window_bg']}; }}
+            QLabel {{ color: {c['text']}; background: transparent;
+                      font-family: 'Segoe UI'; font-size: 12px; }}
+            QScrollArea {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{
+                background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: 'Segoe UI'; font-size: 12px; padding: 5px 16px;
+            }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
+        dlg.exec_()
+
     def refresh_theme(self):
         _set_win_titlebar_dark(self, self.app._theme().get("mode") == "dark")
         c = chrome_for(self.app._theme_id())
@@ -421,6 +482,12 @@ class PlotDialog(QDialog):
             font-family: 'Segoe UI'; font-size: 12px; padding: 4px 12px;
         }}
         QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        QPushButton#PlotHelpBtn {{
+            background-color: transparent; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; border-radius: 13px;
+            font-family: 'Segoe UI'; font-size: 13px; font-weight: bold;
+        }}
+        QPushButton#PlotHelpBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
         QScrollArea#PlotChScroll {{ background: transparent; border: 0px; }}
         QScrollArea#PlotChScroll > QWidget > QWidget {{ background: transparent; }}
         """))
@@ -453,6 +520,7 @@ class PlotDialog(QDialog):
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         self.btn_export.setText(t("plot_export"))
+        self.btn_help.setToolTip(t("plot_help_btn"))
         self.lbl_hint.setText(t("plot_hint"))
         self.plot.setLabel("bottom",
                            t("plot_x_time" if self._x_time else "plot_x_index"))
