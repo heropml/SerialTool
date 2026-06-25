@@ -37,6 +37,16 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.3
+
+A **bug-fix release** — same features as 1.1.2, with three UX fixes:
+
+- **Drag-selection in the data area "eaten" by new data**: after selecting text with the mouse, incoming data extended the native selection along with the appended text, so freshly received lines got highlighted too. The selection is now pinned by its original offset on append, so new data no longer bleeds into it.
+- **Frameless title bar lost after dragging off the top of the screen**: once dragged above the top edge (title bar out of view), the window could no longer be grabbed back. Dragging is now clamped to the screen work area — the title bar always stays on-screen (never past the top, full bar at the bottom, 80px grabbable on each side), multi-monitor aware.
+- **"Check for Update" dialog: long notes truncated & icon top clipped**: very long release notes blew up the dialog, cutting off text and squeezing out the icon. Notes now sit in a height-capped scroll area (scrollable when long) and the dialog auto-sizes to its content.
+
+---
+
 ## What's New in v1.1.2
 
 Major **Auto-reply** upgrade and several developer-productivity additions.
@@ -410,7 +420,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.2`)
+- current **version** (`v1.1.3`)
 
 ---
 

@@ -261,10 +261,25 @@ class TitleBar(QWidget):
                 if new_w <= 0:
                     new_w = self._win.width()
                 self._drag_pos = QPoint(int(new_w * ratio), event.y())
-                self._win.move(event.globalPos() - self._drag_pos)
+                self._move_win_clamped(event.globalPos() - self._drag_pos, event.globalPos())
             elif self._drag_pos is not None:
-                self._win.move(event.globalPos() - self._drag_pos)
+                self._move_win_clamped(event.globalPos() - self._drag_pos, event.globalPos())
             event.accept()
+
+    def _move_win_clamped(self, target, mouse_global):
+        """限制无边框窗口位置：保证标题栏始终留在屏幕工作区内可抓。
+        修 bug：标题栏被拖到屏幕顶部外(y<0)后消失、再也拖不回来。
+        手动 move(Windows)才需要——Linux 走原生 startSystemMove 由 WM 自管。"""
+        x, y = target.x(), target.y()
+        scr = QApplication.screenAt(mouse_global) or QApplication.primaryScreen()
+        if scr is not None:
+            g = scr.availableGeometry()
+            w = self._win.width()
+            th = self.height()        # 标题栏高度：底部至少露出整条标题栏
+            keep = 80                 # 左右至少留这么多像素的标题栏在屏内可点
+            y = max(g.top(), min(y, g.bottom() - th))
+            x = max(g.left() + keep - w, min(x, g.right() - keep))
+        self._win.move(x, y)
 
     def mouseDoubleClickEvent(self, event):
         if sys.platform == "darwin":

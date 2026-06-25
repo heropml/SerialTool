@@ -2521,6 +2521,13 @@ class CommTool(QMainWindow):
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
         # 滚动锁定：插入前先记住是否在底部；用独立游标插入，避免动可见光标/选区/视图
         was_at_bottom = self._recv_at_bottom()
+        # 记录用户可见选区(绝对偏移)：若选区端点落在文档末尾，末尾 insertText 会把该端点
+        # (keepPositionOnInsert=False) 一起后移，导致选区"延伸"覆盖刚追加的新数据。插入后按原
+        # 绝对偏移恢复，把选区钉死。无选区时跳过(光标在末尾跟随无所谓)，零开销。
+        vis_tc = self.txt_recv.textCursor()
+        had_sel = vis_tc.hasSelection()
+        sel_anchor = vis_tc.anchor() if had_sel else -1
+        sel_pos = vis_tc.position() if had_sel else -1
         cursor = QTextCursor(self.txt_recv.document())
         cursor.movePosition(QTextCursor.End)
 
@@ -2574,6 +2581,14 @@ class CommTool(QMainWindow):
                 blk.setVisible(vis)
                 self.txt_recv.document().markContentsDirty(
                     blk.position(), max(1, blk.length()))
+
+        # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，
+        # 钉在插入前的位置。setTextCursor 不会自动滚动视图，故放在 was_at_bottom 滚动之前。
+        if had_sel:
+            tc = self.txt_recv.textCursor()
+            tc.setPosition(sel_anchor)
+            tc.setPosition(sel_pos, QTextCursor.KeepAnchor)
+            self.txt_recv.setTextCursor(tc)
 
         if was_at_bottom:
             sb = self.txt_recv.verticalScrollBar()

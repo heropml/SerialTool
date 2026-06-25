@@ -232,9 +232,22 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         self.lbl_status = QLabel("")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setWordWrap(True)
+        self.lbl_status.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 更新说明可选中复制
         self.lbl_status.setStyleSheet(f"color: {c['text']}; background: transparent; font-size: 11px;")
-        self.lbl_status.hide()
-        v.addWidget(self.lbl_status)
+        # 放进限高滚动区：更新说明很长时(notes 多行)在区内滚动，对话框高度受控、不裁切文字/图标
+        self._status_scroll = QScrollArea()
+        self._status_scroll.setWidget(self.lbl_status)
+        self._status_scroll.setWidgetResizable(True)
+        self._status_scroll.setFrameShape(QFrame.NoFrame)
+        self._status_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._status_scroll.setMaximumHeight(200)
+        self._status_scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:0;}"
+            "QScrollArea>QWidget>QWidget{background:transparent;}")
+        self._status_scroll.viewport().setAutoFillBackground(False)
+        self.lbl_status.setAutoFillBackground(False)
+        self._status_scroll.hide()
+        v.addWidget(self._status_scroll)
 
         h = QHBoxLayout()
         h.setSpacing(10)
@@ -262,7 +275,10 @@ class AboutDialog(_DragFramelessMixin, QDialog):
 
     def _set_status(self, text):
         self.lbl_status.setText(text)
-        self.lbl_status.setVisible(bool(text))
+        self._status_scroll.setVisible(bool(text))
+        # 文本变化(尤其长 notes)后让对话框按内容重算高度。滚动区已限高 200px，
+        # 不会无限撑高；adjustSize 修了"长说明被裁、图标顶部被挤掉"的问题。
+        self.adjustSize()
 
     # ----- 检查 -----
     def _check(self):
