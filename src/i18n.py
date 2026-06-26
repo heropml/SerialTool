@@ -162,6 +162,7 @@ TR = {
         "ms_none_checked": "请先勾选要循环发送的条目",
         "ms_hint": "左侧管理分组；每行可独立设 名称 / 延时 / HEX / 换行 / 校验。勾选多条 → 循环发送：发完每条等其「延时」再发下一条，到底再从头。",
         "ms_name_ph": "名称",
+        "ms_select_all": "全选",
         "ms_delay_tip": "延时(ms)：发完本条后等这么久再发下一条",
         "kw_highlight": "关键字高亮",
         "kw_title": "关键字高亮",
@@ -220,6 +221,17 @@ TR = {
         "ar_toast_on": "自动应答已开启",
         "ar_toast_off": "自动应答已关闭",
         "ar_cooldown_tip": "冷却(ms)：同一规则在此窗口内只响一次，防止匹配帧连续高频到达造成应答风暴。延时是 turnaround、冷却是限流，是两回事。",
+        "ar_frame_on": "帧头+长度组帧",
+        "ar_frame_hdr": "帧头",
+        "ar_frame_off": "长度偏移",
+        "ar_frame_width": "宽",
+        "ar_frame_extra": "整帧=长度+",
+        "ar_frame_tip": (
+            "勾选后按「帧头+长度字段」组帧（适合 AA BB… 这类带帧头+长度的协议），正确处理串口"
+            "粘包/拆包；优先级高于各规则的「整包」静默超时。\n"
+            "帧头=十六进制(如 AA BB)；长度偏移=长度字段相对帧头首字节的偏移；宽=长度字段字节数"
+            "(1/2/4)；LE/BE=长度字段小端/大端；整帧=长度+N 表示整帧字节数=长度字段值+N(帧头/序号/"
+            "校验等固定开销)。\n例(本设备)：帧头 AA BB · 长度偏移 4 · 宽 2 · LE · 整帧=长度+7。"),
         "ar_help": (
             "<b>用法</b>：收到数据按规则匹配 → 自动发应答。多条规则按顺序，命中第一条即停（一帧最多回一条）。仅在已连接 + 总开关开启时生效。<br>"
             "<b>匹配</b>：HEX/文本 × 包含/相等/<b>前缀</b>。HEX 模式 <code>??</code> 通配单字节（如 <code>54 ?? 03</code>）。按帧首字节区分类型 <b>请用「前缀」别用「包含」</b>（避免别帧数据里同字节误命中）。<br>"
@@ -572,6 +584,7 @@ TR = {
         "ms_none_checked": "Check at least one item to cycle-send",
         "ms_hint": "Manage groups on the left; each row has its own name / delay / HEX / newline / checksum. Check items → Cycle Send: after each command waits its delay, then loops.",
         "ms_name_ph": "Name",
+        "ms_select_all": "Select all",
         "ms_delay_tip": "Delay (ms): wait this long after this command before the next",
         "kw_highlight": "Highlight",
         "kw_title": "Keyword Highlight",
@@ -630,6 +643,19 @@ TR = {
         "ar_toast_on": "Auto-reply enabled",
         "ar_toast_off": "Auto-reply disabled",
         "ar_cooldown_tip": "Cooldown (ms): a single rule fires at most once per window — prevents reply storms when matching frames arrive in rapid succession. Different from Delay (turnaround); cooldown is rate-limiting, delay is output timing.",
+        "ar_frame_on": "Header+Length framing",
+        "ar_frame_hdr": "Header",
+        "ar_frame_off": "Len offset",
+        "ar_frame_width": "W",
+        "ar_frame_extra": "frame=len+",
+        "ar_frame_tip": (
+            "When checked, split frames by 'header + length field' (for protocols with a header + "
+            "length like AA BB…), correctly handling serial packet join/split. Takes priority over "
+            "the per-rule 'Frame gap' idle timeout.\n"
+            "Header = hex (e.g. AA BB); Len offset = length field offset from the header's first "
+            "byte; W = length field width in bytes (1/2/4); LE/BE = little/big endian; frame=len+N "
+            "means total frame bytes = length value + N (fixed overhead: header/seq/checksum).\n"
+            "Example (this device): header AA BB · len offset 4 · W 2 · LE · frame=len+7."),
         "ar_help": (
             "<b>How it works</b>: incoming data is matched against rules → auto-sends the reply. Rules checked in order, first match wins (at most one reply per frame). Active only when connected and master switch is on.<br>"
             "<b>Match</b>: HEX/text × contains/equals/<b>prefix</b>. In HEX, <code>??</code> is a single-byte wildcard (e.g. <code>54 ?? 03</code>). To distinguish frame types by the first byte, <b>use prefix, not contains</b> (else that byte inside other frames' data causes false matches).<br>"
@@ -981,6 +1007,7 @@ TR = {
         "ms_none_checked": "請先勾選要迴圈發送的條目",
         "ms_hint": "左側管理分組；每行可獨立設 名稱 / 延時 / HEX / 換行 / 校驗。勾選多條 → 迴圈發送：發完每條等其「延時」再發下一條，到底再從頭。",
         "ms_name_ph": "名稱",
+        "ms_select_all": "全選",
         "ms_delay_tip": "延時(ms)：發完本條後等這麼久再發下一條",
         "kw_highlight": "關鍵字高亮",
         "kw_title": "關鍵字高亮",
@@ -1039,6 +1066,17 @@ TR = {
         "ar_toast_on": "自動應答已開啟",
         "ar_toast_off": "自動應答已關閉",
         "ar_cooldown_tip": "冷卻(ms)：同一規則在此視窗內只響一次，防止匹配幀連續高頻到達造成應答風暴。延時是 turnaround、冷卻是限流，是兩回事。",
+        "ar_frame_on": "幀頭+長度組幀",
+        "ar_frame_hdr": "幀頭",
+        "ar_frame_off": "長度偏移",
+        "ar_frame_width": "寬",
+        "ar_frame_extra": "整幀=長度+",
+        "ar_frame_tip": (
+            "勾選後按「幀頭+長度欄位」組幀（適合 AA BB… 這類帶幀頭+長度的協定），正確處理串口"
+            "黏包/拆包；優先級高於各規則的「整包」靜默逾時。\n"
+            "幀頭=十六進位(如 AA BB)；長度偏移=長度欄位相對幀頭首位元組的偏移；寬=長度欄位位元組數"
+            "(1/2/4)；LE/BE=長度欄位小端/大端；整幀=長度+N 表示整幀位元組數=長度欄位值+N(幀頭/序號/"
+            "校驗等固定開銷)。\n例(本設備)：幀頭 AA BB · 長度偏移 4 · 寬 2 · LE · 整幀=長度+7。"),
         "ar_help": (
             "<b>用法</b>：收到資料按規則匹配 → 自動發應答。多條規則按順序，命中第一條即停（一幀最多回一條）。僅在已連線 + 總開關開啟時生效。<br>"
             "<b>匹配</b>：HEX/文字 × 包含/相等/<b>前綴</b>。HEX 模式 <code>??</code> 通配單位元組（如 <code>54 ?? 03</code>）。按幀首位元組區分類型 <b>請用「前綴」別用「包含」</b>。<br>"

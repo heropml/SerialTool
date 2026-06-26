@@ -30,6 +30,7 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
+import binproto
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
@@ -156,7 +157,8 @@ class CommTool(QMainWindow):
         self.settings = QSettings(self._settings_file(), QSettings.IniFormat)
         self._ar_rules = self._load_ar_rules()       # 自动应答规则
         self._ar_on = self.settings.value("autoreply_on", False, type=bool)
-        self._ar_buf = b""                           # 整包组装缓冲
+        self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
+        self._ar_frame = self._load_ar_frame()       # 帧头+长度组帧配置（全局；启用时优先于 gap 静默分帧）
         self._ar_gap_timer = QTimer(self)            # 整包静默超时
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(self._ar_flush)
@@ -2888,6 +2890,45 @@ class CommTool(QMainWindow):
         self.settings.setValue("autoreply_rules", json.dumps(rules, ensure_ascii=False))
         self.settings.sync()
 
+    def _load_ar_frame(self):
+        """读「帧头+长度组帧」全局配置（QSettings 单 JSON 键 autoreply_frame）。"""
+        raw = self.settings.value("autoreply_frame", "")
+        cfg = {}
+        if raw:
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict):
+                    cfg = d
+            except Exception:
+                pass
+        return self._norm_ar_frame(cfg)
+
+    def _norm_ar_frame(self, cfg):
+        """规整组帧配置 + 预解析帧头为 bytes(_header)，容错坏值不让启动崩。
+        _header 是运行态(不持久化)：帧头 hex 解析失败 → b''，_auto_reply 据此视作未启用。"""
+        w = self._ar_to_int(cfg.get("len_width", 2))
+        out = {
+            "on": bool(cfg.get("on", False)),
+            "header": str(cfg.get("header", "")),
+            "len_off": max(0, self._ar_to_int(cfg.get("len_off", 0))),
+            "len_width": w if w in (1, 2, 4) else 2,
+            "len_be": bool(cfg.get("len_be", False)),
+            "len_extra": max(0, self._ar_to_int(cfg.get("len_extra", 0))),
+        }
+        try:
+            out["_header"] = binproto.parse_hex_header(out["header"])
+        except ValueError:
+            out["_header"] = b""
+        return out
+
+    def _set_ar_frame(self, cfg):
+        """对话框编辑「帧头+长度组帧」后回调：更新内存配置 + 清缓冲 + 落盘（运行态 _header 不存）。"""
+        self._ar_frame = self._norm_ar_frame(cfg)
+        self._ar_reset_buf()       # 组帧方式变了 → 旧缓冲不能再被新配置吃，必须清
+        save = {k: v for k, v in self._ar_frame.items() if not k.startswith("_")}
+        self.settings.setValue("autoreply_frame", json.dumps(save, ensure_ascii=False))
+        self.settings.sync()
+
     def _ar_reset_buf(self):
         """停整包静默 timer + 清缓冲。规则改 / 总开关切 / 关闭连接 都得调，
         否则半截缓冲会以新状态被当成新帧头匹配（误响应）。"""
@@ -2909,15 +2950,31 @@ class CommTool(QMainWindow):
                             if r.get("on", True)), default=0)
 
     def _auto_reply(self, data: bytes):
-        """收到数据 → (可选)整包组装 → 匹配规则 → (可选延时)自动发应答。仅连接且总开关开时生效。
-        整包超时>0 时累积字节、静默该时长视作一整帧再匹配（Modbus 等帧间静默分帧协议需要）。"""
+        """收到数据 → (可选)组帧 → 匹配规则 → (可选延时)自动发应答。仅连接且总开关开时生效。
+        三种组帧粒度（互斥，优先级从高到低）：
+          1. 帧头+长度组帧（_ar_frame.on）：维护跨包字节流，按「帧头定位 + Length 字段」切整帧，
+             正确处理粘包/拆包——有帧头+长度字段的协议（本设备 AA BB…）应优先用这个；
+          2. 整包静默超时（_ar_gap>0）：累积字节、静默该时长视作一整帧（Modbus RTU 等无帧头、
+             靠帧间静默 T3.5 分帧的协议用）；
+          3. 每包即时（默认）：上层一个接收块直接当一帧匹配。"""
         if not self._ar_on or not self._ar_rules or not self._is_open():
             return
-        if self._ar_gap <= 0:
-            self._ar_match(bytes(data))            # 每包即时匹配
-        else:
+        fc = self._ar_frame
+        if fc.get("on") and fc.get("_header"):
+            self._ar_buf += bytes(data)
+            frames, self._ar_buf = binproto.iter_length_frames(
+                self._ar_buf, fc["_header"], fc["len_off"], fc["len_width"],
+                fc["len_extra"], fc["len_be"])
+            # 防御：缓冲异常增长（帧头一直不出现 / 全是坏长度）时截断，避免无界吃内存
+            if len(self._ar_buf) > 8192:
+                self._ar_buf = self._ar_buf[-512:]
+            for f in frames:
+                self._ar_match(f)
+        elif self._ar_gap > 0:
             self._ar_buf += bytes(data)            # 累积；静默 _ar_gap ms 后视作整帧
             self._ar_gap_timer.start(self._ar_gap)
+        else:
+            self._ar_match(bytes(data))            # 每包即时匹配
 
     def _ar_flush(self):
         """整包静默超时：把累积缓冲当一整帧匹配。"""
@@ -3149,7 +3206,7 @@ class CommTool(QMainWindow):
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 自动应答
-        "autoreply_rules", "autoreply_on",
+        "autoreply_rules", "autoreply_on", "autoreply_frame",
         # 杂项
         "auto_reconnect",
     )
@@ -3214,6 +3271,7 @@ class CommTool(QMainWindow):
             self._load_settings()
             # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
             self._ar_rules = self._load_ar_rules()
+            self._ar_frame = self._load_ar_frame()
             self._recompute_ar_gap()
             self._ar_reset_buf()
             # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，

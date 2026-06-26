@@ -5,8 +5,10 @@
 - 字段定义：`名称=偏移:类型`（名称可省，省则用 "偏移:类型" 当名）
 - 类型：数值 u8/i8/u16le/u16be/i16le/i16be/u32../i32../f32le/f32be；
         外加 hexN（N 字节按 HEX 串）/ strN（N 字节 ASCII），后两者仅用于帧解析表展示。
-- 帧定位：当前规则未提供帧长，因此只能把上层的一个接收块视作一帧；
-        帧头只做前缀过滤，不声称能通用处理串口/TCP 粘包拆包。
+- 帧定位：两种粒度——
+    · iter_frames：不带帧长，把上层一个接收块视作一帧，帧头仅作前缀过滤；
+    · iter_length_frames：带「帧头 + 长度字段」，维护跨包字节流按整帧边界切，
+      能处理串口/TCP 的粘包与拆包（自动应答的「帧头+长度组帧」用它）。
 """
 import re
 import struct
@@ -111,3 +113,47 @@ def iter_frames(buf, header):
     if not header:
         return [buf]
     return [buf] if buf.startswith(header) else []
+
+
+def iter_length_frames(buf, header, len_off, len_width, len_extra,
+                       len_be=False, max_frame=4096):
+    """按「帧头 + 长度字段」从字节流 buf 中切出完整帧，处理串口/TCP 的粘包与拆包。
+
+    与 iter_frames（每包一帧、帧头仅前缀过滤）不同：本函数面向**跨包字节流**——
+    用帧头定位帧起点、再读长度字段算出整帧边界，凑满一帧才产出，半帧留到下次拼。
+
+    header    : 帧头 bytes（须非空；空则不组帧、原样退回 buf 交调用方处理）
+    len_off   : 长度字段相对帧头首字节的偏移
+    len_width : 长度字段字节数（1/2/4）
+    len_extra : 整帧总长 = 长度字段值 + len_extra（固定开销：帧头/序号/校验等非 Data 部分）
+    len_be    : 长度字段大端？默认小端
+    max_frame : 整帧长上限，超过即判为坏长度（防御异常数据令缓冲无限等待/吃内存）
+
+    返回 (frames: list[bytes], remaining: bytes)：
+        frames    依次切出的完整帧
+        remaining 不足一帧的尾部（含可能的半个帧头），调用方须作为下次输入的前缀续上
+    """
+    frames = []
+    if not header:
+        return frames, buf
+    i, n = 0, len(buf)
+    while i < n:
+        j = buf.find(header, i)
+        if j < 0:
+            # 没找到帧头：丢弃绝大部分垃圾，只留末尾 len(header)-1 字节（可能是半个帧头）
+            tail = len(header) - 1
+            return frames, (buf[n - tail:] if tail > 0 else b"")
+        i = j                                       # 对齐帧头（丢弃 j 之前的垃圾字节）
+        need = len_off + len_width
+        if n - i < need:
+            break                                   # 长度字段还没收齐 → 等下次
+        L = int.from_bytes(buf[i + len_off:i + need], "big" if len_be else "little")
+        total = L + len_extra
+        if total < need or total > max_frame:
+            i += 1                                  # 坏长度：跳过这个帧头，继续找下一个
+            continue
+        if n - i < total:
+            break                                   # 整帧还没收齐 → 等下次
+        frames.append(buf[i:i + total])
+        i += total
+    return frames, buf[i:]

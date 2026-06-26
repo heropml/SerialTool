@@ -37,6 +37,16 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.4
+
+Stronger **auto-reply** framing plus **multi-send** polish:
+
+- **Auto-reply "Header + Length framing"**: for protocols with a header + length field (e.g. `AA BB | seq | len | data | sum`), enter the header, length-field offset/width/endian and fixed frame overhead — frames are split at their real boundaries across packets, correctly handling serial **packet join/split** (more accurate than the idle-timeout approach, no added delay). Enable it via the checkbox at the top of the dialog.
+- **Multi-send: draggable name column + Select all**: drag the divider between the name and data fields to widen the name column (long names become fully visible, all rows synced); a "Select all / none" checkbox added at the top.
+- **Window min / max**: multi-send and keyword-highlight dialogs get minimize / maximize buttons.
+
+---
+
 ## What's New in v1.1.3
 
 A **bug-fix release** — same features as 1.1.2, with three UX fixes:
@@ -420,7 +430,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.3`)
+- current **version** (`v1.1.4`)
 
 ---
 

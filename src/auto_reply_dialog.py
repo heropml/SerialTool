@@ -63,6 +63,51 @@ class AutoReplyDialog(QDialog):
         top.addWidget(self.btn_help)
         root.addLayout(top)
 
+        # 帧头+长度组帧（全局，整条串口一份）：有帧头+长度字段的协议优先用它，跨包按整帧
+        # 边界切分、正确处理粘包/拆包；启用后优先于各规则的「整包」静默超时。
+        self._frame_box = QFrame()
+        self._frame_box.setObjectName("ArFrameBox")    # 带边框，与下方规则区(ArScroll)风格/左右对齐一致
+        frow = QHBoxLayout(self._frame_box)
+        frow.setContentsMargins(8, 6, 8, 6)
+        frow.setSpacing(6)
+        fc = getattr(app, "_ar_frame", {}) or {}
+        self.cb_frame_on = QCheckBox()
+        self.cb_frame_on.setChecked(bool(fc.get("on")))
+        self.cb_frame_on.toggled.connect(self._schedule)
+        frow.addWidget(self.cb_frame_on)
+        self.lbl_fhdr = QLabel()
+        frow.addWidget(self.lbl_fhdr)
+        self.ed_fhdr = QLineEdit(str(fc.get("header", "")))
+        self.ed_fhdr.setMaximumWidth(110)
+        self.ed_fhdr.textChanged.connect(self._schedule)
+        frow.addWidget(self.ed_fhdr)
+        self.lbl_foff = QLabel()
+        frow.addWidget(self.lbl_foff)
+        self.ed_foff = QLineEdit(str(fc.get("len_off", 0)))
+        self.ed_foff.setMaximumWidth(46)
+        self.ed_foff.textChanged.connect(self._schedule)
+        frow.addWidget(self.ed_foff)
+        self.lbl_fwidth = QLabel()
+        frow.addWidget(self.lbl_fwidth)
+        self.cb_fwidth = QComboBox()
+        self.cb_fwidth.addItems(["1", "2", "4"])
+        self.cb_fwidth.setCurrentText(str(fc.get("len_width", 2)))
+        self.cb_fwidth.currentIndexChanged.connect(self._schedule)
+        frow.addWidget(self.cb_fwidth)
+        self.cb_fbe = QComboBox()
+        self.cb_fbe.addItems(["LE", "BE"])      # 长度字段字节序：小端/大端（工程通用缩写，不翻译）
+        self.cb_fbe.setCurrentIndex(1 if fc.get("len_be") else 0)
+        self.cb_fbe.currentIndexChanged.connect(self._schedule)
+        frow.addWidget(self.cb_fbe)
+        self.lbl_fextra = QLabel()
+        frow.addWidget(self.lbl_fextra)
+        self.ed_fextra = QLineEdit(str(fc.get("len_extra", 0)))
+        self.ed_fextra.setMaximumWidth(46)
+        self.ed_fextra.textChanged.connect(self._schedule)
+        frow.addWidget(self.ed_fextra)
+        frow.addStretch(1)
+        root.addWidget(self._frame_box)
+
         self._rows_host = QWidget()
         self._rows_v = QVBoxLayout(self._rows_host)
         self._rows_v.setContentsMargins(0, 0, 0, 0)
@@ -246,6 +291,19 @@ class AutoReplyDialog(QDialog):
         self.cb_enable.blockSignals(True)
         self.cb_enable.setChecked(bool(getattr(self.app, "_ar_on", False)))
         self.cb_enable.blockSignals(False)
+        # 同步帧头+长度组帧控件（配置导入 / 外部修改 _ar_frame 后）
+        fc = getattr(self.app, "_ar_frame", {}) or {}
+        fw = (self.cb_frame_on, self.ed_fhdr, self.ed_foff, self.cb_fwidth, self.cb_fbe, self.ed_fextra)
+        for w in fw:
+            w.blockSignals(True)
+        self.cb_frame_on.setChecked(bool(fc.get("on")))
+        self.ed_fhdr.setText(str(fc.get("header", "")))
+        self.ed_foff.setText(str(fc.get("len_off", 0)))
+        self.cb_fwidth.setCurrentText(str(fc.get("len_width", 2)))
+        self.cb_fbe.setCurrentIndex(1 if fc.get("len_be") else 0)
+        self.ed_fextra.setText(str(fc.get("len_extra", 0)))
+        for w in fw:
+            w.blockSignals(False)
 
     # ---------------- 落盘 ----------------
     def _schedule(self, *_):
@@ -279,6 +337,15 @@ class AutoReplyDialog(QDialog):
                 "gap": _n(rec["gap"]),
             })
         self.app._set_ar_rules(rules)
+        # 帧头+长度组帧（全局配置）随规则一起去抖落盘
+        self.app._set_ar_frame({
+            "on": self.cb_frame_on.isChecked(),
+            "header": self.ed_fhdr.text(),
+            "len_off": _n(self.ed_foff),
+            "len_width": int(self.cb_fwidth.currentText()),
+            "len_be": self.cb_fbe.currentIndex() == 1,
+            "len_extra": _n(self.ed_fextra),
+        })
 
     # ---------------- 主题 / 语言 ----------------
     def refresh_theme(self):
@@ -303,6 +370,7 @@ class AutoReplyDialog(QDialog):
         }}
         QPushButton#ArHelpBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
         QCheckBox#ArEnable {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 13px; font-weight: 500; }}
+        QFrame#ArFrameBox {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
         QScrollArea#ArScroll {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
         QScrollArea#ArScroll > QWidget > QWidget {{ background: transparent; }}
         QWidget#ArRow {{ background: transparent; }}
@@ -316,6 +384,12 @@ class AutoReplyDialog(QDialog):
         self.cb_enable.setText(t("ar_enable"))
         self.btn_add.setText(t("ar_add"))
         self.btn_help.setToolTip(t("ar_help_btn"))   # 按钮文字固定 "?", 悬停看完整文案
+        self.cb_frame_on.setText(t("ar_frame_on"))
+        self.cb_frame_on.setToolTip(t("ar_frame_tip"))
+        self.lbl_fhdr.setText(t("ar_frame_hdr"))
+        self.lbl_foff.setText(t("ar_frame_off"))
+        self.lbl_fwidth.setText(t("ar_frame_width"))
+        self.lbl_fextra.setText(t("ar_frame_extra"))
         mode_items = [t("ar_mode_contains"), t("ar_mode_equals"), t("ar_mode_prefix")]
         cs_items = [t(k) for k in CHECKSUM_KEYS]
         for rec in self._rows:

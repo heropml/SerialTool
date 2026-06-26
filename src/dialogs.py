@@ -6,7 +6,7 @@ from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
                              QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea,
                              QGraphicsDropShadowEffect, QColorDialog,
-                             QListWidget, QListWidgetItem)
+                             QListWidget, QListWidgetItem, QSplitter)
 from theme import chrome_for, THEME_DEFAULT
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
@@ -557,12 +557,16 @@ class MultiSendDialog(QDialog):
         super().__init__(None)
         self.app = app
         self.setWindowTitle(app._t("multi_send_title"))
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                            | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
         self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(900, 400)
         self.resize(1040, 480)
         self._rows = []
         self._populating = False
+        self._name_split_sizes = None    # 名称/数据列的共享拖动比例（所有行同步）
+        self._syncing_split = False      # 防止同步分隔条时递归
         self._edit_idx = 0      # 编辑哪个分组（数据存于 app._ms_groups，循环在主界面）
         # 去抖：连敲键时合并存盘+重建，避免每个字符都 sync 磁盘/重建快捷栏卡顿
         self._save_timer = QTimer(self)
@@ -608,6 +612,16 @@ class MultiSendDialog(QDialog):
         # ===== 右侧：当前分组的命令 =====
         right = QVBoxLayout()
         right.setSpacing(10)
+        # 表头：全选/全不选。左边距 8 与行 frame 的左 contentsMargins 一致 → 全选框对齐行首勾选框
+        header = QHBoxLayout()
+        header.setContentsMargins(8, 0, 8, 0)
+        self.cb_all = QCheckBox(app._t("ms_select_all"))
+        self.cb_all.setObjectName("MsSelectAll")
+        self.cb_all.setTristate(True)        # 全选=√ / 全不选=空 / 部分=▣
+        self.cb_all.clicked.connect(self._toggle_all)
+        header.addWidget(self.cb_all)
+        header.addStretch(1)
+        right.addLayout(header)
         scroll, self._list_host, self._list_v = _make_list_scroll()
         right.addWidget(scroll, 1)
 
@@ -714,17 +728,25 @@ class MultiSendDialog(QDialog):
         h.setSpacing(6)
         chk = QCheckBox()
         chk.setChecked(checked)
-        chk.stateChanged.connect(self._save)
+        chk.stateChanged.connect(self._on_chk_changed)
         h.addWidget(chk)
         ed_name = QLineEdit(name)
         ed_name.setPlaceholderText(self.app._t("ms_name_ph"))
-        ed_name.setFixedWidth(82)
+        ed_name.setMinimumWidth(40)
         ed_name.textChanged.connect(self._save)
-        h.addWidget(ed_name)
         edit = QLineEdit(data)
         edit.setPlaceholderText(self.app._t("ms_placeholder"))
         edit.textChanged.connect(self._save)
-        h.addWidget(edit, 1)
+        # 名称框 + 数据框放进可拖 QSplitter：拖动调名称列宽(长名称显示不全时)，所有行同步
+        split = QSplitter(Qt.Horizontal)
+        split.setObjectName("MsNameSplit")
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(8)
+        split.addWidget(ed_name)
+        split.addWidget(edit)
+        split.setSizes(self._name_split_sizes or [90, 460])
+        split.splitterMoved.connect(lambda *_: self._sync_splits(split))
+        h.addWidget(split, 1)
         ed_delay = QLineEdit(str(delay))
         ed_delay.setFixedWidth(58)
         ed_delay.setToolTip(self.app._t("ms_delay_tip"))
@@ -750,7 +772,7 @@ class MultiSendDialog(QDialog):
         btn_send = QPushButton(self.app._t("ms_send_one"))
         btn_send.setObjectName("MsSendBtn")
         row = {"frame": frame, "chk": chk, "name": ed_name, "edit": edit,
-               "delay": ed_delay, "hex": cb_hex, "nl": cb_nl, "cs": cb_cs}
+               "delay": ed_delay, "hex": cb_hex, "nl": cb_nl, "cs": cb_cs, "split": split}
         btn_send.clicked.connect(lambda _=False, r=row: self._send_row(r))
         h.addWidget(btn_send)
         btn_del = QPushButton("✕")
@@ -783,6 +805,49 @@ class MultiSendDialog(QDialog):
         if row in self._rows:
             self._rows.remove(row)
         self._commit_now()
+
+    def _sync_splits(self, src):
+        """一行拖动名称/数据分隔条 → 所有行同步到相同比例（列对齐）。"""
+        if self._syncing_split:
+            return
+        sizes = src.sizes()
+        if len(sizes) != 2 or sum(sizes) <= 0:
+            return
+        self._name_split_sizes = sizes
+        self._syncing_split = True
+        try:
+            for r in self._rows:
+                sp = r.get("split")
+                if sp is not None and sp is not src:
+                    sp.setSizes(sizes)
+        finally:
+            self._syncing_split = False
+
+    def _on_chk_changed(self, *_):
+        """某行勾选变化：落盘(去抖) + 刷新顶部全选三态。"""
+        self._save()
+        self._refresh_select_all()
+
+    def _toggle_all(self, checked):
+        """顶部全选框：一键勾选/取消所有行（block 行信号，最后统一落盘+刷新）。"""
+        on = bool(checked)
+        for r in self._rows:
+            r["chk"].blockSignals(True)
+            r["chk"].setChecked(on)
+            r["chk"].blockSignals(False)
+        self._refresh_select_all()
+        self._save()
+
+    def _refresh_select_all(self):
+        """顶部全选框(左/右)反映当前勾选：全选=√ / 全不选=空 / 部分=▣。"""
+        if not hasattr(self, "cb_all"):
+            return
+        n = sum(1 for r in self._rows if r["chk"].isChecked())
+        st = (Qt.Checked if n and n == len(self._rows)
+              else Qt.Unchecked if n == 0 else Qt.PartiallyChecked)
+        self.cb_all.blockSignals(True)
+        self.cb_all.setCheckState(st)
+        self.cb_all.blockSignals(False)
 
     # ----- 持久化（写回主窗口分组 + 同步快捷栏）-----
     def _row_dict(self, r):
@@ -818,6 +883,7 @@ class MultiSendDialog(QDialog):
                           int(it.get("cs", 0)), str(it.get("name", "")),
                           int(it.get("delay", 1000)))
         self.refresh_theme()
+        self._refresh_select_all()
 
     def closeEvent(self, e):
         self._commit_now()    # 关窗时立即落盘待提交编辑
@@ -827,6 +893,7 @@ class MultiSendDialog(QDialog):
     def retranslate(self):
         self.setWindowTitle(self.app._t("multi_send_title"))
         self.btn_add.setText(self.app._t("ms_add"))
+        self.cb_all.setText(self.app._t("ms_select_all"))
         self.lbl_hint.setText(self.app._t("ms_hint"))
         self.btn_new_group.setText(self.app._t("kw_new_group"))
         self.btn_del_group.setText(self.app._t("kw_del_group"))
@@ -862,6 +929,8 @@ class MultiSendDialog(QDialog):
             border-radius: 6px; font-family: 'Segoe UI'; font-size: 12px; padding: 4px 12px;
         }}
         QPushButton#MsSendBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QSplitter#MsNameSplit::handle {{ background: {c['separator']}; margin: 4px 1px; border-radius: 2px; }}
+        QSplitter#MsNameSplit::handle:hover {{ background: {c['accent']}; }}
         QListWidget#KwGroupList {{
             background-color: {c['input_bg']}; border: 1px solid {c['separator']};
             border-radius: 8px; color: {c['text']};
@@ -894,7 +963,9 @@ class KeywordHighlightDialog(QDialog):
         super().__init__(None)
         self.app = app
         self.setWindowTitle(app._t("kw_title"))
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                            | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
         self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(720, 380)
         self.resize(860, 460)

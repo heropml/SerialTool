@@ -1,5 +1,5 @@
 {
-  "version": "1.1.3",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.3/CommTool_Setup_v1.1.3.exe",
-  "notes": "修复两个数据区 bug：拖选文本后新数据到达会把选区延伸覆盖刚收到的行；无边框标题栏被拖到屏幕顶部外后消失。补齐三语使用说明与 README v1.1.3 条目。"
+  "version": "1.1.4",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.4/CommTool_Setup_v1.1.4.exe",
+  "notes": "自动应答新增「帧头+长度组帧」：有帧头+长度字段的协议按真实帧边界切分，正确处理串口粘包/拆包。多条发送：名称列可拖动调宽、新增全选/全不选。多条发送与关键字高亮窗口加最小化/最大化按钮。"
 }
