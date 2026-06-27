@@ -1,5 +1,5 @@
 {
-  "version": "1.1.6",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.6/CommTool_Setup_v1.1.6.exe",
-  "notes": "自动应答·多步状态机：弹窗新增「状态机」框，每条规则可设 仅状态(when，限定当前状态才命中) + 跳转(goto，应答发出后切状态)，把多条规则串成按帧序列推进的握手/会话。goto 仅在应答真正发出后才推进（延时未到/连接断/发送失败/丢包都不推进），并发到达的帧按序列化处理；离线测试器同步显示当前状态与将跳转到的状态。状态机默认关闭，关闭时行为与 v1.1.5 完全一致。"
+  "version": "1.1.7",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.7/CommTool_Setup_v1.1.7.exe",
+  "notes": "自动应答·Modbus RTU 从机：开启后整条引擎作为从机，从机地址匹配且 CRC 正确就按功能码（读 01 线圈/02 离散输入/03 保持寄存器/04 输入寄存器，写 05/06/0F/10）从内置寄存器表自动组装标准响应回发；非法功能/越界地址/非法数据回异常响应。RTU 按「功能码长度 + CRC 自洽」切帧、CRC 不符逐字节重同步；作 TCP 服务器多客户端时响应精确回请求方；故障注入仍作用于响应。开启 Modbus 时规则/状态机让位。Modbus 默认关闭，关闭时行为与 v1.1.6 完全一致。"
 }
