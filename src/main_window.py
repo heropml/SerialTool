@@ -3,6 +3,7 @@
 import codecs
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -159,6 +160,7 @@ class CommTool(QMainWindow):
         self._ar_on = self.settings.value("autoreply_on", False, type=bool)
         self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
         self._ar_frame = self._load_ar_frame()       # 帧头+长度组帧配置（全局；启用时优先于 gap 静默分帧）
+        self._ar_fault = self._load_ar_fault()       # C6 全局故障注入配置（丢包/错CRC/错长度，压测主机）
         self._ar_gap_timer = QTimer(self)            # 整包静默超时
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(self._ar_flush)
@@ -2883,11 +2885,13 @@ class CommTool(QMainWindow):
         return []
 
     def _set_ar_rules(self, rules):
-        """对话框编辑后回调：更新内存规则并落盘（_last 运行态不持久化）。"""
+        """对话框编辑后回调：更新内存规则并落盘。内存保留 _ 前缀运行态键（_hits/_hit_time/
+        _last 命中统计与冷却时刻），但落盘时剥离 —— 不污染配置、也不导出到会话配置档。"""
         self._ar_rules = rules
         self._recompute_ar_gap()
         self._ar_reset_buf()       # 规则变了 → 旧的整包缓冲不能再被新规则吃，必须清掉
-        self.settings.setValue("autoreply_rules", json.dumps(rules, ensure_ascii=False))
+        clean = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rules]
+        self.settings.setValue("autoreply_rules", json.dumps(clean, ensure_ascii=False))
         self.settings.sync()
 
     def _load_ar_frame(self):
@@ -2927,6 +2931,32 @@ class CommTool(QMainWindow):
         self._ar_reset_buf()       # 组帧方式变了 → 旧缓冲不能再被新配置吃，必须清
         save = {k: v for k, v in self._ar_frame.items() if not k.startswith("_")}
         self.settings.setValue("autoreply_frame", json.dumps(save, ensure_ascii=False))
+        self.settings.sync()
+
+    # ----- C6 全局故障注入（autoreply_fault：丢包/错CRC/错长度 概率，压测主机重传/容错）-----
+    def _load_ar_fault(self):
+        raw = self.settings.value("autoreply_fault", "")
+        cfg = {}
+        if raw:
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict):
+                    cfg = d
+            except Exception:
+                pass
+        return self._norm_ar_fault(cfg)
+
+    def _norm_ar_fault(self, cfg):
+        def pct(v):
+            return max(0, min(100, self._ar_to_int(v, 0)))
+        return {"on": bool(cfg.get("on", False)),
+                "drop": pct(cfg.get("drop", 0)),
+                "badcrc": pct(cfg.get("badcrc", 0)),
+                "badlen": pct(cfg.get("badlen", 0))}
+
+    def _set_ar_fault(self, cfg):
+        self._ar_fault = self._norm_ar_fault(cfg)
+        self.settings.setValue("autoreply_fault", json.dumps(self._ar_fault, ensure_ascii=False))
         self.settings.sync()
 
     def _ar_reset_buf(self):
@@ -2987,35 +3017,17 @@ class CommTool(QMainWindow):
         for rule in self._ar_rules:
             if not rule.get("on", True):
                 continue
-            m = (rule.get("match") or "").strip()
-            if not m:
+            if not (rule.get("match") or "").strip():
                 continue
-            mode = self._ar_to_int(rule.get("mode", 0))     # 0=包含 1=相等 2=前缀
-            if mode not in (0, 1, 2):
-                mode = 0       # 配置坏掉时退回到「包含」而不是吞掉整条规则
-            if rule.get("match_hex", True):
-                pat = self._ar_parse_hex_pat(m)
-                if not pat:
-                    continue
-                n = len(pat)
-                if mode == 2:        # 前缀
-                    hit = self._ar_hex_at(pat, data, 0)
-                elif mode == 1:      # 相等
-                    hit = len(data) == n and self._ar_hex_at(pat, data, 0)
-                else:                # 包含：扫各起点
-                    hit = any(self._ar_hex_at(pat, data, i) for i in range(len(data) - n + 1))
-            else:
-                if text_cache is None:
-                    codec = self._get_codec()
-                    try:
-                        text_cache = data.decode("utf-8" if codec == "auto" else codec, errors="replace")
-                    except Exception:
-                        text_cache = ""
-                hit = (m in text_cache) if mode == 0 else (text_cache.strip() == m if mode == 1 else text_cache.startswith(m))
-            if not hit:
+            if not rule.get("match_hex", True) and text_cache is None:
+                codec = self._get_codec()
+                try:
+                    text_cache = data.decode("utf-8" if codec == "auto" else codec, errors="replace")
+                except Exception:
+                    text_cache = ""
+            if not self._ar_hit_test(rule, data, text_cache or ""):
                 continue
-            # 长度过滤（⑤）：min_len/max_len 任一>0 时启用；用于剔除毛刺/超长帧。配置无 UI，
-            # 走 ini/json 手填。0=不限。
+            # 长度过滤（⑤）：min_len/max_len 任一>0 时启用；剔除毛刺/超长帧。无 UI、手填 ini/json。0=不限
             min_len = self._ar_to_int(rule.get("min_len", 0))
             max_len = self._ar_to_int(rule.get("max_len", 0))
             if min_len > 0 and len(data) < min_len:
@@ -3024,43 +3036,246 @@ class CommTool(QMainWindow):
                 continue
             if not self._ar_frame_ok(data, self._ar_to_int(rule.get("verify", 0))):
                 return       # 命中规则但收包校验不过 → 不应答（命中即停）
+            now = time.monotonic()
+            # A3 命中统计：匹配 + 收包校验通过即 +1（含被下面冷却抑制的）；运行态、不持久化
+            rule["_hits"] = self._ar_to_int(rule.get("_hits", 0)) + 1
+            rule["_hit_time"] = now
             # 冷却（rate-limit）：同一规则在冷却窗口内不再触发。delay 是 turnaround 输出延时，
             # 跟冷却是两回事——delay=200 表示「200ms 后回」、cooldown=200 表示「200ms 内不再触发」。
             cooldown = self._ar_to_int(rule.get("cooldown", 0))
-            now = time.monotonic()
             if cooldown > 0 and (now - rule.get("_last", 0.0)) * 1000 < cooldown:
                 return
             rule["_last"] = now      # 运行态，不持久化
-            hexmode = bool(rule.get("reply_hex", True))
-            # 多帧应答（④）：reply 用 | 分段，每段独立替换占位符 + 独立校验，间隔 delay ms 顺次发。
-            # 单段（无 |）退化到原逻辑。
-            raw = rule.get("reply", "")
-            segs = [s.strip() for s in raw.split("|")]
-            segs = [s for s in segs if s]
-            if not segs:
+            # 多帧应答（④）：reply 用 | 分段，每段独立替换占位符 + 独立组帧，间隔 delay ms 顺次发。
+            parts = self._ar_build_parts(rule, data)
+            if not parts:
                 return
-            parts = [self._ar_subst_reply(s, data, hexmode) for s in segs]
             cs = self._ar_to_int(rule.get("cs", 0))
-            delay = self._ar_to_int(rule.get("delay", 0))
-            self._ar_schedule_send(parts, hexmode, cs, delay)
+            cs_segs = rule.get("cs_segs", []) or []    # 内层/额外校验段（在尾部 cs 之前算）
+            delay = self._ar_parse_delay(rule.get("delay", 0))   # C7：(min,max)，每次发随机取
+            self._ar_schedule_send(parts, bool(rule.get("reply_hex", True)),
+                                   cs, cs_segs, delay)
             return      # 命中即停：一帧最多回一条（按规则顺序取第一条命中的）
 
-    def _ar_schedule_send(self, parts, hexmode, cs, delay):
-        """逐段发送 parts；首段在 delay ms 后发，之后每段间隔 max(delay,1) ms 顺次发。
-        单段时与原 _ar_send 等价；多段为 ACK+DATA 类协议留口。"""
+    def _ar_hit_test(self, rule, data, text):
+        """rule 是否匹配 data（text=已按编码解码的文本，文本模式用）。只测匹配本身，
+        不含 verify / 长度 / 冷却 —— 供实时匹配(_ar_match)与离线测试器(_ar_preview)共用。"""
+        m = (rule.get("match") or "").strip()
+        if not m:
+            return False
+        mode = self._ar_to_int(rule.get("mode", 0))     # 0=包含 1=相等 2=前缀
+        if mode not in (0, 1, 2):
+            mode = 0       # 配置坏掉退回「包含」
+        if rule.get("match_hex", True):
+            pat = self._ar_parse_hex_pat(m)
+            if not pat:
+                return False
+            n = len(pat)
+            if mode == 2:
+                return self._ar_hex_at(pat, data, 0)
+            if mode == 1:
+                return len(data) == n and self._ar_hex_at(pat, data, 0)
+            return any(self._ar_hex_at(pat, data, i) for i in range(len(data) - n + 1))
+        if mode == 1:
+            return text.strip() == m
+        if mode == 2:
+            return text.startswith(m)
+        return m in text
+
+    def _ar_build_parts(self, rule, data):
+        """rule.reply 按 | 分段、各段替换占位符 → 已替换文本列表（空段过滤）。"""
+        hexmode = bool(rule.get("reply_hex", True))
+        return [self._ar_subst_reply(s.strip(), data, hexmode)
+                for s in rule.get("reply", "").split("|") if s.strip()]
+
+    def _ar_schedule_send(self, parts, hexmode, cs, segs, delay):
+        """逐段发送 parts。delay=(min,max) ms（C7 范围延时：每次发独立随机取，模拟 turnaround
+        抖动；min==max 即固定）。segs=校验段；每段经 _ar_compose_frame 组装最终字节(段+尾部 cs)，
+        与测试器共用、保证预览=实发。发送前经 C6 全局故障注入（丢包/错CRC/错长度）。"""
+        dmin, dmax = delay if isinstance(delay, (tuple, list)) else (delay, delay)
+
+        def _delay():
+            return random.randint(dmin, dmax) if dmax > dmin else dmin
+
         def fire(idx):
             if not self._ar_on or not self._is_open() or idx >= len(parts):
                 return
             try:
-                self._send_text(parts[idx], hex_mode=hexmode, newline=0, checksum=cs)
+                # 组装最终字节（校验段 + 尾部 cs），与测试器共用 _ar_compose_frame，保证预览=实发。
+                frame = self._ar_compose_frame(parts[idx], hexmode, segs, cs)
+                if frame is None:
+                    # 组帧失败（坏 hex）→ 回退原始文本路径（故障注入不介入这条少见分支）
+                    self._send_text(parts[idx], hex_mode=hexmode, newline=0, checksum=cs)
+                else:
+                    out, fault = self._ar_apply_fault(bytes(frame))   # C6 全局故障注入
+                    if out is None:
+                        self._ar_fault_note(fault)                    # 丢包：不发；fault=本地化「丢包」文案
+                    else:
+                        self._send_text(bytes(out).hex(" "), hex_mode=True, newline=0, checksum=0)
+                        if fault:
+                            self._ar_fault_note(fault)
             except Exception:
                 pass
             if idx + 1 < len(parts):
-                QTimer.singleShot(max(delay, 1), lambda: fire(idx + 1))
-        if delay > 0:
-            QTimer.singleShot(delay, lambda: fire(0))
+                QTimer.singleShot(max(_delay(), 1), lambda: fire(idx + 1))
+        d0 = _delay()
+        if d0 > 0:
+            QTimer.singleShot(d0, lambda: fire(0))
         else:
             fire(0)
+
+    def _ar_parse_delay(self, v):
+        """C7 延时字段 → (min,max) ms。支持 'N'(固定) 或 'N-M'(随机范围)；坏值回退 (0,0)。"""
+        s = str(v if v is not None else "").strip()
+        body = s[1:] if s.startswith("-") else s     # 开头负号不当分隔符
+        if "-" in body:
+            head, _, tail = body.partition("-")
+            if s.startswith("-"):
+                head = "-" + head
+            lo = self._ar_to_int(head, 0)
+            hi = self._ar_to_int(tail, 0)
+            return (lo, hi) if hi >= lo else (hi, lo)
+        n = self._ar_to_int(s, 0)
+        return (n, n)
+
+    @staticmethod
+    def _ar_norm_idx(v, n):
+        """把可能为负的下标归一到 [0..]：负数从末尾算（-1=最后一字节）。"""
+        i = int(v)
+        return i + n if i < 0 else i
+
+    def _ar_reply_bytes(self, text, hexmode):
+        """把（已替换占位符的）应答文本转字节：hexmode→宽容 hex 解析（同 _send_text 规则，
+        容注释/0x/分隔符）；否则按发送编码。坏 hex 返回 None（调用方回退原发送路径）。"""
+        if not hexmode:
+            return text.encode(self._send_codec(), errors="replace")
+        s = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+        s = re.sub(r'//[^\n]*', '', s)
+        s = re.sub(r'#[^\n]*', '', s)
+        s = s.replace("0x", "").replace("0X", "")
+        s = "".join(c for c in s if c not in " \t\r\n-:,;")
+        if not s or len(s) % 2:
+            return None
+        try:
+            return bytes.fromhex(s)
+        except ValueError:
+            return None
+
+    def _ar_apply_cs_segs(self, buf, segs):
+        """按顺序对 buf 应用校验段：每段对 buf[start..end]（含端点）算校验，覆盖写到 at
+        或追加到帧尾。顺序=列表自上而下（内层在前，外层后算能把内层结果算进去）。
+        start/end/at 为 0 基、负数从末尾、end 留空=当前末字节、at 留空=追加。
+        越界 / 放不下 / 坏配置的段跳过、不影响其它段。buf 为 bytearray，原地改并返回。"""
+        for seg in (segs or []):
+            try:
+                algo = self._ar_to_int(seg.get("algo", 0))
+                if algo <= 0:
+                    continue
+                n = len(buf)
+                lo = self._ar_norm_idx(seg.get("start", 0), n)
+                end = seg.get("end", None)
+                hi = (n - 1) if end in (None, "") else self._ar_norm_idx(end, n)
+                if lo < 0 or hi < lo or hi >= n:
+                    continue
+                chk = self.compute_checksum(bytes(buf[lo:hi + 1]), algo)
+                if not chk:
+                    continue
+                at = seg.get("at", None)
+                if at in (None, ""):
+                    buf += chk
+                else:
+                    pos = self._ar_norm_idx(at, len(buf))
+                    if pos < 0 or pos + len(chk) > len(buf):
+                        continue       # 覆盖写放不下 → 跳过（应答里需先留好占位字节）
+                    buf[pos:pos + len(chk)] = chk
+            except Exception:
+                continue
+        return buf
+
+    def _ar_compose_frame(self, text, hexmode, cs_segs, cs):
+        """（已替换占位符的）单段应答文本 → 最终发送字节：解析为字节 → 应用校验段（内层）→
+        追加尾部 cs（外层）。实时发送(_ar_schedule_send)与离线测试器(_ar_preview)共用，
+        保证测试器看到的 = 实际发出的。hex 解析失败返回 None。"""
+        data = self._ar_reply_bytes(text, hexmode)
+        if data is None:
+            return None
+        buf = self._ar_apply_cs_segs(bytearray(data), cs_segs or [])
+        csi = self._ar_to_int(cs)
+        if csi > 0:
+            buf += self.compute_checksum(bytes(buf), csi)
+        return bytes(buf)
+
+    def _ar_apply_fault(self, frame):
+        """C6 全局故障注入：对已组装好的最终帧按概率破坏（压测主机重传/容错）。
+        返回 (要发的字节 or None=丢包, 可读故障标记)。未启用→原样。三种独立掷骰，丢包命中即不发。"""
+        fc = self._ar_fault
+        if not fc.get("on") or not frame:
+            return frame, ""
+        if random.random() * 100 < self._ar_to_int(fc.get("drop", 0)):
+            return None, self._t("ar_fault_note_drop")        # 超时不回
+        buf = bytearray(frame)
+        notes = []
+        if len(buf) > 1 and random.random() * 100 < self._ar_to_int(fc.get("badlen", 0)):
+            buf.pop()                                          # 砍末字节 → 长度错
+            notes.append(self._t("ar_fault_badlen_short"))
+        if len(buf) >= 1 and random.random() * 100 < self._ar_to_int(fc.get("badcrc", 0)):
+            buf[-1] ^= 0xFF                                    # 末字节翻转 → 校验/CRC 错
+            notes.append(self._t("ar_fault_badcrc_short"))
+        note = self._t("ar_fault_note_corrupt", what=" + ".join(notes)) if notes else ""
+        return bytes(buf), note
+
+    def _ar_fault_note(self, text):
+        """故障注入在数据区留痕（让用户看到"这条被故意搞坏/丢了"）。text 已是可读文案。"""
+        if not text:
+            return
+        try:
+            self._append_block_data(text + "\n", direction="tx", force_new_block=True)
+        except Exception:
+            pass
+
+    def _ar_preview(self, frame: bytes):
+        """A2 离线测试器：给一帧 frame，返回第一条命中规则的索引 + 应答预览。
+        不发送、不计数、不冷却，也**不推进 {seq} 实时计数**（存/恢复 _ar_seq）——
+        这样预览出的 {seq} 字节与下次真实应答一致，且不污染实时序号。
+        ({ts} 取预览时刻的毫秒，与未来实发的时间不同，属固有差异。)
+        返回 dict：{"index": i, "verify_ok": bool, "replies": [hex|None,...]}，无命中 index=-1。"""
+        seq_save = self._ar_seq
+        try:
+            codec = self._get_codec()
+            try:
+                text = frame.decode("utf-8" if codec == "auto" else codec, errors="replace")
+            except Exception:
+                text = ""
+            for i, rule in enumerate(self._ar_rules):
+                if not rule.get("on", True):
+                    continue
+                if not (rule.get("match") or "").strip():
+                    continue
+                if not self._ar_hit_test(rule, frame, text):
+                    continue
+                min_len = self._ar_to_int(rule.get("min_len", 0))
+                max_len = self._ar_to_int(rule.get("max_len", 0))
+                if (min_len > 0 and len(frame) < min_len) or (max_len > 0 and len(frame) > max_len):
+                    continue
+                verify_ok = self._ar_frame_ok(frame, self._ar_to_int(rule.get("verify", 0)))
+                replies = []
+                if verify_ok:
+                    hexmode = bool(rule.get("reply_hex", True))
+                    cs = self._ar_to_int(rule.get("cs", 0))
+                    cs_segs = rule.get("cs_segs", []) or []
+                    for part in self._ar_build_parts(rule, frame):
+                        fr = self._ar_compose_frame(part, hexmode, cs_segs, cs)
+                        replies.append(bytes(fr).hex(" ").upper() if fr is not None else None)
+                return {"index": i, "verify_ok": verify_ok, "replies": replies}
+            return {"index": -1, "verify_ok": False, "replies": []}
+        finally:
+            self._ar_seq = seq_save
+
+    def _ar_reset_stats(self):
+        """清零所有规则的 A3 命中统计（运行态）。"""
+        for rule in self._ar_rules:
+            rule.pop("_hits", None)
+            rule.pop("_hit_time", None)
 
     def _ar_send(self, reply, hexmode, cs):
         """保留：单帧应答（无 | 分段时的快路径不再走这里，但若外部代码或测试直接调仍可用）。"""
@@ -3206,7 +3421,7 @@ class CommTool(QMainWindow):
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 自动应答
-        "autoreply_rules", "autoreply_on", "autoreply_frame",
+        "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault",
         # 杂项
         "auto_reconnect",
     )
@@ -3272,6 +3487,7 @@ class CommTool(QMainWindow):
             # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
             self._ar_rules = self._load_ar_rules()
             self._ar_frame = self._load_ar_frame()
+            self._ar_fault = self._load_ar_fault()
             self._recompute_ar_gap()
             self._ar_reset_buf()
             # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，

@@ -37,6 +37,19 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.5
+
+Five auto-reply upgrades — from "usable" to "polished + stress-capable":
+
+- **Checksum segments (inner / extra)** — each reply can add N segments: checksum a sub-range `[start..end]`, written at an offset or appended, computed in order before the row's tail checksum. With `{rN}` placeholder echo, the inner CRC **recomputes automatically** as echoed fields change (no more hardcoding an outer Sum + inner CRC). Opened via the per-row "Chk segs" button.
+- **Rule tester (offline)** — top-bar **Test**: enter one HEX frame → see which rule matches and the reply preview (placeholders + checksum-segment / tail-checksum all computed). Shares the live compose path (preview = what's actually sent); nothing is sent / counted / `{seq}`-advanced.
+- **Hit counters** — live "Hits N" per rule + **Reset stats** (counts on match + RX-checksum pass; runtime, not persisted).
+- **Fault injection (global, host stress test)** — by probability: **Drop** (no reply, tests retransmit) / **Bad CRC** (flip last byte, tests checksum) / **Bad len** (drop last byte, tests framing). Injected frames are marked `⚠` in the data area.
+- **Range delay** — the reply Delay field accepts `100` (fixed) or `100-300` (random jitter per send, simulates device turnaround).
+- The "Header + Length framing" and "Fault injection" boxes get one-line descriptions + a `?` help button with examples.
+
+---
+
 ## What's New in v1.1.4
 
 Stronger **auto-reply** framing plus **multi-send** polish:
@@ -430,7 +443,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.4`)
+- current **version** (`v1.1.5`)
 
 ---
 

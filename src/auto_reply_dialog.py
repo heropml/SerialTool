@@ -32,24 +32,37 @@ class AutoReplyDialog(QDialog):
         self.resize(960, 460)
 
         self._rows = []
+        self._rid_seq = 0                    # 给每行/源规则盖稳定 id，运行态(_hits/_last)按身份迁移，不按索引
         self._syncing = False                # 防止同步分隔条时递归
         self._split_sizes = None             # 收到/回复两框的共享分隔比例
         self._save_timer = QTimer(self)      # 去抖：连改时合并落盘
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(300)
         self._save_timer.timeout.connect(self._commit)
+        self._stats_timer = QTimer(self)     # A3：定时把各行命中计数刷成运行态 _hits（仅窗口可见时跑，见 show/hideEvent）
+        self._stats_timer.setInterval(700)
+        self._stats_timer.timeout.connect(self._refresh_stats)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(6)
 
         top = QHBoxLayout()
+        top.setContentsMargins(9, 0, 0, 0)   # 与下方带 1px 边框的「帧头组帧」框/规则行的复选框左缘对齐
         self.cb_enable = QCheckBox()
         self.cb_enable.setObjectName("ArEnable")
         self.cb_enable.setChecked(bool(getattr(app, "_ar_on", False)))
         self.cb_enable.toggled.connect(self._on_enable)
         top.addWidget(self.cb_enable)
         top.addStretch(1)
+        self.btn_test = QPushButton()           # A2 规则测试器（离线预览）
+        self.btn_test.setObjectName("PlotGhostBtn")
+        self.btn_test.clicked.connect(self._open_tester)
+        top.addWidget(self.btn_test)
+        self.btn_reset_stats = QPushButton()    # A3 重置命中统计
+        self.btn_reset_stats.setObjectName("PlotGhostBtn")
+        self.btn_reset_stats.clicked.connect(self._on_reset_stats)
+        top.addWidget(self.btn_reset_stats)
         self.btn_add = QPushButton()
         self.btn_add.setObjectName("PlotGhostBtn")
         self.btn_add.clicked.connect(lambda *_: (self._add_row(), self._schedule()))
@@ -106,7 +119,64 @@ class AutoReplyDialog(QDialog):
         self.ed_fextra.textChanged.connect(self._schedule)
         frow.addWidget(self.ed_fextra)
         frow.addStretch(1)
+        self.lbl_frame_desc = QLabel()        # 右侧一句话说明
+        self.lbl_frame_desc.setObjectName("ArDesc")
+        frow.addWidget(self.lbl_frame_desc)
+        self.btn_frame_help = QPushButton("?")    # 「?」→ 带例子的用法说明
+        self.btn_frame_help.setObjectName("ArHelpBtn")
+        self.btn_frame_help.setFixedSize(24, 24)
+        self.btn_frame_help.setCursor(Qt.PointingHandCursor)
+        self.btn_frame_help.clicked.connect(
+            lambda *_: self._show_help_dlg(self.app._t("ar_frame_help_title"),
+                                           self.app._t("ar_frame_help")))
+        frow.addWidget(self.btn_frame_help)
         root.addWidget(self._frame_box)
+
+        # C6 全局故障注入（整条串口一份）：按概率丢包/错CRC/错长度，专测主机重传与容错
+        self._fault_box = QFrame()
+        self._fault_box.setObjectName("ArFrameBox")    # 复用带边框样式
+        xrow = QHBoxLayout(self._fault_box)
+        xrow.setContentsMargins(8, 6, 8, 6)
+        xrow.setSpacing(6)
+        xc = getattr(app, "_ar_fault", {}) or {}
+        self.cb_fault_on = QCheckBox()
+        self.cb_fault_on.setChecked(bool(xc.get("on")))
+        self.cb_fault_on.toggled.connect(self._schedule)
+        xrow.addWidget(self.cb_fault_on)
+        self.lbl_fdrop = QLabel()
+        xrow.addWidget(self.lbl_fdrop)
+        self.ed_fdrop = QLineEdit(str(xc.get("drop", 0)))
+        self.ed_fdrop.setMaximumWidth(44)
+        self.ed_fdrop.textChanged.connect(self._schedule)
+        xrow.addWidget(self.ed_fdrop)
+        xrow.addWidget(QLabel("%"))
+        self.lbl_fbadcrc = QLabel()
+        xrow.addWidget(self.lbl_fbadcrc)
+        self.ed_fbadcrc = QLineEdit(str(xc.get("badcrc", 0)))
+        self.ed_fbadcrc.setMaximumWidth(44)
+        self.ed_fbadcrc.textChanged.connect(self._schedule)
+        xrow.addWidget(self.ed_fbadcrc)
+        xrow.addWidget(QLabel("%"))
+        self.lbl_fbadlen = QLabel()
+        xrow.addWidget(self.lbl_fbadlen)
+        self.ed_fbadlen = QLineEdit(str(xc.get("badlen", 0)))
+        self.ed_fbadlen.setMaximumWidth(44)
+        self.ed_fbadlen.textChanged.connect(self._schedule)
+        xrow.addWidget(self.ed_fbadlen)
+        xrow.addWidget(QLabel("%"))
+        xrow.addStretch(1)
+        self.lbl_fault_desc = QLabel()        # 右侧一句话说明
+        self.lbl_fault_desc.setObjectName("ArDesc")
+        xrow.addWidget(self.lbl_fault_desc)
+        self.btn_fault_help = QPushButton("?")    # 「?」→ 带例子的用法说明
+        self.btn_fault_help.setObjectName("ArHelpBtn")
+        self.btn_fault_help.setFixedSize(24, 24)
+        self.btn_fault_help.setCursor(Qt.PointingHandCursor)
+        self.btn_fault_help.clicked.connect(
+            lambda *_: self._show_help_dlg(self.app._t("ar_fault_help_title"),
+                                           self.app._t("ar_fault_help")))
+        xrow.addWidget(self.btn_fault_help)
+        root.addWidget(self._fault_box)
 
         self._rows_host = QWidget()
         self._rows_v = QVBoxLayout(self._rows_host)
@@ -130,10 +200,13 @@ class AutoReplyDialog(QDialog):
     def _add_row(self, rule=None):
         t = self.app._t
         rule = rule or {}
+        self._rid_seq += 1
+        rid = self._rid_seq
+        rule["_rid"] = rid          # 给源规则 dict 盖同一稳定 id（_ 前缀，落盘时剥离），供 _commit 按身份迁移运行态
         row = QWidget()
         row.setObjectName("ArRow")
         h = QHBoxLayout(row)
-        h.setContentsMargins(6, 3, 6, 3)
+        h.setContentsMargins(8, 3, 6, 3)   # 左 8：算上 ArScroll 的 1px 边框后，与「启用」「帧头组帧」复选框左缘对齐
         h.setSpacing(6)
 
         cb_on = QCheckBox()
@@ -160,9 +233,13 @@ class AutoReplyDialog(QDialog):
         for k in CHECKSUM_KEYS:
             cb_cs.addItem(t(k))
         cb_cs.setCurrentIndex(_i(rule.get("cs", 0)))
+        btn_seg = QPushButton()                 # 「校验段」(内层/额外校验) 编辑入口；有段显示数量
+        btn_seg.setObjectName("ArSegBtn")
+        btn_seg.setCursor(Qt.PointingHandCursor)
         # delay=回复 turnaround；cooldown=触发限流（两回事，旧 cooldown 配置原义保留）
-        ed_cd = QLineEdit(str(_i(rule.get("delay", 0))))
-        ed_cd.setMaximumWidth(56)
+        ed_cd = QLineEdit(str(rule.get("delay", "0")))   # C7：支持 "100"(固定) 或 "100-300"(随机范围)
+        ed_cd.setMaximumWidth(72)
+        ed_cd.setToolTip(t("ar_delay_tip"))
         ed_cdwn = QLineEdit(str(_i(rule.get("cooldown", 0))))
         ed_cdwn.setMaximumWidth(56)
         ed_cdwn.setToolTip(t("ar_cooldown_tip"))
@@ -172,6 +249,8 @@ class AutoReplyDialog(QDialog):
         btn_del = QPushButton("✕")
         btn_del.setObjectName("ArDelBtn")
         btn_del.setFixedSize(26, 26)
+        lbl_hits = QLabel()                      # A3 命中计数（_refresh_stats 定时刷新）
+        lbl_hits.setObjectName("ArHits")
 
         # 共所有可翻译子件存入 rec：retranslate() 切语言时统一刷新（否则 label/combo/tooltip 残留旧语言）
         lbl_match = QLabel(t("ar_match"))
@@ -182,10 +261,14 @@ class AutoReplyDialog(QDialog):
         lbl_cdwn = QLabel(t("ar_cooldown"))
         rec = {"w": row, "on": cb_on, "match": ed_match, "mhex": cb_mhex, "mode": cb_mode,
                "verify": cb_verify, "reply": ed_reply, "rhex": cb_rhex, "cs": cb_cs,
+               "seg_btn": btn_seg, "cs_segs": list(rule.get("cs_segs", []) or []),
+               "hits_lbl": lbl_hits, "_rid": rid,
                "cd": ed_cd, "cdwn": ed_cdwn, "gap": ed_gap,
                "lbl_match": lbl_match, "lbl_verify": lbl_verify, "lbl_gap": lbl_gap,
                "lbl_reply": lbl_reply, "lbl_delay": lbl_delay, "lbl_cdwn": lbl_cdwn}
         btn_del.clicked.connect(lambda *_: self._del_row(rec))
+        btn_seg.clicked.connect(lambda *_: self._edit_cs_segs(rec))
+        self._update_seg_btn(rec)
         # 任何改动 → 去抖落盘
         cb_on.toggled.connect(self._schedule)
         cb_mhex.toggled.connect(self._schedule)
@@ -224,6 +307,7 @@ class AutoReplyDialog(QDialog):
         rh.addWidget(ed_reply, 1)
         rh.addWidget(cb_rhex)
         rh.addWidget(cb_cs)
+        rh.addWidget(btn_seg)
         rh.addWidget(lbl_delay)
         rh.addWidget(ed_cd)
         rh.addWidget(QLabel("ms"))
@@ -241,6 +325,7 @@ class AutoReplyDialog(QDialog):
         rec["split"] = split
 
         h.addWidget(split, 1)
+        h.addWidget(lbl_hits)
         h.addWidget(btn_del)
         if self._split_sizes:                # 新行采用当前已有的分隔比例
             split.setSizes(self._split_sizes)
@@ -271,6 +356,261 @@ class AutoReplyDialog(QDialog):
         rec["w"].deleteLater()
         if rec in self._rows:
             self._rows.remove(rec)
+        self._schedule()
+
+    # ---------------- A3 命中统计 ----------------
+    def _refresh_stats(self):
+        """定时把各行「命中 N」刷成对应规则的运行态 _hits（按 _rid 身份对应，不按索引）。
+        隐藏时直接返回（配合 show/hideEvent 停表，避免关窗后空跑）。"""
+        if not self.isVisible():
+            return
+        by_rid = {r.get("_rid"): r for r in getattr(self.app, "_ar_rules", [])
+                  if r.get("_rid") is not None}
+        t = self.app._t
+        for rec in self._rows:
+            lbl = rec.get("hits_lbl")
+            if lbl is None:
+                continue
+            r = by_rid.get(rec.get("_rid"))
+            n = self.app._ar_to_int(r.get("_hits", 0)) if r else 0
+            lbl.setText(t("ar_hits", n=n))
+
+    def _on_reset_stats(self):
+        self.app._ar_reset_stats()
+        self._refresh_stats()
+
+    # ---------------- A2 规则测试器（离线预览）----------------
+    def _open_tester(self):
+        """输入一帧 HEX → 调 app._ar_preview 看命中哪条规则 + 应答预览（不发送、不计数）。"""
+        t = self.app._t
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("ar_test_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(560, 340)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        hint = QLabel(t("ar_test_hint"))
+        hint.setWordWrap(True)
+        hint.setObjectName("ArCsHint")
+        v.addWidget(hint)
+        row = QHBoxLayout()
+        ed = QLineEdit()
+        ed.setPlaceholderText(t("ar_test_ph"))
+        btn = QPushButton(t("ar_test_run"))
+        btn.setObjectName("PlotGhostBtn")
+        row.addWidget(ed, 1)
+        row.addWidget(btn)
+        v.addLayout(row)
+        out = QLabel()
+        out.setWordWrap(True)
+        out.setAlignment(Qt.AlignTop)
+        out.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        out.setObjectName("ArTestOut")
+        oscroll = QScrollArea()
+        oscroll.setObjectName("ArScroll")
+        oscroll.setWidget(out)
+        oscroll.setWidgetResizable(True)
+        oscroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(oscroll, 1)
+
+        def run():
+            s = "".join(ch for ch in ed.text() if ch not in " \t\r\n-:,;")
+            s = s.replace("0x", "").replace("0X", "")
+            frame = None
+            if s and len(s) % 2 == 0:
+                try:
+                    frame = bytes.fromhex(s)
+                except ValueError:
+                    frame = None
+            if frame is None:
+                out.setText(t("ar_test_bad_hex"))
+                return
+            res = self.app._ar_preview(frame)
+            if res.get("index", -1) < 0:
+                out.setText(t("ar_test_no_match"))
+                return
+            lines = [t("ar_test_matched", n=res["index"] + 1)]
+            if not res.get("verify_ok"):
+                lines.append(t("ar_test_verify_fail"))
+            else:
+                reps = res.get("replies", [])
+                if not reps:
+                    lines.append(t("ar_test_no_reply"))
+                for r in reps:
+                    lines.append("→ " + (r if r else t("ar_test_reply_bad")))
+            out.setText("\n".join(lines))
+
+        btn.clicked.connect(lambda *_: run())
+        ed.returnPressed.connect(run)
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
+            QLabel#ArCsHint {{ color: {c['text_sec']}; background: transparent;
+                               font-family: 'Segoe UI'; font-size: 11px; }}
+            QLabel#ArTestOut {{ color: {c['text']}; background: transparent;
+                                font-family: 'Segoe UI'; font-size: 12px; }}
+            QScrollArea#ArScroll {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea#ArScroll > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{
+                background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: 'Segoe UI'; font-size: 12px; padding: 5px 16px;
+            }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
+        dlg.exec_()
+
+    # ---------------- 校验段（内层/额外校验）----------------
+    def _update_seg_btn(self, rec):
+        """按 rec['cs_segs'] 数量刷新按钮文案：有段显示「校验段 (N)」。"""
+        btn = rec.get("seg_btn")
+        if btn is not None:
+            n = len(rec.get("cs_segs", []) or [])
+            btn.setText(self.app._t("ar_cs_btn") + (f" ({n})" if n else ""))
+
+    def _edit_cs_segs(self, rec):
+        """编辑某条应答规则的「校验段」列表（算法 | 起始 | 结束 | 填入位置），
+        确定后写回 rec['cs_segs'] 并去抖落盘。每段对应答帧 [start..end] 算校验、
+        写到 at（留空=追加），在尾部 cs 之前、按从上到下顺序计算。"""
+        t = self.app._t
+        _i = self.app._ar_to_int
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("ar_cs_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(600, 380)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        hint = QLabel(t("ar_cs_help"))
+        hint.setWordWrap(True)
+        hint.setObjectName("ArCsHint")
+        v.addWidget(hint)
+        hdr = QHBoxLayout()
+        hdr.setSpacing(6)
+        for key, w in (("ar_cs_algo", 150), ("ar_cs_start", 60),
+                       ("ar_cs_end", 60), ("ar_cs_at", 80)):
+            lb = QLabel(t(key))
+            lb.setFixedWidth(w)
+            hdr.addWidget(lb)
+        hdr.addStretch(1)
+        v.addLayout(hdr)
+        rows_host = QWidget()
+        rows_v = QVBoxLayout(rows_host)
+        rows_v.setContentsMargins(0, 0, 0, 0)
+        rows_v.setSpacing(4)
+        rows_v.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setObjectName("ArScroll")
+        scroll.setWidget(rows_host)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(scroll, 1)
+        seg_rows = []
+
+        def add_seg(seg=None):
+            seg = seg or {}
+            r = QWidget()
+            rh = QHBoxLayout(r)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.setSpacing(6)
+            algo = QComboBox()
+            algo.setFixedWidth(150)
+            for k in CHECKSUM_KEYS:
+                algo.addItem(t(k))
+            algo.setCurrentIndex(_i(seg.get("algo", 0)))
+            ed_start = QLineEdit(str(_i(seg.get("start", 0))))
+            ed_start.setFixedWidth(60)
+            e_end = seg.get("end", None)
+            ed_end = QLineEdit("" if e_end in (None, "") else str(e_end))
+            ed_end.setFixedWidth(60)
+            e_at = seg.get("at", None)
+            ed_at = QLineEdit("" if e_at in (None, "") else str(e_at))
+            ed_at.setFixedWidth(80)
+            btn_x = QPushButton("✕")
+            btn_x.setObjectName("ArDelBtn")
+            btn_x.setFixedSize(26, 26)
+            srec = {"w": r, "algo": algo, "start": ed_start, "end": ed_end, "at": ed_at}
+
+            def _del():
+                r.setParent(None)
+                r.deleteLater()
+                if srec in seg_rows:
+                    seg_rows.remove(srec)
+
+            btn_x.clicked.connect(lambda *_: _del())
+            for w in (algo, ed_start, ed_end, ed_at, btn_x):
+                rh.addWidget(w)
+            rh.addStretch(1)
+            rows_v.insertWidget(rows_v.count() - 1, r)
+            seg_rows.append(srec)
+
+        for seg in (rec.get("cs_segs", []) or []):
+            add_seg(seg)
+
+        btn_add = QPushButton(t("ar_cs_add"))
+        btn_add.setObjectName("PlotGhostBtn")
+        btn_add.clicked.connect(lambda *_: add_seg())
+        ok_txt = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self.app._lang, "OK")
+        cancel_txt = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(self.app._lang, "Cancel")
+        btn_ok = QPushButton(ok_txt)
+        btn_ok.setObjectName("PlotGhostBtn")
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel = QPushButton(cancel_txt)
+        btn_cancel.setObjectName("PlotGhostBtn")
+        btn_cancel.clicked.connect(dlg.reject)
+        brow = QHBoxLayout()
+        brow.addWidget(btn_add)
+        brow.addStretch(1)
+        brow.addWidget(btn_cancel)
+        brow.addWidget(btn_ok)
+        v.addLayout(brow)
+
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
+            QLabel#ArCsHint {{ color: {c['text_sec']}; background: transparent;
+                               font-family: 'Segoe UI'; font-size: 11px; }}
+            QScrollArea#ArScroll {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea#ArScroll > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{
+                background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: 'Segoe UI'; font-size: 12px; padding: 5px 16px;
+            }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+            QPushButton#ArDelBtn {{
+                background-color: transparent; color: {c['text_sec']};
+                border: 1px solid {c['separator']}; border-radius: 6px; font-size: 13px;
+            }}
+            QPushButton#ArDelBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['danger']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        def _opt(le):
+            txt = le.text().strip()
+            if txt == "":
+                return None
+            try:
+                return int(txt)
+            except ValueError:
+                return None     # 非法输入按"留空"处理：结束=到帧尾、填入位置=追加（绝不静默覆盖偏移 0）
+
+        segs = []
+        for sr in seg_rows:
+            ai = sr["algo"].currentIndex()
+            if ai <= 0:                 # 算法=无 → 该段无意义，丢弃
+                continue
+            st = _opt(sr["start"])
+            segs.append({"algo": ai, "start": 0 if st is None else st,
+                         "end": _opt(sr["end"]), "at": _opt(sr["at"])})
+        rec["cs_segs"] = segs
+        self._update_seg_btn(rec)
         self._schedule()
 
     def reload_rows(self):
@@ -304,6 +644,17 @@ class AutoReplyDialog(QDialog):
         self.ed_fextra.setText(str(fc.get("len_extra", 0)))
         for w in fw:
             w.blockSignals(False)
+        # C6 故障注入控件同步（配置导入 / 外部修改 _ar_fault 后）
+        xc = getattr(self.app, "_ar_fault", {}) or {}
+        xw = (self.cb_fault_on, self.ed_fdrop, self.ed_fbadcrc, self.ed_fbadlen)
+        for w in xw:
+            w.blockSignals(True)
+        self.cb_fault_on.setChecked(bool(xc.get("on")))
+        self.ed_fdrop.setText(str(xc.get("drop", 0)))
+        self.ed_fbadcrc.setText(str(xc.get("badcrc", 0)))
+        self.ed_fbadlen.setText(str(xc.get("badlen", 0)))
+        for w in xw:
+            w.blockSignals(False)
 
     # ---------------- 落盘 ----------------
     def _schedule(self, *_):
@@ -332,10 +683,23 @@ class AutoReplyDialog(QDialog):
                 "reply": rec["reply"].text(),
                 "reply_hex": rec["rhex"].isChecked(),
                 "cs": rec["cs"].currentIndex(),
-                "delay": _n(rec["cd"]),
+                "cs_segs": rec.get("cs_segs", []),
+                "delay": rec["cd"].text().strip(),   # C7：存原始文本（"100" 或 "100-300"）
+
                 "cooldown": _n(rec["cdwn"]),
                 "gap": _n(rec["gap"]),
             })
+        # 保留运行态命中统计/冷却：按稳定 id(_rid) 迁移（rules 与 _rows 同序一一对应），
+        # 删中间行/重排后也不会张冠李戴（_last 是冷却时刻，错配会误抑制/误触发应答）。
+        old_by_rid = {o.get("_rid"): o for o in getattr(self.app, "_ar_rules", [])
+                      if o.get("_rid") is not None}
+        for r, rec in zip(rules, self._rows):
+            r["_rid"] = rec.get("_rid")
+            src = old_by_rid.get(rec.get("_rid"))
+            if src:
+                for k in ("_hits", "_hit_time", "_last"):
+                    if k in src:
+                        r[k] = src[k]
         self.app._set_ar_rules(rules)
         # 帧头+长度组帧（全局配置）随规则一起去抖落盘
         self.app._set_ar_frame({
@@ -345,6 +709,13 @@ class AutoReplyDialog(QDialog):
             "len_width": int(self.cb_fwidth.currentText()),
             "len_be": self.cb_fbe.currentIndex() == 1,
             "len_extra": _n(self.ed_fextra),
+        })
+        # C6 全局故障注入配置
+        self.app._set_ar_fault({
+            "on": self.cb_fault_on.isChecked(),
+            "drop": _n(self.ed_fdrop),
+            "badcrc": _n(self.ed_fbadcrc),
+            "badlen": _n(self.ed_fbadlen),
         })
 
     # ---------------- 主题 / 语言 ----------------
@@ -363,6 +734,14 @@ class AutoReplyDialog(QDialog):
             border: 1px solid {c['separator']}; border-radius: 6px; font-size: 13px;
         }}
         QPushButton#ArDelBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['danger']}; }}
+        QPushButton#ArSegBtn {{
+            background-color: transparent; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; border-radius: 6px;
+            font-family: 'Segoe UI'; font-size: 11px; padding: 3px 8px;
+        }}
+        QPushButton#ArSegBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
+        QLabel#ArHits {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 11px; }}
+        QLabel#ArDesc {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 11px; }}
         QPushButton#ArHelpBtn {{
             background-color: transparent; color: {c['text_sec']};
             border: 1px solid {c['separator']}; border-radius: 13px;
@@ -383,6 +762,8 @@ class AutoReplyDialog(QDialog):
         self.setWindowTitle(t("ar_title"))
         self.cb_enable.setText(t("ar_enable"))
         self.btn_add.setText(t("ar_add"))
+        self.btn_test.setText(t("ar_test"))
+        self.btn_reset_stats.setText(t("ar_reset_stats"))
         self.btn_help.setToolTip(t("ar_help_btn"))   # 按钮文字固定 "?", 悬停看完整文案
         self.cb_frame_on.setText(t("ar_frame_on"))
         self.cb_frame_on.setToolTip(t("ar_frame_tip"))
@@ -390,6 +771,13 @@ class AutoReplyDialog(QDialog):
         self.lbl_foff.setText(t("ar_frame_off"))
         self.lbl_fwidth.setText(t("ar_frame_width"))
         self.lbl_fextra.setText(t("ar_frame_extra"))
+        self.cb_fault_on.setText(t("ar_fault_on"))
+        self.cb_fault_on.setToolTip(t("ar_fault_tip"))
+        self.lbl_fdrop.setText(t("ar_fault_drop"))
+        self.lbl_fbadcrc.setText(t("ar_fault_badcrc"))
+        self.lbl_fbadlen.setText(t("ar_fault_badlen"))
+        self.lbl_frame_desc.setText(t("ar_frame_desc"))
+        self.lbl_fault_desc.setText(t("ar_fault_desc"))
         mode_items = [t("ar_mode_contains"), t("ar_mode_equals"), t("ar_mode_prefix")]
         cs_items = [t(k) for k in CHECKSUM_KEYS]
         for rec in self._rows:
@@ -406,6 +794,10 @@ class AutoReplyDialog(QDialog):
             rec["verify"].setToolTip(t("ar_verify_tip"))
             rec["gap"].setToolTip(t("ar_gap_tip"))
             rec["cdwn"].setToolTip(t("ar_cooldown_tip"))
+            rec["cd"].setToolTip(t("ar_delay_tip"))
+            self._update_seg_btn(rec)
+            rec["seg_btn"].setToolTip(t("ar_cs_tip"))
+            rec["hits_lbl"].setToolTip(t("ar_hits_tip"))
             # combo 项（保留当前选中索引）：模式 + 收/发校验
             for combo, items in ((rec["mode"], mode_items),
                                  (rec["verify"], cs_items),
@@ -417,10 +809,11 @@ class AutoReplyDialog(QDialog):
                 combo.setCurrentIndex(idx)
                 combo.blockSignals(False)
 
-    def _show_help_dlg(self):
-        """弹独立窗口展示使用说明（富文本+可滚动）。原 lbl_help 占顶部太挤，改成按需查看。"""
+    def _show_help_dlg(self, title=None, body=None):
+        """弹独立窗口展示说明（富文本+可滚动）。无参=自动应答总说明；带 title/body=某框的用法举例。
+        （顶部「?」走 clicked(checked=False)，title=False→走默认，仍是总说明。）"""
         dlg = QDialog(self)
-        dlg.setWindowTitle(self.app._t("ar_help_title"))
+        dlg.setWindowTitle(title or self.app._t("ar_help_title"))
         dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
                            | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
@@ -428,7 +821,7 @@ class AutoReplyDialog(QDialog):
         v = QVBoxLayout(dlg)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(8)
-        lbl = QLabel(self.app._t("ar_help"))
+        lbl = QLabel(body or self.app._t("ar_help"))
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.RichText)
         lbl.setAlignment(Qt.AlignTop)
@@ -463,6 +856,15 @@ class AutoReplyDialog(QDialog):
         """))
         _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
         dlg.exec_()
+
+    def showEvent(self, e):
+        self._refresh_stats()          # 显示即刷一次，别等首个 tick
+        self._stats_timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self._stats_timer.stop()       # 关窗/隐藏即停，避免单例窗关掉后仍每 700ms 空跑
+        super().hideEvent(e)
 
     def closeEvent(self, e):
         if self._save_timer.isActive():
