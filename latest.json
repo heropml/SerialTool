@@ -1,5 +1,5 @@
 {
-  "version": "1.1.4",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.4/CommTool_Setup_v1.1.4.exe",
-  "notes": "自动应答新增「帧头+长度组帧」：有帧头+长度字段的协议按真实帧边界切分，正确处理串口粘包/拆包。多条发送：名称列可拖动调宽、新增全选/全不选。多条发送与关键字高亮窗口加最小化/最大化按钮。"
+  "version": "1.1.5",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.5/CommTool_Setup_v1.1.5.exe",
+  "notes": "自动应答五项增强：①每条应答可加多段内层/额外校验，{rN} 占位符自动重算内层 CRC（解决外层 Sum + 内层 CRC 硬编码）；②离线规则测试器，输入一帧即时预览命中规则与应答（预览=实发，不发送/不计数）；③每行实时「命中 N」统计 + 一键重置；④全局故障注入，按概率丢包/错CRC/错长度压测主机重传与容错；⑤延时支持范围抖动（如 100-300，每次随机）。"
 }
