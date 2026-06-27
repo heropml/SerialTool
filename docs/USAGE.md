@@ -37,6 +37,22 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.7
+
+Auto-reply gains a **Modbus RTU slave** mode — turn the whole engine into a slave and auto-answer a master without real hardware:
+
+- **Modbus RTU slave** (new "Modbus slave" button atop the auto-reply dialog): enable + slave address + register table (seed initial values by "space · start address · value"; addresses accept `0x` / decimal, coils use 0/1). Once on, the engine auto-answers the master's reads/writes:
+  - reads: `01` coils / `02` discrete inputs / `03` holding registers / `04` input registers;
+  - writes: `05` single coil / `06` single register / `0F` multiple coils / `10` multiple registers (writes mutate the runtime registers and read back);
+  - illegal function / out-of-range address / illegal data return an **exception response** (`0x80|func` + exception code).
+- **Robust framing** — RTU has no header, so frames are split by "function-code length + CRC self-consistency" with cross-packet buffering; on a CRC mismatch it resyncs byte-by-byte, so noise / misalignment never desyncs it permanently.
+- **Reply to the requester** — as a TCP server with multiple clients, the response goes back to exactly the client that asked (per-client half-packet buffer, cleared on disconnect).
+- **Fault injection still applies** — global drop / bad-CRC / bad-length still hit Modbus responses, to stress-test the master's retry / tolerance.
+- When Modbus is on, rules / state machine / header-framing step aside — the dialog collapses those sections and keeps only fault injection plus a prominent banner (no more "looks enabled but doesn't reply").
+- Fixes dark-theme checkboxes that didn't show checked / unchecked (added `::indicator` styling). Trilingual UI; adds `tests/test_modbus_slave.py` (the repo's first automated test); no new dependencies; Modbus is off by default (behaves exactly like v1.1.6 when off).
+
+---
+
 ## What's New in v1.1.6
 
 Auto-reply gains a **multi-step state machine** — chain rules into a frame-sequence handshake / session:

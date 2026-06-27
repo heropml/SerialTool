@@ -519,6 +519,13 @@ def _dialog_list_qss(c):
     }}
     QLineEdit:focus {{ border: 1px solid {c['accent']}; background-color: {c['input_focus_bg']}; }}
     QCheckBox {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 11px; spacing: 4px; }}
+    QCheckBox::indicator {{
+        width: 14px; height: 14px; border-radius: 3px;
+        border: 1px solid {c['separator']}; background-color: {c['input_bg']};
+    }}
+    QCheckBox::indicator:hover {{ border: 1px solid {c['accent']}; }}
+    QCheckBox::indicator:checked {{ background-color: {c['accent']}; border: 1px solid {c['accent']}; }}
+    QCheckBox::indicator:disabled {{ border: 1px solid {c['separator']}; background-color: {c['window_bg']}; }}
     QComboBox {{
         background-color: {c['input_bg']}; border: 1px solid {c['separator']};
         border-radius: 6px; padding: 3px 6px; color: {c['text']};

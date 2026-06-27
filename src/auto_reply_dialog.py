@@ -63,6 +63,10 @@ class AutoReplyDialog(QDialog):
         self.btn_reset_stats.setObjectName("PlotGhostBtn")
         self.btn_reset_stats.clicked.connect(self._on_reset_stats)
         top.addWidget(self.btn_reset_stats)
+        self.btn_modbus = QPushButton()         # B4 Modbus 从机配置入口（启用时按钮带 ● 标记）
+        self.btn_modbus.setObjectName("PlotGhostBtn")
+        self.btn_modbus.clicked.connect(self._open_modbus)
+        top.addWidget(self.btn_modbus)
         self.btn_add = QPushButton()
         self.btn_add.setObjectName("PlotGhostBtn")
         self.btn_add.clicked.connect(lambda *_: (self._add_row(), self._schedule()))
@@ -75,6 +79,14 @@ class AutoReplyDialog(QDialog):
         self.btn_help.clicked.connect(self._show_help_dlg)
         top.addWidget(self.btn_help)
         root.addLayout(top)
+
+        # B4：Modbus 从机模式提示条（开启时显示，说明下方规则/状态机/帧头组帧不参与）
+        self.lbl_modbus_active = QLabel()
+        self.lbl_modbus_active.setObjectName("ArModbusBanner")   # 醒目:主色加粗(refresh_theme 里样式)
+        self.lbl_modbus_active.setWordWrap(True)
+        self.lbl_modbus_active.setContentsMargins(9, 0, 0, 0)  # 左缩进 9px：行首 ● 与「启用」/各框复选框左缘对齐
+        self.lbl_modbus_active.setVisible(False)
+        root.addWidget(self.lbl_modbus_active)
 
         # 帧头+长度组帧（全局，整条串口一份）：有帧头+长度字段的协议优先用它，跨包按整帧
         # 边界切分、正确处理粘包/拆包；启用后优先于各规则的「整包」静默超时。
@@ -226,12 +238,14 @@ class AutoReplyDialog(QDialog):
         self._rows_v.addStretch(1)
         self._rows_host.setAutoFillBackground(False)
         scroll = QScrollArea()
+        self._rows_scroll = scroll                  # 存引用：Modbus 开启时整块置灰
         scroll.setObjectName("ArScroll")
         scroll.setWidget(self._rows_host)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.viewport().setAutoFillBackground(False)
-        root.addWidget(scroll, 1)
+        root.addWidget(scroll, 100)   # 大 stretch：规则区可见时填满；末尾再留 stretch 1 锚定（规则区隐藏时把内容顶到上方）
+        root.addStretch(1)            # Modbus 模式隐藏规则区后，由它占住下方空白，避免故障注入框上下飘
 
         self.retranslate()
         self.reload_rows()    # 初次构造也走统一路径
@@ -247,8 +261,8 @@ class AutoReplyDialog(QDialog):
         row = QWidget()
         row.setObjectName("ArRow")
         h = QHBoxLayout(row)
-        h.setContentsMargins(8, 3, 6, 3)   # 左 8：算上 ArScroll 的 1px 边框后，与「启用」「帧头组帧」复选框左缘对齐
-        h.setSpacing(6)
+        h.setContentsMargins(8, 3, 6, 3)   # 左 8：与各框（ArScroll 1px 边框 + 8）同列，勾选框左缘对齐
+        h.setSpacing(0)                    # 空复选框后不再叠加布局间距，使「收到」与上方复选框文字左缘对齐
 
         cb_on = QCheckBox()
         cb_on.setChecked(bool(rule.get("on", True)))
@@ -336,7 +350,6 @@ class AutoReplyDialog(QDialog):
         lh = QHBoxLayout(left)
         lh.setContentsMargins(0, 0, 0, 0)
         lh.setSpacing(6)
-        lh.addWidget(cb_on)
         lh.addWidget(ed_when)          # C8：仅状态（默认隐藏，状态机开启时显示）
         lh.addWidget(lbl_match)
         lh.addWidget(ed_match, 1)
@@ -375,8 +388,11 @@ class AutoReplyDialog(QDialog):
         split.splitterMoved.connect(lambda *_: self._sync_splitters(split))
         rec["split"] = split
 
+        h.addWidget(cb_on)            # 启用勾选框直接放行布局(与各框勾选框同层级)，避免分隔条嵌套挤偏左缘
         h.addWidget(split, 1)
+        h.addSpacing(6)
         h.addWidget(lbl_hits)
+        h.addSpacing(6)
         h.addWidget(btn_del)
         if self._split_sizes:                # 新行采用当前已有的分隔比例
             split.setSizes(self._split_sizes)
@@ -704,6 +720,211 @@ class AutoReplyDialog(QDialog):
         self._update_seg_btn(rec)
         self._schedule()
 
+    # ---------------- B4 Modbus 从机 ----------------
+    _MB_SPACES = (("holding", "ar_mb_holding"), ("input", "ar_mb_input"),
+                  ("coils", "ar_mb_coil"), ("discrete", "ar_mb_discrete"))
+
+    def _update_modbus_btn(self):
+        """按钮文案 + 模式切换：Modbus 启用时按钮加 ● 标记，并把「不参与」的部分（规则区 / 状态机 /
+        帧头组帧 + 规则操作按钮）明显淡化（~35% 透明 + 禁用）——保留原位、内容仍在但一眼看出是灰的
+        （macOS 浅色主题下单纯 setEnabled 太弱、直接隐藏又留大片空白）。故障注入框保留（仍作用于
+        Modbus 响应）+ 顶部提示条，消除「看着启用却不响应」的困惑。"""
+        on = bool((getattr(self.app, "_ar_modbus", {}) or {}).get("on"))
+        self.btn_modbus.setText(self.app._t("ar_modbus") + (" ●" if on else ""))
+        # Modbus 开 → 不参与的部分全部隐藏（帧头组帧 / 状态机 / 规则列表 + 测试·重置·添加），
+        # 只留 故障注入框（仍作用于 Modbus 响应）+ 醒目提示条；末尾 stretch 把内容顶到上方、下方留空白。
+        for w in (self._rows_scroll, self._sm_box, self._frame_box,
+                  self.btn_test, self.btn_reset_stats, self.btn_add):
+            w.setVisible(not on)
+        self.lbl_modbus_active.setVisible(on)
+        if on:
+            self.lbl_modbus_active.setText(self.app._t("ar_modbus_active"))
+
+    def _open_modbus(self):
+        """B4：编辑 Modbus 从机配置（启用 + 从机地址 + 寄存器表）。确定 → app._set_ar_modbus()。"""
+        t = self.app._t
+        _i = self.app._ar_to_int
+        cfg = getattr(self.app, "_ar_modbus", {}) or {}
+        space_keys = [s[0] for s in self._MB_SPACES]
+
+        def _parse_int(txt, default=None):
+            txt = (txt or "").strip()
+            if txt == "":
+                return default
+            try:
+                return int(txt, 16) if txt.lower().startswith("0x") else int(txt)
+            except ValueError:
+                return default
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("ar_modbus_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(640, 470)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        hint = QLabel(t("ar_modbus_hint"))
+        hint.setWordWrap(True)
+        hint.setObjectName("ArCsHint")
+        v.addWidget(hint)
+
+        # 顶行：启用 + 从机地址 + ? 帮助
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        cb_on = QCheckBox(t("ar_modbus_on"))
+        cb_on.setChecked(bool(cfg.get("on")))
+        top.addWidget(cb_on)
+        top.addSpacing(12)
+        top.addWidget(QLabel(t("ar_modbus_addr")))
+        ed_addr = QLineEdit(str(_i(cfg.get("addr", 1))))
+        ed_addr.setFixedWidth(60)
+        top.addWidget(ed_addr)
+        top.addStretch(1)
+        btn_help = QPushButton("?")
+        btn_help.setObjectName("ArHelpBtn")
+        btn_help.setFixedSize(24, 24)
+        btn_help.setCursor(Qt.PointingHandCursor)
+        btn_help.clicked.connect(
+            lambda *_: self._show_help_dlg(t("ar_modbus_help_title"), t("ar_modbus_help")))
+        top.addWidget(btn_help)
+        v.addLayout(top)
+
+        # 表头
+        hdr = QHBoxLayout()
+        hdr.setSpacing(6)
+        lb_sp = QLabel(t("ar_modbus_space")); lb_sp.setFixedWidth(130); hdr.addWidget(lb_sp)
+        lb_st = QLabel(t("ar_modbus_start")); lb_st.setFixedWidth(80); hdr.addWidget(lb_st)
+        hdr.addWidget(QLabel(t("ar_modbus_values")), 1)
+        hdr.addSpacing(32)
+        v.addLayout(hdr)
+
+        rows_host = QWidget()
+        rows_v = QVBoxLayout(rows_host)
+        rows_v.setContentsMargins(0, 0, 0, 0)
+        rows_v.setSpacing(4)
+        rows_v.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setObjectName("ArScroll")
+        scroll.setWidget(rows_host)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(scroll, 1)
+        reg_rows = []
+
+        def add_reg(space="holding", start=0, values=""):
+            r = QWidget()
+            rh = QHBoxLayout(r)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.setSpacing(6)
+            cb_space = QComboBox()
+            cb_space.setFixedWidth(130)
+            for _k, lk in self._MB_SPACES:
+                cb_space.addItem(t(lk))
+            cb_space.setCurrentIndex(space_keys.index(space) if space in space_keys else 0)
+            ed_start = QLineEdit(str(start))
+            ed_start.setFixedWidth(80)
+            ed_vals = QLineEdit(values)
+            ed_vals.setPlaceholderText("0x1234, 100, 0x00FF …")
+            btn_x = QPushButton("✕")
+            btn_x.setObjectName("ArDelBtn")
+            btn_x.setFixedSize(26, 26)
+            rrec = {"w": r, "space": cb_space, "start": ed_start, "vals": ed_vals}
+
+            def _del():
+                r.setParent(None)
+                r.deleteLater()
+                if rrec in reg_rows:
+                    reg_rows.remove(rrec)
+
+            btn_x.clicked.connect(lambda *_: _del())
+            rh.addWidget(cb_space)
+            rh.addWidget(ed_start)
+            rh.addWidget(ed_vals, 1)
+            rh.addWidget(btn_x)
+            rows_v.insertWidget(rows_v.count() - 1, r)
+            reg_rows.append(rrec)
+
+        # 从配置重建行：每个空间按「连续地址」分组成一行（start + 逗号分隔的值）
+        def _runs(m):
+            items = sorted((int(k), val) for k, val in (m or {}).items())
+            out = []
+            for a, val in items:
+                if out and a == out[-1][0] + len(out[-1][1]):
+                    out[-1][1].append(val)
+                else:
+                    out.append((a, [val]))
+            return out
+
+        any_row = False
+        for space, _lk in self._MB_SPACES:
+            is_bool = space in ("coils", "discrete")
+            for start, vals in _runs(cfg.get(space)):
+                vs = ", ".join(("1" if v else "0") if is_bool else str(int(v)) for v in vals)
+                add_reg(space, start, vs)
+                any_row = True
+        if not any_row:
+            add_reg()
+
+        btn_add = QPushButton(t("ar_modbus_add"))
+        btn_add.setObjectName("PlotGhostBtn")
+        btn_add.clicked.connect(lambda *_: add_reg())
+        ok_txt = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self.app._lang, "OK")
+        cancel_txt = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(self.app._lang, "Cancel")
+        btn_ok = QPushButton(ok_txt); btn_ok.setObjectName("PlotGhostBtn"); btn_ok.clicked.connect(dlg.accept)
+        btn_cancel = QPushButton(cancel_txt); btn_cancel.setObjectName("PlotGhostBtn"); btn_cancel.clicked.connect(dlg.reject)
+        brow = QHBoxLayout()
+        brow.addWidget(btn_add)
+        brow.addStretch(1)
+        brow.addWidget(btn_cancel)
+        brow.addWidget(btn_ok)
+        v.addLayout(brow)
+
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
+            QLabel#ArCsHint {{ color: {c['text_sec']}; background: transparent;
+                               font-family: 'Segoe UI'; font-size: 11px; }}
+            QScrollArea#ArScroll {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea#ArScroll > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{
+                background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: 'Segoe UI'; font-size: 12px; padding: 5px 16px;
+            }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+            QPushButton#ArHelpBtn {{
+                background-color: transparent; color: {c['text_sec']};
+                border: 1px solid {c['separator']}; border-radius: 12px;
+                font-family: 'Segoe UI'; font-size: 13px; font-weight: bold;
+            }}
+            QPushButton#ArHelpBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
+            QPushButton#ArDelBtn {{
+                background-color: transparent; color: {c['text_sec']};
+                border: 1px solid {c['separator']}; border-radius: 6px; font-size: 13px;
+            }}
+            QPushButton#ArDelBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['danger']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, self.app._theme().get("mode") == "dark")
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        out = {"on": cb_on.isChecked(), "addr": _parse_int(ed_addr.text(), 1),
+               "coils": {}, "discrete": {}, "holding": {}, "input": {}}
+        for rr in reg_rows:
+            space = space_keys[rr["space"].currentIndex()]
+            start = _parse_int(rr["start"].text(), None)
+            if start is None:
+                continue
+            is_bool = space in ("coils", "discrete")
+            for off, tok in enumerate(rr["vals"].text().split(",")):
+                val = _parse_int(tok, None)
+                if val is None:
+                    continue
+                out[space][str(start + off)] = bool(val) if is_bool else (val & 0xFFFF)
+        self.app._set_ar_modbus(out)
+        self._update_modbus_btn()
+
     def reload_rows(self):
         """按 app._ar_rules 重建所有规则行。配置导入/外部修改 _ar_rules 后调用——
         否则旧对话框内 _rows 是陈旧的，下次 _commit() 会把旧行覆盖回 _ar_rules。"""
@@ -756,6 +977,7 @@ class AutoReplyDialog(QDialog):
         for w in sw:
             w.blockSignals(False)
         self._apply_sm_cols()      # 行重建后按当前开关显示/隐藏 when/goto 列
+        self._update_modbus_btn()  # B4：配置导入后刷新 Modbus 按钮 ● 标记
 
     # ---------------- 落盘 ----------------
     def _schedule(self, *_):
@@ -851,6 +1073,7 @@ class AutoReplyDialog(QDialog):
         QPushButton#ArSegBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
         QLabel#ArHits {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 11px; }}
         QLabel#ArDesc {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 11px; }}
+        QLabel#ArModbusBanner {{ color: {c['accent']}; font-family: 'Segoe UI'; font-size: 12px; font-weight: 600; }}
         QPushButton#ArHelpBtn {{
             background-color: transparent; color: {c['text_sec']};
             border: 1px solid {c['separator']}; border-radius: 13px;
@@ -873,6 +1096,8 @@ class AutoReplyDialog(QDialog):
         self.btn_add.setText(t("ar_add"))
         self.btn_test.setText(t("ar_test"))
         self.btn_reset_stats.setText(t("ar_reset_stats"))
+        self.btn_modbus.setToolTip(t("ar_modbus_tip"))
+        self._update_modbus_btn()                    # B4：按钮文案(含 ● 标记)随语言/开关刷新
         self.btn_help.setToolTip(t("ar_help_btn"))   # 按钮文字固定 "?", 悬停看完整文案
         self.cb_frame_on.setText(t("ar_frame_on"))
         self.cb_frame_on.setToolTip(t("ar_frame_tip"))

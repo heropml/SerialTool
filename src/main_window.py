@@ -33,6 +33,7 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     is_valid_ip)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 import binproto
+import modbus_slave
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
@@ -168,6 +169,9 @@ class CommTool(QMainWindow):
         self._ar_sm_pending = None  # C8：在途状态转移 token；整条多段应答完成前串行化后续状态帧
         self._ar_sm_queue = deque() # C8：pending 期间收到的完整帧 FIFO（有界，保持收帧顺序）
         self._ar_sm_draining = False # C8：FIFO 同步排空重入保护
+        self._ar_modbus = self._load_ar_modbus()     # B4 Modbus RTU 从机配置（全局；on/addr/寄存器表）
+        self._modbus = modbus_slave.slave_from_config(self._ar_modbus)  # 运行态从机模型（主机写会改它）
+        self._modbus_buffers = {}                    # TCP Server 每客户端独立半包，防止并发连接串流
         self._ar_gap_timer = QTimer(self)            # 整包静默超时
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(self._ar_flush)
@@ -2006,7 +2010,12 @@ class CommTool(QMainWindow):
                 rip, rport = "", 0   # 不指定远程：回复最近发来数据的对端
             conn = UdpConn(self.cb_local_ip.currentText().strip(), lport, rip, rport)
 
-        conn.data_received.connect(self.on_data_received)
+        # TCP Server 额外携带来源客户端 key，让协议自动应答能精确回给请求方；
+        # 其余连接仍走原有单参数信号。
+        if hasattr(conn, "data_received_from"):
+            conn.data_received_from.connect(self.on_data_received)
+        else:
+            conn.data_received.connect(self.on_data_received)
         conn.error_occurred.connect(self._on_conn_error)
         conn.state_changed.connect(self._on_conn_state_changed)
         # clients_changed / peer_changed 是网络连接专有信号；SerialConn 没有，按需连接
@@ -2114,6 +2123,9 @@ class CommTool(QMainWindow):
 
     def _on_clients_changed(self, clients):
         """TCP Server 客户端列表变化 → 刷新「目标」下拉（含「全部」）。"""
+        active = {key for key, _label in clients}
+        self._modbus_buffers = {key: buf for key, buf in self._modbus_buffers.items()
+                                if key in active}
         if not hasattr(self, "cb_target"):
             return
         cur = self.cb_target.currentData()
@@ -2412,7 +2424,7 @@ class CommTool(QMainWindow):
             self._rx_decode_buffer = b""
             return text
 
-    def on_data_received(self, data: bytes):
+    def on_data_received(self, data: bytes, reply_target=None):
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
             self._on_data_received_impl(data)
@@ -2436,7 +2448,7 @@ class CommTool(QMainWindow):
                 pass
         # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）
         try:
-            self._auto_reply(data)
+            self._auto_reply(data, reply_target=reply_target)
         except Exception:
             pass
 
@@ -3020,6 +3032,93 @@ class CommTool(QMainWindow):
         if goto:
             self._ar_state = goto
 
+    # ----- B4 Modbus RTU 从机（autoreply_modbus：on/addr + 四个稀疏寄存器表。开启后整条引擎
+    #        作为 Modbus 从机:按功能码自动应答,规则/状态机让位;运行态 _modbus 的写在会话级复位）-----
+    def _load_ar_modbus(self):
+        raw = self.settings.value("autoreply_modbus", "")
+        cfg = {}
+        if raw:
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict):
+                    cfg = d
+            except Exception:
+                pass
+        return self._norm_ar_modbus(cfg)
+
+    def _norm_ar_modbus(self, cfg):
+        cfg = cfg or {}
+
+        def _regmap(m, as_bool):
+            out = {}
+            if isinstance(m, dict):
+                for k, v in m.items():
+                    try:
+                        a = int(k)
+                    except (ValueError, TypeError):
+                        continue
+                    out[str(a)] = bool(v) if as_bool else (self._ar_to_int(v) & 0xFFFF)
+            return out
+        return {
+            "on": bool(cfg.get("on", False)),
+            # 从机地址限制为 1..247（0=广播、248-255 保留，都不是有效从机地址；坏值回落到 1，避免哑机）
+            "addr": max(1, min(247, self._ar_to_int(cfg.get("addr", 1)) or 1)),
+            "coils": _regmap(cfg.get("coils"), True),
+            "discrete": _regmap(cfg.get("discrete"), True),
+            "holding": _regmap(cfg.get("holding"), False),
+            "input": _regmap(cfg.get("input"), False),
+        }
+
+    def _set_ar_modbus(self, cfg):
+        """对话框编辑「Modbus 从机」后回调：更新内存配置 + 重建运行态从机(回初值) + 落盘。
+        Modbus 开关/配置变 = 改变了分帧语义 → 必须清跨模式共用的 _ar_buf 半包缓冲并停 gap timer
+        （与 _set_ar_frame / _set_ar_rules 一致），否则切模式时旧字节会被新框架误解析。"""
+        self._ar_modbus = self._norm_ar_modbus(cfg)
+        self._modbus = modbus_slave.slave_from_config(self._ar_modbus)
+        self._ar_reset_buf()
+        self.settings.setValue("autoreply_modbus", json.dumps(self._ar_modbus, ensure_ascii=False))
+        self.settings.sync()
+
+    def _modbus_feed(self, data: bytes, reply_target=None):
+        """B4：Modbus 从机模式收到字节 → 长度感知切整帧 → 逐帧 handle → 有响应就发。"""
+        if reply_target is None:
+            self._ar_buf += bytes(data)
+            frames, self._ar_buf = modbus_slave.iter_frames(self._ar_buf)
+            if len(self._ar_buf) > 8192:       # 防御：坏流不无界增长
+                self._ar_buf = self._ar_buf[-512:]
+        else:
+            buf = self._modbus_buffers.get(reply_target, b"") + bytes(data)
+            frames, remainder = modbus_slave.iter_frames(buf)
+            if len(remainder) > 8192:
+                remainder = remainder[-512:]
+            if remainder:
+                self._modbus_buffers[reply_target] = remainder
+            else:
+                self._modbus_buffers.pop(reply_target, None)
+        for f in frames:
+            try:
+                resp = self._modbus.handle(f)
+            except Exception:
+                resp = None
+            if resp:
+                self._modbus_send(bytes(resp), reply_target=reply_target)
+
+    def _modbus_send(self, frame: bytes, reply_target=None):
+        """发 Modbus 响应。响应同样经 C6 全局故障注入（可压测主机的重传/容错）。"""
+        if not self._ar_on or not self._is_open():
+            return
+        try:
+            out, fault = self._ar_apply_fault(frame)
+            if out is None:
+                self._ar_fault_note(fault)     # 丢包：不发
+            else:
+                self._send_text(bytes(out).hex(" "), hex_mode=True, newline=0, checksum=0,
+                                target=reply_target)
+                if fault:
+                    self._ar_fault_note(fault)
+        except Exception:
+            pass
+
     def _ar_reset_buf(self):
         """停整包静默 timer + 清半包缓冲。规则改 / 组帧改 / 总开关切 / 关闭连接 都得调，否则半截
         缓冲会以新状态被当成新帧头匹配（误响应）。
@@ -3029,6 +3128,8 @@ class CommTool(QMainWindow):
         if hasattr(self, "_ar_gap_timer"):
             self._ar_gap_timer.stop()
         self._ar_buf = b""
+        if hasattr(self, "_modbus_buffers"):
+            self._modbus_buffers.clear()
 
     def _ar_reset_state(self):
         """复位状态机当前状态到 init + 代际 +1（作废在途延迟应答）。仅会话级复位时调：连接开/关、
@@ -3041,6 +3142,9 @@ class CommTool(QMainWindow):
             self._ar_sm_queue.clear()
         self._ar_sm_draining = False
         self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+        # B4：会话级复位 → Modbus 从机运行态寄存器回到配置初值（清掉主机本次会话的写入）
+        if hasattr(self, "_ar_modbus"):
+            self._modbus = modbus_slave.slave_from_config(self._ar_modbus)
 
     @staticmethod
     def _ar_to_int(v, default=0):
@@ -3055,15 +3159,22 @@ class CommTool(QMainWindow):
         self._ar_gap = max((self._ar_to_int(r.get("gap", 0)) for r in self._ar_rules
                             if r.get("on", True)), default=0)
 
-    def _auto_reply(self, data: bytes):
+    def _auto_reply(self, data: bytes, reply_target=None):
         """收到数据 → (可选)组帧 → 匹配规则 → (可选延时)自动发应答。仅连接且总开关开时生效。
         三种组帧粒度（互斥，优先级从高到低）：
           1. 帧头+长度组帧（_ar_frame.on）：维护跨包字节流，按「帧头定位 + Length 字段」切整帧，
              正确处理粘包/拆包——有帧头+长度字段的协议（本设备 AA BB…）应优先用这个；
           2. 整包静默超时（_ar_gap>0）：累积字节、静默该时长视作一整帧（Modbus RTU 等无帧头、
              靠帧间静默 T3.5 分帧的协议用）；
-          3. 每包即时（默认）：上层一个接收块直接当一帧匹配。"""
-        if not self._ar_on or not self._ar_rules or not self._is_open():
+          3. 每包即时（默认）：上层一个接收块直接当一帧匹配。
+        B4：Modbus 从机模式开启时整条引擎让位给 Modbus（按功能码自动应答，规则/状态机不参与；
+        此时即使没有任何规则也生效）。"""
+        if not self._ar_on or not self._is_open():
+            return
+        if self._ar_modbus.get("on"):          # B4 Modbus 从机：独占处理（长度感知组帧）
+            self._modbus_feed(bytes(data), reply_target=reply_target)
+            return
+        if not self._ar_rules:
             return
         fc = self._ar_frame
         if fc.get("on") and fc.get("_header"):
@@ -3083,9 +3194,10 @@ class CommTool(QMainWindow):
             self._ar_match(bytes(data))            # 每包即时匹配
 
     def _ar_flush(self):
-        """整包静默超时：把累积缓冲当一整帧匹配。"""
+        """整包静默超时：把累积缓冲当一整帧匹配。Modbus 模式下不走规则匹配（防止切到 Modbus 后
+        在途的 gap timer 仍误用规则匹配一帧）。"""
         buf, self._ar_buf = self._ar_buf, b""
-        if buf and self._ar_on and self._is_open():
+        if buf and self._ar_on and self._is_open() and not self._ar_modbus.get("on"):
             self._ar_match(buf)
 
     def _ar_match(self, data: bytes):
@@ -3594,6 +3706,7 @@ class CommTool(QMainWindow):
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 自动应答
         "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
+        "autoreply_modbus",
         # 杂项
         "auto_reconnect",
     )
@@ -3661,6 +3774,7 @@ class CommTool(QMainWindow):
             self._ar_frame = self._load_ar_frame()
             self._ar_fault = self._load_ar_fault()
             self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
+            self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入（下方 _ar_reset_state 重建运行态）
             self._recompute_ar_gap()
             self._ar_reset_buf()
             self._ar_reset_state()                # C8：导入新配置=新会话 → 状态机复位到（新）初始状态
@@ -3817,7 +3931,7 @@ class CommTool(QMainWindow):
             self._send_hist_idx = -1
             self._show_hist_at(-1)
 
-    def _send_text(self, raw, hex_mode=None, newline=None, checksum=None) -> bool:
+    def _send_text(self, raw, hex_mode=None, newline=None, checksum=None, target=None) -> bool:
         """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
         hex_mode/newline/checksum 为 None 时用主界面全局设置；多条发送可逐条传入独立值。
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
@@ -3885,7 +3999,7 @@ class CommTool(QMainWindow):
             return False
 
         try:
-            sent = self.conn.send(data, self._send_target())
+            sent = self.conn.send(data, self._send_target() if target is None else target)
         except Exception as e:
             self.tx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)

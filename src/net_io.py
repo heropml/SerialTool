@@ -9,6 +9,7 @@
 
 信号：
     data_received(bytes)   收到数据（统一入口，等价原 SerialReader.data_received）
+    data_received_from(bytes, key)  TCP Server 专用，收到数据及其来源客户端
     error_occurred(str)    socket 错误（致命，主窗口会断开并提示）
     state_changed(bool)    True=已连接/监听中；False=对端断开/停止
     clients_changed(list)  TCP Server 专用，已连接客户端 [(key, label)]
@@ -110,6 +111,8 @@ class NetConn(QObject):
 
 # ============== TCP Server ==============
 class TcpServerConn(NetConn):
+    data_received_from = pyqtSignal(bytes, str)
+
     def __init__(self, local_ip, port, parent=None):
         super().__init__(parent)
         self._ip = local_ip
@@ -144,7 +147,8 @@ class TcpServerConn(NetConn):
             return
         data = bytes(sock.readAll())
         if data:
-            self.data_received.emit(data)
+            self.data_received.emit(data)  # 保留连接层原有公共信号，兼容其他订阅者
+            self.data_received_from.emit(data, self._key(sock))
 
     def _on_disc(self, sock):
         if sock in self._clients:
