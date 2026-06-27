@@ -178,6 +178,47 @@ class AutoReplyDialog(QDialog):
         xrow.addWidget(self.btn_fault_help)
         root.addWidget(self._fault_box)
 
+        # C8 多步状态机（全局）：每条规则可「仅在某状态应答」并「应答后跳转」，串成按帧序列推进的握手。
+        # 启用后每行才显示 when/goto 两列（_apply_sm_cols 控制）；关闭=忽略，等于普通模式。
+        self._sm_box = QFrame()
+        self._sm_box.setObjectName("ArFrameBox")    # 复用带边框样式
+        srow = QHBoxLayout(self._sm_box)
+        srow.setContentsMargins(8, 6, 8, 6)
+        srow.setSpacing(6)
+        sc = getattr(app, "_ar_sm", {}) or {}
+        self.cb_sm_on = QCheckBox()
+        self.cb_sm_on.setChecked(bool(sc.get("on")))
+        self.cb_sm_on.toggled.connect(self._on_sm_toggle)
+        srow.addWidget(self.cb_sm_on)
+        self.lbl_sm_init = QLabel()
+        srow.addWidget(self.lbl_sm_init)
+        self.ed_sm_init = QLineEdit(str(sc.get("init", "")))
+        self.ed_sm_init.setMaximumWidth(90)
+        self.ed_sm_init.textChanged.connect(self._schedule)
+        srow.addWidget(self.ed_sm_init)
+        self.lbl_sm_cur = QLabel()                  # "当前"
+        srow.addWidget(self.lbl_sm_cur)
+        self.lbl_sm_cur_val = QLabel()              # 实时当前状态值（_refresh_stats 刷新）
+        self.lbl_sm_cur_val.setObjectName("ArHits")
+        srow.addWidget(self.lbl_sm_cur_val)
+        self.btn_sm_reset = QPushButton()
+        self.btn_sm_reset.setObjectName("PlotGhostBtn")
+        self.btn_sm_reset.clicked.connect(self._on_sm_reset)
+        srow.addWidget(self.btn_sm_reset)
+        srow.addStretch(1)
+        self.lbl_sm_desc = QLabel()                 # 右侧一句话说明
+        self.lbl_sm_desc.setObjectName("ArDesc")
+        srow.addWidget(self.lbl_sm_desc)
+        self.btn_sm_help = QPushButton("?")
+        self.btn_sm_help.setObjectName("ArHelpBtn")
+        self.btn_sm_help.setFixedSize(24, 24)
+        self.btn_sm_help.setCursor(Qt.PointingHandCursor)
+        self.btn_sm_help.clicked.connect(
+            lambda *_: self._show_help_dlg(self.app._t("ar_sm_help_title"),
+                                           self.app._t("ar_sm_help")))
+        srow.addWidget(self.btn_sm_help)
+        root.addWidget(self._sm_box)
+
         self._rows_host = QWidget()
         self._rows_v = QVBoxLayout(self._rows_host)
         self._rows_v.setContentsMargins(0, 0, 0, 0)
@@ -211,7 +252,7 @@ class AutoReplyDialog(QDialog):
 
         cb_on = QCheckBox()
         cb_on.setChecked(bool(rule.get("on", True)))
-        ed_match = QLineEdit(rule.get("match", ""))
+        ed_match = QLineEdit(str(rule.get("match") or ""))   # str() 容错：配置被手改成非字符串/null 也不崩
         ed_match.setPlaceholderText(t("ar_match_ph"))
         cb_mhex = QCheckBox("HEX")
         cb_mhex.setChecked(bool(rule.get("match_hex", True)))
@@ -225,7 +266,7 @@ class AutoReplyDialog(QDialog):
             cb_verify.addItem(t(k))
         cb_verify.setCurrentIndex(_i(rule.get("verify", 0)))
         cb_verify.setToolTip(t("ar_verify_tip"))
-        ed_reply = QLineEdit(rule.get("reply", ""))
+        ed_reply = QLineEdit(str(rule.get("reply") or ""))   # 同上：str() 容错
         ed_reply.setPlaceholderText(t("ar_reply_ph"))
         cb_rhex = QCheckBox("HEX")
         cb_rhex.setChecked(bool(rule.get("reply_hex", True)))
@@ -251,6 +292,11 @@ class AutoReplyDialog(QDialog):
         btn_del.setFixedSize(26, 26)
         lbl_hits = QLabel()                      # A3 命中计数（_refresh_stats 定时刷新）
         lbl_hits.setObjectName("ArHits")
+        # C8 状态机：when=仅在此状态才命中（可逗号分隔多个），goto=应答后跳转到。仅状态机开启时显示+生效。
+        ed_when = QLineEdit(str(rule.get("when") or ""))     # str() 容错：手改成非字符串/null 也不崩
+        ed_when.setMaximumWidth(80)
+        ed_goto = QLineEdit(str(rule.get("goto") or ""))
+        ed_goto.setMaximumWidth(80)
 
         # 共所有可翻译子件存入 rec：retranslate() 切语言时统一刷新（否则 label/combo/tooltip 残留旧语言）
         lbl_match = QLabel(t("ar_match"))
@@ -264,6 +310,7 @@ class AutoReplyDialog(QDialog):
                "seg_btn": btn_seg, "cs_segs": list(rule.get("cs_segs", []) or []),
                "hits_lbl": lbl_hits, "_rid": rid,
                "cd": ed_cd, "cdwn": ed_cdwn, "gap": ed_gap,
+               "when": ed_when, "goto": ed_goto,
                "lbl_match": lbl_match, "lbl_verify": lbl_verify, "lbl_gap": lbl_gap,
                "lbl_reply": lbl_reply, "lbl_delay": lbl_delay, "lbl_cdwn": lbl_cdwn}
         btn_del.clicked.connect(lambda *_: self._del_row(rec))
@@ -281,6 +328,8 @@ class AutoReplyDialog(QDialog):
         ed_cd.textChanged.connect(self._schedule)
         ed_cdwn.textChanged.connect(self._schedule)
         ed_gap.textChanged.connect(self._schedule)
+        ed_when.textChanged.connect(self._schedule)
+        ed_goto.textChanged.connect(self._schedule)
 
         # 「收到」组（收包侧：匹配/HEX/模式/收校验/整包超时）
         left = QWidget()
@@ -288,6 +337,7 @@ class AutoReplyDialog(QDialog):
         lh.setContentsMargins(0, 0, 0, 0)
         lh.setSpacing(6)
         lh.addWidget(cb_on)
+        lh.addWidget(ed_when)          # C8：仅状态（默认隐藏，状态机开启时显示）
         lh.addWidget(lbl_match)
         lh.addWidget(ed_match, 1)
         lh.addWidget(cb_mhex)
@@ -314,6 +364,7 @@ class AutoReplyDialog(QDialog):
         rh.addWidget(lbl_cdwn)
         rh.addWidget(ed_cdwn)
         rh.addWidget(QLabel("ms"))
+        rh.addWidget(ed_goto)          # C8：应答后跳转（默认隐藏，状态机开启时显示）
         # 两组之间放分隔条：拖动即可调「收到框」「回复框」宽度（各行同步）
         split = QSplitter(Qt.Horizontal)
         split.setObjectName("ArRowSplit")
@@ -333,6 +384,31 @@ class AutoReplyDialog(QDialog):
             split.setSizes([360, 480])
         self._rows_v.insertWidget(self._rows_v.count() - 1, row)
         self._rows.append(rec)
+        _smon = bool(getattr(self, "cb_sm_on", None) and self.cb_sm_on.isChecked())
+        ed_when.setVisible(_smon)     # C8：仅状态机开启时显示这两列
+        ed_goto.setVisible(_smon)
+
+    def _apply_sm_cols(self):
+        """状态机开 → 显示每行 when/goto 列；关 → 隐藏（保持行不拥挤，引擎也忽略 when/goto）。"""
+        on = self.cb_sm_on.isChecked()
+        for rec in self._rows:
+            for k in ("when", "goto"):
+                w = rec.get(k)
+                if w is not None:
+                    w.setVisible(on)
+
+    def _on_sm_toggle(self, on):
+        """状态机开关：显示/隐藏每行 when/goto 列 + 去抖落盘 _ar_sm.on。"""
+        self._apply_sm_cols()
+        self._schedule()
+
+    def _on_sm_reset(self):
+        """把『当前状态』拉回初始状态。有未提交编辑先落盘，再走 _ar_reset_state
+        （复位到 init + 代际 +1，作废在途延迟应答，避免旧 goto 稍后覆盖这次重置）。"""
+        if self._save_timer.isActive():
+            self._commit()
+        self.app._ar_reset_state()
+        self._refresh_stats()
 
     def _sync_splitters(self, src):
         """一行拖动分隔条 → 所有行同步到相同比例（列对齐）。"""
@@ -374,6 +450,9 @@ class AutoReplyDialog(QDialog):
             r = by_rid.get(rec.get("_rid"))
             n = self.app._ar_to_int(r.get("_hits", 0)) if r else 0
             lbl.setText(t("ar_hits", n=n))
+        # C8：实时刷新「当前状态」（空状态显示占位）
+        cur = getattr(self.app, "_ar_state", "")
+        self.lbl_sm_cur_val.setText(cur if cur else t("ar_sm_empty"))
 
     def _on_reset_stats(self):
         self.app._ar_reset_stats()
@@ -429,10 +508,20 @@ class AutoReplyDialog(QDialog):
                 out.setText(t("ar_test_bad_hex"))
                 return
             res = self.app._ar_preview(frame)
+            sm_on = res.get("sm_on")
+            st = res.get("state", "")
+            st_disp = st if st else t("ar_sm_empty")
+            lines = []
+            if sm_on:                                   # C8：先显示当前状态
+                lines.append(t("ar_test_state", s=st_disp))
             if res.get("index", -1) < 0:
-                out.setText(t("ar_test_no_match"))
+                if sm_on and res.get("state_skip") is not None:
+                    lines.append(t("ar_test_state_skip", s=st_disp))   # 内容命中但状态不符
+                else:
+                    lines.append(t("ar_test_no_match"))
+                out.setText("\n".join(lines))
                 return
-            lines = [t("ar_test_matched", n=res["index"] + 1)]
+            lines.append(t("ar_test_matched", n=res["index"] + 1))
             if not res.get("verify_ok"):
                 lines.append(t("ar_test_verify_fail"))
             else:
@@ -441,6 +530,8 @@ class AutoReplyDialog(QDialog):
                     lines.append(t("ar_test_no_reply"))
                 for r in reps:
                     lines.append("→ " + (r if r else t("ar_test_reply_bad")))
+            if sm_on and res.get("goto"):               # C8：应答后跳转
+                lines.append(t("ar_test_goto", s=res["goto"]))
             out.setText("\n".join(lines))
 
         btn.clicked.connect(lambda *_: run())
@@ -655,6 +746,16 @@ class AutoReplyDialog(QDialog):
         self.ed_fbadlen.setText(str(xc.get("badlen", 0)))
         for w in xw:
             w.blockSignals(False)
+        # C8 状态机控件同步（配置导入 / 外部修改 _ar_sm 后）
+        sc = getattr(self.app, "_ar_sm", {}) or {}
+        sw = (self.cb_sm_on, self.ed_sm_init)
+        for w in sw:
+            w.blockSignals(True)
+        self.cb_sm_on.setChecked(bool(sc.get("on")))
+        self.ed_sm_init.setText(str(sc.get("init", "")))
+        for w in sw:
+            w.blockSignals(False)
+        self._apply_sm_cols()      # 行重建后按当前开关显示/隐藏 when/goto 列
 
     # ---------------- 落盘 ----------------
     def _schedule(self, *_):
@@ -664,6 +765,7 @@ class AutoReplyDialog(QDialog):
         self.app._ar_on = bool(on)
         self.app.settings.setValue("autoreply_on", bool(on))
         self.app._ar_reset_buf()              # 跟 _toggle_ar_on 一致：切换时清半帧缓冲
+        self.app._ar_reset_state()            # C8：总开关切换=重新开始 → 状态机回到初始
         self.app._update_autoreply_btn()      # 主界面按钮跟随高亮
 
     def _commit(self):
@@ -688,6 +790,8 @@ class AutoReplyDialog(QDialog):
 
                 "cooldown": _n(rec["cdwn"]),
                 "gap": _n(rec["gap"]),
+                "when": rec["when"].text().strip(),   # C8：仅在此状态(可逗号分隔)才命中；空=任意
+                "goto": rec["goto"].text().strip(),   # C8：应答后跳转到的状态；空=不变
             })
         # 保留运行态命中统计/冷却：按稳定 id(_rid) 迁移（rules 与 _rows 同序一一对应），
         # 删中间行/重排后也不会张冠李戴（_last 是冷却时刻，错配会误抑制/误触发应答）。
@@ -716,6 +820,11 @@ class AutoReplyDialog(QDialog):
             "drop": _n(self.ed_fdrop),
             "badcrc": _n(self.ed_fbadcrc),
             "badlen": _n(self.ed_fbadlen),
+        })
+        # C8 状态机配置（放最后：_set_ar_sm 会把当前状态复位到新 init，要在上面各 _ar_reset_buf 之后）
+        self.app._set_ar_sm({
+            "on": self.cb_sm_on.isChecked(),
+            "init": self.ed_sm_init.text().strip(),
         })
 
     # ---------------- 主题 / 语言 ----------------
@@ -778,11 +887,26 @@ class AutoReplyDialog(QDialog):
         self.lbl_fbadlen.setText(t("ar_fault_badlen"))
         self.lbl_frame_desc.setText(t("ar_frame_desc"))
         self.lbl_fault_desc.setText(t("ar_fault_desc"))
+        # C8 状态机框
+        self.cb_sm_on.setText(t("ar_sm_on"))
+        self.cb_sm_on.setToolTip(t("ar_sm_tip"))
+        self.lbl_sm_init.setText(t("ar_sm_init"))
+        self.ed_sm_init.setPlaceholderText(t("ar_sm_init_ph"))
+        self.lbl_sm_cur.setText(t("ar_sm_cur"))
+        self.btn_sm_reset.setText(t("ar_sm_reset"))
+        self.lbl_sm_desc.setText(t("ar_sm_desc"))
+        # 当前状态为空时显示本地化占位符 → 切语言时立即刷新（否则残留旧语言到下个 700ms tick）
+        _cur = getattr(self.app, "_ar_state", "")
+        self.lbl_sm_cur_val.setText(_cur if _cur else t("ar_sm_empty"))
         mode_items = [t("ar_mode_contains"), t("ar_mode_equals"), t("ar_mode_prefix")]
         cs_items = [t(k) for k in CHECKSUM_KEYS]
         for rec in self._rows:
             rec["match"].setPlaceholderText(t("ar_match_ph"))
             rec["reply"].setPlaceholderText(t("ar_reply_ph"))
+            rec["when"].setPlaceholderText(t("ar_when_ph"))    # C8
+            rec["when"].setToolTip(t("ar_when_tip"))
+            rec["goto"].setPlaceholderText(t("ar_goto_ph"))
+            rec["goto"].setToolTip(t("ar_goto_tip"))
             # 行内 label 文本
             rec["lbl_match"].setText(t("ar_match"))
             rec["lbl_verify"].setText(t("ar_verify"))

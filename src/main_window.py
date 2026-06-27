@@ -7,8 +7,9 @@ import random
 import re
 import sys
 import time
-import serial
+from collections import deque
 from datetime import datetime
+import serial
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
 from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
                          QFontMetrics, QTextFormat, QPalette, QKeySequence)
@@ -161,6 +162,12 @@ class CommTool(QMainWindow):
         self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
         self._ar_frame = self._load_ar_frame()       # 帧头+长度组帧配置（全局；启用时优先于 gap 静默分帧）
         self._ar_fault = self._load_ar_fault()       # C6 全局故障注入配置（丢包/错CRC/错长度，压测主机）
+        self._ar_sm = self._load_ar_sm()             # C8 多步状态机配置（全局；on/init）
+        self._ar_state = self._ar_sm.get("init", "")  # 当前状态(运行态，不持久化)；连接/重置时回到 init
+        self._ar_generation = 0   # C8：会话代际。reset_state 时 +1，作废在途的延迟应答 singleShot
+        self._ar_sm_pending = None  # C8：在途状态转移 token；整条多段应答完成前串行化后续状态帧
+        self._ar_sm_queue = deque() # C8：pending 期间收到的完整帧 FIFO（有界，保持收帧顺序）
+        self._ar_sm_draining = False # C8：FIFO 同步排空重入保护
         self._ar_gap_timer = QTimer(self)            # 整包静默超时
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(self._ar_flush)
@@ -2204,6 +2211,7 @@ class CommTool(QMainWindow):
 
         self._reset_recv_state()   # 顺带补齐原先漏掉的 _inc_decoder / _txt_ends_with_nl
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
+        self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
 
         self.btn_open.setProperty("state", "")
         self.btn_open.style().unpolish(self.btn_open)
@@ -2857,6 +2865,7 @@ class CommTool(QMainWindow):
         self._ar_on = not self._ar_on
         self.settings.setValue("autoreply_on", self._ar_on)
         self._ar_reset_buf()        # 切换瞬间清掉半截组装缓冲，防止下次开启时旧字节被新规则吃
+        self._ar_reset_state()      # C8：总开关切换=重新开始 → 状态机回到初始
         self._update_autoreply_btn()
         if getattr(self, "_ar_dlg", None) is not None:
             cb = self._ar_dlg.cb_enable
@@ -2959,12 +2968,79 @@ class CommTool(QMainWindow):
         self.settings.setValue("autoreply_fault", json.dumps(self._ar_fault, ensure_ascii=False))
         self.settings.sync()
 
+    # ----- C8 多步状态机（autoreply_sm：on + init 初始状态。当前状态 _ar_state 是运行态、不持久化）。
+    #   会话级复位（连接开/关、总开关切、状态机 on-init 变化、配置导入、手动重置）走 _ar_reset_state：
+    #   复位到 init + 代际 +1（作废在途延迟/多段应答）。_ar_reset_buf 只清半包缓冲、不复位状态、不动代际；
+    #   『编辑规则/组帧』只调 _ar_reset_buf —— 不打断进行中的握手、在途应答照常发完 -----
+    def _load_ar_sm(self):
+        raw = self.settings.value("autoreply_sm", "")
+        cfg = {}
+        if raw:
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict):
+                    cfg = d
+            except Exception:
+                pass
+        return self._norm_ar_sm(cfg)
+
+    def _norm_ar_sm(self, cfg):
+        return {"on": bool(cfg.get("on", False)),
+                "init": str(cfg.get("init", "") or "").strip()}
+
+    def _set_ar_sm(self, cfg):
+        """对话框编辑「状态机」后回调：更新内存配置 + 落盘。仅当 on/init 真变化时才复位当前状态——
+        否则每次去抖落盘（用户改任意无关字段）都会把进行中的握手拉回初始。"""
+        new = self._norm_ar_sm(cfg)
+        changed = (not getattr(self, "_ar_sm", None)) or new != self._ar_sm
+        self._ar_sm = new
+        if changed:
+            self._ar_reset_state()      # on/init 变了 → 回到（新）初始状态
+        self.settings.setValue("autoreply_sm", json.dumps(self._ar_sm, ensure_ascii=False))
+        self.settings.sync()
+
+    @staticmethod
+    def _ar_state_tokens(when):
+        """规则 when 字段 → 状态集合（仅逗号分隔，每个去首尾空白）。空 → 空列表(=通配，任意状态)。
+        只按逗号拆 —— 状态名允许含内部空格（如 'WAIT ACK'），与 init/goto 的 strip() 一致。"""
+        return [t.strip() for t in str(when or "").split(",") if t.strip()]
+
+    def _ar_state_ok(self, rule):
+        """状态机门：SM 关 → 恒 True；SM 开 → 规则 when 为空(通配)或含当前状态才放行。"""
+        if not self._ar_sm.get("on"):
+            return True
+        toks = self._ar_state_tokens(rule.get("when"))
+        return (not toks) or (self._ar_state in toks)
+
+    def _ar_apply_goto(self, rule):
+        """C8：规则命中且已发送后，SM 开且 goto 非空 → 把当前状态切到 goto。"""
+        if not self._ar_sm.get("on"):
+            return
+        goto = str(rule.get("goto", "") or "").strip()
+        if goto:
+            self._ar_state = goto
+
     def _ar_reset_buf(self):
-        """停整包静默 timer + 清缓冲。规则改 / 总开关切 / 关闭连接 都得调，
-        否则半截缓冲会以新状态被当成新帧头匹配（误响应）。"""
+        """停整包静默 timer + 清半包缓冲。规则改 / 组帧改 / 总开关切 / 关闭连接 都得调，否则半截
+        缓冲会以新状态被当成新帧头匹配（误响应）。
+        注意：本函数【既不】复位状态机当前状态、【也不】作废在途延迟/多段应答（代际 +1）—— 两者都
+        走 _ar_reset_state（仅会话级）。这样『编辑规则/组帧』这类高频去抖落盘只清缓冲，进行中的握手
+        不被打断、在途的延迟/多段应答也照常发完（与 v1.1.5 普通模式行为一致）。"""
         if hasattr(self, "_ar_gap_timer"):
             self._ar_gap_timer.stop()
         self._ar_buf = b""
+
+    def _ar_reset_state(self):
+        """复位状态机当前状态到 init + 代际 +1（作废在途延迟应答）。仅会话级复位时调：连接开/关、
+        总开关切、状态机 on/init 变化、配置导入、手动重置。【不】绑定到编辑规则/组帧/故障等高频
+        去抖落盘路径，否则进行中的握手会因改了个无关字段就被静默拉回初始。"""
+        if hasattr(self, "_ar_sm"):
+            self._ar_state = self._ar_sm.get("init", "")
+        self._ar_sm_pending = None
+        if hasattr(self, "_ar_sm_queue"):
+            self._ar_sm_queue.clear()
+        self._ar_sm_draining = False
+        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
 
     @staticmethod
     def _ar_to_int(v, default=0):
@@ -3013,6 +3089,17 @@ class CommTool(QMainWindow):
             self._ar_match(buf)
 
     def _ar_match(self, data: bytes):
+        # 状态转移的整条多段应答尚未完成时，后续完整帧先入 FIFO。直接继续匹配会让多个随机延迟
+        # 任务共享同一旧状态并按定时器先后 goto；直接丢弃又会漏掉同一接收块里的后续合法帧。
+        q = self._ar_sm_queue
+        busy = (getattr(self, "_ar_sm_pending", None) is not None
+                or (q and not getattr(self, "_ar_sm_draining", False)))
+        if self._ar_sm.get("on") and busy:
+            if len(q) < 256:       # 有界防御：保留最早到达的 256 帧，过载时丢弃最新帧
+                q.append(bytes(data))
+            if self._ar_sm_pending is None:
+                self._ar_drain_sm_queue()
+            return
         text_cache = None
         for rule in self._ar_rules:
             if not rule.get("on", True):
@@ -3034,6 +3121,8 @@ class CommTool(QMainWindow):
                 continue
             if max_len > 0 and len(data) > max_len:
                 continue
+            if not self._ar_state_ok(rule):
+                continue     # C8 状态机：当前状态不满足该规则「仅状态」→ 跳过、试下一条
             if not self._ar_frame_ok(data, self._ar_to_int(rule.get("verify", 0))):
                 return       # 命中规则但收包校验不过 → 不应答（命中即停）
             now = time.monotonic()
@@ -3053,9 +3142,47 @@ class CommTool(QMainWindow):
             cs = self._ar_to_int(rule.get("cs", 0))
             cs_segs = rule.get("cs_segs", []) or []    # 内层/额外校验段（在尾部 cs 之前算）
             delay = self._ar_parse_delay(rule.get("delay", 0))   # C7：(min,max)，每次发随机取
-            self._ar_schedule_send(parts, bool(rule.get("reply_hex", True)),
-                                   cs, cs_segs, delay)
+            # C8：goto 推进绑定到「首段真正发出」回调，而非排程瞬间 —— 延时未到/连接断/故障丢包
+            # 时不推进。带 goto 的规则同时占用 pending 门闩，整条多段应答完成前把后续帧排入 FIFO，
+            # 防止延迟不同的任务乱序 goto，也避免 A1|A2 被下一状态的 B1 插队。
+            pending = None
+            on_sent = None
+            on_done = None
+            goto = str(rule.get("goto", "") or "").strip()
+            if self._ar_sm.get("on") and goto:
+                pending = object()
+                self._ar_sm_pending = pending
+
+                def on_sent(r=rule, token=pending):
+                    if self._ar_sm_pending is token:
+                        self._ar_apply_goto(r)
+
+                def on_done(token=pending):
+                    if self._ar_sm_pending is token:
+                        self._ar_sm_pending = None
+                        self._ar_drain_sm_queue()
+            try:
+                self._ar_schedule_send(parts, bool(rule.get("reply_hex", True)),
+                                       cs, cs_segs, delay,
+                                       on_sent=on_sent, on_done=on_done)
+            except Exception:
+                if pending is not None and self._ar_sm_pending is pending:
+                    self._ar_sm_pending = None
+                raise
             return      # 命中即停：一帧最多回一条（按规则顺序取第一条命中的）
+
+    def _ar_drain_sm_queue(self):
+        """按收帧顺序消费 pending 期间积压的完整帧；遇到下一条延迟状态转移时自然暂停。"""
+        if (self._ar_sm_draining or not self._ar_sm.get("on")
+                or not self._ar_on or not self._is_open()):
+            return
+        self._ar_sm_draining = True
+        try:
+            q = self._ar_sm_queue
+            while q and self._ar_sm_pending is None:
+                self._ar_match(q.popleft())
+        finally:
+            self._ar_sm_draining = False
 
     def _ar_hit_test(self, rule, data, text):
         """rule 是否匹配 data（text=已按编码解码的文本，文本模式用）。只测匹配本身，
@@ -3088,36 +3215,60 @@ class CommTool(QMainWindow):
         return [self._ar_subst_reply(s.strip(), data, hexmode)
                 for s in rule.get("reply", "").split("|") if s.strip()]
 
-    def _ar_schedule_send(self, parts, hexmode, cs, segs, delay):
+    def _ar_schedule_send(self, parts, hexmode, cs, segs, delay, on_sent=None, on_done=None):
         """逐段发送 parts。delay=(min,max) ms（C7 范围延时：每次发独立随机取，模拟 turnaround
         抖动；min==max 即固定）。segs=校验段；每段经 _ar_compose_frame 组装最终字节(段+尾部 cs)，
-        与测试器共用、保证预览=实发。发送前经 C6 全局故障注入（丢包/错CRC/错长度）。"""
+        与测试器共用、保证预览=实发。发送前经 C6 全局故障注入（丢包/错CRC/错长度）。
+        on_sent：首段「真正发出」后调一次（C8 状态机据此推进 goto）—— 延时未到/连接断/故障丢包/
+        异常时不调，避免「应答没出去但状态已推进」导致主机重试被新状态拒绝。
+        on_done：整条多段应答结束或中止后调一次，用于释放 pending 并继续消费状态帧 FIFO。"""
+        gen = getattr(self, "_ar_generation", 0)   # C8：捕获本次会话代际；reset_state/重连会 +1
         dmin, dmax = delay if isinstance(delay, (tuple, list)) else (delay, delay)
 
         def _delay():
             return random.randint(dmin, dmax) if dmax > dmin else dmin
 
         def fire(idx):
-            if not self._ar_on or not self._is_open() or idx >= len(parts):
+            def finish_batch():
+                if on_done is not None:
+                    on_done()
+
+            # 代际已变（手动重置/断重连/配置导入）→ 整批在途任务作废：旧回复不发、旧 goto 不执行
+            if gen != getattr(self, "_ar_generation", 0):
+                finish_batch()
                 return
+            if not self._ar_on or not self._is_open() or idx >= len(parts):
+                finish_batch()
+                return
+            sent_ok = False
             try:
                 # 组装最终字节（校验段 + 尾部 cs），与测试器共用 _ar_compose_frame，保证预览=实发。
                 frame = self._ar_compose_frame(parts[idx], hexmode, segs, cs)
                 if frame is None:
-                    # 组帧失败（坏 hex）→ 回退原始文本路径（故障注入不介入这条少见分支）
-                    self._send_text(parts[idx], hex_mode=hexmode, newline=0, checksum=cs)
+                    # 组帧失败（坏 hex）→ 回退原始文本路径（故障注入不介入这条少见分支）。
+                    # sent_ok 取 _send_text 真返回：无客户端/底层失败/坏 hex 时为 False → 不推进状态。
+                    sent_ok = bool(self._send_text(parts[idx], hex_mode=hexmode, newline=0, checksum=cs))
                 else:
                     out, fault = self._ar_apply_fault(bytes(frame))   # C6 全局故障注入
                     if out is None:
                         self._ar_fault_note(fault)                    # 丢包：不发；fault=本地化「丢包」文案
                     else:
-                        self._send_text(bytes(out).hex(" "), hex_mode=True, newline=0, checksum=0)
+                        # 取 _send_text 布尔返回（TCP 无客户端/底层 write 失败=False）→ 失败不推进状态
+                        sent_ok = bool(self._send_text(bytes(out).hex(" "), hex_mode=True, newline=0, checksum=0))
                         if fault:
                             self._ar_fault_note(fault)
             except Exception:
                 pass
+            if idx == 0:
+                try:
+                    if on_sent is not None and sent_ok:
+                        on_sent()   # 首段确实发出 → 推进状态（失败/丢包则不推进）
+                except Exception:
+                    pass           # 回调异常也必须继续后续段并最终释放 pending
             if idx + 1 < len(parts):
                 QTimer.singleShot(max(_delay(), 1), lambda: fire(idx + 1))
+            else:
+                finish_batch()      # 最后一段完成后再释放 pending，保证多段应答不被下一状态插队
         d0 = _delay()
         if d0 > 0:
             QTimer.singleShot(d0, lambda: fire(0))
@@ -3238,7 +3389,14 @@ class CommTool(QMainWindow):
         不发送、不计数、不冷却，也**不推进 {seq} 实时计数**（存/恢复 _ar_seq）——
         这样预览出的 {seq} 字节与下次真实应答一致，且不污染实时序号。
         ({ts} 取预览时刻的毫秒，与未来实发的时间不同，属固有差异。)
-        返回 dict：{"index": i, "verify_ok": bool, "replies": [hex|None,...]}，无命中 index=-1。"""
+        返回 dict（含 C8 字段）：
+          命中：{"index": i, "verify_ok": bool, "replies": [hex|None,...], "sm_on": bool,
+                 "state": 当前状态, "goto": 应答后将跳转到的状态}
+          无命中：{"index": -1, "verify_ok": False, "replies": [], "sm_on": bool,
+                   "state": 当前状态, "state_skip": 内容命中但被状态门拦下的首条规则索引 or None}
+        说明：goto 仅在 SM 开、verify_ok 且 replies[0] 可组帧（实发确会发出）时非空；
+              state_skip 仅在 SM 开、有规则按内容命中但当前状态不匹配其 when 时为该规则索引（可为 0）。
+        预览只读当前 _ar_state、不推进它（实发推进靠真连接的 _ar_match）。"""
         seq_save = self._ar_seq
         try:
             codec = self._get_codec()
@@ -3246,6 +3404,8 @@ class CommTool(QMainWindow):
                 text = frame.decode("utf-8" if codec == "auto" else codec, errors="replace")
             except Exception:
                 text = ""
+            sm_on = bool(self._ar_sm.get("on"))
+            state_skip = None        # 内容命中但被状态门拦下的第一条索引（仅 SM 开时记，用于提示）
             for i, rule in enumerate(self._ar_rules):
                 if not rule.get("on", True):
                     continue
@@ -3257,6 +3417,10 @@ class CommTool(QMainWindow):
                 max_len = self._ar_to_int(rule.get("max_len", 0))
                 if (min_len > 0 and len(frame) < min_len) or (max_len > 0 and len(frame) > max_len):
                     continue
+                if sm_on and not self._ar_state_ok(rule):
+                    if state_skip is None:
+                        state_skip = i      # 内容命中但当前状态不符 → 记首条供提示，不作为命中
+                    continue
                 verify_ok = self._ar_frame_ok(frame, self._ar_to_int(rule.get("verify", 0)))
                 replies = []
                 if verify_ok:
@@ -3266,8 +3430,16 @@ class CommTool(QMainWindow):
                     for part in self._ar_build_parts(rule, frame):
                         fr = self._ar_compose_frame(part, hexmode, cs_segs, cs)
                         replies.append(bytes(fr).hex(" ").upper() if fr is not None else None)
-                return {"index": i, "verify_ok": verify_ok, "replies": replies}
-            return {"index": -1, "verify_ok": False, "replies": []}
+                # 预览=实发：goto 经 on_sent 在「首段真正发出」后才推进，故仅当首段能组出帧时才报。
+                # 校验不过 / 无应答内容(replies 空) / 首段坏 hex(replies[0] is None，回退发送也会因同样坏 hex
+                # 失败、sent_ok=False) → 实发都不会跳转，预览也不报 goto。
+                goto = ""
+                if sm_on and verify_ok and replies and replies[0] is not None:
+                    goto = str(rule.get("goto", "") or "").strip()
+                return {"index": i, "verify_ok": verify_ok, "replies": replies,
+                        "sm_on": sm_on, "state": self._ar_state, "goto": goto}
+            return {"index": -1, "verify_ok": False, "replies": [],
+                    "sm_on": sm_on, "state": self._ar_state, "state_skip": state_skip}
         finally:
             self._ar_seq = seq_save
 
@@ -3421,7 +3593,7 @@ class CommTool(QMainWindow):
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 自动应答
-        "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault",
+        "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
         # 杂项
         "auto_reconnect",
     )
@@ -3488,8 +3660,10 @@ class CommTool(QMainWindow):
             self._ar_rules = self._load_ar_rules()
             self._ar_frame = self._load_ar_frame()
             self._ar_fault = self._load_ar_fault()
+            self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
             self._recompute_ar_gap()
             self._ar_reset_buf()
+            self._ar_reset_state()                # C8：导入新配置=新会话 → 状态机复位到（新）初始状态
             # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
             # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
             self._ar_on = s.value("autoreply_on", False, type=bool)

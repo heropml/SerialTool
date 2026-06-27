@@ -37,6 +37,22 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.6
+
+Auto-reply gains a **multi-step state machine** — chain rules into a frame-sequence handshake / session:
+
+- **State machine box** (top of the auto-reply dialog): enable / initial state / live current state / reset. Each rule gets two optional fields:
+  - **only state (when)** — the rule matches only when the current state equals it (comma-separate several, names may contain spaces, blank = any state / wildcard);
+  - **go to (goto)** — after this rule replies, set the current state to it.
+
+  Use it for "only reply to B after receiving A", a different reply per handshake stage, etc. The when/goto columns appear only when the state machine is enabled.
+- **Tester sync** — the offline rule tester shows the current state, the state it would move to after replying, and a "matched by content but not by state → would not reply" hint (preview = what's actually sent; state isn't advanced).
+- **Robust transitions** — goto advances only after the reply is **actually sent** (not on delay-not-elapsed / disconnected / no client / send failure / fault-drop), so host retries still hit the current state.
+- **Concurrency-serialized** — while a goto reply (incl. multi-part `|` + inter-part delay) is in flight, later frames are queued (bounded FIFO) and processed in receive order — no out-of-order transitions under random delays.
+- Disconnect / reconnect / toggle / config import / manual reset returns the machine to its initial state; editing rules does **not** interrupt an in-progress handshake. Trilingual UI; no new dependencies; the state machine is off by default (behaves exactly like v1.1.5 when off).
+
+---
+
 ## What's New in v1.1.5
 
 Five auto-reply upgrades — from "usable" to "polished + stress-capable":
