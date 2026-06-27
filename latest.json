@@ -1,5 +1,5 @@
 {
-  "version": "1.1.5",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.5/CommTool_Setup_v1.1.5.exe",
-  "notes": "自动应答五项增强：①每条应答可加多段内层/额外校验，{rN} 占位符自动重算内层 CRC（解决外层 Sum + 内层 CRC 硬编码）；②离线规则测试器，输入一帧即时预览命中规则与应答（预览=实发，不发送/不计数）；③每行实时「命中 N」统计 + 一键重置；④全局故障注入，按概率丢包/错CRC/错长度压测主机重传与容错；⑤延时支持范围抖动（如 100-300，每次随机）。"
+  "version": "1.1.6",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.6/CommTool_Setup_v1.1.6.exe",
+  "notes": "自动应答·多步状态机：弹窗新增「状态机」框，每条规则可设 仅状态(when，限定当前状态才命中) + 跳转(goto，应答发出后切状态)，把多条规则串成按帧序列推进的握手/会话。goto 仅在应答真正发出后才推进（延时未到/连接断/发送失败/丢包都不推进），并发到达的帧按序列化处理；离线测试器同步显示当前状态与将跳转到的状态。状态机默认关闭，关闭时行为与 v1.1.5 完全一致。"
 }
