@@ -1,5 +1,5 @@
 {
-  "version": "1.1.7",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.7/CommTool_Setup_v1.1.7.exe",
-  "notes": "自动应答·Modbus RTU 从机：开启后整条引擎作为从机，从机地址匹配且 CRC 正确就按功能码（读 01 线圈/02 离散输入/03 保持寄存器/04 输入寄存器，写 05/06/0F/10）从内置寄存器表自动组装标准响应回发；非法功能/越界地址/非法数据回异常响应。RTU 按「功能码长度 + CRC 自洽」切帧、CRC 不符逐字节重同步；作 TCP 服务器多客户端时响应精确回请求方；故障注入仍作用于响应。开启 Modbus 时规则/状态机让位。Modbus 默认关闭，关闭时行为与 v1.1.6 完全一致。"
+  "version": "1.1.8",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.8/CommTool_Setup_v1.1.8.exe",
+  "notes": "自动应答·位掩码 / 字段级匹配：「匹配」从「逐字节精确 / 整字节通配」升级为逐字节 (值, 掩码) 比对——新增半字节通配 A? / ?5（高 / 低 4 位）、位级掩码 b:1xxxxxx1（冒号分隔 + 8 位 0/1/x，x=该位不关心，可连写多个）、字段级（通配填充到偏移 + 「前缀」模式）。每行匹配框旁新增「?」示例气泡。向后零回归：旧规则解析逐字节等价、行为不变；位掩码仅 HEX 模式有意义。"
 }
