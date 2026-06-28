@@ -3588,30 +3588,87 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _ar_parse_hex_pat(s):
-        """解析 HEX 匹配 pattern，支持 ?? / XX 通配单字节。
-        返回 list[int|None]（None=通配），格式错误时返回 None（整条规则跳过）。"""
-        s = s.replace(" ", "").upper()
-        if not s or len(s) % 2:
-            return None
-        out = []
-        for i in range(0, len(s), 2):
-            ch = s[i:i+2]
-            if ch in ("??", "XX"):
-                out.append(None)
+        """解析 HEX 匹配 pattern → list[(值, 掩码)]，命中条件 (字节 & 掩码) == (值 & 掩码)。
+        支持（D 位掩码/字段级匹配）：
+          AB          整字节精确         → (0xAB, 0xFF)
+          ?? / XX     整字节通配         → (0x00, 0x00)
+          A? / ?5     半字节通配(X 同 ?) → (0xA0, 0xF0) / (0x05, 0x0F)
+          b:1xxxxxx1  位级掩码(8 位 0/1/x，x=该位不关心) → (0x81, 0x81)
+        为保证旧规则零回归，先完整尝试旧解析（删除空格后按字节解析）；旧语法能成功时
+        立即返回，只有失败后才按新掩码语法解析。`b:…` 的冒号在旧 HEX 中非法，
+        因此任意数量的位掩码都不会与旧规则撞义；token 须由空格/边界切出。
+        格式错误返回 None（整条规则跳过，与原行为一致）。"""
+        # 旧版会先删除所有半字节之间的空格；例如 `A b10000000` 是合法的
+        # `AB 10 00 00 00`。必须先跑原解析器，否则中间的 b-token 会抢占旧语义。
+        legacy = s.replace(" ", "").upper()
+        if legacy and len(legacy) % 2 == 0:
+            legacy_out = []
+            for i in range(0, len(legacy), 2):
+                pair = legacy[i:i + 2]
+                if pair in ("??", "XX"):
+                    legacy_out.append((0x00, 0x00))
+                else:
+                    try:
+                        legacy_out.append((int(pair, 16), 0xFF))
+                    except ValueError:
+                        break
             else:
-                try:
-                    out.append(int(ch, 16))
-                except ValueError:
+                return legacy_out
+
+        out = []
+        buf = []   # 累积的 HEX 半字节字符（跨空格拼接）
+
+        def flush_hex():
+            chars = "".join(buf)
+            buf.clear()
+            if not chars:
+                return True
+            if len(chars) % 2:
+                return False
+            for i in range(0, len(chars), 2):
+                val = msk = 0
+                for nib in (chars[i], chars[i + 1]):
+                    val <<= 4
+                    msk <<= 4
+                    if nib in "?X":
+                        pass                       # 通配半字节：掩码该半字节为 0
+                    elif nib in "0123456789ABCDEF":
+                        val |= int(nib, 16)
+                        msk |= 0xF
+                    else:
+                        return False
+                out.append((val, msk))
+            return True
+
+        for tok in s.upper().split():
+            if tok.startswith("B:") and len(tok) == 10 and all(c in "01X" for c in tok[2:]):
+                if not flush_hex():                # 先消化前面累积的 hex
                     return None
-        return out
+                val = msk = 0
+                for c in tok[2:]:
+                    val <<= 1
+                    msk <<= 1
+                    if c == "1":
+                        val |= 1
+                        msk |= 1
+                    elif c == "0":
+                        msk |= 1
+                    # 'X'：该位 val/msk 均 0（不关心）
+                out.append((val, msk))
+            else:
+                buf.append(tok)
+        if not flush_hex():
+            return None
+        return out or None
 
     @staticmethod
     def _ar_hex_at(pat, data, off):
-        """带通配的 HEX pattern 是否在 data 偏移 off 处命中。pat 元素为 None 表示通配。"""
+        """带掩码的 HEX pattern 是否在 data 偏移 off 处命中。pat 元素为 (值, 掩码)：
+        命中需 (data[off+i] & 掩码) == (值 & 掩码)。掩码 0xFF=精确、0x00=整字节通配。"""
         if off < 0 or off + len(pat) > len(data):
             return False
-        for i, p in enumerate(pat):
-            if p is not None and data[off + i] != p:
+        for i, (v, m) in enumerate(pat):
+            if (data[off + i] & m) != (v & m):
                 return False
         return True
 

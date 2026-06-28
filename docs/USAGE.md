@@ -37,6 +37,21 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.8
+
+Auto-reply matching goes **sub-byte** — beyond whole-byte `??` wildcards, you can now match by **nibble, bit, or field**:
+
+- **Bitmask / field-level match** — matching upgrades from "exact byte / whole-byte wildcard" to a per-byte **`(value, mask)`** compare; a hit needs `(received & mask) == (value & mask)`:
+  - **whole byte**: exact `AB`; wildcard `??` / `XX` (unchanged)
+  - **nibble wildcard**: `A?` (high nibble = A, low nibble any), `?5` (low nibble = 5); `X` is the same as `?`
+  - **bit-mask**: `b:` + 8 of `0/1/x`, where `x` = don't-care bit, e.g. `b:1xxxxxx1` checks only the top and bottom bits
+  - mix: `AA b:1001xxxx ?5` = byte0 must be `AA`, byte1 high nibble `1001` / low nibble any, byte2 low nibble `5`
+- **Field-level** — "the sub-field at some offset == X" is expressed by padding wildcards up to that offset + "prefix" mode (e.g. byte 3 bit0 must be 1: match `?? ?? ?? b:xxxxxxx1`, mode = prefix).
+- **Backward compatible** — spaces are just separators, plain HEX is joined across spaces (`A B` = 0xAB); exact/wildcard bytes parse byte-for-byte identically to before, so existing rules are unchanged. All three modes (contains / equals / prefix) honor masks; bit-masks apply in HEX mode only.
+- Real-time matching and the **offline rule tester** share one parser, so both gain it; trilingual UI (placeholder + a "bit/nibble mask" section in help); adds `tests/test_match_mask.py` (17 cases); no new dependencies.
+
+---
+
 ## What's New in v1.1.7
 
 Auto-reply gains a **Modbus RTU slave** mode — turn the whole engine into a slave and auto-answer a master without real hardware:

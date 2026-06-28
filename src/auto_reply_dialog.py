@@ -6,7 +6,7 @@
 匹配/发送逻辑在 main_window（即使本对话框没开也生效）；本对话框只是编辑器，规则存 app._ar_rules。
 单实例非模态，复用刷新主题/语言；窗口带最小化/最大化。
 """
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
                              QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame, QSplitter)
 
@@ -268,6 +268,13 @@ class AutoReplyDialog(QDialog):
         cb_on.setChecked(bool(rule.get("on", True)))
         ed_match = QLineEdit(str(rule.get("match") or ""))   # str() 容错：配置被手改成非字符串/null 也不崩
         ed_match.setPlaceholderText(t("ar_match_ph"))
+        btn_mhelp = QPushButton("?")            # D：匹配掩码语法小帮助（点 → 示例气泡）
+        btn_mhelp.setObjectName("ArHelpBtn")
+        btn_mhelp.setFixedSize(20, 20)
+        btn_mhelp.setCursor(Qt.PointingHandCursor)
+        btn_mhelp.setToolTip({"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
+                              "zh_tw": "匹配語法 / 遮罩範例"}.get(self.app._lang, "Match syntax"))
+        btn_mhelp.clicked.connect(lambda *_: self._show_mask_help(btn_mhelp))
         cb_mhex = QCheckBox("HEX")
         cb_mhex.setChecked(bool(rule.get("match_hex", True)))
         # 复用主窗的容错 int：ini/json 被手改成非数字（如 gap:"abc"）也不让初始化崩
@@ -322,7 +329,7 @@ class AutoReplyDialog(QDialog):
         rec = {"w": row, "on": cb_on, "match": ed_match, "mhex": cb_mhex, "mode": cb_mode,
                "verify": cb_verify, "reply": ed_reply, "rhex": cb_rhex, "cs": cb_cs,
                "seg_btn": btn_seg, "cs_segs": list(rule.get("cs_segs", []) or []),
-               "hits_lbl": lbl_hits, "_rid": rid,
+               "hits_lbl": lbl_hits, "mhelp": btn_mhelp, "_rid": rid,
                "cd": ed_cd, "cdwn": ed_cdwn, "gap": ed_gap,
                "when": ed_when, "goto": ed_goto,
                "lbl_match": lbl_match, "lbl_verify": lbl_verify, "lbl_gap": lbl_gap,
@@ -353,6 +360,7 @@ class AutoReplyDialog(QDialog):
         lh.addWidget(ed_when)          # C8：仅状态（默认隐藏，状态机开启时显示）
         lh.addWidget(lbl_match)
         lh.addWidget(ed_match, 1)
+        lh.addWidget(btn_mhelp)
         lh.addWidget(cb_mhex)
         lh.addWidget(cb_mode)
         lh.addWidget(lbl_verify)
@@ -1127,6 +1135,8 @@ class AutoReplyDialog(QDialog):
         cs_items = [t(k) for k in CHECKSUM_KEYS]
         for rec in self._rows:
             rec["match"].setPlaceholderText(t("ar_match_ph"))
+            rec["mhelp"].setToolTip({"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
+                                     "zh_tw": "匹配語法 / 遮罩範例"}.get(self.app._lang, "Match syntax"))
             rec["reply"].setPlaceholderText(t("ar_reply_ph"))
             rec["when"].setPlaceholderText(t("ar_when_ph"))    # C8
             rec["when"].setToolTip(t("ar_when_tip"))
@@ -1157,6 +1167,29 @@ class AutoReplyDialog(QDialog):
                 combo.addItems(items)
                 combo.setCurrentIndex(idx)
                 combo.blockSignals(False)
+
+    def _show_mask_help(self, anchor):
+        """点「匹配」框旁的小 ? → 弹掩码语法示例气泡（Qt.Popup：点外部自动关闭）。"""
+        pop = QDialog(self, Qt.Popup)
+        pop.setObjectName("ArMaskTip")
+        pop.setAttribute(Qt.WA_DeleteOnClose)   # 关闭即销毁，避免多次点击累积
+        v = QVBoxLayout(pop)
+        v.setContentsMargins(12, 10, 12, 10)
+        lbl = QLabel(self.app._t("ar_mask_help"))
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setWordWrap(False)          # 每条示例单行不折行，气泡宽度自适应最长行
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)   # 例子可复制
+        v.addWidget(lbl)
+        c = chrome_for(self.app._theme_id())
+        pop.setStyleSheet(localize_qss(f"""
+            QDialog#ArMaskTip {{ background-color: {c['input_bg']};
+                border: 1px solid {c['separator']}; border-radius: 8px; }}
+            QLabel {{ color: {c['text']}; background: transparent;
+                     font-family: 'Segoe UI'; font-size: 12px; }}
+        """))
+        pop.adjustSize()
+        pop.move(anchor.mapToGlobal(QPoint(0, anchor.height() + 4)))
+        pop.show()
 
     def _show_help_dlg(self, title=None, body=None):
         """弹独立窗口展示说明（富文本+可滚动）。无参=自动应答总说明；带 title/body=某框的用法举例。

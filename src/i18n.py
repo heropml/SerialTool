@@ -215,7 +215,8 @@ TR = {
         "ar_gap_tip": "整包：累积收到的字节、静默这么久(ms)视作一整帧再匹配(Modbus 等分帧)；0=每包即时。注意分帧在匹配前进行、整条串口共用，实际取所有启用规则中的最大值。",
         "ar_verify": "收包校验",
         "ar_verify_tip": "对收到的整帧做校验：尾部按所选算法校验通过才应答，不通过(坏帧)不回。选「无」=不校验。本设备=MOBUS。",
-        "ar_match_ph": "匹配（HEX 可用 ?? 通配，如 54 ?? 03）",
+        "ar_match_ph": "匹配（HEX：?? 整字节、A?/?5 半字节、b:1xxxxxx1 位掩码 通配，如 54 ?? 03）",
+        "ar_mask_help": "<b>匹配语法</b>（HEX 模式）<br>• <code>AB</code> 整字节精确　<code>??</code>/<code>XX</code> 整字节通配<br>• <code>A?</code> / <code>?5</code> 半字节通配（高 / 低 4 位，<code>X</code> 同 <code>?</code>）<br>• <code>b:1xxxxxx1</code> 位掩码（8 位 <code>0/1/x</code>，<code>x</code>=该位不关心）<br>• 混写：<code>AA b:1001xxxx ?5</code><br>• 字段级：<code>?? ?? ?? b:xxxxxxx1</code> + 模式「前缀」= 第 4 字节 bit0 须为 1",
         "ar_reply_ph": "应答（{r3}=第3字节 {r1+1}=加1 {r1^FF}=异或 {seq}=自增 {ts}=时间戳 | 分多帧）",
         "ar_btn_tip": "单击=打开配置，双击=切换开关",
         "ar_toast_on": "自动应答已开启",
@@ -309,7 +310,7 @@ TR = {
             "校验等固定开销)。\n例(本设备)：帧头 AA BB · 长度偏移 4 · 宽 2 · LE · 整帧=长度+7。"),
         "ar_help": (
             "<b>用法</b>：收到数据按规则匹配 → 自动发应答。多条规则按顺序，命中第一条即停（一帧最多回一条）。仅在已连接 + 总开关开启时生效。<br>"
-            "<b>匹配</b>：HEX/文本 × 包含/相等/<b>前缀</b>。HEX 模式 <code>??</code> 通配单字节（如 <code>54 ?? 03</code>）。按帧首字节区分类型 <b>请用「前缀」别用「包含」</b>（避免别帧数据里同字节误命中）。<br>"
+            "<b>匹配</b>：HEX/文本 × 包含/相等/<b>前缀</b>。HEX 模式 <code>??</code> 通配单字节（如 <code>54 ?? 03</code>）；更细粒度可用 <b>半字节</b> <code>A?</code>/<code>?5</code>（高/低 4 位）和 <b>位掩码</b> <code>b:1xxxxxx1</code>（8 位 <code>0/1/x</code>，<code>x</code>=该位不关心）。按帧首字节区分类型 <b>请用「前缀」别用「包含」</b>（避免别帧数据里同字节误命中）。<br>"
             "<b>应答占位符</b>（在「回复」框写）："
             "<code>{rN}</code>=收到帧第 N 字节(0基) &nbsp; "
             "<code>{rN-M}</code>=第 N..M 字节 &nbsp; "
@@ -712,7 +713,8 @@ TR = {
         "ar_gap_tip": "Frame gap: buffer bytes and treat them as one frame after this idle time (ms) before matching (Modbus framing); 0 = per-chunk. Note: framing happens before matching and is shared by the connection, so the LARGEST value among enabled rules is used.",
         "ar_verify": "RX checksum",
         "ar_verify_tip": "Verify the whole received frame's trailing checksum with this algorithm; reply only if it passes (bad frames get no reply). 'None' = no check. This device = MOBUS.",
-        "ar_match_ph": "match (HEX may use ?? wildcards, e.g. 54 ?? 03)",
+        "ar_match_ph": "match (HEX: ?? byte, A?/?5 nibble, b:1xxxxxx1 bit-mask wildcards, e.g. 54 ?? 03)",
+        "ar_mask_help": "<b>Match syntax</b> (HEX mode)<br>• <code>AB</code> exact byte　<code>??</code>/<code>XX</code> byte wildcard<br>• <code>A?</code> / <code>?5</code> nibble wildcard (high / low 4 bits; <code>X</code> = <code>?</code>)<br>• <code>b:1xxxxxx1</code> bit-mask (8 of <code>0/1/x</code>; <code>x</code> = don't-care)<br>• mix: <code>AA b:1001xxxx ?5</code><br>• field: <code>?? ?? ?? b:xxxxxxx1</code> + 'prefix' mode = byte 4 bit0 must be 1",
         "ar_reply_ph": "reply ({r3}=byte 3 {r1+1}=add {r1^FF}=xor {seq}=counter {ts}=timestamp; | splits into multiple frames)",
         "ar_btn_tip": "Click = open config, double-click = toggle on/off",
         "ar_toast_on": "Auto-reply enabled",
@@ -808,7 +810,7 @@ TR = {
             "Example (this device): header AA BB · len offset 4 · W 2 · LE · frame=len+7."),
         "ar_help": (
             "<b>How it works</b>: incoming data is matched against rules → auto-sends the reply. Rules checked in order, first match wins (at most one reply per frame). Active only when connected and master switch is on.<br>"
-            "<b>Match</b>: HEX/text × contains/equals/<b>prefix</b>. In HEX, <code>??</code> is a single-byte wildcard (e.g. <code>54 ?? 03</code>). To distinguish frame types by the first byte, <b>use prefix, not contains</b> (else that byte inside other frames' data causes false matches).<br>"
+            "<b>Match</b>: HEX/text × contains/equals/<b>prefix</b>. In HEX, <code>??</code> is a single-byte wildcard (e.g. <code>54 ?? 03</code>). For finer granularity use <b>nibble</b> <code>A?</code>/<code>?5</code> (high/low 4 bits) and a <b>bit-mask</b> <code>b:1xxxxxx1</code> (8 of <code>0/1/x</code>, <code>x</code> = don't-care bit). To distinguish frame types by the first byte, <b>use prefix, not contains</b> (else that byte inside other frames' data causes false matches).<br>"
             "<b>Reply placeholders</b> (in the Reply field): "
             "<code>{rN}</code>=received byte N (0-based) &nbsp; "
             "<code>{rN-M}</code>=range &nbsp; "
@@ -1210,7 +1212,8 @@ TR = {
         "ar_gap_tip": "整包：累積收到的位元組、靜默這麼久(ms)視作一整幀再匹配(Modbus 等分幀)；0=每包即時。注意分幀在匹配前進行、整條串口共用，實際取所有啟用規則中的最大值。",
         "ar_verify": "收包校驗",
         "ar_verify_tip": "對收到的整幀做校驗：尾部按所選演算法校驗通過才應答，不通過(壞幀)不回。選「無」=不校驗。本裝置=MOBUS。",
-        "ar_match_ph": "匹配（HEX 可用 ?? 通配，如 54 ?? 03）",
+        "ar_match_ph": "匹配（HEX：?? 整位元組、A?/?5 半位元組、b:1xxxxxx1 位元遮罩 通配，如 54 ?? 03）",
+        "ar_mask_help": "<b>匹配語法</b>（HEX 模式）<br>• <code>AB</code> 整位元組精確　<code>??</code>/<code>XX</code> 整位元組通配<br>• <code>A?</code> / <code>?5</code> 半位元組通配（高 / 低 4 位，<code>X</code> 同 <code>?</code>）<br>• <code>b:1xxxxxx1</code> 位元遮罩（8 位 <code>0/1/x</code>，<code>x</code>=該位不關心）<br>• 混寫：<code>AA b:1001xxxx ?5</code><br>• 欄位級：<code>?? ?? ?? b:xxxxxxx1</code> + 模式「前綴」= 第 4 位元組 bit0 須為 1",
         "ar_reply_ph": "應答（{r3}=第3位元組 {r1+1}=加1 {r1^FF}=異或 {seq}=自增 {ts}=時間戳 | 分多幀）",
         "ar_btn_tip": "單擊=開啟配置，雙擊=切換開關",
         "ar_toast_on": "自動應答已開啟",
@@ -1304,7 +1307,7 @@ TR = {
             "校驗等固定開銷)。\n例(本設備)：幀頭 AA BB · 長度偏移 4 · 寬 2 · LE · 整幀=長度+7。"),
         "ar_help": (
             "<b>用法</b>：收到資料按規則匹配 → 自動發應答。多條規則按順序，命中第一條即停（一幀最多回一條）。僅在已連線 + 總開關開啟時生效。<br>"
-            "<b>匹配</b>：HEX/文字 × 包含/相等/<b>前綴</b>。HEX 模式 <code>??</code> 通配單位元組（如 <code>54 ?? 03</code>）。按幀首位元組區分類型 <b>請用「前綴」別用「包含」</b>。<br>"
+            "<b>匹配</b>：HEX/文字 × 包含/相等/<b>前綴</b>。HEX 模式 <code>??</code> 通配單位元組（如 <code>54 ?? 03</code>）；更細粒度可用 <b>半位元組</b> <code>A?</code>/<code>?5</code>（高/低 4 位）和 <b>位元遮罩</b> <code>b:1xxxxxx1</code>（8 位 <code>0/1/x</code>，<code>x</code>=該位不關心）。按幀首位元組區分類型 <b>請用「前綴」別用「包含」</b>。<br>"
             "<b>應答佔位符</b>（在「回覆」框寫）："
             "<code>{rN}</code>=收到幀第 N 位元組(0基) &nbsp; "
             "<code>{rN-M}</code>=第 N..M 位元組 &nbsp; "
@@ -1499,4 +1502,3 @@ TR = {
 }
 CHECKSUM_KEYS = ["ck_none", "ck_sum", "ck_neg_sum", "ck_xor", "ck_crc8",
                  "ck_modbus", "ck_ccitt", "ck_crc32", "ck_add16", "ck_mobus"]
-
