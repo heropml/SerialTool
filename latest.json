@@ -1,5 +1,5 @@
 {
-  "version": "1.1.8",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.8/CommTool_Setup_v1.1.8.exe",
-  "notes": "自动应答·位掩码 / 字段级匹配：「匹配」从「逐字节精确 / 整字节通配」升级为逐字节 (值, 掩码) 比对——新增半字节通配 A? / ?5（高 / 低 4 位）、位级掩码 b:1xxxxxx1（冒号分隔 + 8 位 0/1/x，x=该位不关心，可连写多个）、字段级（通配填充到偏移 + 「前缀」模式）。每行匹配框旁新增「?」示例气泡。向后零回归：旧规则解析逐字节等价、行为不变；位掩码仅 HEX 模式有意义。"
+  "version": "1.1.9",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.9/CommTool_Setup_v1.1.9.exe",
+  "notes": "自动应答·脚本应答：每条规则可写 Python reply(frame, ctx) 动态生成单帧/多帧应答；ctx 提供状态/序号/命中数与可定制 CRC（poly/init/refin… 全可调）及 crc16/crc8/sum8/xor8/hexbytes/tohex 等工具。脚本在独立子进程执行、超时整组强制终止（含其子进程）、预览与实发隔离、导入含脚本的配置前征求同意。可与 v1.1.8 位掩码匹配叠加；脚本默认关闭，关时行为与 v1.1.8 一致。"
 }
