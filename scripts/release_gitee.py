@@ -14,7 +14,9 @@
 用法（在项目根或 scripts 下都行）：
   py -3 scripts/release_gitee.py            # 版本号自动从 src/version.py 读
   py -3 scripts/release_gitee.py 1.1.3      # 指定版本号
-前置：installer/CommTool_Setup_v<版本>.exe 和 dist_onefile/CommTool_v<版本>.exe 已打好。
+前置：installer/CommTool_Setup_v<版本>.exe 已打好。
+（Gitee 仓库附件配额仅 1GB → 本脚本只往 Gitee 传 Setup.exe：在线更新只依赖它；
+  免安装版 onefile.exe 与 macOS .dmg 只发到 GitHub，不占 Gitee 配额。）
 
 推代码到 Gitee 不归本脚本管（走 SSH）：git push gitee CommTool
 """
@@ -106,11 +108,12 @@ def main():
     token = get_token()
     ver = get_version()
     tag = f"comm-v{ver}"
+    # Gitee 附件配额仅 1GB（免费版）：每版 3 资产 ~131MB，约 8 版就撑满（HTTP 400「超出配额」）。
+    # 在线更新只依赖 Setup.exe（latest.json 的 url 指它），故 Gitee 只放 Setup.exe；
+    # 免安装版 onefile.exe 与 macOS .dmg 只发到 GitHub（无配额限制）。
     setup = os.path.join(ROOT, "installer", f"CommTool_Setup_v{ver}.exe")
-    onefile = os.path.join(ROOT, "dist_onefile", f"CommTool_v{ver}.exe")
-    for p in (setup, onefile):
-        if not os.path.exists(p):
-            die(f"找不到安装包：{p}\n  先打包：build.bat + ISCC + onefile")
+    if not os.path.exists(setup):
+        die(f"找不到安装包：{setup}\n  先打包：build.bat + ISCC")
 
     print(f">> Gitee 发版 {tag}")
 
@@ -126,7 +129,7 @@ def main():
     else:
         st, rel = api("POST", "/releases", {
             "access_token": token, "tag_name": tag, "name": f"CommTool v{ver}",
-            "body": f"国内镜像版（功能与 GitHub Release 一致）。\n安装版 CommTool_Setup_v{ver}.exe / 免安装 CommTool_v{ver}.exe",
+            "body": f"国内镜像版（功能与 GitHub Release 一致）。\n安装版 CommTool_Setup_v{ver}.exe（免安装版 / macOS dmg 请到 GitHub Release 下载）",
             "target_commitish": BRANCH,
         })
         if st not in (200, 201) or not isinstance(rel, dict) or not rel.get("id"):
@@ -142,13 +145,12 @@ def main():
                 {"access_token": token})
             print(f"  删旧附件 {a.get('name')}")
 
-    # 3. 传新附件
-    for p in (setup, onefile):
-        st, res = upload(rid, p, token)
-        if st in (200, 201) and isinstance(res, dict):
-            print(f"  [OK] 传 {res.get('name')}")
-        else:
-            die(f"传附件失败 {os.path.basename(p)}：HTTP {st} {res}")
+    # 3. 传新附件（仅 Setup.exe；onefile / dmg 走 GitHub，不占 Gitee 配额）
+    st, res = upload(rid, setup, token)
+    if st in (200, 201) and isinstance(res, dict):
+        print(f"  [OK] 传 {res.get('name')}")
+    else:
+        die(f"传附件失败 {os.path.basename(setup)}：HTTP {st} {res}")
 
     # 4. 验证下载链接
     dl = f"https://gitee.com/{OWNER}/{REPO}/releases/download/{tag}/CommTool_Setup_v{ver}.exe"

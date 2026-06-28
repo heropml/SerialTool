@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """把 macOS .dmg 补传到 Gitee 的 comm-v<版本> Release（只动 .dmg，不碰已有 .exe）。
 
-为什么单独一个：release_gitee.py 会「删光所有附件再传两个 .exe」，在 Mac 上跑会把
-Windows 的 .exe 删掉、且本机补不回。本脚本只针对 dist/CommTool_v<版本>.dmg —— 同名旧
-附件先删再传（Gitee 无 clobber），其余附件（.exe / 源码包）原样保留，行为与
-release_macos.sh 往 GitHub Release 追加 .dmg 一致。
+⚠️ 自 v1.2.0 起**不再用于标准发版流程**：Gitee 附件配额仅 1GB，已改为「Gitee 只放
+Setup.exe」（见 release_gitee.py），dmg 与 onefile 只发 GitHub。仅在确需手动给某版
+往 Gitee 补一个 dmg 时才用本脚本（会消耗 Gitee 配额，慎用）。
+
+本脚本只针对 dist/CommTool_v<版本>.dmg —— 同名旧附件先删再传（Gitee 无 clobber），
+其余附件（.exe / 源码包）原样保留。
 
 令牌 / 版本号来源同 release_gitee.py（环境变量 GITEE_TOKEN 或 scripts/.gitee_token；
 版本号取 argv，否则读 src/version.py）。

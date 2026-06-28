@@ -37,6 +37,23 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.0
+
+**Modbus master / polling** — after the Modbus RTU **slave** in auto-reply, this adds the **master** side: act as a Modbus master, poll a slave's registers / coils at a per-row period and show the results live (no more hand-typing request frames for bring-up, table dumps, or periodic checks):
+
+- **Modbus master poll** — new **Modbus Master** button atop the Data area. Each row: `Name / Unit / Function / Address / Qty (read) or Value (write) / Period ms` → live **Value (decimal + hex)** + **Status**.
+  - reads **01** coils / **02** discrete inputs / **03** holding / **04** input registers; writes **05** single coil / **06** single register (re-written each period, echo shown).
+  - **half-duplex**: only one request in flight; the next is sent after a response or timeout (1s); each row scheduled on its own period.
+  - status at a glance: **OK / Timeout / Exception (slave's code) / Bad response / Send failed**.
+- **Transport auto-select** — serial → **Modbus RTU** (with CRC), TCP Client → **Modbus TCP** (MBAP); or force RTU / TCP.
+- **Local-echo mode** — tick it if your serial adapter echoes sent frames (common on RS-485 half-duplex): it strips one leading copy of the request (tolerating leading noise) before parsing the real response. Crucial for writes 05/06, whose echo is identical to a success reply — without it the echo is taken as success and the slave's exception is lost.
+- **Robust validation** — checks slave id / returned count / write echo / exception-function match; RTU resyncs byte-by-byte on a bad frame (never clears the whole buffer, so a local-echo pile-up can't drop the response), TCP self-frames by MBAP length.
+- Adds `src/modbus_master.py` + `src/modbus_master_dialog.py` + `tests/test_modbus_master.py` (34 cases); trilingual UI; no new dependencies; zero impact on existing features until enabled; converged over **three adversarial-review rounds**.
+
+> Tip: don't enable "Auto-reply · Modbus slave" and "Modbus master" at the same time — one receives requests, the other sends them; mixing interferes (see the "?" help in the dialog).
+
+---
+
 ## What's New in v1.1.9
 
 Auto-reply gains **scripted replies** — write a little Python per rule to build the reply dynamically, for logic that static templates and bitmasks can't cover (compute the answer from the received bytes, look up a table, state-dependent responses, custom CRC, …):

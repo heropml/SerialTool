@@ -1,5 +1,5 @@
 {
-  "version": "1.1.9",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.1.9/CommTool_Setup_v1.1.9.exe",
-  "notes": "自动应答·脚本应答：每条规则可写 Python reply(frame, ctx) 动态生成单帧/多帧应答；ctx 提供状态/序号/命中数与可定制 CRC（poly/init/refin… 全可调）及 crc16/crc8/sum8/xor8/hexbytes/tohex 等工具。脚本在独立子进程执行、超时整组强制终止（含其子进程）、预览与实发隔离、导入含脚本的配置前征求同意。可与 v1.1.8 位掩码匹配叠加；脚本默认关闭，关时行为与 v1.1.8 一致。"
+  "version": "1.2.0",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.0/CommTool_Setup_v1.2.0.exe",
+  "notes": "Modbus 主机轮询（master/poll）：把本工具当 Modbus 主机，按每行周期半双工轮询从机，实时显示寄存器/线圈值（十进制+十六进制）与状态（OK/超时/异常码/响应无效）。读 01/02/03/04、写 05/06；传输自动选择（串口→Modbus RTU、TCP Client→Modbus TCP）；串口适配器回显可开「本地回显」剥除（专治写 05/06 回显与成功同形）；严格核对从机ID/数量/写回显/异常功能码。继自动应答 Modbus 从机之后补上主机侧；无新依赖，启用前不影响原有功能。"
 }
