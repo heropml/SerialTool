@@ -8,7 +8,8 @@
 """
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
-                             QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame, QSplitter)
+                             QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame, QSplitter,
+                             QPlainTextEdit)
 
 from theme import chrome_for
 from fonts import localize_qss
@@ -298,6 +299,9 @@ class AutoReplyDialog(QDialog):
         btn_seg = QPushButton()                 # 「校验段」(内层/额外校验) 编辑入口；有段显示数量
         btn_seg.setObjectName("ArSegBtn")
         btn_seg.setCursor(Qt.PointingHandCursor)
+        btn_script = QPushButton()              # B5「脚本」编辑入口；有脚本显 ●
+        btn_script.setObjectName("ArSegBtn")
+        btn_script.setCursor(Qt.PointingHandCursor)
         # delay=回复 turnaround；cooldown=触发限流（两回事，旧 cooldown 配置原义保留）
         ed_cd = QLineEdit(str(rule.get("delay", "0")))   # C7：支持 "100"(固定) 或 "100-300"(随机范围)
         ed_cd.setMaximumWidth(72)
@@ -329,6 +333,8 @@ class AutoReplyDialog(QDialog):
         rec = {"w": row, "on": cb_on, "match": ed_match, "mhex": cb_mhex, "mode": cb_mode,
                "verify": cb_verify, "reply": ed_reply, "rhex": cb_rhex, "cs": cb_cs,
                "seg_btn": btn_seg, "cs_segs": list(rule.get("cs_segs", []) or []),
+               "script_btn": btn_script, "script": str(rule.get("script") or ""),
+               "script_on": bool(rule.get("script_on", True)),
                "hits_lbl": lbl_hits, "mhelp": btn_mhelp, "_rid": rid,
                "cd": ed_cd, "cdwn": ed_cdwn, "gap": ed_gap,
                "when": ed_when, "goto": ed_goto,
@@ -336,7 +342,9 @@ class AutoReplyDialog(QDialog):
                "lbl_reply": lbl_reply, "lbl_delay": lbl_delay, "lbl_cdwn": lbl_cdwn}
         btn_del.clicked.connect(lambda *_: self._del_row(rec))
         btn_seg.clicked.connect(lambda *_: self._edit_cs_segs(rec))
+        btn_script.clicked.connect(lambda *_: self._edit_script(rec))
         self._update_seg_btn(rec)
+        self._update_script_btn(rec)
         # 任何改动 → 去抖落盘
         cb_on.toggled.connect(self._schedule)
         cb_mhex.toggled.connect(self._schedule)
@@ -379,6 +387,7 @@ class AutoReplyDialog(QDialog):
         rh.addWidget(cb_rhex)
         rh.addWidget(cb_cs)
         rh.addWidget(btn_seg)
+        rh.addWidget(btn_script)
         rh.addWidget(lbl_delay)
         rh.addWidget(ed_cd)
         rh.addWidget(QLabel("ms"))
@@ -549,11 +558,15 @@ class AutoReplyDialog(QDialog):
             if not res.get("verify_ok"):
                 lines.append(t("ar_test_verify_fail"))
             else:
-                reps = res.get("replies", [])
-                if not reps:
-                    lines.append(t("ar_test_no_reply"))
-                for r in reps:
-                    lines.append("→ " + (r if r else t("ar_test_reply_bad")))
+                serr = res.get("script_err")
+                if serr:
+                    lines.append(t("ar_script_err", e=serr))   # B5：脚本错误显示在测试器里
+                else:
+                    reps = res.get("replies", [])
+                    if not reps:
+                        lines.append(t("ar_test_no_reply"))
+                    for r in reps:
+                        lines.append("→ " + (r if r else t("ar_test_reply_bad")))
             if sm_on and res.get("goto"):               # C8：应答后跳转
                 lines.append(t("ar_test_goto", s=res["goto"]))
             out.setText("\n".join(lines))
@@ -585,6 +598,134 @@ class AutoReplyDialog(QDialog):
         if btn is not None:
             n = len(rec.get("cs_segs", []) or [])
             btn.setText(self.app._t("ar_cs_btn") + (f" ({n})" if n else ""))
+
+    def _update_script_btn(self, rec):
+        """有脚本显「脚本 ●」，否则「脚本」。"""
+        btn = rec.get("script_btn")
+        if btn is None:
+            return
+        has_code = bool((rec.get("script") or "").strip())
+        active = has_code and bool(rec.get("script_on", True))    # 启用且有代码才生效
+        btn.setText(self.app._t("ar_script_btn"))   # 不加 ●，纯靠颜色区分：启用=蓝、禁用/无码=灰
+        btn.setToolTip(self.app._t("ar_script_tip"))
+        c = chrome_for(self.app._theme_id())
+        if active:   # 启用：按钮文字 + ● 变蓝(accent)，一眼看出此行走脚本
+            btn.setStyleSheet(
+                "QPushButton{background-color:transparent;color:%s;border:1px solid %s;"
+                "border-radius:6px;font-family:'Segoe UI';font-size:11px;padding:3px 8px;font-weight:700;}"
+                "QPushButton:hover{background-color:%s;color:%s;}"
+                % (c["accent"], c["accent"], c["ghost_hover"], c["accent"]))
+        else:
+            btn.setStyleSheet("")   # 无代码或已禁用 → 回退灰样式（有代码但禁用时 ● 为灰）
+        # 仅「启用且有代码」时该行静态回复部分让位置灰；禁用脚本则恢复静态可编辑
+        for key in ("lbl_reply", "reply", "rhex", "cs", "seg_btn"):
+            w = rec.get(key)
+            if w is not None:
+                w.setEnabled(not active)
+        if rec.get("reply") is not None:
+            rec["reply"].setToolTip(self.app._t("ar_script_mode_tip") if active else "")
+
+    def _edit_script(self, rec):
+        """编辑某条规则的「脚本应答」(Python)：定义 reply(frame, ctx) 动态生成应答。
+        确定后写回 rec['script'] 去抖落盘。空脚本=不启用，行为与静态模板一致。"""
+        t = self.app._t
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("ar_script_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                           | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
+                           | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(660, 500)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        hint = QLabel(t("ar_script_help"))
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.RichText)
+        hint.setObjectName("ArCsHint")
+        v.addWidget(hint)
+        editor = QPlainTextEdit()
+        editor.setObjectName("ArScriptEdit")
+        editor.setPlainText((rec.get("script") or "").strip() or t("ar_script_tmpl"))
+        v.addWidget(editor, 1)
+        # 内置测试：输入一帧 → 跑当前编辑器里的脚本看输出（无需先确定、无副作用）
+        trow = QHBoxLayout()
+        trow.setSpacing(6)
+        ed_test = QLineEdit()
+        ed_test.setPlaceholderText(t("ar_script_test_ph"))
+        btn_test = QPushButton(t("ar_test_run"))
+        btn_test.setObjectName("PlotGhostBtn")
+        trow.addWidget(ed_test, 1)
+        trow.addWidget(btn_test)
+        v.addLayout(trow)
+        lbl_out = QLabel("")
+        lbl_out.setWordWrap(True)
+        lbl_out.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(lbl_out)
+
+        def run_test():
+            s = "".join(ch for ch in ed_test.text() if ch not in " \t\r\n-:,;")
+            s = s.replace("0x", "").replace("0X", "")
+            frame = None
+            if s and len(s) % 2 == 0:
+                try:
+                    frame = bytes.fromhex(s)
+                except ValueError:
+                    frame = None
+            if frame is None:
+                lbl_out.setText(t("ar_test_bad_hex"))
+                return
+            parts, err = self.app._ar_script_eval(
+                {"script": editor.toPlainText()}, frame, preview=True)
+            if err:
+                lbl_out.setText(t("ar_script_err", e=err))
+            elif parts:
+                lbl_out.setText(" | ".join(parts))
+            else:
+                lbl_out.setText(t("ar_script_none"))
+
+        btn_test.clicked.connect(run_test)
+
+        btns = QHBoxLayout()
+        cb_en = QCheckBox(t("ar_script_enable"))          # 左下角：启用/禁用脚本（保留代码不删）
+        cb_en.setChecked(bool(rec.get("script_on", True)))
+        cb_en.toggled.connect(lambda on: editor.setEnabled(on))
+        editor.setEnabled(cb_en.isChecked())              # 禁用 → 编辑器变灰、不可输入
+        btns.addWidget(cb_en)
+        btns.addStretch(1)
+        lmap = lambda zh, en, tw: {"zh": zh, "en": en, "zh_tw": tw}.get(self.app._lang, en)
+        btn_cancel = QPushButton(lmap("取消", "Cancel", "取消"))
+        btn_cancel.setObjectName("PlotGhostBtn")
+        btn_ok = QPushButton(lmap("确定", "OK", "確定"))
+        btn_ok.setObjectName("ArOkBtn")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok.clicked.connect(dlg.accept)
+        btns.addWidget(btn_cancel)
+        btns.addWidget(btn_ok)
+        v.addLayout(btns)
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
+            QDialog {{ background-color: {c['window_bg']}; }}
+            QLabel {{ color: {c['text']}; background: transparent;
+                     font-family: 'Segoe UI'; font-size: 12px; }}
+            QLabel#ArCsHint {{ color: {c['text_sec']}; }}
+            QPlainTextEdit#ArScriptEdit {{ background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px;
+                font-family: Menlo, Consolas, 'Courier New', monospace; font-size: 12px; }}
+            QPlainTextEdit#ArScriptEdit:disabled {{ background-color: {c['window_bg']}; color: {c['text_sec']};
+                border: 1px solid {c['separator']}; }}
+            QLineEdit {{ background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px; padding: 4px; }}
+            QPushButton#PlotGhostBtn {{ background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; border-radius: 6px; padding: 5px 14px; }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+            QPushButton#ArOkBtn {{ background-color: {c['accent']}; color: #FFFFFF;
+                border: none; border-radius: 6px; padding: 5px 16px; }}
+        """))
+        if dlg.exec_() == QDialog.Accepted:
+            rec["script"] = editor.toPlainText().strip()
+            rec["script_on"] = cb_en.isChecked()
+            self._update_script_btn(rec)
+            self._schedule()
 
     def _edit_cs_segs(self, rec):
         """编辑某条应答规则的「校验段」列表（算法 | 起始 | 结束 | 填入位置），
@@ -1016,6 +1157,8 @@ class AutoReplyDialog(QDialog):
                 "reply_hex": rec["rhex"].isChecked(),
                 "cs": rec["cs"].currentIndex(),
                 "cs_segs": rec.get("cs_segs", []),
+                "script": rec.get("script", ""),     # B5：脚本应答（Python），空=不启用
+                "script_on": rec.get("script_on", True),   # 启用开关：禁用则保留代码但不生效
                 "delay": rec["cd"].text().strip(),   # C7：存原始文本（"100" 或 "100-300"）
 
                 "cooldown": _n(rec["cdwn"]),
@@ -1095,6 +1238,15 @@ class AutoReplyDialog(QDialog):
         QWidget#ArRow {{ background: transparent; }}
         QSplitter#ArRowSplit::handle {{ background: {c['separator']}; margin: 5px 1px; border-radius: 2px; }}
         QSplitter#ArRowSplit::handle:hover {{ background: {c['accent']}; }}
+        /* B5：脚本模式下该行静态回复部分置灰——明显的禁用态（扁平底 + 淡字 + 虚线框） */
+        QLineEdit:disabled {{ background-color: {c['window_bg']}; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; }}
+        QComboBox:disabled {{ background-color: {c['window_bg']}; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; }}
+        QCheckBox:disabled {{ color: {c['text_sec']}; }}
+        QPushButton#ArSegBtn:disabled {{ background-color: transparent; color: {c['text_sec']};
+            border: 1px solid {c['separator']}; }}
+        QLabel:disabled {{ color: {c['text_sec']}; }}
         """))
 
     def retranslate(self):
@@ -1156,6 +1308,8 @@ class AutoReplyDialog(QDialog):
             rec["cd"].setToolTip(t("ar_delay_tip"))
             self._update_seg_btn(rec)
             rec["seg_btn"].setToolTip(t("ar_cs_tip"))
+            self._update_script_btn(rec)
+            rec["script_btn"].setToolTip(t("ar_script_tip"))
             rec["hits_lbl"].setToolTip(t("ar_hits_tip"))
             # combo 项（保留当前选中索引）：模式 + 收/发校验
             for combo, items in ((rec["mode"], mode_items),

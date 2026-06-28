@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """CommTool 入口。"""
 import sys
+import multiprocessing
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 from app_icon import get_app_icon
@@ -10,6 +11,9 @@ from updater import cleanup_temp_installers, set_translator
 
 
 def main():
+    # PyInstaller/Windows 下脚本应答使用 multiprocessing 隔离执行；必须在创建
+    # QApplication 前调用，否则冻结版子进程会递归重启整个 GUI。
+    multiprocessing.freeze_support()
     if sys.platform == "win32":
         try:
             import ctypes

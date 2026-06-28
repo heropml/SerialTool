@@ -37,6 +37,19 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.1.9
+
+Auto-reply gains **scripted replies** — write a little Python per rule to build the reply dynamically, for logic that static templates and bitmasks can't cover (compute the answer from the received bytes, look up a table, state-dependent responses, custom CRC, …):
+
+- **Scripted reply** — click **Script** on a rule and define `reply(frame, ctx)`:
+  - return `bytes` (one frame) / `list[bytes]` (multi-frame) / `str` (text) / `None` (no reply); the script owns the whole frame and computes its own checksum via ctx.
+  - `ctx`: `.state` (state-machine state) · `.seq` · `.hits`; a **customizable CRC** `ctx.crc(data, width, poly, init, refin, refout, xorout, byteorder)` plus shortcuts `crc16` (Modbus) / `crc8` / `sum8` / `xor8` / `hexbytes` / `tohex`.
+  - the editor has a built-in **Test** to run one frame; an **Enable script** toggle keeps the code while turning it off; when active the row's static reply / checksum are greyed out.
+- **Isolated & safe** — scripts run in a **separate process**: on timeout (1s default) the whole process group is killed (including any subprocess the script spawned), so the GUI never freezes; preview / test and live use separate processes (no cross-contamination); importing a config that contains scripts asks for confirmation (decline blanks the scripts).
+- Stacks with v1.1.8's bitmask matching; fault injection + delay + state-machine goto all apply to scripted replies; trilingual UI; adds `tests/test_script.py`; no new dependencies; scripts are off by default (behaves like v1.1.8 when unused).
+
+---
+
 ## What's New in v1.1.8
 
 Auto-reply matching goes **sub-byte** — beyond whole-byte `??` wildcards, you can now match by **nibble, bit, or field**:
@@ -47,8 +60,7 @@ Auto-reply matching goes **sub-byte** — beyond whole-byte `??` wildcards, you 
   - **bit-mask**: `b:` + 8 of `0/1/x`, where `x` = don't-care bit, e.g. `b:1xxxxxx1` checks only the top and bottom bits
   - mix: `AA b:1001xxxx ?5` = byte0 must be `AA`, byte1 high nibble `1001` / low nibble any, byte2 low nibble `5`
 - **Field-level** — "the sub-field at some offset == X" is expressed by padding wildcards up to that offset + "prefix" mode (e.g. byte 3 bit0 must be 1: match `?? ?? ?? b:xxxxxxx1`, mode = prefix).
-- **Backward compatible** — spaces are just separators, plain HEX is joined across spaces (`A B` = 0xAB); exact/wildcard bytes parse byte-for-byte identically to before, so existing rules are unchanged. All three modes (contains / equals / prefix) honor masks; bit-masks apply in HEX mode only.
-- Real-time matching and the **offline rule tester** share one parser, so both gain it; trilingual UI (placeholder + a "bit/nibble mask" section in help); adds `tests/test_match_mask.py` (17 cases); no new dependencies.
+- **Backward compatible** — spaces are just separators, plain HEX is joined across spaces (`A B` = 0xAB); exact/wildcard bytes parse byte-for-byte identically to before, so existing rules are unchanged. All three modes (contains / equals / prefix) honor masks; bit-masks apply in HEX mode only.- Real-time matching and the **offline rule tester** share one parser, so both gain it; trilingual UI (placeholder + a "bit/nibble mask" section in help); adds `tests/test_match_mask.py` (17 cases); no new dependencies.
 
 ---
 

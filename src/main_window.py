@@ -7,6 +7,8 @@ import random
 import re
 import sys
 import time
+import types
+import multiprocessing
 from collections import deque
 from datetime import datetime
 import serial
@@ -16,7 +18,7 @@ from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
-                             QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip)
+                             QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip, QDialog)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -40,6 +42,106 @@ from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutD
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
 PROTO_SERIAL = "Serial"
 CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
+
+
+def _ar_crc_impl(data, width=16, poly=0x1021, init=0x0000,
+                 refin=False, refout=False, xorout=0x0000, byteorder="big"):
+    """通用 CRC 实现。放在模块顶层，供主进程 ctx 和 spawn 脚本子进程共用。"""
+    data = bytes(data)
+    mask = (1 << width) - 1
+    topbit = 1 << (width - 1)
+
+    def _refl(v, n):
+        r = 0
+        for i in range(n):
+            if v & (1 << i):
+                r |= 1 << (n - 1 - i)
+        return r
+
+    reg = init & mask
+    for b in data:
+        if refin:
+            b = _refl(b, 8)
+        reg ^= (b << (width - 8)) & mask
+        for _ in range(8):
+            reg = ((reg << 1) ^ poly) & mask if (reg & topbit) else (reg << 1) & mask
+    if refout:
+        reg = _refl(reg, width)
+    reg = (reg ^ xorout) & mask
+    return reg.to_bytes((width + 7) // 8, byteorder)
+
+
+def _ar_script_worker(conn):
+    """B5 脚本常驻子进程。每个任务用全新 namespace；主进程超时时杀整个进程组，
+    脚本若再起子进程(subprocess 等)也会被一并清理、不残留。只回传可 pickle 的 bytes/错误文本。"""
+    group_ready = sys.platform == "win32"   # Windows 由 taskkill /T 按 PID 树回收，无 setsid
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()      # 成为新会话/进程组组长 → 脚本起的子进程同组，父进程可整组 kill
+            group_ready = (os.getpgrp() == os.getpid())
+        except Exception:
+            group_ready = False
+    try:
+        conn.send(("ready", group_ready))   # 父进程收到后才允许发任务/整组 kill
+    except Exception:
+        conn.close()
+        return
+
+    def _xor8(d):
+        value = 0
+        for c in bytes(d):
+            value ^= c
+        return bytes([value])
+
+    def _hexbytes(s):
+        clean = re.sub(r"[^0-9A-Fa-f]", "", str(s).replace("0x", "").replace("0X", ""))
+        return bytes.fromhex(clean)
+
+    try:
+        while True:
+            try:
+                script, frame, ctx_data, codec = conn.recv()
+            except EOFError:
+                return
+            try:
+                ctx = types.SimpleNamespace(
+                    state=ctx_data["state"], seq=ctx_data["seq"], hits=ctx_data["hits"],
+                    crc=_ar_crc_impl,
+                    crc16=lambda d: _ar_crc_impl(d, 16, 0x8005, 0xFFFF,
+                                                  refin=True, refout=True, byteorder="little"),
+                    crc8=lambda d: _ar_crc_impl(d, 8, 0x07, 0x00),
+                    sum8=lambda d: bytes([sum(bytes(d)) & 0xFF]),
+                    xor8=_xor8, hexbytes=_hexbytes,
+                    tohex=lambda d: " ".join("%02X" % x for x in bytes(d)),
+                )
+                ns = {}
+                exec(compile(script, "<ar-script>", "exec"), ns)
+                func = ns.get("reply")
+                if not callable(func):
+                    raise ValueError("脚本须定义 reply(frame, ctx) 函数")
+                result = func(bytes(frame), ctx)
+                if result is None:
+                    norm = None
+                elif isinstance(result, (bytes, bytearray)):
+                    norm = [bytes(result)]
+                elif isinstance(result, str):
+                    norm = [result.encode(codec, errors="replace")]
+                elif isinstance(result, (list, tuple)):
+                    norm = []
+                    for item in result:
+                        if isinstance(item, (bytes, bytearray)):
+                            norm.append(bytes(item))
+                        elif isinstance(item, str):
+                            norm.append(item.encode(codec, errors="replace"))
+                        else:
+                            raise TypeError("reply 返回 list 内含非 bytes / str 元素")
+                else:
+                    raise TypeError("reply 返回类型须 bytes / str / list / None")
+                conn.send(("ok", norm))
+            except Exception as e:
+                conn.send(("err", "%s: %s" % (type(e).__name__, e)))
+    finally:
+        conn.close()
 
 
 class ThemedToolTip(QLabel):
@@ -96,6 +198,8 @@ class ThemedToolTip(QLabel):
 # ============== 主窗口 ==============
 class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
+    _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
+    _AR_SCRIPT_START_TIMEOUT = 5.0  # spawn/冻结版首启可较慢；与单次脚本超时分开
 
     def __init__(self):
         super().__init__()
@@ -176,6 +280,13 @@ class CommTool(QMainWindow):
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(self._ar_flush)
         self._ar_gap = 0     # 整包静默(ms)：取所有启用规则中的最大值（分帧在匹配前、整条串口共用一个）
+        self._ar_script_cache = {}   # B5：脚本文本 → (编译 code, 错误文案)，主进程先做语法校验
+        self._ar_script_proc = None  # B5：实发脚本常驻隔离进程（超时整组 kill + 下次重建）
+        self._ar_script_conn = None
+        self._ar_script_group_ready = False  # ready 握手确认 worker PID 是独立进程组 ID
+        self._ar_preview_proc = None # B5：预览/测试专用隔离进程，与实发分开 → 预览不污染实发模块态
+        self._ar_preview_conn = None
+        self._ar_preview_group_ready = False
         self._ar_seq = 0     # 应答 {seq} 占位符的自增计数（每次替换 +1，wrap 0..255）
         self._send_count = 0 # 发送区 {count} 占位符的自增计数（每次成功 do_send/多条发送 +1，wrap）
         self._send_hist = []         # 发送命令历史(FIFO max 100)，启动从 QSettings 恢复
@@ -3247,12 +3358,23 @@ class CommTool(QMainWindow):
             if cooldown > 0 and (now - rule.get("_last", 0.0)) * 1000 < cooldown:
                 return
             rule["_last"] = now      # 运行态，不持久化
-            # 多帧应答（④）：reply 用 | 分段，每段独立替换占位符 + 独立组帧，间隔 delay ms 顺次发。
-            parts = self._ar_build_parts(rule, data)
-            if not parts:
-                return
-            cs = self._ar_to_int(rule.get("cs", 0))
-            cs_segs = rule.get("cs_segs", []) or []    # 内层/额外校验段（在尾部 cs 之前算）
+            # B5：有脚本则跑脚本动态生成应答（脚本拥有整帧、不叠校验段/尾校验）；否则走静态模板
+            # （④ 多帧 | 分段、占位符替换、校验段）。两路都经故障注入 + 延时发送、共用 goto 回调。
+            script = str(rule.get("script") or "").strip()   # str() 容错：script 非字符串也不崩
+            if script and rule.get("script_on", True):
+                parts, serr = self._ar_script_eval(rule, data)
+                if serr:
+                    self._ar_fault_note(self._t("ar_script_err", e=serr))   # 脚本错误：数据区留痕、不崩
+                if not parts:
+                    return
+                hexmode, cs, cs_segs = True, 0, []
+            else:
+                parts = self._ar_build_parts(rule, data)
+                if not parts:
+                    return
+                hexmode = bool(rule.get("reply_hex", True))
+                cs = self._ar_to_int(rule.get("cs", 0))
+                cs_segs = rule.get("cs_segs", []) or []    # 内层/额外校验段（在尾部 cs 之前算）
             delay = self._ar_parse_delay(rule.get("delay", 0))   # C7：(min,max)，每次发随机取
             # C8：goto 推进绑定到「首段真正发出」回调，而非排程瞬间 —— 延时未到/连接断/故障丢包
             # 时不推进。带 goto 的规则同时占用 pending 门闩，整条多段应答完成前把后续帧排入 FIFO，
@@ -3274,8 +3396,7 @@ class CommTool(QMainWindow):
                         self._ar_sm_pending = None
                         self._ar_drain_sm_queue()
             try:
-                self._ar_schedule_send(parts, bool(rule.get("reply_hex", True)),
-                                       cs, cs_segs, delay,
+                self._ar_schedule_send(parts, hexmode, cs, cs_segs, delay,
                                        on_sent=on_sent, on_done=on_done)
             except Exception:
                 if pending is not None and self._ar_sm_pending is pending:
@@ -3326,6 +3447,174 @@ class CommTool(QMainWindow):
         hexmode = bool(rule.get("reply_hex", True))
         return [self._ar_subst_reply(s.strip(), data, hexmode)
                 for s in rule.get("reply", "").split("|") if s.strip()]
+
+    # ---- B5 脚本化应答：每条规则可选一段 Python，命中时跑 reply(frame, ctx) 动态生成应答 ----
+    @staticmethod
+    def _ar_crc(data, width=16, poly=0x1021, init=0x0000,
+                refin=False, refout=False, xorout=0x0000, byteorder="big"):
+        """通用参数化 CRC（Rocksoft 模型）→ bytes（width//8 字节，按 byteorder）。
+        覆盖 CCITT / Modbus / XMODEM / 任意自定义多项式，供脚本 ctx.crc 调用。"""
+        return _ar_crc_impl(data, width, poly, init, refin, refout, xorout, byteorder)
+
+    def _ar_make_ctx(self, rule, preview=False):
+        """脚本只读上下文 + 校验工具：state / seq / hits + 可定制 crc 及便捷封装。
+        seq 每次调用自增（live 持久化；preview 由 _ar_preview 的 save/restore 还原）；
+        hits 在 preview 下 +1，与「live 已在 _ar_match 先 +1」对齐，使预览=实发。"""
+        crc = CommTool._ar_crc
+
+        def _xor8(d):
+            r = 0
+            for c in bytes(d):
+                r ^= c
+            return bytes([r])
+
+        def _hexbytes(s):
+            s = re.sub(r"[^0-9A-Fa-f]", "", str(s).replace("0x", "").replace("0X", ""))
+            return bytes.fromhex(s)
+
+        next_seq = (self._ar_to_int(getattr(self, "_ar_seq", 0)) + 1) & 0xFF
+        if not preview:
+            self._ar_seq = next_seq      # 真实执行才写回；编辑器/离线预览无副作用
+        return types.SimpleNamespace(
+            state=str(getattr(self, "_ar_state", "") or ""),
+            seq=next_seq,
+            hits=self._ar_to_int(rule.get("_hits", 0)) + (1 if preview else 0),
+            crc=crc,                                                      # 通用：自定义 poly/init/refin…
+            crc16=lambda d: crc(d, 16, 0x8005, 0xFFFF, refin=True, refout=True, byteorder="little"),  # Modbus
+            crc8=lambda d: crc(d, 8, 0x07, 0x00),                        # CRC-8/SMBus
+            sum8=lambda d: bytes([sum(bytes(d)) & 0xFF]),
+            xor8=_xor8,
+            hexbytes=_hexbytes,                                          # "AA BB"/"0xAABB" → bytes
+            tohex=lambda d: " ".join("%02X" % x for x in bytes(d)),      # bytes → "AA BB"
+        )
+
+    def _ar_script_code(self, script):
+        """编译脚本 → (code 对象, None) 或 (None, 错误)，按文本缓存。只缓存编译结果、不缓存运行态/全局：
+        每次执行用全新命名空间，避免编辑器测试 / 离线预览污染实发脚本的全局状态。"""
+        cached = self._ar_script_cache.get(script)
+        if cached is not None:
+            return cached
+        try:
+            res = (compile(script, "<ar-script>", "exec"), None)
+        except Exception as e:
+            res = (None, "%s: %s" % (type(e).__name__, e))
+        self._ar_script_cache[script] = res
+        return res
+
+    @staticmethod
+    def _ar_kill_worker(proc, conn, group_ready=False):
+        """强制回收一个脚本子进程及其整个进程组（含脚本自己起的子进程：subprocess 等）。
+        posix 走 killpg（worker 已 setsid 成组长）；Windows 走 taskkill /T 杀进程树。
+        group_ready 只能来自 ready 握手；组长已退出时进程组仍可能存在，不能仅看 is_alive()。"""
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if proc is None:
+            return
+        try:
+            alive = proc.is_alive()
+            if sys.platform == "win32":
+                if group_ready or alive:
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   capture_output=True,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            else:
+                import signal
+                killed_group = False
+                if group_ready and proc.pid and proc.pid != os.getpgrp():
+                    try:
+                        # 组长退出后 os.getpgid(worker_pid) 会失败，但后代仍使用
+                        # 原 worker PID 作为 PGID；因此直接按握手记录的 PGID 清理。
+                        os.killpg(proc.pid, signal.SIGKILL)
+                        killed_group = True
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        pass
+                if alive and not killed_group:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+            proc.join(0.5)
+            if proc.is_alive() and hasattr(proc, "kill"):
+                proc.kill()
+                proc.join(0.5)
+            proc.close()
+        except Exception:
+            pass
+
+    def _ar_stop_script_worker(self):
+        """回收脚本子进程（实发 + 预览两个一起收）。超时、通信故障和应用退出都走这里。"""
+        pairs = [(self._ar_script_proc, self._ar_script_conn, self._ar_script_group_ready),
+                 (self._ar_preview_proc, self._ar_preview_conn, self._ar_preview_group_ready)]
+        self._ar_script_proc = self._ar_script_conn = None
+        self._ar_preview_proc = self._ar_preview_conn = None
+        self._ar_script_group_ready = self._ar_preview_group_ready = False
+        for proc, conn, group_ready in pairs:
+            self._ar_kill_worker(proc, conn, group_ready)
+
+    def _ar_get_script_worker(self, preview=False):
+        """惰创建 spawn 子进程并常驻复用；预览/测试用独立进程，与实发 worker 隔离 ——
+        预览推进的 random / 已导入模块等共享状态不会污染真实执行。"""
+        proc_attr = "_ar_preview_proc" if preview else "_ar_script_proc"
+        conn_attr = "_ar_preview_conn" if preview else "_ar_script_conn"
+        group_attr = "_ar_preview_group_ready" if preview else "_ar_script_group_ready"
+        proc, conn = getattr(self, proc_attr), getattr(self, conn_attr)
+        if proc is not None and proc.is_alive() and conn is not None:
+            return conn
+        group_ready = getattr(self, group_attr)
+        setattr(self, proc_attr, None)
+        setattr(self, conn_attr, None)
+        setattr(self, group_attr, False)
+        self._ar_kill_worker(proc, conn, group_ready)
+        mp = multiprocessing.get_context("spawn")
+        parent, child = mp.Pipe(duplex=True)
+        proc = mp.Process(target=_ar_script_worker, args=(child,), daemon=True)
+        proc.start()
+        child.close()
+        group_ready = False
+        try:
+            if not parent.poll(self._AR_SCRIPT_START_TIMEOUT):
+                raise TimeoutError("脚本子进程启动超时")
+            status, group_ready = parent.recv()
+            if status != "ready" or not group_ready:
+                raise RuntimeError("脚本子进程隔离初始化失败")
+        except Exception:
+            self._ar_kill_worker(proc, parent, group_ready)
+            raise
+        setattr(self, proc_attr, proc)
+        setattr(self, conn_attr, parent)
+        setattr(self, group_attr, group_ready)
+        return parent
+
+    def _ar_script_eval(self, rule, frame, preview=False):
+        """跑规则脚本 → (应答 hex 字符串段列表 or None, 错误文案 or None)。无副作用（不发送/不留痕）。
+        脚本拥有整帧 → 结果按 hexmode=True 原样发、不叠校验。在常驻隔离子进程中执行；超时整组 kill、
+        下次重建；每次任务全新命名空间。预览/测试走独立进程，不污染实发的模块态。"""
+        script = str(rule.get("script") or "").strip()      # str() 容错：配置里 script 非字符串也不崩
+        code, err = self._ar_script_code(script)
+        if code is None:
+            return None, err
+        ctx = self._ar_make_ctx(rule, preview=preview)
+        ctx_data = {"state": ctx.state, "seq": ctx.seq, "hits": ctx.hits}
+        try:
+            conn = self._ar_get_script_worker(preview=preview)
+            conn.send((script, bytes(frame), ctx_data, self._send_codec()))
+            if not conn.poll(self._AR_SCRIPT_TIMEOUT):
+                self._ar_stop_script_worker()       # 真正杀掉死循环/阻塞任务(连同其子进程)
+                return None, self._t("ar_script_timeout", s=self._AR_SCRIPT_TIMEOUT)
+            status, result = conn.recv()
+        except Exception as e:
+            self._ar_stop_script_worker()
+            return None, "%s: %s" % (type(e).__name__, e)
+        if status == "err":
+            return None, result
+        parts = [" ".join("%02X" % x for x in b) for b in (result or []) if b]
+        return (parts or None), None
 
     def _ar_schedule_send(self, parts, hexmode, cs, segs, delay, on_sent=None, on_done=None):
         """逐段发送 parts。delay=(min,max) ms（C7 范围延时：每次发独立随机取，模拟 turnaround
@@ -3535,13 +3824,19 @@ class CommTool(QMainWindow):
                     continue
                 verify_ok = self._ar_frame_ok(frame, self._ar_to_int(rule.get("verify", 0)))
                 replies = []
+                script_err = None
                 if verify_ok:
-                    hexmode = bool(rule.get("reply_hex", True))
-                    cs = self._ar_to_int(rule.get("cs", 0))
-                    cs_segs = rule.get("cs_segs", []) or []
-                    for part in self._ar_build_parts(rule, frame):
-                        fr = self._ar_compose_frame(part, hexmode, cs_segs, cs)
-                        replies.append(bytes(fr).hex(" ").upper() if fr is not None else None)
+                    script = str(rule.get("script") or "").strip()      # str() 容错
+                    if script and rule.get("script_on", True):          # B5：预览也跑脚本（无副作用变体）
+                        parts, script_err = self._ar_script_eval(rule, frame, preview=True)
+                        replies = list(parts or [])
+                    else:
+                        hexmode = bool(rule.get("reply_hex", True))
+                        cs = self._ar_to_int(rule.get("cs", 0))
+                        cs_segs = rule.get("cs_segs", []) or []
+                        for part in self._ar_build_parts(rule, frame):
+                            fr = self._ar_compose_frame(part, hexmode, cs_segs, cs)
+                            replies.append(bytes(fr).hex(" ").upper() if fr is not None else None)
                 # 预览=实发：goto 经 on_sent 在「首段真正发出」后才推进，故仅当首段能组出帧时才报。
                 # 校验不过 / 无应答内容(replies 空) / 首段坏 hex(replies[0] is None，回退发送也会因同样坏 hex
                 # 失败、sent_ok=False) → 实发都不会跳转，预览也不报 goto。
@@ -3549,7 +3844,8 @@ class CommTool(QMainWindow):
                 if sm_on and verify_ok and replies and replies[0] is not None:
                     goto = str(rule.get("goto", "") or "").strip()
                 return {"index": i, "verify_ok": verify_ok, "replies": replies,
-                        "sm_on": sm_on, "state": self._ar_state, "goto": goto}
+                        "sm_on": sm_on, "state": self._ar_state, "goto": goto,
+                        "script_err": script_err}
             return {"index": -1, "verify_ok": False, "replies": [],
                     "sm_on": sm_on, "state": self._ar_state, "state_skip": state_skip}
         finally:
@@ -3794,6 +4090,67 @@ class CommTool(QMainWindow):
         except Exception as e:
             self._info_dlg(self._t("cfg_export"), self._t("cfg_export_fail", err=str(e)), is_error=True)
 
+    def _ar_confirm(self, title, body):
+        """与主题一致的「是 / 否」确认框，返回 True=用户选「是」。供 B5 脚本导入门禁用。"""
+        dlg = QDialog(None)
+        dlg.setModal(True)
+        dlg.setWindowTitle(title)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(18, 16, 18, 16)
+        v.setSpacing(12)
+        lbl = QLabel(body)
+        lbl.setWordWrap(True)
+        lbl.setMaximumWidth(440)
+        v.addWidget(lbl)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        lm = lambda zh, en, tw: {"zh": zh, "en": en, "zh_tw": tw}.get(self._lang, en)
+        btn_no = QPushButton(lm("否", "No", "否"))
+        btn_no.setObjectName("ArCfNo")
+        btn_yes = QPushButton(lm("是", "Yes", "是"))
+        btn_yes.setObjectName("ArCfYes")
+        btn_no.clicked.connect(dlg.reject)
+        btn_yes.clicked.connect(dlg.accept)
+        row.addWidget(btn_no)
+        row.addWidget(btn_yes)
+        v.addLayout(row)
+        c = chrome_for(self._theme_id())
+        dlg.setStyleSheet(localize_qss(f"""
+            QDialog {{ background-color: {c['window_bg']}; }}
+            QLabel {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 13px; }}
+            QPushButton {{ border-radius: 6px; padding: 6px 16px; font-family: 'Segoe UI'; font-size: 12px; }}
+            QPushButton#ArCfNo {{ background-color: {c['input_bg']}; color: {c['text']};
+                border: 1px solid {c['separator']}; }}
+            QPushButton#ArCfNo:hover {{ background-color: {c['ghost_hover']}; }}
+            QPushButton#ArCfYes {{ background-color: {c['accent']}; color: #FFFFFF; border: none; }}
+        """))
+        return dlg.exec_() == QDialog.Accepted
+
+    def _ar_gate_imported_scripts(self, data):
+        """B5 安全门禁：导入配置若含非空脚本，征求同意；拒绝则清空所有脚本字段后再导入其余。
+        返回处理后的 data（autoreply_rules 字符串可能被改写）。"""
+        raw = data.get("autoreply_rules")
+        if not raw:
+            return data
+        try:
+            rules = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(rules, list):
+                return data
+        except Exception:
+            return data
+        n = sum(1 for r in rules if isinstance(r, dict) and str(r.get("script") or "").strip())
+        if n == 0:
+            return data
+        if self._ar_confirm(self._t("ar_script_import_title"),
+                            self._t("ar_script_import_warn", n=n)):
+            return data            # 信任 → 保留脚本
+        for r in rules:            # 拒绝 → 清空脚本字段，其余配置照常导入
+            if isinstance(r, dict):
+                r.pop("script", None)
+        new = dict(data)
+        new["autoreply_rules"] = json.dumps(rules, ensure_ascii=False)
+        return new
+
     def import_config(self):
         """导入 JSON 配置：批量 setValue 到 QSettings + 立刻刷新 UI。
         能即时生效：主题/语言/显示选项/发送框文本/连接字段(UI 显示，未重连)/自动应答规则与状态。
@@ -3810,10 +4167,13 @@ class CommTool(QMainWindow):
         except Exception as e:
             self._info_dlg(self._t("cfg_import"), self._t("cfg_import_fail", err=str(e)), is_error=True)
             return
+        data = self._ar_gate_imported_scripts(data)   # B5：含脚本则征求同意，拒绝则清空脚本
         s = self.settings
         n = 0
         for k, v in data.items():
             if k in self._CFG_KEYS:
+                if isinstance(v, (dict, list)):   # B5#4：原生 JSON 对象 → 字符串（各 loader 都按 JSON 字符串读，否则规则全丢）
+                    v = json.dumps(v, ensure_ascii=False)
                 s.setValue(k, v)
                 n += 1
         s.sync()
@@ -5070,6 +5430,7 @@ class CommTool(QMainWindow):
             self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
         if hasattr(self, "_rate_timer"):
             self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
+        self._ar_stop_script_worker()      # B5：回收常驻脚本子进程
         self._save_settings()
         self.close_conn()
         self._close_log_file()
