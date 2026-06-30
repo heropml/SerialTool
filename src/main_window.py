@@ -38,6 +38,7 @@ import binproto
 import modbus_slave
 import modbus_master
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
+from updater import UpdateChecker
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
@@ -530,7 +531,18 @@ class CommTool(QMainWindow):
         self.lbl_version = QLabel(f"v{APP_VERSION}")
         self.lbl_version.setFont(ui_font(10))
         self.lbl_version.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+        self.lbl_version.installEventFilter(self)   # 有新版时整条变可点徽标（见 eventFilter）
         self.status_bar.addPermanentWidget(self.lbl_version)
+
+        # 自动检查更新：启动延迟静默查一次 + 每 6 小时后台再查；发现新版 → 版本号变可点徽标。
+        self._update_badge_version = None    # 非空=已发现的新版本号（徽标态）
+        self._auto_checker = None            # 在途的后台 UpdateChecker，防并发重复
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(6 * 60 * 60 * 1000)   # 6 小时
+        self._update_timer.timeout.connect(self._auto_update_check)
+        if self.settings.value("auto_update_check", True, type=bool):
+            self._update_timer.start()
+            QTimer.singleShot(5000, self._auto_update_check)   # 启动 5s 后静默查（避开启动高峰）
 
         # 同步最大行数
         self._on_max_lines_changed()
@@ -1112,6 +1124,11 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # 右下角版本号徽标：有新版时点一下打开「关于」走更新（无新版则普通标签、点击无反应）
+        if obj is getattr(self, "lbl_version", None) and event.type() == QEvent.MouseButtonPress:
+            if self._update_badge_version:
+                self.open_about()
+            return False
         # 自动应答按钮：双击 → 翻转总开关（吃掉事件，不让 QPushButton 默认处理再发 clicked）
         if obj is getattr(self, "btn_autoreply", None) and event.type() == QEvent.MouseButtonDblClick:
             self._ar_btn_dbl_clicked()
@@ -2514,8 +2531,7 @@ class CommTool(QMainWindow):
         # 2. 内联 setStyleSheet 的几处也跟着 chrome palette 刷
         c = chrome_for(self._theme_id())
         self._apply_theme_label_styles(c)
-        if hasattr(self, "lbl_version"):
-            self.lbl_version.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
+        self._apply_version_label_style(c)   # 普通色 / 新版徽标强调色，按当前态自适应（复用 c）
         if hasattr(self, "lbl_log_path"):
             self.lbl_log_path.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
         if hasattr(self, "status_bar"):
@@ -4173,7 +4189,7 @@ class CommTool(QMainWindow):
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
         # 杂项
-        "auto_reconnect",
+        "auto_reconnect", "auto_update_check",
     )
 
     def export_config(self):
@@ -5750,6 +5766,58 @@ class CommTool(QMainWindow):
         menu.exec_(self.btn_titlebar_help.mapToGlobal(
             QPoint(0, self.btn_titlebar_help.height())))
 
+    # ----- 自动检查更新（启动 + 每 6 小时静默查；有新版 → 右下角版本号亮可点徽标）-----
+    def _auto_update_check(self):
+        """后台静默检查新版本：拿到清单后若有新版就在右下角版本号显示可点徽标；出错不打扰用户。"""
+        if not self.settings.value("auto_update_check", True, type=bool):
+            return
+        if self._auto_checker is not None:     # 上一次还在跑就不重复发
+            return
+        chk = UpdateChecker(APP_VERSION, self)
+        chk.finished.connect(self._on_auto_update_checked)
+        self._auto_checker = chk
+        chk.start()
+
+    def _on_auto_update_checked(self, info, err):
+        self._auto_checker = None
+        ver = info.get("version", "") if info else ""
+        if info and info.get("newer") and ver:   # 防御：version 缺失/为空就不挂空白徽标
+            self._show_update_badge(ver)
+
+    def _show_update_badge(self, ver):
+        """把右下角版本号变成「● 可更新 vX」高亮可点徽标，点击打开「关于」走下载更新。"""
+        if not hasattr(self, "lbl_version"):
+            return
+        self._update_badge_version = ver
+        self.lbl_version.setText(self._t("update_badge", ver=ver))
+        self.lbl_version.setToolTip(self._t("update_badge_tip", ver=ver))
+        self.lbl_version.setCursor(Qt.PointingHandCursor)
+        self._apply_version_label_style()
+
+    def _apply_version_label_style(self, c=None):
+        """按是否有新版徽标给右下角版本号上色（普通=次要色；徽标=强调色加粗）。主题切换时复用。
+        c：调用方已算好的 chrome palette，传入可省一次 chrome_for（如 refresh_theme）。"""
+        if not hasattr(self, "lbl_version"):
+            return
+        if c is None:
+            c = chrome_for(self._theme_id())
+        if getattr(self, "_update_badge_version", None):
+            self.lbl_version.setStyleSheet(
+                f"color: {c['accent']}; background: transparent; font-weight: 600;")
+        else:
+            self.lbl_version.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
+
+    def _set_auto_update_check(self, enabled):
+        """「自动检查更新」开关：写盘 + 起停 6h 定时器；刚打开则立即静默查一次。"""
+        self.settings.setValue("auto_update_check", bool(enabled))
+        self.settings.sync()
+        if enabled:
+            if not self._update_timer.isActive():
+                self._update_timer.start()
+            QTimer.singleShot(0, self._auto_update_check)
+        else:
+            self._update_timer.stop()
+
     def open_about(self):
         """打开「关于 + 检查更新」对话框（托盘菜单触发）。
         parent=None：与其它子对话框一致，避免干扰主窗 WM_NCHITTEST。modal 由 setModal(True) 保证。"""
@@ -5760,6 +5828,8 @@ class CommTool(QMainWindow):
             icon=get_app_icon(),
             theme_id=self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT,
             on_quit=self._real_quit,
+            auto_check=self.settings.value("auto_update_check", True, type=bool),
+            on_auto_check_changed=self._set_auto_update_check,
             parent=None,
         )
         dlg.exec_()

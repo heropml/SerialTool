@@ -37,6 +37,15 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.2
+
+Two usability upgrades: **drag-to-reorder** for Multi-Send, and a **silent auto-update check** (Claude-style — checks quietly in the background and only nudges you when a newer version exists).
+
+- **Multi-Send drag-to-reorder** — each row has a **☰ drag handle** at its start; press and drag up/down to change the send order, drop to save. The insert point snaps to the upper/lower half of the target row.
+- **Auto-update check** — a silent check runs ~5s after startup and again **every 6 hours**; only a newer version is surfaced — no version / no network stays **completely silent (no popups)**. When a newer version is found, the **bottom-right version label turns into a clickable “● Update vX” badge**; click it to open About and download. The About dialog gains an **“Auto-check for updates” toggle** (on by default; turn it off to stop background checks — manual “Check for Updates” still works).
+
+---
+
 ## What's New in v1.2.1
 
 Builds on v1.2.0's Modbus master with **multi-write functions**, hardened **mis-operation safety**, and **draggable columns** — converged over five adversarial-review rounds:
@@ -532,7 +541,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.1.5`)
+- current **version** (`v1.2.2`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

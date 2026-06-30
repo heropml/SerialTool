@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """对话框：CloseDialog / MultiSendDialog / KeywordHighlightDialog + 共享样式 helper。"""
 import sys
-from PyQt5.QtCore import Qt, QTimer, QUrl
-from PyQt5.QtGui import QColor, QDesktopServices
+from PyQt5.QtCore import Qt, QTimer, QUrl, QMimeData, QEvent, QPoint
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
                              QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea,
                              QGraphicsDropShadowEffect, QColorDialog,
@@ -176,12 +176,14 @@ class AboutDialog(_DragFramelessMixin, QDialog):
     tr: 主窗口翻译函数 _t；app_name/version；icon：QIcon；on_quit：去装更新前退出 app 的回调。"""
 
     def __init__(self, tr, app_name, version, icon=None,
-                 theme_id=THEME_DEFAULT, on_quit=None, parent=None):
+                 theme_id=THEME_DEFAULT, on_quit=None,
+                 auto_check=True, on_auto_check_changed=None, parent=None):
         super().__init__(parent)
         self._tr = tr
         self._version = version
         self._theme_id = theme_id
         self._on_quit = on_quit
+        self._on_auto_check_changed = on_auto_check_changed
         self._checker = None
         self._downloader = None
         self._dl_url = ""
@@ -269,9 +271,24 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         h.addWidget(self.btn_close, 1)
         v.addLayout(h)
 
+        # 「自动检查更新」开关：勾上则启动后静默查、有新版在主窗右下角版本号亮可点徽标
+        self.cb_auto = QCheckBox(tr("auto_check_update"))
+        self.cb_auto.setChecked(bool(auto_check))
+        self.cb_auto.setCursor(Qt.PointingHandCursor)
+        self.cb_auto.toggled.connect(self._on_auto_toggled)
+        ha = QHBoxLayout()
+        ha.addStretch(1)
+        ha.addWidget(self.cb_auto)
+        ha.addStretch(1)
+        v.addLayout(ha)
+
         outer.addWidget(self._card)
         self.setStyleSheet(localize_qss(CloseDialog._build_qss(self)))
         self.setMinimumWidth(340)
+
+    def _on_auto_toggled(self, on):
+        if self._on_auto_check_changed:
+            self._on_auto_check_changed(bool(on))
 
     def _set_status(self, text):
         self.lbl_status.setText(text)
@@ -500,6 +517,26 @@ def _make_list_scroll():
     return scroll, host, vbox
 
 
+class _DragHandle(QLabel):
+    """多条发送的行拖拽手柄：按住左键发起 QDrag，由列表容器(host)接收 drop 重排行顺序。"""
+    def __init__(self, dialog, frame):
+        super().__init__("☰")          # ☰ 三横，拖拽手柄惯例图标
+        self.setObjectName("MsDragGrip")
+        self.setFixedWidth(18)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip({"zh": "按住拖动改变顺序", "en": "Drag to reorder",
+                         "zh_tw": "按住拖動改變順序"}.get(getattr(dialog.app, "_lang", "zh"),
+                                                          "Drag to reorder"))
+        self._dialog = dialog
+        self._frame = frame
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._dialog._begin_row_drag(self._frame)
+        super().mousePressEvent(e)   # 无论左右键都让基类感知，保持 Qt 内部按下状态一致
+
+
 def _dialog_list_qss(c):
     """MultiSendDialog / KeywordHighlightDialog 共用的列表型弹窗基础样式表。
     各自再拼接自己特有的按钮样式(MsPrimaryBtn/MsSendBtn 等)。"""
@@ -630,6 +667,10 @@ class MultiSendDialog(QDialog):
         header.addStretch(1)
         right.addLayout(header)
         scroll, self._list_host, self._list_v = _make_list_scroll()
+        # 行拖拽排序：手柄发起 QDrag、容器(host)接收 drop 按落点重排
+        self._list_host.setAcceptDrops(True)
+        self._list_host.installEventFilter(self)
+        self._drag_frame = None
         right.addWidget(scroll, 1)
 
         self.btn_add = QPushButton(app._t("ms_add"))
@@ -737,6 +778,7 @@ class MultiSendDialog(QDialog):
         chk.setChecked(checked)
         chk.stateChanged.connect(self._on_chk_changed)
         h.addWidget(chk)
+        h.addWidget(_DragHandle(self, frame))   # 行拖拽手柄（拖它改变顺序）
         ed_name = QLineEdit(name)
         ed_name.setPlaceholderText(self.app._t("ms_name_ph"))
         ed_name.setMinimumWidth(40)
@@ -811,6 +853,62 @@ class MultiSendDialog(QDialog):
         row["frame"].deleteLater()
         if row in self._rows:
             self._rows.remove(row)
+        self._commit_now()
+
+    # ----- 拖拽排序 -----
+    def eventFilter(self, obj, event):
+        if obj is self._list_host:
+            et = event.type()
+            if et in (QEvent.DragEnter, QEvent.DragMove):
+                if event.mimeData().hasFormat("application/x-mssend-row"):
+                    event.acceptProposedAction()
+                    return True
+            elif et == QEvent.Drop:
+                if event.mimeData().hasFormat("application/x-mssend-row"):
+                    self._on_row_drop(event.pos().y())
+                    event.acceptProposedAction()
+                    return True
+            elif et == QEvent.DragLeave:
+                # 拖到列表区外：接掉事件即可（拖拽影像跟随鼠标，无悬停高亮需清理）
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _begin_row_drag(self, frame):
+        """行手柄按下：发起 QDrag，用整行截图作拖拽影像。"""
+        self._drag_frame = frame
+        drag = QDrag(frame)
+        mime = QMimeData()
+        mime.setData("application/x-mssend-row", b"1")
+        drag.setMimeData(mime)
+        pm = frame.grab()
+        drag.setPixmap(pm)
+        drag.setHotSpot(QPoint(12, pm.height() // 2))
+        drag.exec_(Qt.MoveAction)
+        self._drag_frame = None
+
+    def _on_row_drop(self, y):
+        """按落点 y 把被拖的行插到目标位置，重排 _rows + 布局并落盘。"""
+        src = self._drag_frame
+        if src is None:
+            return
+        frames = [r["frame"] for r in self._rows]
+        if src not in frames:
+            return
+        src_idx = frames.index(src)
+        target = len(frames)
+        for i, f in enumerate(frames):
+            if y < f.y() + f.height() / 2:     # 落点在某行上半 → 插到它之前
+                target = i
+                break
+        if target > src_idx:                   # 源行移除后其后目标索引前移 1
+            target -= 1
+        if target < 0 or target == src_idx:
+            return
+        row = self._rows.pop(src_idx)
+        self._rows.insert(target, row)
+        self._list_v.removeWidget(src)
+        self._list_v.insertWidget(target, src)
         self._commit_now()
 
     def _sync_splits(self, src):
@@ -938,6 +1036,8 @@ class MultiSendDialog(QDialog):
         QPushButton#MsSendBtn:hover {{ background-color: {c['accent_hover']}; }}
         QSplitter#MsNameSplit::handle {{ background: {c['separator']}; margin: 4px 1px; border-radius: 2px; }}
         QSplitter#MsNameSplit::handle:hover {{ background: {c['accent']}; }}
+        QLabel#MsDragGrip {{ color: {c['text_sec']}; font-size: 13px; }}
+        QLabel#MsDragGrip:hover {{ color: {c['accent']}; }}
         QListWidget#KwGroupList {{
             background-color: {c['input_bg']}; border: 1px solid {c['separator']};
             border-radius: 8px; color: {c['text']};
