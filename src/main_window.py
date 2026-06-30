@@ -316,6 +316,14 @@ class CommTool(QMainWindow):
         self._send_hist = []         # 发送命令历史(FIFO max 100)，启动从 QSettings 恢复
         self._send_hist_idx = -1     # 当前导航位置：-1=未在导航态，0..len-1=正在看历史第 N 条
         self._send_hist_pending = "" # 进入历史前的草稿，↓ 翻回最新时复原
+        # 串口物理移除检测：已连接的口在后台扫描里连续 _serial_missing_limit 次都枚举不到
+        # → 判定已拔出/掉驱动 → 主动断开。去抖(连续多次)是为滤掉 USB 串口的瞬时掉枚举
+        # (见 _populate_port_combo 注释)，否则适配器抖一下就把正在用的连接误断了。
+        # 扫描周期 1500ms → 3 次 ≈ 4.5s 才断。
+        self._serial_device = None       # 当前已连接的串口设备名(仅串口连接时非空)
+        self._serial_missing_count = 0   # 已连接:当前口在扫描中连续未枚举到的次数(去抖计数)
+        self._sel_missing_count = 0      # 未连接:选中口连续缺失次数(占位宽限去抖，超限删占位)
+        self._serial_missing_limit = 3
         # 自动重连：连接非主动断开时按退避序列(1/2/4/8/16/30s)重连；用户点关闭/退出时跳过
         self._user_closing = False
         self._reconnect_attempts = 0
@@ -2221,6 +2229,9 @@ class CommTool(QMainWindow):
         self.set_settings_enabled(False)
         self._update_net_fields()
         self._update_conn_status()
+        # 记录已连接的串口设备名 + 复位掉线去抖计数，供后台扫描检测物理移除
+        self._serial_device = port if proto == PROTO_SERIAL else None
+        self._serial_missing_count = 0
 
     def _reset_recv_state(self):
         """统一重置接收解析状态：连接打开/关闭、清空数据区时调用，保证三处一致。"""
@@ -2234,7 +2245,10 @@ class CommTool(QMainWindow):
 
     def _on_conn_error(self, msg):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
-        proto = self.cb_proto.currentText() if hasattr(self, "cb_proto") else ""
+        # 用 _conn_proto(实际打开的协议)而非下拉框当前值：连接中导入配置可能改了下拉框，
+        # 不能拿新值解释旧连接(见 __init__ 处 _conn_proto 注释)。在此处一次性取，早于下面
+        # close_conn() 把它清空；失败/无连接时回退读下拉框。
+        proto = self._conn_proto or (self.cb_proto.currentText() if hasattr(self, "cb_proto") else "")
         key = {PROTO_SERIAL: "err_open_failed",
                PROTO_TCP_SERVER: "err_listen_failed",
                PROTO_TCP_CLIENT: "err_connect_failed",
@@ -2255,7 +2269,10 @@ class CommTool(QMainWindow):
             self.close_conn()
         # 只在「曾连上又断了」(运行时掉线) 或「正在重连周期内」时自动重连。
         # 手动打开失败（端口占用/服务器离线/绑定失败）不该陷入无限重试。
-        if was_engaged or in_retry:
+        # 串口运行时掉线几乎都是拔出/断电的物理事件：**不自动重连**——口可能已从系统移除，
+        # 重连会反复失败、还可能连到下拉回落选中的别的口（用户：「删除之后不要再自动打开」）。
+        # 网络(TCP/UDP)掉线才自动重连。
+        if (was_engaged or in_retry) and proto != PROTO_SERIAL:
             self._schedule_reconnect()
 
     def _schedule_reconnect(self):
@@ -2408,6 +2425,8 @@ class CommTool(QMainWindow):
         self._conn_cfg = None
         self._mbm_guard_until = 0.0   # 物理连接已断，旧响应不可能进入下一会话
         self._conn_engaged = False
+        self._serial_device = None    # 已断开 → 清掉串口掉线检测的目标设备
+        self._serial_missing_count = 0
         if conn:
             try:
                 conn.blockSignals(True)
@@ -2453,36 +2472,82 @@ class CommTool(QMainWindow):
         if getattr(self, "_oneshot_scan", None) is scan:
             self._oneshot_scan = None
 
-    def _populate_port_combo(self, port_list, keep_device=None):
+    def _populate_port_combo(self, port_list, keep_device=None, allow_placeholder=True):
         self.cb_port.blockSignals(True)
         self.cb_port.clear()
         for device, label in port_list:
             self.cb_port.addItem(label, device)
         if keep_device:
+            idx = -1
             for i in range(self.cb_port.count()):
                 if self.cb_port.itemData(i) == keep_device:
-                    self.cb_port.setCurrentIndex(i)
+                    idx = i
                     break
+            if idx < 0:
+                if allow_placeholder:
+                    # 选中口本次没枚举到、但仍在去抖宽限内（可能只是 USB 串口瞬时掉枚举/
+                    # 插拔瞬间）：保留为占位项并选中，**绝不让选择静默落到列表第一个口** ——
+                    # 否则「选了串口1，后台扫描时 COM1 短暂消失 → 默认跳第一个口(串口2) →
+                    # 用户没察觉就打开成串口2」。口回来后下次扫描选回真实项。
+                    self.cb_port.addItem(self._t("port_missing", port=keep_device), keep_device)
+                    idx = self.cb_port.count() - 1
+                else:
+                    # 已超过宽限、口确实长期不在（拔出/掉驱动）：删掉占位、回落到第一个真实口
+                    # （没有则不选），断开/拔出后下拉不再常驻「未检测到」残留项。
+                    idx = 0 if self.cb_port.count() else -1
+            self.cb_port.setCurrentIndex(idx)
         self.cb_port.blockSignals(False)
 
     def _on_port_scan_complete(self, port_list):
         if not port_list:
             port_list = [("", self._t("no_ports"))]
-        # 串口已连接时不动 cb_port：端口占用中，也别打断用户的当前选择
-        if self.conn is not None and self.cb_proto.currentText() == PROTO_SERIAL:
+        # 串口已连接时不动 cb_port（端口占用中、也别打断当前选择）；但要顺带检查正在用的口
+        # 是否还在枚举里 —— USB 串口会偶发瞬时掉枚举(见 _populate_port_combo 注释)，故连续
+        # _serial_missing_limit 次都检测不到才判定真移除 → 主动断开(单次抖动不误断正在用的连接)。
+        if self.conn is not None and self._conn_proto == PROTO_SERIAL:
+            if self._serial_device:
+                if any(dev == self._serial_device for dev, _ in port_list):
+                    self._serial_missing_count = 0
+                else:
+                    self._serial_missing_count += 1
+                    if self._serial_missing_count >= self._serial_missing_limit:
+                        dev = self._serial_device
+                        self._serial_missing_count = 0
+                        self.close_conn()    # 干净断开；不自动重连(口已移除即放弃)
+                        self.toast(self._t("serial_removed", port=dev), error=True)
             return
         if self.cb_port.view().isVisible():   # 下拉正展开时不刷，避免选项跳动
             return
-        if port_list == self._last_port_list:
+        pending = getattr(self, "_pending_restore_port", None)
+        # 选中口连续缺失去抖计数 —— **必须在「列表与上次相同就 return」去重之前更新**：
+        # 口拔掉后端口列表很快稳定不变(就是少了那个口)，若把计数放在 return 之后，列表稳定
+        # 后每次都提前 return、计数停更、占位永远删不掉。这里每次扫描都推进计数。
+        sel = self.cb_port.currentData() or pending
+        if sel and not any(dev == sel for dev, _ in port_list):
+            self._sel_missing_count += 1
+        else:
+            self._sel_missing_count = 0
+        # 宽限刚走完(计数恰超限)的那一次：即便端口列表没变，也要重建一次把占位删掉、回落真实口。
+        need_drop = bool(sel) and self._sel_missing_count == self._serial_missing_limit + 1
+        # pending(启动恢复的上次端口)已出现在列表里但还没选回时，别因「列表与上次相同」提前返回——
+        # 否则启动扫描早于配置恢复(pending 设值)时，pending 设上后端口列表恰好没变，会永远跳过
+        # 恢复、选不回上次用的串口。这种情况必须放行一次，让下面的 pending 分支把它选回。
+        pending_present = bool(pending) and any(dev == pending for dev, _ in port_list)
+        if port_list == self._last_port_list and not need_drop and not pending_present:
             return
-        # 优先保留用户当前选择；启动恢复时 cb_port 还空，则用待恢复端口选回上次设备
-        keep = self.cb_port.currentData() or getattr(self, "_pending_restore_port", None)
         self._last_port_list = port_list
-        self._populate_port_combo(port_list, keep)
-        # 待恢复端口确实匹配上了才清除；没插上时保留，等设备出现的那次扫描再选回
-        if (getattr(self, "_pending_restore_port", None)
-                and self.cb_port.currentData() == self._pending_restore_port):
-            self._pending_restore_port = None
+        # ① pending(启动恢复的上次端口)一旦真实出现就选回它，优先于一切——即便此前因长期不在
+        #    已回落到别的口，设备插上的那次扫描仍能选回，不丢「恢复上次选择」能力。
+        if pending and any(dev == pending for dev, _ in port_list):
+            keep, hold = pending, True
+            self._pending_restore_port = None   # 上次端口已真实出现并将被选回 → 恢复完成
+            self._sel_missing_count = 0
+        else:
+            # ② 否则保持用户当前选择；选中口短暂消失(去抖宽限内)→ 占位保留防漂移；
+            #    长期不在(超宽限)→ 删占位、回落第一个真实口，下拉不留「未检测到」残留。
+            keep = sel
+            hold = self._sel_missing_count <= self._serial_missing_limit
+        self._populate_port_combo(port_list, keep, allow_placeholder=hold)
 
     def _wait_oneshot_scan(self):
         """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running。"""
@@ -4178,16 +4243,17 @@ class CommTool(QMainWindow):
         # 主题/语言
         "theme", "language",
         # 多条发送 / 关键字 / 帧解析 / 绘图
-        "multi_send_groups", "multi_send_group_idx",
+        "multi_send_groups", "multi_send_group_idx", "multi_send_split",
         "keyword_groups", "keyword_active",
         "frame_rules",
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 自动应答
         "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
-        "autoreply_modbus",
+        "autoreply_modbus", "autoreply_split",
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
+        "modbus_master_split",
         # 杂项
         "auto_reconnect", "auto_update_check",
     )

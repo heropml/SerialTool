@@ -35,7 +35,7 @@ class AutoReplyDialog(QDialog):
         self._rows = []
         self._rid_seq = 0                    # 给每行/源规则盖稳定 id，运行态(_hits/_last)按身份迁移，不按索引
         self._syncing = False                # 防止同步分隔条时递归
-        self._split_sizes = None             # 收到/回复两框的共享分隔比例
+        self._split_sizes = self._load_split_sizes()   # 收到/回复两框共享分隔比例（从 settings 恢复）
         self._save_timer = QTimer(self)      # 去抖：连改时合并落盘
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(300)
@@ -443,14 +443,27 @@ class AutoReplyDialog(QDialog):
         self.app._ar_reset_state()
         self._refresh_stats()
 
+    def _load_split_sizes(self):
+        """从 settings 读上次拖好的收到/回复两列宽 'w1,w2'；非法则 None（用默认均分）。"""
+        raw = self.app.settings.value("autoreply_split", "")
+        try:
+            parts = [int(x) for x in str(raw).split(",")]
+            if len(parts) == 2 and all(p > 0 for p in parts):
+                return parts
+        except (ValueError, TypeError):
+            pass
+        return None
+
     def _sync_splitters(self, src):
-        """一行拖动分隔条 → 所有行同步到相同比例（列对齐）。"""
+        """一行拖动分隔条 → 所有行同步到相同比例（列对齐），并持久化列宽。"""
         if self._syncing:
             return
         sizes = src.sizes()
         if len(sizes) != 2 or sum(sizes) <= 0:
             return
         self._split_sizes = sizes
+        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
+        self.app.settings.setValue("autoreply_split", "%d,%d" % (sizes[0], sizes[1]))
         self._syncing = True
         try:
             for rec in self._rows:
@@ -459,6 +472,10 @@ class AutoReplyDialog(QDialog):
                     sp.setSizes(sizes)
         finally:
             self._syncing = False
+
+    def closeEvent(self, e):
+        self.app.settings.sync()   # 把拖动列宽刷到磁盘
+        super().closeEvent(e)
 
     def _del_row(self, rec):
         rec["w"].setParent(None)

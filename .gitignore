@@ -10,6 +10,8 @@ build_onefile/
 build_macos/
 dist/
 dist_onefile/
+dist_verify*/
+build_verify*/
 installer/
 # .spec 文件每次 PyInstaller 自动重新生成（build.bat 用 CLI 参数构造）
 *.spec

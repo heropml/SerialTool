@@ -609,7 +609,9 @@ class MultiSendDialog(QDialog):
         self.resize(1040, 480)
         self._rows = []
         self._populating = False
-        self._name_split_sizes = None    # 名称/数据列的共享拖动比例（所有行同步）
+        # 名称/数据列的共享拖动比例（所有行同步）；从 settings 恢复上次拖好的列宽，
+        # 没存过则 None → 用默认 [90, 460]。拖动后在 _sync_splits 里写回 settings 持久化。
+        self._name_split_sizes = self._load_split_sizes()
         self._syncing_split = False      # 防止同步分隔条时递归
         self._edit_idx = 0      # 编辑哪个分组（数据存于 app._ms_groups，循环在主界面）
         # 去抖：连敲键时合并存盘+重建，避免每个字符都 sync 磁盘/重建快捷栏卡顿
@@ -911,14 +913,27 @@ class MultiSendDialog(QDialog):
         self._list_v.insertWidget(target, src)
         self._commit_now()
 
+    def _load_split_sizes(self):
+        """从 settings 读上次拖好的名称/数据列宽 "w_name,w_data"；无效则 None（用默认）。"""
+        raw = self.app.settings.value("multi_send_split", "")
+        try:
+            parts = [int(x) for x in str(raw).split(",")]
+            if len(parts) == 2 and all(p > 0 for p in parts):
+                return parts
+        except (ValueError, TypeError):
+            pass
+        return None
+
     def _sync_splits(self, src):
-        """一行拖动名称/数据分隔条 → 所有行同步到相同比例（列对齐）。"""
+        """一行拖动名称/数据分隔条 → 所有行同步到相同比例（列对齐），并持久化列宽。"""
         if self._syncing_split:
             return
         sizes = src.sizes()
         if len(sizes) != 2 or sum(sizes) <= 0:
             return
         self._name_split_sizes = sizes
+        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
+        self.app.settings.setValue("multi_send_split", "%d,%d" % (sizes[0], sizes[1]))
         self._syncing_split = True
         try:
             for r in self._rows:
@@ -992,6 +1007,7 @@ class MultiSendDialog(QDialog):
 
     def closeEvent(self, e):
         self._commit_now()    # 关窗时立即落盘待提交编辑
+        self.app.settings.sync()   # 把拖动列宽等设置刷到磁盘
         super().closeEvent(e)
 
     # ----- 主题 / 语言 -----

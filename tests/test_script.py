@@ -419,6 +419,237 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w._ar_on, w._ar_dlg = old_ar, old_dlg
 
+    def test_port_combo_keeps_selection_when_device_vanishes(self):
+        """选中口在某次扫描里没枚举到时，选择必须保留（占位），绝不静默漂移到别的口。
+        复现并钉死「选了串口1、后台扫描 COM1 短暂消失 → 打开成了串口2」的根因。"""
+        w = _win()
+        # 选 COM1
+        w._populate_port_combo([("COM1", "COM1"), ("COM2", "COM2")], keep_device="COM1")
+        self.assertEqual(w.cb_port.currentData(), "COM1")
+        # COM1 本次扫描消失（只剩 COM2）→ 选择必须仍是 COM1，不能跳到 COM2
+        w._populate_port_combo([("COM2", "COM2")], keep_device="COM1")
+        self.assertEqual(w.cb_port.currentData(), "COM1")        # 占位保留，未漂移到 COM2
+        self.assertIn("COM1", w.cb_port.currentText())           # 显示为占位（含设备名）
+        # COM1 回来 → 选回真实 COM1（不再是占位项）
+        w._populate_port_combo([("COM1", "COM1"), ("COM2", "COM2")], keep_device="COM1")
+        self.assertEqual(w.cb_port.currentData(), "COM1")
+        self.assertEqual(w.cb_port.currentText(), "COM1")        # 真实项标签，非「未检测到」
+
+    def test_multi_send_column_width_persists(self):
+        """拖动名称/数据列宽 → 写盘；重开对话框恢复（不再回默认）。"""
+        from dialogs import MultiSendDialog
+
+        class _FakeSplit:                       # 绕开离屏下 splitter 无几何的问题
+            def sizes(self):
+                return [150, 400]
+            def setSizes(self, s):
+                pass
+        w = _win()
+        old = w._ms_groups
+        try:
+            w._ms_groups = [{"name": "T", "items": [{"name": "A", "data": "a"}]}]
+            w.settings.remove("multi_send_split")
+            dlg = MultiSendDialog(w)
+            self.assertIsNone(dlg._name_split_sizes)            # 没存过 → 默认
+            dlg._sync_splits(_FakeSplit())                      # 模拟拖动到 150/400
+            self.assertEqual(w.settings.value("multi_send_split", ""), "150,400")
+            dlg.close()
+            # 重开 → 读回保存的列宽，不再回默认
+            dlg2 = MultiSendDialog(w)
+            self.assertEqual(dlg2._name_split_sizes, [150, 400])
+            dlg2.close()
+        finally:
+            w._ms_groups = old
+            w.settings.remove("multi_send_split")
+
+    def test_modbus_master_column_width_persists(self):
+        """Modbus 主机轮询：拖动列宽 → 写盘；重开对话框恢复。"""
+        from modbus_master_dialog import ModbusMasterDialog, _DEFAULT_SPLIT
+
+        class _FakeSplit:
+            def __init__(self, sizes):
+                self._s = sizes
+            def sizes(self):
+                return self._s
+            def setSizes(self, s):
+                pass
+        w = _win()
+        try:
+            w.settings.remove("modbus_master_split")
+            dlg = ModbusMasterDialog(w)
+            self.assertIsNone(dlg._split_sizes)
+            new_sizes = [s + 7 for s in _DEFAULT_SPLIT]
+            dlg._sync_splits(_FakeSplit(new_sizes))
+            self.assertEqual(w.settings.value("modbus_master_split", ""),
+                             ",".join(str(s) for s in new_sizes))
+            dlg.close()
+            dlg2 = ModbusMasterDialog(w)
+            self.assertEqual(dlg2._split_sizes, new_sizes)
+            dlg2.close()
+        finally:
+            w.settings.remove("modbus_master_split")
+
+    def test_autoreply_column_width_persists(self):
+        """自动应答：拖动收到/回复列宽 → 写盘；重开对话框恢复。"""
+        from auto_reply_dialog import AutoReplyDialog
+
+        class _FakeSplit:
+            def sizes(self):
+                return [220, 520]
+            def setSizes(self, s):
+                pass
+        w = _win()
+        try:
+            w.settings.remove("autoreply_split")
+            dlg = AutoReplyDialog(w)
+            self.assertIsNone(dlg._split_sizes)
+            dlg._sync_splitters(_FakeSplit())
+            self.assertEqual(w.settings.value("autoreply_split", ""), "220,520")
+            dlg.close()
+            dlg2 = AutoReplyDialog(w)
+            self.assertEqual(dlg2._split_sizes, [220, 520])
+            dlg2.close()
+        finally:
+            w.settings.remove("autoreply_split")
+
+    def test_port_placeholder_dropped_after_grace(self):
+        """未连接：选中口短暂消失保留占位(防漂移)；长期不在时——即便端口列表此后稳定不变——
+        占位也要在宽限后被删、回落真实口（钉死「列表稳定后计数停更、占位删不掉」的回归）。"""
+        w = _win()
+        old = (w.conn, w._pending_restore_port, w._last_port_list, w._sel_missing_count)
+        try:
+            w.conn = None
+            w._pending_restore_port = None
+            w._sel_missing_count = 0
+            w._last_port_list = None
+            # 选中 COM1
+            w._populate_port_combo([("COM1", "COM1"), ("COM2", "COM2")], "COM1")
+            self.assertEqual(w.cb_port.currentData(), "COM1")
+            # 之后端口列表【稳定】为只有 COM2（COM1 一直不在）——不手动重置 _last_port_list，
+            # 验证列表稳定时计数仍推进、占位最终被删。
+            for _ in range(w._serial_missing_limit):
+                w._on_port_scan_complete([("COM2", "COM2")])
+                self.assertEqual(w.cb_port.currentData(), "COM1")   # 宽限内保留 COM1 占位
+            # 超宽限的那次：列表依旧没变，也要删占位、回落第一个真实口 COM2
+            w._on_port_scan_complete([("COM2", "COM2")])
+            self.assertEqual(w.cb_port.currentData(), "COM2")
+            datas = [w.cb_port.itemData(i) for i in range(w.cb_port.count())]
+            self.assertNotIn("COM1", datas)                   # 占位已删，不再常驻
+        finally:
+            (w.conn, w._pending_restore_port, w._last_port_list,
+             w._sel_missing_count) = old
+
+    def test_port_pending_restored_when_scan_precedes_config(self):
+        """启动扫描早于配置恢复：pending 在「端口列表已与上次相同」之后才设上，仍要选回上次的串口
+        （钉死「列表没变就 return、pending 永远跳过」的时序回归）。"""
+        w = _win()
+        old = (w.conn, w._pending_restore_port, w._last_port_list, w._sel_missing_count)
+        try:
+            w.conn = None
+            w._sel_missing_count = 0
+            w._pending_restore_port = None
+            w._last_port_list = None
+            # 第一次扫描已处理(此时还没 pending)，_last_port_list 已等于当前列表，cb_port 落在 COM1
+            w._populate_port_combo([("COM1", "COM1"), ("COM87", "COM87")], None)
+            w._on_port_scan_complete([("COM1", "COM1"), ("COM87", "COM87")])
+            self.assertEqual(w.cb_port.currentData(), "COM1")
+            # 配置恢复此刻才设上 pending=COM87；下一次扫描端口列表【不变】
+            w._pending_restore_port = "COM87"
+            w._on_port_scan_complete([("COM1", "COM1"), ("COM87", "COM87")])
+            self.assertEqual(w.cb_port.currentData(), "COM87")   # 列表没变也选回了 COM87
+            self.assertIsNone(w._pending_restore_port)
+        finally:
+            (w.conn, w._pending_restore_port, w._last_port_list,
+             w._sel_missing_count) = old
+
+    def test_port_pending_reselected_when_device_returns(self):
+        """启动恢复：上次端口先占位、超宽限回落到别的口，插上后仍自动选回（pending 不被占位误清）。"""
+        w = _win()
+        old = (w.conn, w._pending_restore_port, w._last_port_list, w._sel_missing_count)
+        try:
+            w.conn = None
+            w._sel_missing_count = 0
+            w._last_port_list = None
+            w._pending_restore_port = "COM1"
+            # 起点：COM1 占位选中（pending 恢复但没插）
+            w._populate_port_combo([("COM2", "COM2"), ("COM3", "COM3")], "COM1")
+            self.assertEqual(w.cb_port.currentData(), "COM1")
+            # 列表【稳定】 [COM2,COM3]、COM1 一直不在 → 超宽限后删占位、回落，但 pending 仍 COM1
+            for _ in range(w._serial_missing_limit + 2):
+                w._on_port_scan_complete([("COM2", "COM2"), ("COM3", "COM3")])
+            self.assertNotEqual(w.cb_port.currentData(), "COM1")  # 已回落
+            self.assertEqual(w._pending_restore_port, "COM1")     # pending 未被占位误清
+            # COM1 插上（列表变化）→ 自动选回 + 清 pending
+            w._on_port_scan_complete([("COM1", "COM1"), ("COM2", "COM2"), ("COM3", "COM3")])
+            self.assertEqual(w.cb_port.currentData(), "COM1")
+            self.assertIsNone(w._pending_restore_port)
+        finally:
+            (w.conn, w._pending_restore_port, w._last_port_list,
+             w._sel_missing_count) = old
+
+    def test_serial_runtime_error_no_autoreconnect(self):
+        """串口运行时掉线(拔出)不自动重连；网络掉线仍重连。"""
+        w = _win()
+        n = {"reconnect": 0}
+        old = (w._schedule_reconnect, w.conn, w._conn_engaged, w._reconnect_attempts,
+               w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto)
+        try:
+            w._schedule_reconnect = lambda: n.__setitem__("reconnect", n["reconnect"] + 1)
+            w.close_conn = lambda: None
+            w.toast = lambda *a, **k: None
+            w._refresh_stat_labels = lambda *a, **k: None
+            w.conn = None
+            w._conn_engaged = True            # 曾连上 → 运行时掉线
+            w._reconnect_attempts = 0
+            # 串口掉线 → 不重连（_on_conn_error 以 _conn_proto 为准，不看下拉框）
+            w._conn_proto = "Serial"
+            w._on_conn_error("device disconnected")
+            self.assertEqual(n["reconnect"], 0)
+            # 网络(TCP Client)掉线 → 仍重连
+            w._conn_engaged = True
+            w._reconnect_attempts = 0
+            w._conn_proto = "TCP Client"
+            w._on_conn_error("connection reset")
+            self.assertEqual(n["reconnect"], 1)
+        finally:
+            (w._schedule_reconnect, w.conn, w._conn_engaged, w._reconnect_attempts,
+             w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto) = old
+
+    def test_serial_removal_disconnects_after_debounce(self):
+        """已连接的串口在后台扫描里连续 N 次检测不到 → 断开；单次抖动不误断。"""
+        w = _win()
+        calls = {"close": 0, "toast": 0}
+        old = (w.conn, w._conn_proto, w._serial_device, w._serial_missing_count,
+               w.close_conn, w.toast)
+        try:
+            w.close_conn = lambda: calls.__setitem__("close", calls["close"] + 1)
+            w.toast = lambda *a, **k: calls.__setitem__("toast", calls["toast"] + 1)
+            w.conn = object()                      # 假装已连接
+            w._conn_proto = "Serial"               # PROTO_SERIAL
+            w._serial_device = "COM1"
+            w._serial_missing_count = 0
+            # 口在 → 计数清零，不断开
+            w._on_port_scan_complete([("COM1", "COM1"), ("COM2", "COM2")])
+            self.assertEqual(calls["close"], 0)
+            self.assertEqual(w._serial_missing_count, 0)
+            # 连续缺失：达阈值前不断
+            for _ in range(w._serial_missing_limit - 1):
+                w._on_port_scan_complete([("COM2", "COM2")])
+            self.assertEqual(calls["close"], 0)
+            # 再缺一次 → 达阈值 → 断开 + 提示各一次
+            w._on_port_scan_complete([("COM2", "COM2")])
+            self.assertEqual(calls["close"], 1)
+            self.assertEqual(calls["toast"], 1)
+            # 单次抖动后口回来 → 计数清零，不会断
+            w._serial_missing_count = 0
+            w._on_port_scan_complete([("COM2", "COM2")])    # 缺 1 次
+            w._on_port_scan_complete([("COM1", "COM1")])    # 回来 → 清零
+            self.assertEqual(w._serial_missing_count, 0)
+            self.assertEqual(calls["close"], 1)             # 没有再断
+        finally:
+            (w.conn, w._conn_proto, w._serial_device, w._serial_missing_count,
+             w.close_conn, w.toast) = old
+
     def test_exact_int_accepts_leading_zero_decimal(self):
         from modbus_master import _exact_int
         self.assertEqual(_exact_int("08"), 8)

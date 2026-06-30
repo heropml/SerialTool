@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.3
+
+A robustness fix release: serial-port selection and disconnect handling are more reliable, and several dialogs now remember their dragged column widths.
+
+- **Serial selection no longer "jumps"** — when a selected port briefly drops out of enumeration during a background scan (common with USB-serial adapters), the selection no longer silently switches to another port; if the port is genuinely gone for good, the "not detected" placeholder is auto-removed and the selection falls back to the first real port.
+- **Connected port removed (unplugged / driver gone)** — after a few consecutive missed scans the connection is **automatically closed with a "serial port X removed" notice**, instead of staying stuck in a fake "connected" state.
+- **Serial disconnect no longer auto-reconnects in a loop** — a serial drop is almost always a physical unplug/power-off; reconnecting is pointless and could grab a different port, so a serial disconnect now just cleanly disconnects (network TCP/UDP drops still auto-reconnect with backoff).
+- **Dialogs remember column widths** — column widths you drag in **Multi-Send**, **Modbus Master**, and **Auto-reply** now persist across reopen/restart and travel with the session config import/export.
+- Also fixed: restoring the last serial port when the startup scan races ahead of config restore; connection-error handling now uses the actual connected protocol (avoids a misjudgment if config is imported mid-connection).
+
+---
+
 ## What's New in v1.2.2
 
 Two usability upgrades: **drag-to-reorder** for Multi-Send, and a **silent auto-update check** (Claude-style — checks quietly in the background and only nudges you when a newer version exists).
@@ -541,7 +553,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.2`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.3`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

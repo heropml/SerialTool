@@ -44,7 +44,9 @@ class ModbusMasterDialog(QDialog):
         self.resize(1040, 460)
 
         self._rows = []
-        self._split_sizes = None          # 名称~值七列的共享拖动比例，所有行与表头同步
+        # 名称~值七列的共享拖动比例，所有行与表头同步；从 settings 恢复上次拖好的列宽，
+        # 没存过则 None → 用 _DEFAULT_SPLIT。拖动后在 _sync_splits 里写回 settings 持久化。
+        self._split_sizes = self._load_split_sizes()
         self._syncing_split = False        # 防止同步分隔条递归
         self._dirty = False                # 编辑只改草稿；显式点“应用”后才重启轮询，避免误写
 
@@ -156,14 +158,27 @@ class ModbusMasterDialog(QDialog):
         sp.setHandleWidth(8)
         return sp
 
+    def _load_split_sizes(self):
+        """从 settings 读上次拖好的七列宽 'w1,...,wN'；列数不符/非法则 None（用默认）。"""
+        raw = self.app.settings.value("modbus_master_split", "")
+        try:
+            parts = [int(x) for x in str(raw).split(",")]
+            if len(parts) == len(_DEFAULT_SPLIT) and all(p > 0 for p in parts):
+                return parts
+        except (ValueError, TypeError):
+            pass
+        return None
+
     def _sync_splits(self, src):
-        """任一行(或表头)拖动分隔条 → 所有行 + 表头同步到相同比例（列对齐）。"""
+        """任一行(或表头)拖动分隔条 → 所有行 + 表头同步到相同比例（列对齐），并持久化列宽。"""
         if self._syncing_split:
             return
         sizes = src.sizes()
         if not sizes or sum(sizes) <= 0:
             return
         self._split_sizes = sizes
+        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
+        self.app.settings.setValue("modbus_master_split", ",".join(str(s) for s in sizes))
         self._syncing_split = True
         try:
             targets = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
@@ -172,6 +187,10 @@ class ModbusMasterDialog(QDialog):
                     sp.setSizes(sizes)
         finally:
             self._syncing_split = False
+
+    def closeEvent(self, e):
+        self.app.settings.sync()   # 把拖动列宽刷到磁盘
+        super().closeEvent(e)
 
     def _update_header_scroll_margin(self, *_args):
         """数据区出现垂直滚动条时，表头预留同宽空间，保持 splitter 像素对齐。"""
