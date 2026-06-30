@@ -225,6 +225,8 @@ class CommTool(QMainWindow):
             QApplication.instance().installEventFilter(self)
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
+        self._conn_proto = None   # 实际打开的协议；配置导入可改下拉框，不能拿新值解释旧连接
+        self._conn_cfg = None     # 实际打开时的端点/串口参数快照；UI 导入改值后必须重连
         self._conn_engaged = False   # 连接是否已成功建立 → 区分"打开失败"与"运行时断开"的错误文案
         self.rx_bytes = 0
         self.tx_bytes = 0
@@ -280,6 +282,9 @@ class CommTool(QMainWindow):
         # Modbus 主机轮询（master/poll）：规则 + 总开关 + 变体；运行态半双工调度
         self._mbm_rules = self._load_mbm_rules()
         self._mbm_on = self.settings.value("modbus_master_on", False, type=bool)
+        if self._mbm_on and self._ar_on:
+            self._ar_on = False       # 主机/自动应答共用同一收流，启动时主机模式优先，禁止假双开
+            self.settings.setValue("autoreply_on", False)
         self._mbm_variant = self.settings.value("modbus_master_variant", "", type=str)  # ""=按连接自动
         self._mbm_echo = self.settings.value("modbus_master_echo", False, type=bool)  # 串口本地回显模式
         self._mbm_inflight = None    # 在途请求 {i,unit,func,qty,tid,variant}；None=空闲可发下一条
@@ -287,6 +292,7 @@ class CommTool(QMainWindow):
         self._mbm_tid = 0            # Modbus-TCP 事务 ID 自增
         self._mbm_due = {}           # 行 index → 下次到点 monotonic 时刻
         self._mbm_results = {}       # 行 index → {"status","text"}（供对话框读/打开时回填）
+        self._mbm_guard_until = 0.0  # RTU 帧间静默/超时隔离：到此刻前不发新请求
         self._mbm_sched = QTimer(self)   # 调度下一条轮询（单次）
         self._mbm_sched.setSingleShot(True)
         self._mbm_sched.timeout.connect(self._mbm_tick)
@@ -2083,6 +2089,20 @@ class CommTool(QMainWindow):
             return None
         return p if 1 <= p <= 65535 else None
 
+    def _conn_config_signature(self, proto=None):
+        """当前 UI 的连接签名；用于确认打开后的实际连接没有被配置导入改写解释。"""
+        proto = proto or self.cb_proto.currentText()
+        if proto == PROTO_SERIAL:
+            try:
+                baud = int(self.cb_baud.currentText())
+            except (ValueError, TypeError):
+                baud = None
+            return (proto, self.cb_port.currentData(), baud, self.cb_databits.currentText(),
+                    self.cb_parity.currentText(), self.cb_stopbits.currentText())
+        if proto == PROTO_TCP_CLIENT:
+            return (proto, self.ed_remote_ip.text().strip(), self._parse_port(self.ed_remote_port.text()))
+        return (proto,)
+
     def open_conn(self):
         proto = self.cb_proto.currentText()
         if proto == PROTO_SERIAL:
@@ -2166,10 +2186,15 @@ class CommTool(QMainWindow):
 
         # 先赋值再 open()：TCP Server / UDP / 组播的 open() 会**同步**发出 state_changed(True)，
         # 此时 self.conn 必须已指向 conn，否则 _on_conn_state_changed 看到 None、状态栏先跑一次「未连接」
+        self._conn_proto = proto
+        self._conn_cfg = self._conn_config_signature(proto)
+        self._mbm_guard_until = 0.0   # 新物理会话不继承旧连接的迟到响应隔离期
         self.conn = conn
         if not conn.open():   # 同步失败(端口占用/绑定失败)：error_occurred 已触发 _on_conn_error → close_conn 复位
             if self.conn is conn:   # 兜底：万一 _on_conn_error 未清理，这里补清
                 self.conn = None
+                self._conn_proto = None
+                self._conn_cfg = None
                 conn.deleteLater()
             return
 
@@ -2329,6 +2354,15 @@ class CommTool(QMainWindow):
             return self.cb_target.currentData()
         return None
 
+    def _abort_partial_tcp_stream(self, sent, expected):
+        """TCP 短写后流中已留下半帧，不能继续复用；立即断开，交自动重连重建干净流。"""
+        if (0 < sent < expected
+                and getattr(self, "_conn_proto", None) == PROTO_TCP_CLIENT):
+            self.close_conn()
+            self._schedule_reconnect()
+            return True
+        return False
+
     def _flush_pending_cr(self):
         """把跨包待定的 \\r 输出出来。
         场景：CRLF 模式下对端只发了孤立 \\r 然后没下文，断开连接/切模式时
@@ -2353,6 +2387,9 @@ class CommTool(QMainWindow):
             self.sw_log_file.setChecked(False)
         conn = self.conn
         self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
+        self._conn_proto = None
+        self._conn_cfg = None
+        self._mbm_guard_until = 0.0   # 物理连接已断，旧响应不可能进入下一会话
         self._conn_engaged = False
         if conn:
             try:
@@ -2590,11 +2627,14 @@ class CommTool(QMainWindow):
                 fdlg.feed(data)
             except Exception:
                 pass
-        # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）
-        try:
-            self._auto_reply(data, reply_target=reply_target)
-        except Exception:
-            pass
+        # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）。
+        # 但 Modbus 主机轮询激活时，收到的都是从机「响应」——绝不能再让自动应答(尤其内置
+        # Modbus 从机)把它当请求回发，否则总线互相干扰。主机激活时整体跳过自动应答。
+        if not self._mbm_active():
+            try:
+                self._auto_reply(data, reply_target=reply_target)
+            except Exception:
+                pass
         # Modbus 主机轮询：若有在途请求，把响应喂给轮询引擎切帧/解析（兜底不影响主流程）
         try:
             self._mbm_feed(data)
@@ -3023,8 +3063,17 @@ class CommTool(QMainWindow):
 
     def _toggle_ar_on(self):
         """翻转自动应答总开关：落盘 + 按钮高亮刷新 + 同步对话框 checkbox（若开着）+ toast。"""
-        self._ar_on = not self._ar_on
-        self.settings.setValue("autoreply_on", self._ar_on)
+        new_value = not self._ar_on
+        self._set_autoreply_enabled(new_value)
+        self.toast(self._t("ar_toast_on" if self._ar_on else "ar_toast_off"))
+
+    def _set_autoreply_enabled(self, enabled):
+        """设置自动应答总开关；开启时关闭 Modbus 主机，保证状态与实际执行一致。"""
+        enabled = bool(enabled)
+        if enabled and getattr(self, "_mbm_on", False):
+            self._set_mbm_enabled(False)
+        self._ar_on = enabled
+        self.settings.setValue("autoreply_on", enabled)
         self._ar_reset_buf()        # 切换瞬间清掉半截组装缓冲，防止下次开启时旧字节被新规则吃
         self._ar_reset_state()      # C8：总开关切换=重新开始 → 状态机回到初始
         self._update_autoreply_btn()
@@ -3033,7 +3082,22 @@ class CommTool(QMainWindow):
             cb.blockSignals(True)
             cb.setChecked(self._ar_on)
             cb.blockSignals(False)
-        self.toast(self._t("ar_toast_on" if self._ar_on else "ar_toast_off"))
+
+    def _set_mbm_enabled(self, enabled):
+        """设置主机轮询总开关；开启时关闭自动应答，避免两个引擎争用同一接收流。"""
+        enabled = bool(enabled)
+        if enabled and self._ar_on:
+            self._set_autoreply_enabled(False)
+        self._mbm_on = enabled
+        self.settings.setValue("modbus_master_on", enabled)
+        self.settings.sync()
+        self._update_mbm_btn()
+        if getattr(self, "_mbm_dlg", None) is not None:
+            cb = self._mbm_dlg.cb_enable
+            cb.blockSignals(True)
+            cb.setChecked(enabled)
+            cb.blockSignals(False)
+        self._mbm_restart()
 
     def _update_autoreply_btn(self):
         """自动应答开启时高亮「自动应答」按钮（动态属性 arActive + 重新 polish 生效）。"""
@@ -4106,6 +4170,8 @@ class CommTool(QMainWindow):
         # 自动应答
         "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
         "autoreply_modbus",
+        # Modbus 主机轮询
+        "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
         # 杂项
         "auto_reconnect",
     )
@@ -4245,6 +4311,26 @@ class CommTool(QMainWindow):
             # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
             self._ar_on = s.value("autoreply_on", False, type=bool)
             self._update_autoreply_btn()
+            # Modbus 主机也是 __init__ 期读入的运行缓存；导入后重载全部配置并重启调度。
+            self._mbm_rules = self._load_mbm_rules()
+            requested_mbm_on = s.value("modbus_master_on", False, type=bool)
+            # 导入配置本身不是“向当前设备发送”的授权动作。连接已打开时必须暂停，避免导入
+            # 一个启用的 05/06/0F/10 规则后立刻改写现场设备；用户需显式重新启用。
+            self._mbm_on = self._mbm_import_enabled(requested_mbm_on)
+            if requested_mbm_on != self._mbm_on:
+                s.setValue("modbus_master_on", False)
+                s.sync()
+            variant = s.value("modbus_master_variant", "", type=str)
+            self._mbm_variant = variant if variant in ("", "rtu", "tcp") else ""
+            self._mbm_echo = s.value("modbus_master_echo", False, type=bool)
+            if self._mbm_on and self._ar_on:
+                # 导入结果也保持互斥（主机优先）。走 _set_autoreply_enabled 而非手设标志，
+                # 才能一并复位状态机 + 同步「打开着的」自动应答对话框 checkbox（否则对话框
+                # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
+                self._set_autoreply_enabled(False)
+                s.sync()
+            self._update_mbm_btn()
+            self._mbm_restart()
             # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
             # 后续编辑（commit 走旧内存）把导入的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
             self._ms_groups, _ = self._load_ms_groups()
@@ -4268,6 +4354,8 @@ class CommTool(QMainWindow):
             if getattr(self, "_keyword_dlg", None) is not None:
                 self._keyword_dlg._reload_group_list()
                 self._keyword_dlg._reload_rows()
+            if getattr(self, "_mbm_dlg", None) is not None:
+                self._mbm_dlg.reload_config()
             # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
             # 避免新配置和老缓冲数据/旧规则混在一起。
             if getattr(self, "_plot_dlg", None) is not None:
@@ -4397,17 +4485,28 @@ class CommTool(QMainWindow):
     # ==================== Modbus 主机轮询（master / poll）====================
     # 半双工轮询引擎：按每行各自周期，到点发一条请求帧（RTU 含 CRC / Modbus-TCP 含 MBAP），
     # 收到响应或超时后再发下一条；响应在 _mbm_feed 里按「刚发请求」的 unit/func/qty 切帧解析。
-    # 持久化：modbus_master（规则）/ modbus_master_on（总开关）/ modbus_master_variant（变体）。
+    # 持久化：modbus_master（规则）/ modbus_master_on（总开关）/
+    # modbus_master_variant（变体）/ modbus_master_echo（本地回显）。
     # 运行态（不持久化）：_mbm_inflight / _mbm_buf / _mbm_tid / _mbm_due / _mbm_results。
     _MBM_TIMEOUT_MS = 1000
+    _MBM_MIN_GUARD_MS = 60   # 超时隔离的下限；实际取本请求完整响应超时，低速大帧会自动增长
+    _MBM_QTIMER_MAX_MS = 0x7FFFFFFF
 
     def _load_mbm_rules(self):
         raw = self.settings.value("modbus_master", "")
         try:
             data = json.loads(raw) if raw else []
-            return [modbus_master.normalize_poll(r) for r in data] if isinstance(data, list) else []
         except Exception:
             return []
+        if not isinstance(data, list):
+            return []
+        out = []
+        for r in data:                       # 逐条规范化：单条损坏只跳过它，不清空整张表
+            try:
+                out.append(modbus_master.normalize_poll(r))
+            except Exception:
+                pass
+        return out
 
     def _mbm_save_rules(self):
         try:
@@ -4421,11 +4520,25 @@ class CommTool(QMainWindow):
         """生效变体：用户显式选优先；否则按连接类型（TCP Client→tcp，其余→rtu）。"""
         if self._mbm_variant in ("rtu", "tcp"):
             return self._mbm_variant
-        return "tcp" if self.cb_proto.currentText() == PROTO_TCP_CLIENT else "rtu"
+        proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
+        return "tcp" if proto == PROTO_TCP_CLIENT else "rtu"
+
+    def _mbm_connection_ready(self):
+        """当前实际连接与界面配置一致，且属于主机轮询支持的连接类型。"""
+        configured = self.cb_proto.currentText()
+        actual = getattr(self, "_conn_proto", None) or configured
+        return bool(actual in (PROTO_SERIAL, PROTO_TCP_CLIENT)
+                    and configured == actual  # 导入改了协议但旧连接未重连：暂停，禁止发错制式
+                    and getattr(self, "_conn_cfg", None) == self._conn_config_signature(configured))
 
     def _mbm_active(self):
-        return bool(self._mbm_on and self._is_open()
+        return bool(self._mbm_connection_ready()
+                    and self._mbm_on and self._is_open()
                     and any(r.get("enabled") for r in self._mbm_rules))
+
+    def _mbm_import_enabled(self, requested):
+        """连接期间导入只加载规则，不继承“启用”状态，避免导入动作直接产生总线写入。"""
+        return bool(requested and not self._is_open())
 
     def _mbm_restart(self):
         """开关/连接/规则/变体变化后：复位运行态并按需启动轮询。"""
@@ -4439,6 +4552,42 @@ class CommTool(QMainWindow):
         self._mbm_results = {}     # 规则增删/重排后清结果，避免旧结果按旧索引错位到新行
         if self._mbm_active():
             self._mbm_tick()
+
+    def _mbm_rtu_silent_ms(self):
+        """Modbus RTU 帧间至少 3.5 个字符；高于 19200 baud 按规范固定取 1.75ms。"""
+        baud = self._mbm_serial_baud()
+        bits = self._mbm_serial_char_bits()
+        return 2 if baud > 19200 else max(2, int(3.5 * bits * 1000.0 / baud + 0.999))
+
+    def _mbm_serial_baud(self):
+        """优先使用连接打开时的真实波特率，不用可能已被配置导入改写的界面值。"""
+        cfg = getattr(self, "_conn_cfg", None)
+        if cfg and cfg[0] == PROTO_SERIAL and len(cfg) > 2 and cfg[2]:
+            return max(int(cfg[2]), 300)
+        try:
+            return max(int(str(self.cb_baud.currentText()).strip()), 300)
+        except (ValueError, TypeError):
+            return 9600
+
+    def _mbm_serial_char_bits(self):
+        """实际每字符位数 = 起始位 + 数据位 + 可选校验位 + 停止位。"""
+        cfg = getattr(self, "_conn_cfg", None)
+        try:
+            if cfg and cfg[0] == PROTO_SERIAL and len(cfg) > 5:
+                databits, parity, stopbits = int(cfg[3]), str(cfg[4]), float(cfg[5])
+            else:
+                databits = int(self.cb_databits.currentText())
+                parity = self.cb_parity.currentText()
+                stopbits = float(self.cb_stopbits.currentText())
+        except (ValueError, TypeError):
+            return 11.0
+        return 1.0 + databits + (0.0 if parity == "None" else 1.0) + stopbits
+
+    def _mbm_rtu_tx_guard_ms(self, frame_len):
+        """无响应帧（广播）发送后，保守等待整帧传输时间 + t3.5。"""
+        tx_ms = int(frame_len * self._mbm_serial_char_bits()
+                    * 1000.0 / self._mbm_serial_baud() + 0.999)
+        return tx_ms + self._mbm_rtu_silent_ms()
 
     def _mbm_tick(self):
         """调度：无在途请求时挑一个到点的行发出；否则按最早到点时间排下次唤醒。"""
@@ -4454,17 +4603,59 @@ class CommTool(QMainWindow):
                 best_i, best_due = i, due
         if best_i is None:
             return
-        wait = best_due - now
+        wait = max(best_due, self._mbm_guard_until) - now   # 超时静默期内推迟，先排空迟到响应
         if wait <= 0.0:
             self._mbm_poll(best_i)
         else:
-            self._mbm_sched.start(int(wait * 1000) + 1)
+            # +1 避免毫秒取整后提前唤醒；同时钳到 QTimer 的有符号 int 上限。
+            delay_ms = min(self._MBM_QTIMER_MAX_MS, max(1, int(wait * 1000) + 1))
+            self._mbm_sched.start(delay_ms)
+
+    def _mbm_timeout_ms(self, frame, r):
+        """响应超时 = 处理余量(1s) + 串口收发传输时间。低波特率大帧(如 1200baud 255字节
+        ~2.1s)下固定 1s 会在请求还没发完就误判超时，故按 帧长+波特率 动态加时。
+        TCP / 非串口连接无波特率概念 → 用固定基值。"""
+        base = self._MBM_TIMEOUT_MS
+        proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
+        if proto != PROTO_SERIAL:
+            return base
+        baud = self._mbm_serial_baud()
+        resp_len = modbus_master.rtu_normal_len(r["func"], r["qty"]) or 8
+        # 按实际数据位/校验/停止位计算，请求 + 响应两段传输。
+        tx_ms = ((len(frame) + resp_len) * self._mbm_serial_char_bits()
+                 * 1000.0 / baud)
+        return int(base + tx_ms)
 
     def _mbm_poll(self, i):
         """构造并发出第 i 行的请求帧，登记在途请求 + 启动响应超时。"""
         r = modbus_master.normalize_poll(self._mbm_rules[i])
         variant = self._mbm_variant_eff()
-        arg = r["qty"] if r["func"] in modbus_master.READ_FUNCS else r["wval"]
+        if (r["unit"] is None or r["addr"] is None or r["period"] is None
+                or (r["func"] in modbus_master.READ_FUNCS and r["qty"] is None)
+                or (variant == "rtu" and r["unit"] > 247)):
+            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+            self._mbm_due[i] = time.monotonic() + 1.0
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
+            return
+        # 写值守卫：输入空白/非法/越界 → 报错、不发送（绝不静默截断或写 0）
+        if ((r["func"] in modbus_master.WRITE_SINGLE and r["wval"] is None)
+                or (r["func"] in modbus_master.WRITE_MULTI and not r["wvals"])):
+            self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
+            return
+        # RTU 地址 0 是广播：只允许写，且从机按规范不返回响应。读广播直接拒绝。
+        if variant == "rtu" and r["unit"] == 0 and r["func"] in modbus_master.READ_FUNCS:
+            self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_read"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
+            return
+        if r["func"] in modbus_master.READ_FUNCS:
+            arg = r["qty"]
+        elif r["func"] in modbus_master.WRITE_MULTI:
+            arg = r["wvals"]                  # 0F/10：写值列表
+        else:
+            arg = r["wval"]                   # 05/06：单写值
         try:
             if variant == "tcp":
                 self._mbm_tid = (self._mbm_tid + 1) & 0xFFFF
@@ -4477,13 +4668,28 @@ class CommTool(QMainWindow):
         except Exception as e:
             self._mbm_set_result(i, "err", str(e))
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
-            self._mbm_tick()
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
-        # 写类(05/06)预期回显值：05 线圈 0/1 → 0xFF00/0x0000；06 即写入值
+        # RTU 广播写：发送成功即完成本轮，不登记 inflight、不启动响应超时。
+        if variant == "rtu" and r["unit"] == 0:
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            sent_ok = self._mbm_send_raw(frame)
+            # 广播无响应可作为帧结束锚点，自行覆盖发送时间+t3.5；期间本地回显也会被丢弃。
+            self._mbm_guard_until = (time.monotonic()
+                                     + self._mbm_rtu_tx_guard_ms(len(frame)) / 1000.0)
+            if sent_ok:
+                self._mbm_set_result(i, "ok", self._t("mbm_st_broadcast"))
+            else:
+                self._mbm_set_result(i, "err", self._t("mbm_st_senderr"))
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
+            return
+        # 写类预期回显：05 线圈 0/1→0xFF00/0x0000；06 即写入值；0F/10 回显 (起始地址, 数量)
         exp_write = None
         if r["func"] in modbus_master.WRITE_SINGLE:
             ev = (0xFF00 if r["wval"] else 0x0000) if r["func"] == 0x05 else (r["wval"] & 0xFFFF)
             exp_write = (r["addr"], ev)
+        elif r["func"] in modbus_master.WRITE_MULTI:
+            exp_write = (r["addr"], r["qty"])
         # 先登记在途请求再发送：避免响应在 send() 内被同步投递时（罕见但可能）因 inflight
         # 尚未就绪而被 _mbm_feed 丢弃；发送失败再回滚。echo=刚发的 RTU 帧，用于剥串口本地回显。
         self._mbm_buf = b""
@@ -4492,13 +4698,15 @@ class CommTool(QMainWindow):
                               "addr": r["addr"], "exp_write": exp_write,
                               "echo": frame if variant == "rtu" else None}
         self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
-        self._mbm_to.start(self._MBM_TIMEOUT_MS)
+        timeout_ms = self._mbm_timeout_ms(frame, r)
+        self._mbm_inflight["timeout_ms"] = timeout_ms
+        self._mbm_to.start(timeout_ms)
         if not self._mbm_send_raw(frame):
             self._mbm_to.stop()
             self._mbm_inflight = None
             self._mbm_set_result(i, "err", self._t("mbm_st_senderr"))
             self._mbm_due[i] = time.monotonic() + max(r["period"], 200) / 1000.0
-            self._mbm_tick()
+            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
 
     def _mbm_send_raw(self, frame) -> bool:
@@ -4510,7 +4718,9 @@ class CommTool(QMainWindow):
             sent = self.conn.send(frame, self._send_target())
         except Exception:
             return False
-        if sent == SEND_NO_TARGET or sent <= 0:
+        # 串口 write() 允许返回短写；只有整帧全部交付才可登记为成功并等待响应。
+        if sent == SEND_NO_TARGET or sent != len(frame):
+            self._abort_partial_tcp_stream(sent, len(frame))
             return False
         self.tx_bytes += len(frame)
         self.tx_packets += 1
@@ -4530,16 +4740,21 @@ class CommTool(QMainWindow):
         坏帧/串口本地回显/杂散字节用「丢 1 字节重同步」处理，而非清空整缓冲——避免请求回显
         与合法响应粘包后把响应一并丢掉（RS-485 半双工本地回显常见）。"""
         if self._mbm_inflight is None:
+            # 超时隔离期间若迟到字节开始到达，从最后一个字节起重新满足 RTU t3.5，确保整帧
+            # 排空后才恢复发送；调度器原定时到点后会再次读取更新后的 guard_until。
+            if time.monotonic() < self._mbm_guard_until and self._mbm_variant_eff() == "rtu":
+                self._mbm_guard_until = max(
+                    self._mbm_guard_until,
+                    time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0)
             return
         self._mbm_buf += bytes(data)
         if len(self._mbm_buf) > 4096:                 # 防异常流无界增长
             self._mbm_buf = self._mbm_buf[-4096:]
         info = self._mbm_inflight
         if info["variant"] == "tcp":
-            # Modbus-TCP 是可靠的 MBAP 分帧流：坏帧/事务ID·从机ID 不符 → 丢弃整缓冲等超时，
-            # 不做丢字节重同步（否则可能在杂散字节里凑出假帧）。
+            # 按 MBAP 完整帧跳过迟到的旧 TID/Unit，再找当前响应；只对畸形 MBAP/PDU 清缓冲。
             try:
-                out = modbus_master.take_tcp_response(
+                result, consumed = modbus_master.take_tcp_response_matching(
                     self._mbm_buf, info["tid"], info["func"], info["unit"])
             except modbus_slave.ModbusException as e:
                 self._mbm_set_result(info["i"], "exc", self._t("mbm_st_exc", code=e.code))
@@ -4547,8 +4762,10 @@ class CommTool(QMainWindow):
             except ValueError:
                 self._mbm_buf = b""
             else:
-                if out is not None:
-                    self._mbm_apply(info, out[0])
+                if consumed:
+                    self._mbm_buf = self._mbm_buf[consumed:]
+                if result is not None:
+                    self._mbm_apply(info, result)
             return
         # RTU「本地回显模式」：串口适配器会回显发出的帧时，先剥掉一份与请求完全相同的前导回显，
         # 再解析真正的从机响应。写功能码 05/06 的成功响应与请求同形——仅此法能把回显与
@@ -4562,10 +4779,9 @@ class CommTool(QMainWindow):
                 return
             self._mbm_buf = rest
             info["echo_done"] = True
-        # RTU：丢 1 字节重同步——处理串口本地回显/线噪声后的粘包，避免整条响应被一起丢掉。
-        guard = 0
-        while self._mbm_buf and guard < 600:
-            guard += 1
+        # RTU：每次失败必丢 1 字节，缓冲又有 4096 上限，因此循环天然有限；不另设较小 guard，
+        # 避免大量残留字节后已经到达的完整响应被搁在缓冲里、因没有新数据事件而最终超时。
+        while self._mbm_buf:
             try:
                 out = modbus_master.take_rtu_response(
                     self._mbm_buf, info["unit"], info["func"], info["qty"])
@@ -4597,7 +4813,8 @@ class CommTool(QMainWindow):
             if len(result["regs"]) != info["qty"]:
                 return self._t("mbm_st_badresp")
         elif "bits" in result:
-            if len(result["bits"]) < info["qty"]:
+            expected = ((info["qty"] + 7) // 8) * 8
+            if len(result["bits"]) != expected:
                 return self._t("mbm_st_badresp")
         elif "echo" in result:
             exp = info.get("exp_write")
@@ -4607,8 +4824,12 @@ class CommTool(QMainWindow):
 
     def _mbm_finish_inflight(self):
         self._mbm_to.stop()
+        info = self._mbm_inflight
         self._mbm_inflight = None
         self._mbm_buf = b""
+        # 正常响应后也必须留出 RTU t3.5 帧间静默，不能在最后一个响应字节后立即发下一帧。
+        if info is not None and info.get("variant") == "rtu":
+            self._mbm_guard_until = time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0
         self._mbm_tick()
 
     def _mbm_on_timeout(self):
@@ -4618,6 +4839,11 @@ class CommTool(QMainWindow):
         self._mbm_set_result(info["i"], "timeout", self._t("mbm_st_timeout"))
         self._mbm_inflight = None
         self._mbm_buf = b""
+        # RTU 无事务 ID：超时后至少再隔离一个“本请求完整超时窗口”。隔离期间收到迟到
+        # 字节还会在 _mbm_feed 中延长到最后一字节后的 t3.5，显著降低误配到下一请求的风险。
+        if info.get("variant") == "rtu":
+            guard_ms = max(self._MBM_MIN_GUARD_MS, int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
+            self._mbm_guard_until = time.monotonic() + guard_ms / 1000.0
         self._mbm_tick()
 
     def _mbm_fmt_result(self, info, result):
@@ -4631,6 +4857,8 @@ class CommTool(QMainWindow):
             return " ".join("1" if b else "0" for b in bits)
         if "echo" in result:
             a, v = result["echo"]
+            if info["func"] in modbus_master.WRITE_MULTI:
+                return self._t("mbm_st_written_multi", addr=a, n=v)   # v=数量
             return self._t("mbm_st_written", addr=a, val=v)
         return ""
 
@@ -4648,7 +4876,8 @@ class CommTool(QMainWindow):
             from modbus_master_dialog import ModbusMasterDialog
             self._mbm_dlg = ModbusMasterDialog(self)
         dlg = self._mbm_dlg
-        dlg.reload_rows()
+        if not dlg._dirty:           # 保留尚未“应用”的界面草稿；已提交时才从运行配置刷新
+            dlg.reload_rows()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -4732,7 +4961,13 @@ class CommTool(QMainWindow):
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return False
-        if sent <= 0:                # 底层 write/writeDatagram 失败（对端断开/网络不可达等）
+        strict_full_write = getattr(self, "_conn_proto", None) in (PROTO_SERIAL, PROTO_TCP_CLIENT)
+        if sent <= 0 or (strict_full_write and sent != len(data)):
+            # 串口/TCP Client 都是一条字节流，部分写入不能算整包成功；TCP 半帧会污染后续
+            # MBAP/应用帧边界，必须断开重建。统计只记底层明确接收的实际字节数。
+            if 0 < sent < len(data):
+                self.tx_bytes += sent
+            self._abort_partial_tcp_stream(sent, len(data))
             self.tx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_send_failed"), error=True)

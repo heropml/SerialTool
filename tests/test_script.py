@@ -8,6 +8,7 @@
 """
 import os
 import sys
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -59,6 +60,376 @@ class CrcTests(unittest.TestCase):
         self.assertEqual(le, be[::-1])
         self.assertEqual(len(self.C(b"x", 8, 0x07)), 1)
         self.assertEqual(len(self.C(b"x", 32, 0x04C11DB7)), 4)
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class ModbusMasterIntegrationTests(unittest.TestCase):
+    def test_config_whitelist_contains_all_master_settings(self):
+        self.assertTrue({"modbus_master", "modbus_master_on", "modbus_master_variant",
+                         "modbus_master_echo"}.issubset(CommTool._CFG_KEYS))
+
+    def test_partial_frame_send_is_failure_and_not_counted(self):
+        w = _win()
+        frame = bytes.fromhex("0110000000020400010002")
+
+        class PartialConn:
+            @staticmethod
+            def send(data, target):
+                return len(data) - 1
+
+        old_conn, old_is_open, old_target = w.conn, w._is_open, w._send_target
+        old_proto, old_close, old_reconnect = w._conn_proto, w.close_conn, w._schedule_reconnect
+        old_bytes, old_packets = w.tx_bytes, w.tx_packets
+        closed, reconnects = [], []
+        try:
+            w.conn = PartialConn()
+            w._is_open = lambda: True
+            w._send_target = lambda: None
+            w._conn_proto = "TCP Client"
+            w.close_conn = lambda: closed.append(True)
+            w._schedule_reconnect = lambda: reconnects.append(True)
+            self.assertFalse(w._mbm_send_raw(frame))
+            self.assertEqual((w.tx_bytes, w.tx_packets), (old_bytes, old_packets))
+            self.assertEqual(closed, [True])
+            self.assertEqual(reconnects, [True])
+        finally:
+            w.conn = old_conn
+            w._is_open = old_is_open
+            w._send_target = old_target
+            w._conn_proto, w.close_conn = old_proto, old_close
+            w._schedule_reconnect = old_reconnect
+            w.tx_bytes, w.tx_packets = old_bytes, old_packets
+
+    def test_normal_send_rejects_and_counts_actual_partial_write(self):
+        w = _win()
+
+        class PartialConn:
+            @staticmethod
+            def send(_data, _target):
+                return 1
+
+        old_conn, old_open, old_proto = w.conn, w._is_open, w._conn_proto
+        old_bytes, old_packets, old_errors = w.tx_bytes, w.tx_packets, w.tx_errors
+        try:
+            w.conn = PartialConn()
+            w._is_open = lambda: True
+            w._conn_proto = "Serial"
+            self.assertFalse(w._send_text("AA BB", hex_mode=True, newline=0, checksum=0))
+            self.assertEqual(w.tx_bytes, old_bytes + 1)
+            self.assertEqual(w.tx_packets, old_packets)
+            self.assertEqual(w.tx_errors, old_errors + 1)
+        finally:
+            w.conn, w._is_open, w._conn_proto = old_conn, old_open, old_proto
+            w.tx_bytes, w.tx_packets, w.tx_errors = old_bytes, old_packets, old_errors
+
+    def test_tcp_connection_reports_actual_short_write(self):
+        from PyQt5.QtNetwork import QAbstractSocket
+        from net_io import TcpClientConn
+
+        class ShortSocket:
+            @staticmethod
+            def state():
+                return QAbstractSocket.ConnectedState
+
+            @staticmethod
+            def write(_data):
+                return 3
+
+        conn = TcpClientConn("127.0.0.1", 1)
+        conn._sock = ShortSocket()
+        self.assertEqual(conn.send(b"1234567890"), 3)
+
+    def test_tcp_server_rejects_and_drops_partial_client_stream(self):
+        from net_io import TcpServerConn
+
+        class ShortClient:
+            aborted = False
+            deleted = False
+
+            def write(self, _data):
+                return 3
+
+            def abort(self):
+                self.aborted = True
+
+            def deleteLater(self):
+                self.deleted = True
+
+        client = ShortClient()
+        conn = TcpServerConn("127.0.0.1", 1)
+        conn._clients = [client]
+        conn._emit_clients = lambda: None
+        self.assertEqual(conn.send(b"1234567890"), 0)
+        self.assertTrue(client.aborted)
+        self.assertTrue(client.deleted)
+        self.assertEqual(conn._clients, [])
+
+    def test_protocol_change_pauses_existing_connection(self):
+        class Combo:
+            @staticmethod
+            def currentText():
+                return "TCP Client"
+
+        fake = type("Fake", (), {"cb_proto": Combo(), "_conn_proto": "Serial",
+                                  "_mbm_on": True, "_mbm_rules": [{"enabled": True}],
+                                  "_mbm_connection_ready": lambda self: CommTool._mbm_connection_ready(self),
+                                  "_is_open": lambda self: True})()
+        self.assertFalse(CommTool._mbm_active(fake))
+
+    def test_imported_master_is_paused_while_connected(self):
+        opened = type("Fake", (), {"_is_open": lambda self: True})()
+        closed = type("Fake", (), {"_is_open": lambda self: False})()
+        self.assertFalse(CommTool._mbm_import_enabled(opened, True))
+        self.assertTrue(CommTool._mbm_import_enabled(closed, True))
+
+    def test_changed_serial_settings_pause_existing_connection(self):
+        from modbus_master_dialog import ModbusMasterDialog
+        w = _win()
+        old_cfg, old_proto, old_on = w._conn_cfg, w._conn_proto, w._mbm_on
+        old_rules, old_open = w._mbm_rules, w._is_open
+        old_ui_proto, old_baud = w.cb_proto.currentText(), w.cb_baud.currentText()
+        try:
+            w.cb_proto.setCurrentText("Serial")
+            w.cb_baud.setCurrentText("9600")
+            w._conn_proto = "Serial"
+            w._conn_cfg = w._conn_config_signature("Serial")
+            w._mbm_on = True
+            w._mbm_rules = [{"enabled": True}]
+            w._is_open = lambda: True
+            self.assertTrue(w._mbm_active())
+            w.cb_baud.setCurrentText("19200")
+            self.assertFalse(w._mbm_active())
+            w._mbm_on = False
+            dlg = ModbusMasterDialog(w)
+            dlg.cb_enable.setChecked(True)
+            self.assertFalse(dlg.cb_enable.isChecked())
+            self.assertFalse(w._mbm_on)
+            dlg.close()
+        finally:
+            w.cb_proto.setCurrentText(old_ui_proto)
+            w.cb_baud.setCurrentText(old_baud)
+            w._conn_cfg, w._conn_proto, w._mbm_on = old_cfg, old_proto, old_on
+            w._mbm_rules, w._is_open = old_rules, old_open
+
+    def test_coil_response_byte_count_must_match_request(self):
+        fake = type("Fake", (), {"_t": lambda self, key: key})()
+        self.assertIsNone(CommTool._mbm_validate(fake, {"qty": 1}, {"bits": [False] * 8}))
+        self.assertEqual(CommTool._mbm_validate(
+            fake, {"qty": 1}, {"bits": [False] * 16}), "mbm_st_badresp")
+
+    def test_qtimer_delay_is_clamped_after_rounding(self):
+        class Timer:
+            value = None
+
+            def start(self, value):
+                self.value = value
+
+        fake = type("Fake", (), {})()
+        fake._mbm_inflight = None
+        fake._mbm_active = lambda: True
+        fake._mbm_rules = [{"enabled": True}]
+        fake._mbm_due = {0: time.monotonic() + 0x7FFFFFFF}
+        fake._mbm_guard_until = 0.0
+        fake._mbm_sched = Timer()
+        fake._mbm_poll = lambda _i: self.fail("future poll must not run immediately")
+        fake._MBM_QTIMER_MAX_MS = CommTool._MBM_QTIMER_MAX_MS
+        CommTool._mbm_tick(fake)
+        self.assertEqual(fake._mbm_sched.value, 0x7FFFFFFF)
+
+    def test_rtu_timeout_uses_full_timeout_window_as_guard(self):
+        fake = type("Fake", (), {})()
+        fake._mbm_inflight = {"i": 0, "variant": "rtu", "timeout_ms": 2300}
+        fake._mbm_buf = b"late"
+        fake._MBM_MIN_GUARD_MS = CommTool._MBM_MIN_GUARD_MS
+        fake._MBM_TIMEOUT_MS = CommTool._MBM_TIMEOUT_MS
+        fake._mbm_set_result = lambda *_args: None
+        fake._t = lambda key: key
+        fake._mbm_tick = lambda: None
+        before = time.monotonic()
+        CommTool._mbm_on_timeout(fake)
+        self.assertIsNone(fake._mbm_inflight)
+        self.assertEqual(fake._mbm_buf, b"")
+        self.assertGreaterEqual(fake._mbm_guard_until, before + 2.3)
+
+    def test_late_byte_never_shortens_timeout_guard(self):
+        fake = type("Fake", (), {})()
+        fake._mbm_inflight = None
+        fake._mbm_guard_until = time.monotonic() + 2.0
+        fake._mbm_variant_eff = lambda: "rtu"
+        fake._mbm_rtu_silent_ms = lambda: 5
+        original = fake._mbm_guard_until
+        CommTool._mbm_feed(fake, b"late")
+        self.assertGreaterEqual(fake._mbm_guard_until, original)
+
+    def test_successful_rtu_response_observes_interframe_silence(self):
+        class Timer:
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        fake = type("Fake", (), {})()
+        fake._mbm_to = Timer()
+        fake._mbm_inflight = {"variant": "rtu"}
+        fake._mbm_buf = b"response"
+        fake._mbm_rtu_silent_ms = lambda: 5
+        fake._mbm_tick = lambda: None
+        before = time.monotonic()
+        CommTool._mbm_finish_inflight(fake)
+        self.assertTrue(fake._mbm_to.stopped)
+        self.assertGreaterEqual(fake._mbm_guard_until, before + 0.005)
+
+    def test_broadcast_guard_includes_transmit_time(self):
+        fake = type("Fake", (), {})()
+        fake._conn_cfg = ("Serial", "COM1", 1200, "8", "None", "1")
+        fake.cb_baud = type("Combo", (), {"currentText": lambda self: "115200"})()
+        fake._mbm_serial_baud = lambda: CommTool._mbm_serial_baud(fake)
+        fake._mbm_serial_char_bits = lambda: CommTool._mbm_serial_char_bits(fake)
+        fake._mbm_rtu_silent_ms = lambda: CommTool._mbm_rtu_silent_ms(fake)
+        guard = CommTool._mbm_rtu_tx_guard_ms(fake, 20)
+        self.assertGreater(guard, CommTool._mbm_rtu_silent_ms(fake))
+
+    def test_rtu_timing_uses_actual_serial_character_width(self):
+        fake = type("Fake", (), {})()
+        fake._conn_cfg = ("Serial", "COM1", 9600, "8", "Even", "2")
+        fake.cb_baud = type("Combo", (), {"currentText": lambda self: "9600"})()
+        fake._mbm_serial_baud = lambda: CommTool._mbm_serial_baud(fake)
+        fake._mbm_serial_char_bits = lambda: CommTool._mbm_serial_char_bits(fake)
+        self.assertEqual(CommTool._mbm_serial_char_bits(fake), 12.0)
+        self.assertEqual(CommTool._mbm_rtu_silent_ms(fake), 5)
+
+    def test_master_and_autoreply_switches_are_mutually_exclusive(self):
+        w = _win()
+        old_ar, old_mbm = w._ar_on, w._mbm_on
+        try:
+            w._ar_on, w._mbm_on = True, False
+            w._set_mbm_enabled(True)
+            self.assertTrue(w._mbm_on)
+            self.assertFalse(w._ar_on)
+            w._set_autoreply_enabled(True)
+            self.assertTrue(w._ar_on)
+            self.assertFalse(w._mbm_on)
+        finally:
+            w._ar_on, w._mbm_on = old_ar, old_mbm
+            w.settings.setValue("autoreply_on", old_ar)
+            w.settings.setValue("modbus_master_on", old_mbm)
+            w._update_autoreply_btn()
+            w._update_mbm_btn()
+            w._mbm_restart()
+
+    def test_physical_close_clears_old_guard(self):
+        w = _win()
+        old_guard = w._mbm_guard_until
+        try:
+            w._mbm_guard_until = time.monotonic() + 10.0
+            w.close_conn()
+            self.assertEqual(w._mbm_guard_until, 0.0)
+        finally:
+            w._mbm_guard_until = old_guard
+
+    def test_dirty_dialog_blocks_runtime_changes_using_old_rules(self):
+        from modbus_master_dialog import ModbusMasterDialog
+        w = _win()
+        old_rules, old_on = w._mbm_rules, w._mbm_on
+        old_variant, old_echo = w._mbm_variant, w._mbm_echo
+        try:
+            w._mbm_on = False
+            w._mbm_variant = ""
+            w._mbm_echo = False
+            w._mbm_rules = [{"enabled": True, "name": "old", "unit": 1, "func": 6,
+                             "addr": 10, "qty": 1, "period": 1000,
+                             "wval": 0x1111, "wvals": []}]
+            dlg = ModbusMasterDialog(w)
+            dlg._rows[0]["qty"].setText("8738")  # 0x2222，仍是草稿
+            self.assertTrue(dlg._dirty)
+            dlg._on_enable(True)
+            self.assertFalse(w._mbm_on)
+            self.assertFalse(dlg.cb_enable.isChecked())
+            self.assertEqual(w._mbm_rules[0]["wval"], 0x1111)
+            dlg.cb_variant.setCurrentIndex(dlg.cb_variant.findData("tcp"))
+            self.assertEqual(w._mbm_variant, "")
+            self.assertEqual(dlg.cb_variant.currentData(), "")
+            dlg.cb_echo.setChecked(True)
+            self.assertFalse(w._mbm_echo)
+            self.assertFalse(dlg.cb_echo.isChecked())
+            dlg.close()
+        finally:
+            w._mbm_rules, w._mbm_on = old_rules, old_on
+            w._mbm_variant, w._mbm_echo = old_variant, old_echo
+
+    def test_header_stays_aligned_when_vertical_scrollbar_appears(self):
+        from PyQt5.QtWidgets import QApplication
+        from modbus_master_dialog import ModbusMasterDialog
+        w = _win()
+        old_rules = w._mbm_rules
+        try:
+            w._mbm_rules = [
+                {"enabled": True, "name": "row%d" % i, "unit": 1, "func": 3,
+                 "addr": i, "qty": 1, "period": 1000, "wval": 0, "wvals": []}
+                for i in range(30)
+            ]
+            dlg = ModbusMasterDialog(w)
+            dlg.resize(1040, 460)
+            dlg.show()
+            QApplication.instance().processEvents()
+            QApplication.instance().processEvents()
+            row_split = dlg._rows[0]["split"]
+            self.assertTrue(dlg.scroll.verticalScrollBar().isVisible())
+            self.assertEqual(dlg._hdr_split.width(), row_split.width())
+            self.assertEqual(dlg._hdr_split.sizes(), row_split.sizes())
+            dlg.close()
+        finally:
+            w._mbm_rules = old_rules
+
+    def test_tcp_server_broadcast_succeeds_if_any_client_gets_full_frame(self):
+        from net_io import TcpServerConn
+
+        class DeadClient:        # write 返回 -1：对端 RST / 缓冲满
+            @staticmethod
+            def write(_data):
+                return -1
+
+        class GoodClient:
+            @staticmethod
+            def write(data):
+                return len(data)
+
+        dead, good = DeadClient(), GoodClient()
+        conn = TcpServerConn("127.0.0.1", 1)
+        conn._clients = [dead, good]
+        conn._emit_clients = lambda: None
+        # 一个客户端 -1 失败、另一个整帧成功 → 整体成功(返回 len)，不因掉线客户端误判失败；
+        # -1 客户端不剔除(交 Qt disconnected 清理)。
+        self.assertEqual(conn.send(b"1234567890"), 10)
+        self.assertEqual(conn._clients, [dead, good])
+
+    def test_disable_autoreply_syncs_open_dialog_checkbox(self):
+        from auto_reply_dialog import AutoReplyDialog
+        w = _win()
+        old_ar, old_dlg = w._ar_on, getattr(w, "_ar_dlg", None)
+        try:
+            w._ar_on = True
+            dlg = AutoReplyDialog(w)
+            w._ar_dlg = dlg
+            dlg.cb_enable.setChecked(True)
+            w._set_autoreply_enabled(False)
+            self.assertFalse(w._ar_on)
+            self.assertFalse(dlg.cb_enable.isChecked())   # 打开着的对话框 checkbox 同步关闭
+            dlg.close()
+        finally:
+            w._ar_on, w._ar_dlg = old_ar, old_dlg
+
+    def test_exact_int_accepts_leading_zero_decimal(self):
+        from modbus_master import _exact_int
+        self.assertEqual(_exact_int("08"), 8)
+        self.assertEqual(_exact_int("010"), 10)      # 十进制 10，不是八进制
+        self.assertEqual(_exact_int("0x1F"), 31)     # 十六进制前缀仍支持
+        self.assertEqual(_exact_int("247"), 247)
+        self.assertEqual(_exact_int(5), 5)
+        with self.assertRaises(ValueError):
+            _exact_int("zz")
+        with self.assertRaises(ValueError):
+            _exact_int(1.9)                           # 非整数浮点仍拒
 
 
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))

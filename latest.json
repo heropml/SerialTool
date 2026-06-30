@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.0/CommTool_Setup_v1.2.0.exe",
-  "notes": "Modbus 主机轮询（master/poll）：把本工具当 Modbus 主机，按每行周期半双工轮询从机，实时显示寄存器/线圈值（十进制+十六进制）与状态（OK/超时/异常码/响应无效）。读 01/02/03/04、写 05/06；传输自动选择（串口→Modbus RTU、TCP Client→Modbus TCP）；串口适配器回显可开「本地回显」剥除（专治写 05/06 回显与成功同形）；严格核对从机ID/数量/写回显/异常功能码。继自动应答 Modbus 从机之后补上主机侧；无新依赖，启用前不影响原有功能。"
+  "version": "1.2.1",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.1/CommTool_Setup_v1.2.1.exe",
+  "notes": "Modbus 主机增强：写多功能码 0F 写多线圈 / 10 写多寄存器；误操作安全（非法/越界的从机ID·地址·写值一律拒发、写多任一项非法整组拒发、响应超时静默期、主机轮询时跳过自动应答）；轮询时改规则须点「应用」才生效；表格可拖拽列。并修复对抗式评审发现的 4 处：导入配置时若连接已开强制暂停、读写多完整地址段越界校验、RTU 动态超时 + t3.5 帧间静默、轮询周期 QTimer 钳到整数上限。"
 }

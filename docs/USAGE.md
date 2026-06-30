@@ -37,6 +37,19 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.1
+
+Builds on v1.2.0's Modbus master with **multi-write functions**, hardened **mis-operation safety**, and **draggable columns** — converged over five adversarial-review rounds:
+
+- **Multi-write functions** — the master now supports **0F (write multiple coils) / 10 (write multiple registers)**: put several values in the Qty/Value cell, comma- or space-separated (e.g. `100,200,300`; 0F coils: `0/1`).
+- **Mis-operation safety**: illegal/out-of-range **Unit (0..247) / Address (0..65535) / write value** are **refused** instead of silently clamped (so a bad Unit can't become broadcast address 0 and write every slave); a write-multi with any invalid item or over the spec limit is **rejected as a whole** (no silent truncation / address shift); after a request timeout a short **quiet window** prevents a late reply from being mis-matched to the next row; while master polling is active, auto-reply is skipped so it can't fight the built-in Modbus slave on the bus.
+- **Draft editing** — while polling is on, editing a rule only stages a draft (no more auto-commit-and-send after 300 ms); click **Apply** to take effect (prevents an accidental write when switching a read to a write). Unapplied drafts survive closing/reopening.
+- **Draggable columns** — drag the boundaries between Name…Value to resize; all rows and the header stay pixel-synced; the Function column is narrower by default.
+- Robustness: one corrupt rule is skipped instead of wiping the whole table; the string `"false"` is correctly read as disabled; many illegal rules schedule asynchronously (no recursion/stack overflow). Behaves like v1.2.0 when the Modbus master is off.
+- **Mutual exclusion + connection self-heal**: auto-reply and Modbus master are **one-click mutually exclusive** (enabling one disables the other; both dialog toggles stay in sync); TCP/serial half-frame writes drop & reconnect immediately, never polluting later frames; Modbus address/numeric inputs accept leading zeros (e.g. `08`/`010`).
+
+---
+
 ## What's New in v1.2.0
 
 **Modbus master / polling** — after the Modbus RTU **slave** in auto-reply, this adds the **master** side: act as a Modbus master, poll a slave's registers / coils at a per-row period and show the results live (no more hand-typing request frames for bring-up, table dumps, or periodic checks):

@@ -172,11 +172,28 @@ class TcpServerConn(NetConn):
             targets = [s for s in self._clients if self._key(s) == target]
             if not targets:
                 return SEND_NO_TARGET
-        ok = False
+        # 广播尽力而为：任一客户端整帧写成功即算成功。只有「半帧」(0<n<len) 会错位污染
+        # 该客户端的字节流 → abort 剔除；纯写失败(-1，对端 RST/缓冲满)交 Qt 的 disconnected
+        # 信号清理，不因某个掉线客户端把其它已收到完整帧的客户端也判成发送失败。
+        any_ok = False
+        poisoned = []
         for s in targets:
-            if s.write(data) != -1:   # QTcpSocket.write 失败返回 -1
-                ok = True
-        return len(data) if ok else 0   # 全部客户端写入失败 → 0（调用方按发送失败处理）
+            n = s.write(data)
+            if n == len(data):
+                any_ok = True
+            elif 0 < n < len(data):
+                poisoned.append(s)  # 半帧已进入该客户端流，不能继续复用
+        for s in poisoned:
+            try:
+                s.abort()
+                if s in self._clients:
+                    self._clients.remove(s)
+                s.deleteLater()
+            except Exception:
+                pass
+        if poisoned:
+            self._emit_clients()
+        return len(data) if any_ok else 0
 
     def close(self):
         for s in list(self._clients):
@@ -257,7 +274,8 @@ class TcpClientConn(NetConn):
 
     def send(self, data, target=None):
         if self._sock and self._sock.state() == QAbstractSocket.ConnectedState:
-            return len(data) if self._sock.write(data) != -1 else 0
+            n = self._sock.write(data)
+            return n if n > 0 else 0
         return 0
 
     def close(self):

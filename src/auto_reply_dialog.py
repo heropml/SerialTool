@@ -1133,11 +1133,7 @@ class AutoReplyDialog(QDialog):
         self._save_timer.start()
 
     def _on_enable(self, on):
-        self.app._ar_on = bool(on)
-        self.app.settings.setValue("autoreply_on", bool(on))
-        self.app._ar_reset_buf()              # 跟 _toggle_ar_on 一致：切换时清半帧缓冲
-        self.app._ar_reset_state()            # C8：总开关切换=重新开始 → 状态机回到初始
-        self.app._update_autoreply_btn()      # 主界面按钮跟随高亮
+        self.app._set_autoreply_enabled(on)
 
     def _commit(self):
         def _n(le):
