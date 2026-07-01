@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.4
+
+**Terminal mode** — a "Terminal mode" toggle in the **Send** settings turns the send box into a lightweight serial terminal, handy for logging into a Linux serial console and typing commands:
+
+- **Type-to-send, key by key** — type in the send box and each keystroke goes straight to the device: **Enter / Backspace / Tab / Ctrl+C / arrow keys (↑↓ shell history, ←→ move) / ESC / Home / End / Delete** are all passed through.
+- **Terminal-semantic rendering** — the data area renders the device's echo like a terminal: proper **backspace erase**, `\r` carriage return, cursor moves, and the common line-editing ANSI sequences (`ESC[J` / `ESC[K` erase, `ESC[C` / `ESC[D` cursor); **color codes `ESC[..m` are ignored** (colored `ls` output shows clean, no more `^[[31m` garbage).
+- **Local echo / Enter mapping** — a "Local echo" switch (for devices that don't echo); "Enter" can be **CR / LF / CRLF** (default CR, matching most Linux consoles).
+- While terminal mode is on, the **irrelevant format settings (HEX display / timestamp / packet-split / timeout / HEX send / checksum, etc.) are dimmed & disabled**, and periodic send is stopped — only terminal-related options stay active; everything restores when you turn it off.
+- Limitation: full-screen TUIs (`vi` / `top` with whole-screen cursor positioning) aren't emulated — use a dedicated terminal for those.
+
+---
+
 ## What's New in v1.2.3
 
 A robustness fix release: serial-port selection and disconnect handling are more reliable, and several dialogs now remember their dragged column widths.
@@ -553,7 +565,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.3`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.4`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

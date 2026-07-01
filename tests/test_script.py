@@ -587,6 +587,192 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             (w.conn, w._pending_restore_port, w._last_port_list,
              w._sel_missing_count) = old
 
+    def test_terminal_key_mapping(self):
+        """终端模式按键 → 字节映射：回车(CR/LF/CRLF)、Backspace、Tab、方向键、Ctrl+C、普通字符。"""
+        from PyQt5.QtCore import Qt
+        w = _win()
+        old = w._terminal_enter
+        try:
+            w._terminal_enter = 0   # CR
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Return, Qt.NoModifier, "\r"), (b"\r", "\n"))
+            w._terminal_enter = 1   # LF
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Return, Qt.NoModifier, ""), (b"\n", "\n"))
+            w._terminal_enter = 2   # CRLF
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Enter, Qt.NoModifier, ""), (b"\r\n", "\n"))
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Backspace, Qt.NoModifier, "")[0], b"\x7f")
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Tab, Qt.NoModifier, "\t"), (b"\t", "\t"))
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Up, Qt.NoModifier, "")[0], b"\x1b[A")
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_Left, Qt.NoModifier, "")[0], b"\x1b[D")
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_C, Qt.ControlModifier, "\x03")[0], b"\x03")
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_A, Qt.NoModifier, "a"), (b"a", "a"))
+            self.assertEqual(w._term_key_to_bytes(Qt.Key_unknown, Qt.NoModifier, ""), (None, None))
+        finally:
+            w._terminal_enter = old
+
+    def test_terminal_append_stream(self):
+        r"""终端轻量 VT 渲染：\n 换行、\r 回行首、\b 光标左移 + 覆盖式打印。"""
+        w = _win()
+        old_esc, old_discard, old_pos = w._term_esc, w._term_discard_csi, w._term_pos
+        try:
+            w._term_esc = ""
+            w._term_pos = None
+            w.txt_recv.clear()
+            w._terminal_append("line1\nline2")
+            self.assertEqual(w.txt_recv.toPlainText(), "line1\nline2")
+            # \r 回行首 + 覆盖：abc\rXY → XYc（X 覆盖 a、Y 覆盖 b、c 留存，真终端行为）
+            w.txt_recv.clear()
+            w._terminal_append("abc\rXY")
+            self.assertEqual(w.txt_recv.toPlainText(), "XYc")
+            w.txt_recv.clear()
+            w._terminal_append("a\r\nb")
+            self.assertEqual(w.txt_recv.toPlainText(), "a\nb")
+            # \b 光标左移（非破坏）+ 覆盖：abc\b\bX → aXc
+            w.txt_recv.clear()
+            w._terminal_append("abc\b\bX")
+            self.assertEqual(w.txt_recv.toPlainText(), "aXc")
+            # 'BS 空格 BS' 擦除序列：ab\b \bX → aX
+            w.txt_recv.clear()
+            w._terminal_append("ab\b \bX")
+            self.assertEqual(w.txt_recv.toPlainText(), "aX")
+            # 用户设备的退格回显：BS + ESC[J（擦光标到末尾）+ 杂散 0xFF(U+FFFD) → 删末字符
+            w.txt_recv.clear()
+            w._terminal_append("ls")
+            w._terminal_append("\b\x1b[J�")
+            self.assertEqual(w.txt_recv.toPlainText(), "l")
+            # 颜色码 ESC[..m 被忽略（不再显示成 ^[[31m 乱码）
+            w.txt_recv.clear()
+            w._terminal_append("a\x1b[31mb\x1b[0mc")
+            self.assertEqual(w.txt_recv.toPlainText(), "abc")
+            # ESC[K 擦到行尾
+            w.txt_recv.clear()
+            w._terminal_append("abcde\r\x1b[K")
+            self.assertEqual(w.txt_recv.toPlainText(), "")
+            # 超大 CSI 光标计数：到边界即停、不空转冻结（ab + ESC[大数D → 回行首，X 覆盖 a → Xb）
+            w.txt_recv.clear()
+            w._terminal_append("ab\x1b[999999999DX")
+            self.assertEqual(w.txt_recv.toPlainText(), "Xb")
+            # 未处理控制符（BEL/NUL）丢弃
+            w.txt_recv.clear()
+            w._terminal_append("a\x07\x00b")
+            self.assertEqual(w.txt_recv.toPlainText(), "ab")
+            # 跨块拼接的转义序列：ESC[ 在前一块、J 在后一块
+            w.txt_recv.clear()
+            w._terminal_append("xy")
+            w._terminal_append("\b\x1b[")
+            w._terminal_append("J")
+            self.assertEqual(w.txt_recv.toPlainText(), "x")
+            # 未完成的超长 CSI 跨块输入会被丢弃，不无限增长；之后普通文本仍可继续渲染
+            w.txt_recv.clear()
+            w._terminal_append("\x1b[" + "9" * 100)
+            self.assertEqual(w._term_esc, "")
+            self.assertTrue(w._term_discard_csi)
+            w._terminal_append("mok")   # m 终止并被丢弃，后面的普通文本继续渲染
+            self.assertEqual(w.txt_recv.toPlainText(), "ok")
+        finally:
+            w._term_esc, w._term_discard_csi, w._term_pos = old_esc, old_discard, old_pos
+
+    def test_terminal_mode_receive_bypasses_decoration(self):
+        """终端模式收数据：纯流显示，绕过时间戳/方向/HEX/分包装饰。"""
+        w = _win()
+        old = w._terminal_on
+        try:
+            w._terminal_on = True
+            w.txt_recv.clear()
+            w._on_data_received_impl(b"hello\n")
+            self.assertEqual(w.txt_recv.toPlainText(), "hello\n")
+        finally:
+            w._terminal_on = old
+
+    def test_terminal_toggle_persists(self):
+        """终端模式开关写盘 + 纳入配置导出键。"""
+        w = _win()
+        old = w._terminal_on
+        try:
+            w._set_terminal_enabled(True)
+            self.assertTrue(w._terminal_on)
+            self.assertTrue(w.settings.value("terminal_mode", type=bool))
+            self.assertEqual(w.txt_send.property("tr_placeholder"), "term_send_ph")   # 占位同步
+            w._set_terminal_enabled(False)
+            self.assertFalse(w._terminal_on)
+            self.assertFalse(w.settings.value("terminal_mode", type=bool))
+            self.assertEqual(w.txt_send.property("tr_placeholder"), "send_placeholder")
+            self.assertIn("terminal_mode", w._CFG_KEYS)
+        finally:
+            w._set_terminal_enabled(old)
+
+    def test_terminal_disables_irrelevant_settings(self):
+        """终端模式开启时不生效的显示/发送格式设置变不可配置，关闭后恢复；编码/自动换行不受影响。"""
+        w = _win()
+        old = w._terminal_on
+        try:
+            w._set_terminal_enabled(True)
+            for name in ("sw_rx_hex", "sw_show_timestamp", "sw_line_split",
+                         "sw_tx_hex", "sw_append_newline", "cb_checksum"):
+                self.assertFalse(getattr(w, name).isEnabled(), name + " 应不可配置")
+            self.assertTrue(w.cb_encoding.isEnabled())   # 编码仍可用
+            self.assertTrue(w.sw_wrap.isEnabled())       # 自动换行仍可用
+            w._set_terminal_enabled(False)
+            for name in ("sw_rx_hex", "sw_tx_hex", "cb_checksum"):
+                self.assertTrue(getattr(w, name).isEnabled(), name + " 应恢复可配置")
+        finally:
+            w._set_terminal_enabled(old)
+
+    def test_import_reloads_terminal_settings(self):
+        """配置导入后终端三项即时生效（不必重启）：状态 + UI 开关 + 禁用态都同步。"""
+        w = _win()
+        old = (w._terminal_on, w._terminal_echo, w._terminal_enter)
+        try:
+            w._set_terminal_enabled(False)
+            w.settings.setValue("terminal_mode", True)
+            w.settings.setValue("terminal_echo", True)
+            w.settings.setValue("terminal_enter", 2)    # CRLF
+            w._reload_terminal_from_settings()
+            self.assertTrue(w._terminal_on)
+            self.assertTrue(w._terminal_echo)
+            self.assertEqual(w._terminal_enter, 2)
+            self.assertTrue(w.sw_terminal.isChecked())
+            self.assertTrue(w.sw_term_echo.isChecked())
+            self.assertEqual(w.cb_term_enter.currentIndex(), 2)
+            self.assertFalse(w.sw_rx_hex.isEnabled())   # 终端开 → 其它设置不可配置
+        finally:
+            for k in ("terminal_mode", "terminal_echo", "terminal_enter"):
+                w.settings.remove(k)
+            w._set_terminal_enabled(old[0])
+            w._terminal_echo, w._terminal_enter = old[1], old[2]
+
+    def test_safe_enter_idx(self):
+        """回车映射索引安全解析：损坏/越界值回退 0，不让启动崩溃、不让下拉越界。"""
+        f = CommTool._safe_enter_idx
+        self.assertEqual(f(0), 0)
+        self.assertEqual(f(2), 2)
+        self.assertEqual(f("1"), 1)
+        self.assertEqual(f("abc"), 0)   # 损坏的 ini 值
+        self.assertEqual(f(None), 0)
+        self.assertEqual(f(99), 0)      # 越界
+        self.assertEqual(f(-1), 0)
+
+    def test_terminal_mode_stops_period_send(self):
+        """开终端模式时停掉定时发送，避免后台继续按周期发空内容。"""
+        w = _win()
+        old = (w._terminal_on, w.sw_period.isChecked())
+        try:
+            w._set_terminal_enabled(False)
+            # 模拟「定时发送」已开 + 定时器在跑（blockSignals 避免触发未连接的提前关闭）
+            w.sw_period.blockSignals(True)
+            w.sw_period.setChecked(True)
+            w.sw_period.blockSignals(False)
+            w.send_timer.start(1000)
+            self.assertTrue(w.send_timer.isActive())
+            w._set_terminal_enabled(True)
+            self.assertFalse(w.sw_period.isChecked())   # 定时发送被关
+            self.assertFalse(w.send_timer.isActive())   # 定时器停了
+        finally:
+            w.send_timer.stop()
+            w.sw_period.blockSignals(True)
+            w.sw_period.setChecked(old[1])
+            w.sw_period.blockSignals(False)
+            w._set_terminal_enabled(old[0])
+
     def test_serial_runtime_error_no_autoreconnect(self):
         """串口运行时掉线(拔出)不自动重连；网络掉线仍重连。"""
         w = _win()

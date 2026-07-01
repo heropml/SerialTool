@@ -152,6 +152,12 @@ class CloseDialog(_DragFramelessMixin, QDialog):
         }}
         QPushButton#DialogGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QPushButton#DialogGhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
+        QCheckBox {{ color: {c['text']}; background: transparent;
+            font-family: 'Segoe UI'; font-size: 12px; spacing: 6px; }}
+        QCheckBox::indicator {{ width: 15px; height: 15px; border-radius: 3px;
+            border: 1px solid {c['separator']}; background-color: {c['input_bg']}; }}
+        QCheckBox::indicator:hover {{ border: 1px solid {c['accent']}; }}
+        QCheckBox::indicator:checked {{ background-color: {c['accent']}; border: 1px solid {c['accent']}; }}
         """
 
     def _on_min(self):

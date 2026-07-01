@@ -1,5 +1,5 @@
 {
-  "version": "1.2.3",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.3/CommTool_Setup_v1.2.3.exe",
-  "notes": "串口稳健性修复：选口防乱跳（瞬时掉枚举不再跳到别的口、口长期不在自动移除占位）、串口被拔出自动断开并提示、串口掉线不再反复自动重连；多条发送 / Modbus 主机 / 自动应答三个对话框的列宽拖动现在持久化（重开 / 重启保持）。"
+  "version": "1.2.4",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.4/CommTool_Setup_v1.2.4.exe",
+  "notes": "新增「终端模式」（轻量串口终端）：发送区开启后，在发送框直接键入即时发送（回车 / Backspace / Tab / Ctrl+C / 方向键等透传给设备），数据区按终端语义渲染（处理退格 / 光标 / ESC[J 擦除、忽略颜色码）；带本地回显与回车（CR/LF/CRLF）开关；开启时自动停掉定时发送并淡化禁用用不上的设置。适合登录 Linux 串口控制台敲命令调试。"
 }

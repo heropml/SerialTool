@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """iOS 风格控件：IOSSwitch / TitleBar / Card / make_label。"""
 import sys
-from PyQt5.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QPoint,
+from PyQt5.QtCore import (Qt, QEvent, QPropertyAnimation, QEasingCurve, QPoint,
                           pyqtSignal, pyqtProperty)
 from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon, QPen, QPalette
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
@@ -64,9 +64,17 @@ class IOSSwitch(QWidget):
         if event.button() == Qt.LeftButton:
             self.setChecked(not self._checked)
 
+    def changeEvent(self, event):
+        # 启用/禁用切换时重绘，让禁用态的变淡效果立即生效
+        if event.type() == QEvent.EnabledChange:
+            self.update()
+        super().changeEvent(event)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if not self.isEnabled():
+            p.setOpacity(0.35)     # 禁用态：整体明显变淡，一眼看出不可配置
         track_color = QColor(COLOR_GREEN) if self._checked else self._track_off
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(track_color))

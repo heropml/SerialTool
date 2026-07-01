@@ -18,7 +18,8 @@ from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
-                             QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip, QDialog)
+                             QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip, QDialog,
+                             QGraphicsOpacityEffect)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -288,6 +289,14 @@ class CommTool(QMainWindow):
             self.settings.setValue("autoreply_on", False)
         self._mbm_variant = self.settings.value("modbus_master_variant", "", type=str)  # ""=按连接自动
         self._mbm_echo = self.settings.value("modbus_master_echo", False, type=bool)  # 串口本地回显模式
+        # 终端模式：发送框逐字符即时发送 + 数据区纯字节流显示（轻量串口终端，不解析 ANSI 转义）
+        self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
+        self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
+        self._terminal_enter = self._safe_enter_idx(self.settings.value("terminal_enter", 0))   # 0=CR 1=LF 2=CRLF
+        self._term_esc = ""    # 终端渲染：跨块未完成的 ANSI/CSI 转义序列缓冲
+        self._term_discard_csi = False  # 超长 CSI：跨块丢弃到终止字节，避免残片显示
+        self._term_pos = None  # 终端渲染：跨块延续的光标绝对位置（None=从文末开始）
+        self._setting_labels = {}   # 设置项标签引用（i18n key → QLabel），终端模式淡化禁用行用
         self._mbm_inflight = None    # 在途请求 {i,unit,func,qty,tid,variant}；None=空闲可发下一条
         self._mbm_buf = b""          # 响应字节累积（半双工，只对应当前在途请求）
         self._mbm_tid = 0            # Modbus-TCP 事务 ID 自增
@@ -556,6 +565,7 @@ class CommTool(QMainWindow):
         self._on_max_lines_changed()
         self._refresh_stat_labels()   # 状态栏 RX/TX 统计初始文案 + tooltip
         self._align_send_card_cols()  # 发送卡片两行三按钮等列宽对齐（语言切换后还要再调）
+        self._apply_terminal_ui(self._terminal_on)   # 启动恢复终端模式时，禁用不生效的格式设置
 
     def _align_send_card_cols(self):
         """对齐发送卡片两行的三列控件：每列取上下两行 sizeHint().width() 的最大值并 setFixedWidth。
@@ -576,6 +586,17 @@ class CommTool(QMainWindow):
             w = max(floor, top.sizeHint().width(), bot.sizeHint().width())
             top.setFixedWidth(w)
             bot.setFixedWidth(w)
+
+    def _fit_data_toolbar(self):
+        """数据区顶部工具栏按钮按各自内容宽度显示，避免首次显示 / 语言切换时文字被裁：
+        初次 apply_style 时 widget 还没 show、QSS 未完全传到子控件，按钮 sizeHint 偏窄、
+        布局按此分配后不再重排 → 文字被挤裁。首次显示(样式已生效)后按 sizeHint 定 minimumWidth。"""
+        for name in ("btn_keyword", "btn_filter_hl", "btn_plot", "btn_frame",
+                     "btn_mbm", "btn_font_dec", "btn_font_inc"):
+            b = getattr(self, name, None)
+            if b is not None:
+                b.setMinimumWidth(0)          # 先撤回旧值，让 sizeHint 反映当前文本自然宽度
+                b.setMinimumWidth(b.sizeHint().width())
 
     def build_sidebar(self):
         host = QWidget()
@@ -780,7 +801,10 @@ class CommTool(QMainWindow):
         grid.setVerticalSpacing(6)
 
         def lbl(key):
-            return self._tr_label(key, color=COLOR_TEXT_SECONDARY)
+            w = self._tr_label(key, color=COLOR_TEXT_SECONDARY)
+            # 用列表存：同一 i18n key 可能在多个卡片各有一个标签（如 encoding），避免相互覆盖
+            self._setting_labels.setdefault(key, []).append(w)
+            return w
 
         def sw_row(row, key, sw):
             grid.addWidget(lbl(key), row, 0)
@@ -909,7 +933,10 @@ class CommTool(QMainWindow):
         grid.setVerticalSpacing(6)
 
         def lbl(key):
-            return self._tr_label(key, color=COLOR_TEXT_SECONDARY)
+            w = self._tr_label(key, color=COLOR_TEXT_SECONDARY)
+            # 用列表存：同一 i18n key 可能在多个卡片各有一个标签（如 encoding），避免相互覆盖
+            self._setting_labels.setdefault(key, []).append(w)
+            return w
 
         def sw_row(row, key, sw):
             grid.addWidget(lbl(key), row, 0)
@@ -958,6 +985,42 @@ class CommTool(QMainWindow):
         extra_row(row, "checksum", self.cb_checksum); row += 1
 
         layout.addLayout(grid)
+
+        # 终端模式相关设置单独框成一组（终端模式 / 本地回显 / 回车），视觉上与上面的通用发送设置
+        # 区分开。SettingsGroup 边框用半透明灰，明暗主题下都协调、无需跟随主题重刷。
+        term_frame = QFrame()
+        term_frame.setObjectName("SettingsGroup")
+        # 只要边框、不要底色；用强调蓝边框醒目地框出这一组（明暗主题都协调、无需跟随主题重刷）
+        term_frame.setStyleSheet(
+            "QFrame#SettingsGroup{border:1px solid rgba(0,122,255,0.7);border-radius:8px;"
+            "background:transparent;}")
+        tg = QGridLayout(term_frame)
+        tg.setContentsMargins(10, 6, 10, 6)
+        tg.setColumnStretch(0, 1)
+        tg.setHorizontalSpacing(6)
+        tg.setVerticalSpacing(6)
+
+        self.sw_terminal = IOSSwitch(self._terminal_on)
+        self.sw_terminal.toggled.connect(self._set_terminal_enabled)
+        tg.addWidget(lbl("term_mode"), 0, 0)
+        tg.addWidget(self.sw_terminal, 0, 2, alignment=Qt.AlignRight)
+
+        self.sw_term_echo = IOSSwitch(self._terminal_echo)
+        self.sw_term_echo.toggled.connect(self._on_term_echo_changed)
+        tg.addWidget(lbl("term_echo"), 1, 0)
+        tg.addWidget(self.sw_term_echo, 1, 2, alignment=Qt.AlignRight)
+
+        self.cb_term_enter = QComboBox()
+        self.cb_term_enter.addItem("CR")
+        self.cb_term_enter.addItem("LF")
+        self.cb_term_enter.addItem("CRLF")
+        self.cb_term_enter.setCurrentIndex(self._terminal_enter)
+        self.cb_term_enter.setFixedWidth(MAIN_W)
+        self.cb_term_enter.currentIndexChanged.connect(self._on_term_enter_changed)
+        tg.addWidget(lbl("term_enter"), 2, 0)
+        tg.addWidget(self.cb_term_enter, 2, 2, alignment=Qt.AlignRight)
+
+        layout.addWidget(term_frame)
         return card
 
     def build_receive_card(self):
@@ -1145,12 +1208,22 @@ class CommTool(QMainWindow):
         # 不超时消失（默认 10s 会消失），移出 rect 时立刻收起，避免长文案没看完就没了。
         # macOS 不走此分支 → 让下面 _show_mac_tooltip 用 ThemedToolTip 自绘（原生 QToolTip
         # 加 QSS 后背景透明看不清，已知 Mac Qt 问题）
+        # 终端模式：发送框不弹「动态字段 / 命令历史」提示（逐字符直发，这些都无关）
+        if (getattr(self, "_terminal_on", False) and obj is getattr(self, "txt_send", None)
+                and event.type() == QEvent.ToolTip):
+            return True
         if (obj is getattr(self, "txt_send", None) and event.type() == QEvent.ToolTip
-                and not self._mac_tooltip):
+                and not getattr(self, "_mac_tooltip", False)):
             tip = self.txt_send.toolTip()
             if tip:
                 QToolTip.showText(event.globalPos(), tip, self.txt_send,
                                   self.txt_send.rect(), 600000)   # 10 min 上限
+            return True
+        # 终端模式：发送框作键盘捕获 —— 每个按键即时转字节发出、吃掉事件不让它进发送框累积。
+        # 放在 ↑↓ 历史导航之前：终端里方向键要发 ESC 序列(shell 历史/编辑)，而非翻命令历史。
+        if (getattr(self, "_terminal_on", False) and obj is getattr(self, "txt_send", None)
+                and event.type() == QEvent.KeyPress):
+            self._terminal_key(event)
             return True
         # 发送区 ↑↓ 历史导航：仅在 cursor 在首行(↑)/末行(↓)时拦截，否则让 QTextEdit 走默认行内移动
         if obj is getattr(self, "txt_send", None) and event.type() == QEvent.KeyPress:
@@ -1813,9 +1886,12 @@ class CommTool(QMainWindow):
         self.txt_send.setFont(mono_font(10))
         # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
         self.txt_send.setFixedHeight(64)
-        self.txt_send.setProperty("tr_placeholder", "send_placeholder")
+        # 占位文案随终端模式而定（启动恢复 terminal_mode=True 时也用对的那句）；
+        # tr_placeholder 属性供语言切换 _apply_language 刷新，终端模式时由 _set_terminal_enabled 改它。
+        _ph = "term_send_ph" if self._terminal_on else "send_placeholder"
+        self.txt_send.setProperty("tr_placeholder", _ph)
         self.txt_send.installEventFilter(self)   # ↑↓ 历史导航（在 eventFilter 里处理）
-        self.txt_send.setPlaceholderText(self._t("send_placeholder"))
+        self.txt_send.setPlaceholderText(self._t(_ph))
         # 悬浮提示：动态字段语法 + ↑↓ 历史；语言切换由 _apply_language 通过 tr_tooltip 刷新
         self.txt_send.setProperty("tr_tooltip", "send_box_tip")
         self.txt_send.setToolTip(self._t("send_box_tip"))
@@ -2025,7 +2101,9 @@ class CommTool(QMainWindow):
             color: {tooltip_fg};
             border: 0px;
             border-radius: 6px;
-            padding: 4px 8px;
+            padding: 5px 9px;
+            font-size: 12px;
+            font-weight: 500;
         }}
         QWidget#TitleBar {{
             background-color: {c['window_bg']};
@@ -2727,6 +2805,11 @@ class CommTool(QMainWindow):
         self.rx_packets += 1
         # 标签刷新交给 1Hz 的 _rate_timer：高频收包路径只累加整数计数器，
         # 不每包重建文案 + setText（会触发状态栏重排），高吞吐下避免无谓的 GUI 线程开销。
+
+        # 终端模式：纯字节流直接追加显示，绕过 HEX / 时间戳 / 方向 / 分行 / 分包 等所有装饰。
+        if self._terminal_on:
+            self._terminal_append(self._decode_rx(data))
+            return
 
         use_hex = self.sw_rx_hex.isChecked()
         use_line_split = self.sw_line_split.isChecked() and not use_hex
@@ -4254,6 +4337,8 @@ class CommTool(QMainWindow):
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
         "modbus_master_split",
+        # 终端模式
+        "terminal_mode", "terminal_echo", "terminal_enter",
         # 杂项
         "auto_reconnect", "auto_update_check",
     )
@@ -4444,9 +4529,30 @@ class CommTool(QMainWindow):
                 self._plot_dlg.reload_cfg()
             if getattr(self, "_frame_dlg", None) is not None:
                 self._frame_dlg.reload_cfg()
+            self._reload_terminal_from_settings()   # 终端模式三项随配置档导入即时生效，无需重启
         except Exception:
             pass
         self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
+
+    def _reload_terminal_from_settings(self):
+        """从 settings 重载终端模式三项（模式 / 本地回显 / 回车）并即时同步 UI 与禁用态。
+        供配置档导入后调用，让终端设置无需重启即生效（与其它设置「立刻刷新」一致）。"""
+        s = self.settings
+        self._terminal_enter = self._safe_enter_idx(s.value("terminal_enter", 0))
+        self._terminal_echo = s.value("terminal_echo", False, type=bool)
+        if hasattr(self, "sw_term_echo"):
+            self.sw_term_echo.blockSignals(True)
+            self.sw_term_echo.setChecked(self._terminal_echo)
+            self.sw_term_echo.blockSignals(False)
+        if hasattr(self, "cb_term_enter"):
+            self.cb_term_enter.blockSignals(True)
+            self.cb_term_enter.setCurrentIndex(self._terminal_enter)
+            self.cb_term_enter.blockSignals(False)
+        term_on = s.value("terminal_mode", False, type=bool)
+        if term_on != self._terminal_on:
+            self._set_terminal_enabled(term_on)   # 变了 → 切换 + 同步开关/占位/禁用态
+        else:
+            self._apply_terminal_ui(term_on)      # 值未变也确保禁用态正确（_load_settings 动过其它开关）
 
     def _send_subst(self, raw, hex_mode):
         """发送区动态字段替换：
@@ -5069,6 +5175,243 @@ class CommTool(QMainWindow):
         self._last_direction = "tx"
         return True
 
+    # ----- 终端模式（轻量串口终端：逐字符即时发送 + 纯字节流显示，不解析 ANSI）-----
+    @staticmethod
+    def _safe_enter_idx(v):
+        """回车映射索引安全解析：损坏/越界的 settings 值不让 __init__ 抛异常、不让下拉越界。"""
+        try:
+            n = int(v)
+        except (ValueError, TypeError):
+            return 0
+        return n if n in (0, 1, 2) else 0
+
+    def _set_terminal_enabled(self, on):
+        on = bool(on)
+        self._terminal_on = on
+        self._term_esc = ""           # 切换时清掉未完成的转义序列残留
+        self._term_discard_csi = False
+        self._term_pos = None         # 光标位置重置（下次从文末开始）
+        self.settings.setValue("terminal_mode", on)
+        self.settings.sync()
+        # 同步开关控件（程序化调用时）；阻断信号避免 setChecked → toggled → 本函数 递归
+        if hasattr(self, "sw_terminal") and self.sw_terminal.isChecked() != on:
+            self.sw_terminal.blockSignals(True)
+            self.sw_terminal.setChecked(on)
+            self.sw_terminal.blockSignals(False)
+        if hasattr(self, "txt_send"):
+            if on:
+                self.txt_send.clear()   # 终端模式发送框作键盘捕获、不累积文本
+            ph = "term_send_ph" if on else "send_placeholder"
+            self.txt_send.setProperty("tr_placeholder", ph)   # 语言切换时也用对的占位文案
+            self.txt_send.setPlaceholderText(self._t(ph))
+        if on:
+            # 进入终端模式：停掉会在后台按周期发送的功能（定时发送 + 多条发送循环），否则它们
+            # 仍在后台周期发（终端模式发送框为空 → 发空内容，且与逐字符直发互相干扰）。
+            if hasattr(self, "sw_period") and self.sw_period.isChecked():
+                self.sw_period.setChecked(False)   # 触发 on_period_toggled → send_timer.stop()
+            self._ms_stop_cycle()
+        self._apply_terminal_ui(on)
+        self.toast(self._t("term_on") if on else self._t("term_off"))
+
+    def _apply_terminal_ui(self, on):
+        """终端模式开启时，把「对终端不生效」的显示 / 发送格式设置禁用（不可配置），避免误以为还
+        起作用。终端是纯字节流逐字符直发：HEX 显示 / 时间戳 / 分包 / 超时 / 换行分包，以及
+        HEX 发送 / 追加换行 / 定时 / 校验 全被绕过。仍有用的（字符编码 / 自动换行 / 最大行数 /
+        实时记录）不动。关闭终端模式后全部恢复可配置。"""
+        for name in ("sw_rx_hex", "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
+                     "sw_line_split", "cb_line_nl",
+                     "sw_tx_hex", "sw_append_newline", "cb_append_nl",
+                     "sw_period", "ed_period_ms", "cb_checksum"):
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setEnabled(not on)
+        # 连同标签文字一起淡化，让禁用的整行统一「暗下去」（只灰控件、标签还满色 → 不明显）
+        for k in ("hex_display", "show_timestamp", "packet_split", "timeout", "line_split",
+                  "hex_send", "append_newline", "period", "checksum"):
+            for lab in self._setting_labels.get(k, ()):
+                if on:
+                    eff = QGraphicsOpacityEffect(lab)
+                    eff.setOpacity(0.4)
+                    lab.setGraphicsEffect(eff)
+                else:
+                    lab.setGraphicsEffect(None)
+
+    def _on_term_echo_changed(self, on):
+        self._terminal_echo = bool(on)
+        self.settings.setValue("terminal_echo", self._terminal_echo)
+        self.settings.sync()
+
+    def _on_term_enter_changed(self, idx):
+        self._terminal_enter = int(idx)
+        self.settings.setValue("terminal_enter", self._terminal_enter)
+        self.settings.sync()
+
+    def _term_key_to_bytes(self, key, mod, text):
+        """终端模式：把一次按键(key 码 / 修饰键 / 文本)映射为 (要发字节, 本地回显文本|None)。
+        纯函数、不碰 UI，便于单元测试。"""
+        enter = {0: b"\r", 1: b"\n", 2: b"\r\n"}.get(self._terminal_enter, b"\r")
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            return enter, "\n"
+        if key == Qt.Key_Backspace:
+            return b"\x7f", None          # DEL：现代 Linux / 多数终端的退格惯例
+        if key == Qt.Key_Tab:
+            return b"\t", "\t"
+        if key == Qt.Key_Escape:
+            return b"\x1b", None
+        seq = {Qt.Key_Up: b"\x1b[A", Qt.Key_Down: b"\x1b[B",
+               Qt.Key_Right: b"\x1b[C", Qt.Key_Left: b"\x1b[D",
+               Qt.Key_Home: b"\x1b[H", Qt.Key_End: b"\x1b[F",
+               Qt.Key_Delete: b"\x1b[3~"}
+        if key in seq:
+            return seq[key], None
+        if (mod & Qt.ControlModifier) and Qt.Key_A <= key <= Qt.Key_Z:
+            return bytes([key - Qt.Key_A + 1]), None   # Ctrl+A=0x01 … Ctrl+C=0x03 … Ctrl+Z=0x1a
+        if text:
+            try:
+                data = text.encode(self._send_codec(), errors="replace")
+            except Exception:
+                data = text.encode("utf-8", errors="replace")
+            return data, text
+        return None, None
+
+    def _terminal_key(self, event):
+        data, echo = self._term_key_to_bytes(event.key(), event.modifiers(), event.text())
+        if data:
+            self._terminal_send(data, echo)
+
+    def _terminal_send(self, data, echo=None):
+        """终端模式即时发送一小段字节（按键）。统计计数；本地回显开则把回显文本写进数据区。"""
+        if not self._is_open():
+            return
+        try:
+            sent = self.conn.send(data, self._send_target())
+        except Exception as e:
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
+            self.toast(self._t("err_send_failed", e=e), error=True)
+            return
+        if sent == SEND_NO_TARGET:
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
+            self.toast(self._t("net_no_target"), error=True)
+            return
+        if sent <= 0:
+            self.tx_errors += 1
+            self._refresh_stat_labels(with_tooltip=False)
+            return
+        self.tx_bytes += len(data)
+        self.tx_packets += 1
+        if self._terminal_echo and echo:
+            self._terminal_append(echo)
+
+    def _terminal_append(self, text):
+        r"""把收到的字节流按终端语义渲染到数据区（轻量 VT）：处理 \b(光标左移)、\r(回行首)、
+        \n(换行)、覆盖式打印，以及行编辑常用的 CSI 序列 ESC[J/ESC[K(擦除)、ESC[C/ESC[D(光标
+        左右)；颜色 ESC[..m、定位 ESC[..H 等其它 CSI 忽略（不显示成乱码）。不解析全屏 TUI。"""
+        if not text:
+            return
+        was_bottom = self._recv_at_bottom()
+        doc = self.txt_recv.document()
+        cur = QTextCursor(doc)
+        # 跨块延续光标位置（终端是连续流）；位置失效（如行数超限被裁剪）则退回文末
+        pos, last = self._term_pos, doc.characterCount() - 1
+        if pos is not None and 0 <= pos <= last:
+            cur.setPosition(pos)
+        else:
+            cur.movePosition(QTextCursor.End)
+        esc = self._term_esc          # 跨块残留的未完成转义序列
+        self._term_esc = ""
+        discard_csi = self._term_discard_csi
+        self._term_discard_csi = False
+        buf = []
+
+        def _flush():
+            if buf:
+                cur.insertText("".join(buf))
+                del buf[:]
+
+        for ch in text:
+            if discard_csi:
+                # 超长 CSI 的剩余部分全部吃掉；遇终止字节后恢复普通解析。
+                if "\x40" <= ch <= "\x7e":
+                    discard_csi = False
+                continue
+            if esc:                   # 正在收集转义序列
+                esc += ch
+                if len(esc) > 64:
+                    # 异常设备可能一直发 ESC[ + 参数却不给终止字母；限制跨块缓冲长度，
+                    # 避免内存持续增长，也避免最终对超长数字执行 int()。
+                    esc = ""
+                    discard_csi = True
+                elif len(esc) == 2 and ch != "[":
+                    esc = ""          # ESC 后不是 '['（非 CSI，如 ESC( 等）：吃掉、不处理
+                elif len(esc) >= 3 and "\x40" <= ch <= "\x7e":
+                    _flush()
+                    self._term_handle_csi(cur, esc)   # CSI 终止字母到达 → 处理
+                    esc = ""
+                continue
+            if ch == "\x1b":
+                _flush()
+                esc = "\x1b"
+            elif ch == "\b":
+                _flush()
+                if not cur.atBlockStart():
+                    cur.movePosition(QTextCursor.Left)
+            elif ch == "\r":
+                _flush()
+                cur.movePosition(QTextCursor.StartOfLine)
+            elif ch == "\n":
+                _flush()
+                cur.movePosition(QTextCursor.End)
+                cur.insertText("\n")
+            elif ch == "\t" or (ch >= " " and ch != "�"):
+                # 覆盖式打印：行尾→追加（可批量）；行内→替换光标右侧字符。U+FFFD(无效字节)丢弃。
+                if cur.atBlockEnd():
+                    buf.append(ch)
+                else:
+                    _flush()
+                    cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
+                    cur.removeSelectedText()
+                    cur.insertText(ch)
+            # 其它控制符（BEL/NUL 等）丢弃
+        _flush()
+        self._term_esc = esc          # 未完成的转义序列留到下次拼接
+        self._term_discard_csi = discard_csi
+        self._term_pos = cur.position()   # 光标位置留到下块延续
+        if was_bottom:
+            self._scroll_recv_to_bottom()
+
+    def _term_handle_csi(self, cur, seq):
+        """处理一条 CSI 序列 seq = ESC[ <参数> <终止字母>。只管行编辑相关：擦除 J/K + 光标左右
+        C/D；其余（颜色 m、定位 H/f、上下移 A/B 等）忽略，避免显示成乱码。"""
+        final = seq[-1]
+        params = seq[2:-1]            # ESC[ 与终止字母之间的参数串，如 ""、"0"、"2"、"5"
+        if final == "J":              # 擦除显示：0/缺省=光标到文末；2=全清
+            if params in ("", "0"):
+                c2 = QTextCursor(cur)
+                c2.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+                c2.removeSelectedText()
+            elif params == "2":
+                self.txt_recv.clear()
+                cur.movePosition(QTextCursor.End)
+        elif final == "K":            # 擦除行：0/缺省=光标到行尾
+            if params in ("", "0"):
+                c2 = QTextCursor(cur)
+                c2.movePosition(QTextCursor.EndOfLine, QTextCursor.KeepAnchor)
+                c2.removeSelectedText()
+        elif final == "D":            # 光标左移 N（缺省 1）
+            n = min(int(params), 100000) if params.isdigit() else 1   # 钳上限防超大 N 空转
+            for _ in range(n):
+                if cur.atBlockStart():
+                    break             # 到行首即停（设备发 ESC[999999999D 也不会冻结界面）
+                cur.movePosition(QTextCursor.Left)
+        elif final == "C":            # 光标右移 N（缺省 1）
+            n = min(int(params), 100000) if params.isdigit() else 1
+            for _ in range(n):
+                if cur.atBlockEnd():
+                    break             # 到行尾即停
+                cur.movePosition(QTextCursor.Right)
+
     @staticmethod
     def compute_checksum(data: bytes, index: int) -> bytes:
         if not data or index <= 0:
@@ -5509,6 +5852,7 @@ class CommTool(QMainWindow):
             self._set_ms_cycle_btn(self._ms_cycle_timer.isActive())
         # 发送卡片两行三列等列宽：必须在 btn_ms_cycle 文字更新之后，否则取的是旧语言的 sizeHint
         self._align_send_card_cols()
+        self._fit_data_toolbar()   # 数据区工具栏按钮宽度随语言重算，防新语言文字被裁
         # 多条发送/关键字高亮弹窗若开着也跟着切语言
         if getattr(self, "_multi_send_dlg", None) is not None:
             self._multi_send_dlg.retranslate()
@@ -5907,6 +6251,8 @@ class CommTool(QMainWindow):
         if not getattr(self, "_height_synced", False):
             self._height_synced = True
             QTimer.singleShot(0, self._sync_right_send_height)
+            # 数据区顶部工具栏按钮：样式生效后按内容宽度定宽，避免首次显示时文字被裁
+            QTimer.singleShot(0, self._fit_data_toolbar)
         # 跨显示器后状态栏等透明区域不重绘的修复：监听屏幕切换（只连一次）
         if not getattr(self, "_screen_sig_connected", False):
             wh = self.windowHandle()
