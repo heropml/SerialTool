@@ -683,6 +683,285 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w._terminal_on = old
 
+    def test_profile_lock_acquire_and_reclaim(self):
+        """配置槽位锁：临时目录隔离（不受外部已开窗口影响），依次分配 ''/2/3，释放中间槽后复用。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        p1, l1 = _main._acquire_profile(path_fn)
+        p2, l2 = _main._acquire_profile(path_fn)
+        p3, l3 = _main._acquire_profile(path_fn)
+        try:
+            self.assertEqual((p1, p2, p3), ("", "2", "3"))   # 干净环境 → 确定性槽位
+            l2.unlock()                                       # 释放中间槽位 2
+            p4, l4 = _main._acquire_profile(path_fn)
+            self.assertEqual(p4, "2")                         # 复用刚释放的槽位
+            l4.unlock()
+        finally:
+            l1.unlock()
+            l3.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_acquire_profile_prefers_requested_slot(self):
+        """「打开指定配置」：preferred 指定的空闲槽位被优先占用；被占则回落到第一个空闲槽位。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        p, lock = _main._acquire_profile(path_fn, preferred="3")
+        try:
+            self.assertEqual(p, "3")                              # 指定的空闲槽位被优先拿到
+            p2, lock2 = _main._acquire_profile(path_fn, preferred="3")
+            try:
+                self.assertEqual(p2, "")                          # "3" 已占 → 回落到第一个空闲("")
+            finally:
+                lock2.unlock()
+        finally:
+            lock.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_acquire_profile_returns_none_when_full(self):
+        """8 个槽位全占（开满 8 窗口）时返回 (None, None) → 调用方提示已达上限、不再开第 9 个。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        locks = []
+        try:
+            for _ in range(8):                                  # 占满 "" + 2..8 共 8 个
+                p, lk = _main._acquire_profile(path_fn)
+                self.assertIsNotNone(lk)
+                locks.append(lk)
+            p9, lk9 = _main._acquire_profile(path_fn)            # 第 9 个：无空闲槽位
+            self.assertIsNone(p9)
+            self.assertIsNone(lk9)
+        finally:
+            for lk in locks:
+                lk.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_parse_profile_arg(self):
+        """命令行 --profile=<值> 解析：合法值取回 / 空值=主配置 / 无该参数 / 越界·乱填 → None。"""
+        import main as _main
+        self.assertEqual(_main._parse_profile_arg(["x", "--profile=3", "y"]), "3")
+        self.assertEqual(_main._parse_profile_arg(["--profile="]), "")   # 空 = 主配置
+        self.assertIsNone(_main._parse_profile_arg(["x", "y"]))
+        self.assertIsNone(_main._parse_profile_arg(["--profile=9"]))     # 越界(>8) → None，防孤儿配置
+        self.assertIsNone(_main._parse_profile_arg(["--profile=abc"]))   # 乱填 → None
+
+    def test_acquire_profile_ignores_out_of_range_preferred(self):
+        """越界 preferred（如 "9"）被忽略、走正常扫描回落到第一个空闲，不建出菜单选不到的孤儿槽位。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        p, lock = _main._acquire_profile(path_fn, preferred="9")
+        try:
+            self.assertEqual(p, "")   # "9" 非法 → 忽略 → 拿第一个空闲槽位
+        finally:
+            lock.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_profile_in_use_smoke(self):
+        """_profile_in_use（子菜单标注「使用中」用）探测不抛异常、返回 bool。"""
+        w = _win()
+        self.assertIn(w._profile_in_use("7"), (True, False))
+
+    def test_switch_profile_in_place(self):
+        """就地切换配置（不新开窗口）：_profile/_title_suffix/settings/标题切到目标；
+        P1 切换取消排队的自动重连；P2 目标缺键的字段复位到默认、不残留上一配置。
+        用共享 _win() + 存/还原身份——不新建实例（新建后 _shutdown 会与 port_scanner 线程在
+        进程退出时竞态、触发 Qt C++ 层崩溃 0xC0000409；其它测试也都复用 _win() 不销毁）。"""
+        from PyQt5.QtWidgets import QApplication
+        import tempfile
+        import shutil
+        import os as _os
+        w = _win()
+        app = QApplication.instance()
+        o_profile, o_suffix, o_settings = w._profile, w._title_suffix, w.settings
+        had_lock = hasattr(app, "_profile_lock")
+        o_app_lock = getattr(app, "_profile_lock", None)
+        o_send = w.txt_send.toPlainText()
+        d = tempfile.mkdtemp()
+        orig = CommTool._settings_file
+        CommTool._settings_file = staticmethod(
+            lambda p="": _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p))
+        try:
+            w.txt_send.setPlainText("LEAK-ME")           # P2：制造"上一配置"的残留值
+            w._reconnect_timer.start(99999)              # P1：模拟排队中的自动重连
+            w._switch_profile("3")
+            self.assertEqual(w._profile, "3")
+            self.assertEqual(w._title_suffix, " (3)")
+            self.assertTrue(w.windowTitle().endswith("(3)"))
+            self.assertTrue(w.settings.fileName().endswith("settings-3.ini"))
+            self.assertEqual(w.txt_send.toPlainText(), w._field_defaults.get("txt_send", ""))  # P2：复位、不残留
+            self.assertFalse(w._reconnect_timer.isActive())                                     # P1：已取消重连
+        finally:
+            CommTool._settings_file = staticmethod(orig)
+            cur = getattr(app, "_profile_lock", None)   # 释放 switch 抢的锁、还原 app 锁
+            if cur is not None and cur is not o_app_lock:
+                try:
+                    cur.unlock()
+                except Exception:
+                    pass
+            if had_lock:
+                app._profile_lock = o_app_lock
+            elif hasattr(app, "_profile_lock"):
+                try:
+                    delattr(app, "_profile_lock")
+                except Exception:
+                    pass
+            # 还原共享 _WIN 身份/settings/发送框/标题，避免污染后续测试
+            w._profile, w._title_suffix, w.settings = o_profile, o_suffix, o_settings
+            w.txt_send.setPlainText(o_send)
+            w._reconnect_timer.stop()
+            w.setWindowTitle(w._t("app_title") + w._title_suffix)
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_delete_profile(self):
+        """删除配置：确认→删掉 settings-<N>.ini；取消→保留；主配置("")即使确认也拒删（前置 guard）。
+        用共享 _win()（_delete_profile 只删文件、不改 UI）+ monkeypatch _settings_file + stub 确认框。"""
+        import tempfile
+        import shutil
+        import os as _os
+        w = _win()
+        d = tempfile.mkdtemp()
+        orig = CommTool._settings_file
+        CommTool._settings_file = staticmethod(
+            lambda p="": _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p))
+        try:
+            target = CommTool._settings_file("4")
+            open(target, "w").close()                       # 造一个待删配置
+            main_ini = CommTool._settings_file("")
+            open(main_ini, "w").close()
+            w._confirm_dlg = lambda *a, **k: False           # 取消 → 不删
+            w._delete_profile("4")
+            self.assertTrue(_os.path.exists(target))
+            w._confirm_dlg = lambda *a, **k: True            # 确认 → 删
+            w._delete_profile("4")
+            self.assertFalse(_os.path.exists(target))
+            w._delete_profile("")                            # 主配置：前置 guard 直接返回，不删
+            self.assertTrue(_os.path.exists(main_ini))
+            w._delete_profile("9")                           # 越界(非 2..8)：前置 guard 拒绝
+            # 被占：目标配置的 .mwlock 被别处持有（模拟另一窗口在用）→ 拒绝删除、文件保留
+            from PyQt5.QtCore import QLockFile
+            t5 = CommTool._settings_file("5")
+            open(t5, "w").close()
+            held = QLockFile(t5 + ".mwlock")
+            self.assertTrue(held.tryLock(0))
+            try:
+                w._delete_profile("5")                       # confirm 仍为 True，但锁被占
+                self.assertTrue(_os.path.exists(t5))         # 被占 → 未删
+            finally:
+                held.unlock()
+        finally:
+            w.__dict__.pop("_confirm_dlg", None)             # 移除 stub，恢复类方法
+            CommTool._settings_file = staticmethod(orig)
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_statusbar_background_opaque(self):
+        """状态栏背景须不透明（窗口色）——若为 transparent，toast(showMessage) 时 Qt 隐藏 RX/TX
+        统计标签但透明底不擦底、旧像素残留会与提示文字重叠（用户实测到的 bug）。"""
+        w = _win()
+        ss = w.status_bar.styleSheet()
+        self.assertNotIn("transparent", ss)   # 不透明底才能擦净隐藏标签的残留
+
+    def test_profile_lock_does_not_deadlock_qsettings_sync(self):
+        """回归（多窗口卡死根因）：配置槽位锁的文件名不能与 QSettings 内部写锁 <ini>.lock 撞名，
+        否则同进程 settings.sync() 会与自己已持有的锁死锁——新配置窗口构造时(首次落盘迁移)
+        或关窗保存时永久阻塞，表现为『进程在、界面没有』/『关第一个窗口卡死』。
+        用带超时的线程跑 sync：撞名→线程永久阻塞→join 超时→done 为空→断言失败。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        import threading
+        from PyQt5.QtCore import QSettings
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        prof, lock = _main._acquire_profile(path_fn)   # 持有槽位锁（撞名点就在这个 .lock）
+        done = []
+
+        def worker():
+            s = QSettings(path_fn(prof), QSettings.IniFormat)
+            s.setValue("probe", 1)
+            s.sync()                 # 撞名时这里会永久阻塞在 QLockFile 上
+            done.append(True)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(5.0)
+        try:
+            self.assertTrue(done, "settings.sync() 卡死——配置槽位锁与 QSettings 的 <ini>.lock 撞名了")
+        finally:
+            if lock:
+                lock.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    @staticmethod
+    def _titlebar_grabbable(w):
+        """标题栏顶部是否有连续 ≥120px 宽、8px 高的一段落在某屏工作区内（= 抓得住、拖得动）。"""
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QRect
+        fg = w.frameGeometry()
+        strip = QRect(fg.left(), fg.top(), fg.width(), 8)
+        for s in QApplication.screens():
+            it = s.availableGeometry().intersected(strip)
+            if it.width() >= 120 and it.height() >= 8:
+                return True
+        return False
+
+    def test_ensure_on_screen_pulls_offscreen_window_back(self):
+        """窗口完全挪到屏幕外时，_ensure_on_screen 把它搬回、标题栏可抓（防'进程在窗口看不见'）。"""
+        w = _win()
+        old = w.geometry()
+        try:
+            w.move(-10000, -10000)   # 挪到任何屏幕都够不到的位置
+            w._ensure_on_screen()
+            self.assertTrue(self._titlebar_grabbable(w))   # 已被搬回且标题栏抓得住
+        finally:
+            w.setGeometry(old)
+
+    def test_ensure_on_screen_rescues_barely_intersecting_window(self):
+        """回归：窗口只剩一条边/一个角相交（intersects()=True 但标题栏已被推出屏）时，
+        旧逻辑会误判'可见'而不搬；新逻辑要求标题栏真的露出一段，故应把它搬回抓得住的位置。"""
+        from PyQt5.QtWidgets import QApplication
+        w = _win()
+        old = w.geometry()
+        try:
+            avail = QApplication.primaryScreen().availableGeometry()
+            # 顶到主屏右下角：只有左上极小一块在屏内，标题栏顶部条几乎全被推出右侧
+            w.move(avail.right() - 5, avail.bottom() - 5)
+            fg = w.frameGeometry()
+            # 前提校验：此位置下 intersects() 仍为 True（正是旧逻辑漏判的场景），但标题栏抓不住
+            self.assertTrue(any(s.availableGeometry().intersects(fg) for s in QApplication.screens()))
+            self.assertFalse(self._titlebar_grabbable(w))
+            w._ensure_on_screen()
+            self.assertTrue(self._titlebar_grabbable(w))   # 修复后标题栏可抓
+        finally:
+            w.setGeometry(old)
+
+    def test_settings_file_profile_isolation(self):
+        """多窗口配置隔离：主 profile=settings.ini，其余=settings-<N>.ini，同目录不同文件。"""
+        import os as _os
+        main = CommTool._settings_file("")
+        p2 = CommTool._settings_file("2")
+        p3 = CommTool._settings_file("3")
+        self.assertTrue(main.endswith("settings.ini"))
+        self.assertTrue(p2.endswith("settings-2.ini"))
+        self.assertTrue(p3.endswith("settings-3.ini"))
+        self.assertEqual(len({main, p2, p3}), 3)                       # 三个路径各不相同
+        self.assertEqual(_os.path.dirname(main), _os.path.dirname(p2))  # 隔离只体现在文件名、同目录
+
     def test_terminal_toggle_persists(self):
         """终端模式开关写盘 + 纳入配置导出键。"""
         w = _win()

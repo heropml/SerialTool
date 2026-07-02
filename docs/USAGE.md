@@ -37,6 +37,21 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.5
+
+**Multiple windows** — you can now run several independent CommTool windows at once, each debugging its own device without interfering, and manage multiple config sets:
+
+- **New Window** — "Help → Open Config → New Window (auto)" opens another independent window (or just launch the program again); the title carries a `(2)` / `(3)` suffix (taskbar and tray too).
+- **Configs no longer clobber each other** — each window uses its own settings file (main = `settings.ini`, others = `settings-2.ini` / `settings-3.ini`…); a file lock auto-assigns a free slot, so even double-launching the exe auto-isolates (fixes the old "two windows overwrite each other's config" problem).
+- **Fully independent** — each window has its own connection, send/receive, auto-reply, Modbus master, terminal, etc. (note: a serial COM port can still only be opened by one window; opening the same port in a second window reports "busy" — that's expected, data never mixes).
+- **Open Config (switch)** — "Help → Open Config" lists saved configs (Main / Config 2 / Config 3…); clicking one switches the **current window** to it (title changes to `(N)`, saves go to that config afterward). The one in use by another window, and the current window's own, are shown disabled. Solves "closed everything, now want a previous config back but there's no entry."
+- **Delete Config** — "Help → Delete Config" removes config files you no longer need (with confirmation, Cancel focused by default to avoid mis-deletes); the main config and in-use configs can't be deleted.
+- **Multi-monitor safeguard / window cap** — if a window ends up off-screen (a disconnected/closed monitor), it's pulled back onto the primary screen on first show; up to 8 windows can be open at once (a message appears when full).
+
+**Fixes in this release**: ① Can't connect to a local / LAN TCP server or client while a system proxy is on — debug connections now always go **direct, bypassing the proxy** (TCP / UDP both fixed); ② the bottom status-bar toast no longer overlaps the RX / TX stats text; ③ fixed the second / new-config window sometimes hanging with no visible window, and close-window freezes.
+
+---
+
 ## What's New in v1.2.4
 
 **Terminal mode** — a "Terminal mode" toggle in the **Send** settings turns the send box into a lightweight serial terminal, handy for logging into a Linux serial console and typing commands:
@@ -565,7 +580,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.4`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.5`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

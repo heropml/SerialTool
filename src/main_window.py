@@ -204,8 +204,12 @@ class CommTool(QMainWindow):
     _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
     _AR_SCRIPT_START_TIMEOUT = 5.0  # spawn/冻结版首启可较慢；与单次脚本超时分开
 
-    def __init__(self):
+    def __init__(self, profile=""):
         super().__init__()
+        # 多窗口配置隔离：""=主窗口(settings.ini)，其余用 settings-<profile>.ini；标题加 (N) 区分。
+        # 让「开多个窗口 / 新建窗口」各用各的配置、退出不再互相覆盖。
+        self._profile = str(profile or "")
+        self._title_suffix = "" if not self._profile else " (%s)" % self._profile
         # macOS 用原生窗口边框（红黄绿交通灯 + 系统原生缩放）；Windows/Linux 仍是自定义无边框
         if sys.platform == "darwin":
             self.setWindowFlags(Qt.Window)
@@ -266,7 +270,7 @@ class CommTool(QMainWindow):
         self._log_seg = 0         # 当前分包序号
         self._recv_font_size = 10
 
-        self.settings = QSettings(self._settings_file(), QSettings.IniFormat)
+        self.settings = QSettings(self._settings_file(self._profile), QSettings.IniFormat)
         self._ar_rules = self._load_ar_rules()       # 自动应答规则
         self._ar_on = self.settings.value("autoreply_on", False, type=bool)
         self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
@@ -363,6 +367,7 @@ class CommTool(QMainWindow):
                 self.title_bar.setMouseTracking(True)
         self.refresh_ports()       # 启动即扫一次串口，cb_port 立刻有内容供恢复上次选择
         self.apply_style()
+        self._capture_field_defaults()   # 记录字段构建默认值（在 _load_settings 覆盖前）供切换配置复位用
         self._load_settings()
         self._setup_tray()
         # Ctrl+F 全局快捷键：从任何控件按下都打开搜索栏（_open_search 内会自动聚焦输入框）
@@ -423,7 +428,7 @@ class CommTool(QMainWindow):
 
     # ----- UI 构建 -----
     def init_ui(self):
-        self.setWindowTitle(self._t("app_title"))
+        self.setWindowTitle(self._t("app_title") + self._title_suffix)
         self.resize(1140, 740)
         self.setMinimumSize(960, 600)
 
@@ -437,7 +442,7 @@ class CommTool(QMainWindow):
 
         # 标题栏
         self.title_bar = TitleBar(self)
-        self.title_bar.set_title(self._t("app_title"))
+        self.title_bar.set_title(self._t("app_title") + self._title_suffix)
         self.title_bar.set_app_icon(get_app_icon())
 
         self.cb_language = self.title_bar.cb_language
@@ -503,7 +508,10 @@ class CommTool(QMainWindow):
 
         # 状态栏
         self.status_bar = QStatusBar()
-        self.status_bar.setStyleSheet(f"background: transparent; color: {COLOR_TEXT_SECONDARY};")
+        # 不透明底（不用 transparent）：否则 showMessage(toast) 时 Qt 隐藏 RX/TX 统计标签、
+        # 透明底不擦底会残留旧像素与提示重叠。初始用默认主题窗口色，apply_style 再按实际主题刷新。
+        self.status_bar.setStyleSheet(
+            f"background: {chrome_for(THEME_DEFAULT)['window_bg']}; color: {COLOR_TEXT_SECONDARY};")
         # 左右边距和上面的 content_layout (20px) 对齐
         self.status_bar.setContentsMargins(20, 0, 20, 0)
         self.status_bar.setSizeGripEnabled(False)
@@ -597,6 +605,25 @@ class CommTool(QMainWindow):
             if b is not None:
                 b.setMinimumWidth(0)          # 先撤回旧值，让 sizeHint 反映当前文本自然宽度
                 b.setMinimumWidth(b.sizeHint().width())
+
+    def _ensure_on_screen(self):
+        """确保窗口的『标题栏』落在某个屏幕工作区内、且够宽能抓得住。多显示器/分辨率变化后，
+        恢复的旧位置或默认位置可能落到屏幕外 → 表现为『进程在、窗口看不见』。
+        注意：不能只用 intersects()（任意 1px 相交就算可见）——窗口只剩一条边/一个角在屏内时，
+        顶部标题栏其实已被推出屏幕、鼠标点不到、拖不动。故这里只认『标题栏顶部有连续一段
+        (≥MIN_W 宽)真的落在工作区内』，达不到就搬回主屏左上。"""
+        try:
+            MIN_W, STRIP_H = 120, 8   # 标题栏至少露出 120px 宽、顶部 8px 高，才算抓得住
+            fg = self.frameGeometry()
+            title_strip = QRect(fg.left(), fg.top(), fg.width(), STRIP_H)
+            for scr in QApplication.screens():
+                inter = scr.availableGeometry().intersected(title_strip)
+                if inter.width() >= MIN_W and inter.height() >= STRIP_H:
+                    return   # 标题栏够抓，无需搬动
+            avail = QApplication.primaryScreen().availableGeometry()
+            self.move(avail.left() + 60, avail.top() + 60)
+        except Exception:
+            pass
 
     def build_sidebar(self):
         host = QWidget()
@@ -2090,7 +2117,7 @@ class CommTool(QMainWindow):
         QScrollBar::handle:vertical:hover {{ background: {c['scrollbar_hover']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
         QStatusBar {{
-            background: transparent;
+            background: {c['window_bg']};
             color: {c['text_sec']};
             border-top: 1px solid {c['separator']};
         }}
@@ -2678,7 +2705,10 @@ class CommTool(QMainWindow):
         if hasattr(self, "lbl_log_path"):
             self.lbl_log_path.setStyleSheet(f"color: {c['text_sec']}; background: transparent;")
         if hasattr(self, "status_bar"):
-            self.status_bar.setStyleSheet(f"background: transparent; color: {c['text_sec']};")
+            # 用不透明的窗口色而非 transparent：showMessage(toast) 时 Qt 会隐藏 RX/TX 统计标签，
+            # 但透明底不擦底 → 隐藏标签的旧像素残留、与提示文字重叠。不透明底每次重绘擦净 → 不重叠。
+            # 窗口(QMainWindow)本就是同一 window_bg，故观感不变。
+            self.status_bar.setStyleSheet(f"background: {c['window_bg']}; color: {c['text_sec']};")
         if hasattr(self, "lbl_state"):
             self._set_state_color(opened=self._is_open())
         if hasattr(self, "title_bar") and hasattr(self.title_bar, "title_label"):
@@ -4306,6 +4336,16 @@ class CommTool(QMainWindow):
         InfoDialog(title, body, ok_text=ok, is_error=is_error,
                    theme_id=self._theme_id(), parent=None).exec_()
 
+    def _confirm_dlg(self, title, body, ok_text=None, danger=True):
+        """主题化二选一确认框（替代 QMessageBox.question）；返回 True=确认 / False=取消。
+        danger=True 时确认按钮用红色（删除等破坏性操作）。parent=None 理由同 _info_dlg。"""
+        cancel = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(self._lang, "Cancel")
+        ok = ok_text or {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK")
+        dlg = InfoDialog(title, body, ok_text=ok, is_error=danger,
+                         theme_id=self._theme_id(), parent=None,
+                         confirm=True, cancel_text=cancel, danger=danger)
+        return dlg.exec_() == QDialog.Accepted
+
     # ----- 会话配置档 导入/导出 -----
     # 包含的 QSettings 键（实际 _save_settings 写入的 key 名，已对齐）：
     #   连接（网络/串口）+ 数据区显示 + 发送区 + 主题/语言 + 多条发送/关键字/帧解析/绘图 + 自动应答 + 自动重连
@@ -4458,81 +4498,89 @@ class CommTool(QMainWindow):
         s.sync()
         # 立刻刷 UI（兜底 try：刷新失败不该让导入本身报错）
         try:
-            # 语言不在 _load_settings 里恢复，得单独读 + _set_language 触发完整 retranslate
-            new_lang = s.value("language", self._lang)
-            if new_lang != self._lang and new_lang in TR:
-                self._set_language(new_lang)
-            # _load_settings 覆盖：geometry/recv_font/显示开关/编码/主题/发送选项/连接字段...
-            # (geometry/h_splitter 不在 _CFG_KEYS 导入集里，原 QSettings 值不变，restore 等于 no-op)
-            self._load_settings()
-            # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
-            self._ar_rules = self._load_ar_rules()
-            self._ar_frame = self._load_ar_frame()
-            self._ar_fault = self._load_ar_fault()
-            self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
-            self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入（下方 _ar_reset_state 重建运行态）
-            self._recompute_ar_gap()
-            self._ar_reset_buf()
-            self._ar_reset_state()                # C8：导入新配置=新会话 → 状态机复位到（新）初始状态
-            # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
-            # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
-            self._ar_on = s.value("autoreply_on", False, type=bool)
-            self._update_autoreply_btn()
-            # Modbus 主机也是 __init__ 期读入的运行缓存；导入后重载全部配置并重启调度。
-            self._mbm_rules = self._load_mbm_rules()
-            requested_mbm_on = s.value("modbus_master_on", False, type=bool)
-            # 导入配置本身不是“向当前设备发送”的授权动作。连接已打开时必须暂停，避免导入
-            # 一个启用的 05/06/0F/10 规则后立刻改写现场设备；用户需显式重新启用。
-            self._mbm_on = self._mbm_import_enabled(requested_mbm_on)
-            if requested_mbm_on != self._mbm_on:
-                s.setValue("modbus_master_on", False)
-                s.sync()
-            variant = s.value("modbus_master_variant", "", type=str)
-            self._mbm_variant = variant if variant in ("", "rtu", "tcp") else ""
-            self._mbm_echo = s.value("modbus_master_echo", False, type=bool)
-            if self._mbm_on and self._ar_on:
-                # 导入结果也保持互斥（主机优先）。走 _set_autoreply_enabled 而非手设标志，
-                # 才能一并复位状态机 + 同步「打开着的」自动应答对话框 checkbox（否则对话框
-                # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
-                self._set_autoreply_enabled(False)
-                s.sync()
-            self._update_mbm_btn()
-            self._mbm_restart()
-            # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
-            # 后续编辑（commit 走旧内存）把导入的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
-            self._ms_groups, _ = self._load_ms_groups()
-            try:
-                self._ms_group_idx = int(s.value("multi_send_group_idx", 0))
-            except (ValueError, TypeError):
-                self._ms_group_idx = 0
-            if not (0 <= self._ms_group_idx < len(self._ms_groups)):
-                self._ms_group_idx = 0
-            self._rebuild_ms_group_combo()
-            self._rebuild_ms_quick_bar()
-            self._keyword_groups, self._keyword_active, _ = self._load_keyword_groups()
-            self._rebuild_kw_group_combo()
-            self._refresh_extra_selections()    # 高亮规则变了 → 重画数据区 extra selections
-            # 已打开的对话框同步刷新（_ar_rules 改了对话框内 _rows 仍是旧的，会反写覆盖）
-            if getattr(self, "_ar_dlg", None) is not None:
-                self._ar_dlg.reload_rows()
-            if getattr(self, "_multi_send_dlg", None) is not None:
-                self._multi_send_dlg._reload_group_list()
-                self._multi_send_dlg._reload_rows()
-            if getattr(self, "_keyword_dlg", None) is not None:
-                self._keyword_dlg._reload_group_list()
-                self._keyword_dlg._reload_rows()
-            if getattr(self, "_mbm_dlg", None) is not None:
-                self._mbm_dlg.reload_config()
-            # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
-            # 避免新配置和老缓冲数据/旧规则混在一起。
-            if getattr(self, "_plot_dlg", None) is not None:
-                self._plot_dlg.reload_cfg()
-            if getattr(self, "_frame_dlg", None) is not None:
-                self._frame_dlg.reload_cfg()
-            self._reload_terminal_from_settings()   # 终端模式三项随配置档导入即时生效，无需重启
+            self._apply_loaded_settings()
         except Exception:
             pass
         self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
+
+    def _apply_loaded_settings(self):
+        """从 self.settings 重新载入并即时刷新全部 UI/缓存。
+        「导入配置」(import_config) 与「切换配置」(_switch_profile) 共用——两者都是把 self.settings
+        的内容整体应用到当前窗口。含语言/显示/主题/连接字段/自动应答/Modbus主机/多条发送/关键字/
+        绘图/帧解析/终端。Modbus 主机启用态被强制关（安全：加载配置不等于授权写设备，需显式重开）。"""
+        s = self.settings
+        # 语言不在 _load_settings 里恢复，得单独读 + _set_language 触发完整 retranslate
+        new_lang = s.value("language", self._lang)
+        if new_lang != self._lang and new_lang in TR:
+            self._set_language(new_lang)
+        # _load_settings 覆盖：geometry/recv_font/显示开关/编码/主题/发送选项/连接字段...
+        # (geometry/h_splitter 不在 _CFG_KEYS 导入集里，原 QSettings 值不变，restore 等于 no-op)
+        self._load_settings()
+        # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
+        self._ar_rules = self._load_ar_rules()
+        self._ar_frame = self._load_ar_frame()
+        self._ar_fault = self._load_ar_fault()
+        self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
+        self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入（下方 _ar_reset_state 重建运行态）
+        self._recompute_ar_gap()
+        self._ar_reset_buf()
+        self._ar_reset_state()                # C8：导入新配置=新会话 → 状态机复位到（新）初始状态
+        # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
+        # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
+        self._ar_on = s.value("autoreply_on", False, type=bool)
+        self._update_autoreply_btn()
+        # Modbus 主机也是 __init__ 期读入的运行缓存；导入后重载全部配置并重启调度。
+        self._mbm_rules = self._load_mbm_rules()
+        requested_mbm_on = s.value("modbus_master_on", False, type=bool)
+        # 加载配置本身不是“向当前设备发送”的授权动作。连接已打开时必须暂停，避免加载
+        # 一个启用的 05/06/0F/10 规则后立刻改写现场设备；用户需显式重新启用。
+        self._mbm_on = self._mbm_import_enabled(requested_mbm_on)
+        if requested_mbm_on != self._mbm_on:
+            s.setValue("modbus_master_on", False)
+            s.sync()
+        variant = s.value("modbus_master_variant", "", type=str)
+        self._mbm_variant = variant if variant in ("", "rtu", "tcp") else ""
+        self._mbm_echo = s.value("modbus_master_echo", False, type=bool)
+        if self._mbm_on and self._ar_on:
+            # 加载结果也保持互斥（主机优先）。走 _set_autoreply_enabled 而非手设标志，
+            # 才能一并复位状态机 + 同步「打开着的」自动应答对话框 checkbox（否则对话框
+            # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
+            self._set_autoreply_enabled(False)
+            s.sync()
+        self._update_mbm_btn()
+        self._mbm_restart()
+        # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
+        # 后续编辑（commit 走旧内存）把加载的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
+        self._ms_groups, _ = self._load_ms_groups()
+        try:
+            self._ms_group_idx = int(s.value("multi_send_group_idx", 0))
+        except (ValueError, TypeError):
+            self._ms_group_idx = 0
+        if not (0 <= self._ms_group_idx < len(self._ms_groups)):
+            self._ms_group_idx = 0
+        self._rebuild_ms_group_combo()
+        self._rebuild_ms_quick_bar()
+        self._keyword_groups, self._keyword_active, _ = self._load_keyword_groups()
+        self._rebuild_kw_group_combo()
+        self._refresh_extra_selections()    # 高亮规则变了 → 重画数据区 extra selections
+        # 已打开的对话框同步刷新（_ar_rules 改了对话框内 _rows 仍是旧的，会反写覆盖）
+        if getattr(self, "_ar_dlg", None) is not None:
+            self._ar_dlg.reload_rows()
+        if getattr(self, "_multi_send_dlg", None) is not None:
+            self._multi_send_dlg._reload_group_list()
+            self._multi_send_dlg._reload_rows()
+        if getattr(self, "_keyword_dlg", None) is not None:
+            self._keyword_dlg._reload_group_list()
+            self._keyword_dlg._reload_rows()
+        if getattr(self, "_mbm_dlg", None) is not None:
+            self._mbm_dlg.reload_config()
+        # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
+        # 避免新配置和老缓冲数据/旧规则混在一起。
+        if getattr(self, "_plot_dlg", None) is not None:
+            self._plot_dlg.reload_cfg()
+        if getattr(self, "_frame_dlg", None) is not None:
+            self._frame_dlg.reload_cfg()
+        self._reload_terminal_from_settings()   # 终端模式三项随配置档加载即时生效，无需重启
 
     def _reload_terminal_from_settings(self):
         """从 settings 重载终端模式三项（模式 / 本地回显 / 回车）并即时同步 UI 与禁用态。
@@ -5757,9 +5805,9 @@ class CommTool(QMainWindow):
         self._apply_language()
 
     def _apply_language(self):
-        self.setWindowTitle(self._t("app_title"))
+        self.setWindowTitle(self._t("app_title") + self._title_suffix)
         if hasattr(self, "title_bar"):
-            self.title_bar.set_title(self._t("app_title"))
+            self.title_bar.set_title(self._t("app_title") + self._title_suffix)
 
         for w in self.findChildren(QWidget):
             k = w.property("tr_text")
@@ -5831,7 +5879,7 @@ class CommTool(QMainWindow):
             self.cb_target.setItemText(0, self._t("client_all"))
 
         if self._tray:
-            self._tray.setToolTip(self._t("app_title"))
+            self._tray.setToolTip(self._t("app_title") + self._title_suffix)
             if hasattr(self, "_tray_show_action"):
                 self._tray_show_action.setText(self._t("tray_show"))
             if hasattr(self, "_tray_about_action"):
@@ -5870,21 +5918,25 @@ class CommTool(QMainWindow):
 
     # ----- 持久化 -----
     @staticmethod
-    def _settings_file() -> str:
+    def _settings_file(profile="") -> str:
         """
         优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
         macOS：不走绿色版逻辑（绝不写进 .app 包内 —— 会破坏签名、重装即丢），
         固定用 ~/Library/Application Support/CommTool/。
+        profile：多窗口配置隔离。""=主配置 settings.ini（含旧版路径兼容）；其余=settings-<profile>.ini
+        （只放主可写位置，不做旧版兼容——是新开的独立会话，本就该从默认起）。
         """
+        name = "settings.ini" if not profile else "settings-%s.ini" % profile
         if sys.platform == "darwin":
             cfg_dir = os.path.join(
                 os.path.expanduser("~/Library/Application Support"), "CommTool")
-            new_ini = os.path.join(cfg_dir, "settings.ini")
-            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失。
-            legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
-            if not os.path.exists(new_ini) and os.path.exists(legacy):
-                return legacy
+            new_ini = os.path.join(cfg_dir, name)
+            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失（仅主配置）。
+            if not profile:
+                legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
+                if not os.path.exists(new_ini) and os.path.exists(legacy):
+                    return legacy
             try:
                 os.makedirs(cfg_dir, exist_ok=True)
             except Exception:
@@ -5896,7 +5948,7 @@ class CommTool(QMainWindow):
         else:
             base = os.path.dirname(os.path.abspath(__file__))
 
-        portable = os.path.join(base, "settings.ini")
+        portable = os.path.join(base, name)
 
         # 判定 portable 路径可不可用：
         # - 文件已存在 → 测试能否打开追加写（覆盖只读文件场景）
@@ -5928,12 +5980,13 @@ class CommTool(QMainWindow):
         # 回退用户配置目录
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
         cfg_dir = os.path.join(appdata, "CommTool")
-        new_ini = os.path.join(cfg_dir, "settings.ini")
+        new_ini = os.path.join(cfg_dir, name)
         # 向后兼容：旧版 NetworkTool 的配置在 %APPDATA%\NetworkTool\。新目录尚无配置、
-        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（读写都走旧路径）。
-        old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
-        if not os.path.exists(new_ini) and os.path.exists(old_ini):
-            return old_ini
+        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（仅主配置）。
+        if not profile:
+            old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
+            if not os.path.exists(new_ini) and os.path.exists(old_ini):
+                return old_ini
         try:
             os.makedirs(cfg_dir, exist_ok=True)
         except Exception:
@@ -6007,6 +6060,14 @@ class CommTool(QMainWindow):
             geo = s.value("geometry")
             if geo:
                 self.restoreGeometry(geo)
+            elif self._profile:
+                # 新配置(无保存位置)：按 profile 序号层叠偏移，避免多窗口完全重叠、看着像只开了一个
+                try:
+                    n = int(self._profile)
+                except (ValueError, TypeError):
+                    n = 2
+                off = 40 * max(1, min(n - 1, 8))   # 钳 1..8 档，防 PID 型 profile 偏出屏幕
+                self.move(self.x() + off, self.y() + off)
             h_state = s.value("h_splitter")
             if h_state:
                 self.h_splitter.restoreState(h_state)
@@ -6126,7 +6187,7 @@ class CommTool(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self._tray = QSystemTrayIcon(get_app_icon(), self)
-        self._tray.setToolTip(self._t("app_title"))
+        self._tray.setToolTip(self._t("app_title") + self._title_suffix)
 
         menu = QMenu()
         self._tray_show_action = menu.addAction(self._t("tray_show"))
@@ -6163,18 +6224,226 @@ class CommTool(QMainWindow):
         菜单使用项目主题色，弹在按钮正下方。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
-        menu.setStyleSheet(f"""
+        qss = f"""
             QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
                      border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
-        """)
+            QMenu::item:disabled {{ color: {c['text_sec']}; }}
+        """
+        menu.setStyleSheet(qss)
+        # 「打开配置」子菜单：列出已保存的配置（主/2/3…）。点空闲的 → 把【当前窗口】就地切到该
+        # 配置（不新开窗口）；「当前窗口」/「使用中」标注并禁用。末尾「新建窗口（自动分配）」= 另开
+        # 一个独立窗口占下一个空闲槽位。解决「全部关掉后想用回以前第 3 个配置」——数据一直在磁盘。
+        sub = menu.addMenu(self._t("open_profile"))
+        sub.setStyleSheet(qss)
+        for p in [""] + [str(n) for n in range(2, 9)]:
+            try:
+                if not os.path.exists(CommTool._settings_file(p)):
+                    continue
+            except Exception:
+                continue
+            name = self._t("profile_main") if p == "" else self._t("profile_n", n=p)
+            if p == self._profile:
+                sub.addAction(self._t("profile_current", name=name)).setEnabled(False)
+            elif self._profile_in_use(p):
+                sub.addAction(self._t("profile_busy", name=name)).setEnabled(False)
+            else:
+                sub.addAction(name).triggered.connect(
+                    lambda *_a, prof=p: self._switch_profile(prof))   # 就地切换到该配置
+        sub.addSeparator()
+        sub.addAction(self._t("new_window_auto")).triggered.connect(
+            lambda *_a: self._open_new_window())                      # 另开一个独立窗口
+        # 「删除配置」子菜单：仅列可删的编号配置(存在、非当前、空闲；主配置不可删)。有才显示。
+        deletable = []
+        for _n in range(2, 9):
+            _p = str(_n)
+            try:
+                _ex = os.path.exists(CommTool._settings_file(_p))
+            except Exception:
+                _ex = False
+            if _ex and _p != self._profile and not self._profile_in_use(_p):
+                deletable.append(_p)
+        if deletable:
+            sub_del = menu.addMenu(self._t("delete_profile"))
+            sub_del.setStyleSheet(qss)
+            for _p in deletable:
+                sub_del.addAction(self._t("profile_n", n=_p)).triggered.connect(
+                    lambda *_a, prof=_p: self._delete_profile(prof))
+        menu.addSeparator()
         act = menu.addAction(self._t("about") + "…")
         act.triggered.connect(self.open_about)
         # 弹在按钮正下方
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_help.mapToGlobal(
             QPoint(0, self.btn_titlebar_help.height())))
+
+    @staticmethod
+    def _profile_in_use(profile):
+        """探测某配置槽位是否被活着的窗口占用：能拿到 .mwlock=空闲(立即释放)，拿不到=使用中。
+        陈旧锁(持有进程已死)会被 tryLock 判为可夺 → 视为空闲，符合预期；当前窗口自持的槽位
+        因锁被本进程占着 → 判为使用中（菜单里单独标「当前窗口」）。"""
+        from PyQt5.QtCore import QLockFile
+        lf = QLockFile(CommTool._settings_file(profile) + ".mwlock")
+        if lf.tryLock(0):
+            lf.unlock()
+            return False
+        return True
+
+    def _open_new_window(self, profile=None):
+        """再开一个独立窗口（新进程）。profile=None → 自动占下一个空闲槽位（settings-N.ini）；
+        指定 profile（""=主配置 / "2".."8"）→ 以该已保存配置打开（供「打开指定配置」子菜单用）。
+        若目标配置在启动瞬间恰被别人占用，新进程会回落到自动分配，仍能开出窗口。"""
+        import subprocess
+        try:
+            if getattr(sys, "frozen", False):
+                args = [sys.executable]                                  # 冻结版：exe 自身
+            else:
+                args = [sys.executable, os.path.abspath(sys.argv[0])]    # 源码运行：python + main.py
+            if profile is not None:
+                args.append("--profile=%s" % profile)                    # main() 解析后优先占该槽位
+            kwargs = {}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen(args, **kwargs)
+        except Exception as e:
+            self.toast(self._t("err_new_window", e=e), error=True)
+
+    def _switch_profile(self, profile):
+        """把【当前窗口】就地切换到另一个已保存配置（不新开窗口）。
+        流程：抢目标配置的槽位锁(被别的窗口占用则拒绝) → 存当前配置 + 断开当前连接(切配置=新会话)
+        → 交换 profile 锁(释放旧的、持有新的) → 改 settings 指向 + 标题 → 从新配置重载全部 UI。
+        窗口位置/大小保持不变(不跳到目标配置上次的几何)，减少视觉突兀。"""
+        profile = str(profile)
+        if profile == self._profile:
+            return
+        from PyQt5.QtCore import QLockFile
+        # 1) 先抢目标槽位锁；被占（别的窗口正用该配置）→ 拒绝，避免两个窗口写同一文件
+        new_lock = QLockFile(self._settings_file(profile) + ".mwlock")
+        if not new_lock.tryLock(100):
+            self.toast(self._t("profile_switch_busy"), error=True)
+            return
+        # 2) 存当前配置 + 停自动重连 + 断开当前连接（切配置=新会话）。旧连接/排队的重连都属旧配置，
+        #    留着会在新配置下误发起连接：故无条件取消重连、并且只要 conn 非空就拆
+        #    （TCP Client "连接中" 时 is_open=False，只判 is_open 会漏掉、旧连接稍后可能在新配置下连上）。
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+        self._cancel_reconnect()
+        self._reconnect_attempts = 0
+        if self.conn is not None:
+            self.close_conn()
+        # 3) 交换 profile 锁：新锁挂 app 保活、释放旧锁（旧配置槽位随即空出，可被别的窗口用）
+        app = QApplication.instance()
+        old_lock = getattr(app, "_profile_lock", None)
+        app._profile_lock = new_lock
+        if old_lock is not None:
+            try:
+                old_lock.unlock()
+            except Exception:
+                pass
+        # 4) 切换身份 + settings 指向新配置文件
+        self._profile = profile
+        self._title_suffix = "" if not profile else " (%s)" % profile
+        self.settings = QSettings(self._settings_file(profile), QSettings.IniFormat)
+        # 5) 保住当前窗口几何（下面 _load_settings 会按新配置的存档几何挪窗，切换时不希望窗口跳走）
+        geo = self.saveGeometry()
+        try:
+            # 先复位「缺失键则不改控件」的字段（发送文本/地址/串口参数等）到构建默认值，
+            # 否则目标配置缺某键时会残留上一配置的值、之后保存还会污染目标配置。
+            self._restore_field_defaults()
+            self._apply_loaded_settings()   # 与「导入配置」共用：整体重载新配置到 UI
+        except Exception:
+            pass
+        self.restoreGeometry(geo)
+        # 6) 刷新标题栏 / 任务栏 / 托盘的窗口名后缀
+        self.setWindowTitle(self._t("app_title") + self._title_suffix)
+        if hasattr(self, "title_bar"):
+            self.title_bar.set_title(self._t("app_title") + self._title_suffix)
+        if self._tray:
+            self._tray.setToolTip(self._t("app_title") + self._title_suffix)
+        name = self._t("profile_main") if not profile else self._t("profile_n", n=profile)
+        self.toast(self._t("profile_switched", name=name))
+
+    # 「缺失键则不改控件」的字段（见 _load_settings：这些用 is not None/restore_combo，缺失就不动）。
+    # 切换配置到不完整配置前先复位它们，避免残留上一配置的值。line edit→.text；combo→.currentText。
+    _RESET_LINE_EDITS = ("ed_packet_timeout", "ed_max_lines", "ed_period_ms",
+                         "ed_local_port", "ed_remote_ip", "ed_remote_port", "ed_group")
+    _RESET_COMBOS = ("cb_local_ip", "cb_proto", "cb_baud", "cb_databits",
+                     "cb_parity", "cb_stopbits", "cb_log_split")
+
+    def _capture_field_defaults(self):
+        """在首次 _load_settings 覆盖前，记录上述字段的构建期默认值（= 全新配置该显示的值）。
+        供 _switch_profile 切到不完整配置时先复位，避免残留上一配置的发送文本/地址/串口参数等。"""
+        d = {"txt_send": self.txt_send.toPlainText()}
+        for n in self._RESET_LINE_EDITS:
+            w = getattr(self, n, None)
+            if w is not None:
+                d[n] = w.text()
+        for n in self._RESET_COMBOS:
+            w = getattr(self, n, None)
+            if w is not None:
+                d[n] = w.currentText()
+        self._field_defaults = d
+
+    def _restore_field_defaults(self):
+        """把 _capture_field_defaults 记录的默认值写回控件（切换配置前调用）。"""
+        d = getattr(self, "_field_defaults", None)
+        if not d:
+            return
+        if "txt_send" in d:
+            self.txt_send.setPlainText(d["txt_send"])
+        for n in self._RESET_LINE_EDITS:
+            w = getattr(self, n, None)
+            if w is not None and n in d:
+                w.setText(d[n])
+        for n in self._RESET_COMBOS:
+            w = getattr(self, n, None)
+            if w is not None and n in d:
+                w.setCurrentText(d[n])
+        if hasattr(self, "cb_port") and self.cb_port.count() > 0:
+            self.cb_port.setCurrentIndex(0)   # 串口选择复位到第一个（ser_port 缺失时不残留旧口）
+
+    def _delete_profile(self, profile):
+        """删除一个已保存的编号配置（settings-<N>.ini + QSettings 内部锁）。二次确认后删除。
+        只删 2..8 的编号配置：主配置("")不可删、当前窗口在用的不可删、别的窗口开着的不可删。
+        用 QLockFile 独占目标槽位=确认无人在用后再删；unlock() 会移除 .mwlock（Qt 负责删文件，
+        勿再手工删——否则可能删掉另一窗口刚抢到该槽位新建的锁，导致两窗口同写一配置）。"""
+        profile = str(profile)
+        if profile not in {"2", "3", "4", "5", "6", "7", "8"} or profile == self._profile:
+            return   # 非 2..8 / 主配置 / 当前窗口：菜单本不给入口，双保险
+        name = self._t("profile_n", n=profile)
+        if not self._confirm_dlg(self._t("profile_delete_title"),
+                                 self._t("profile_delete_body", name=name),
+                                 ok_text=self._t("delete")):
+            return
+        from PyQt5.QtCore import QLockFile
+        base = self._settings_file(profile)
+        lk = QLockFile(base + ".mwlock")
+        if not lk.tryLock(0):        # 拿不到锁 = 正被别的窗口用 → 不能删
+            self.toast(self._t("profile_delete_busy"), error=True)
+            return
+        removed = False
+        try:
+            if os.path.exists(base):
+                os.remove(base)
+                removed = True
+            p_qlock = base + ".lock"   # QSettings 可能残留的内部锁
+            if os.path.exists(p_qlock):
+                try:
+                    os.remove(p_qlock)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        finally:
+            lk.unlock()   # 释放并移除 .mwlock（不手工再删，避免与刚抢到该槽位的新窗口竞态）
+        if removed:
+            self.toast(self._t("profile_deleted", name=name))
+        else:
+            self._info_dlg(self._t("profile_delete_title"),
+                           self._t("profile_delete_fail", name=name), is_error=True)
 
     # ----- 自动检查更新（启动 + 每 6 小时静默查；有新版 → 右下角版本号亮可点徽标）-----
     def _auto_update_check(self):
@@ -6253,7 +6522,9 @@ class CommTool(QMainWindow):
             QTimer.singleShot(0, self._sync_right_send_height)
             # 数据区顶部工具栏按钮：样式生效后按内容宽度定宽，避免首次显示时文字被裁
             QTimer.singleShot(0, self._fit_data_toolbar)
-        # 跨显示器后状态栏等透明区域不重绘的修复：监听屏幕切换（只连一次）
+            # 兜底：窗口若落在屏幕外(多显示器/旧位置)则搬回主屏，避免"进程在、窗口看不见"
+            QTimer.singleShot(0, self._ensure_on_screen)
+        # 跨显示器后状态栏等区域不重绘的修复（多屏 backing store 刷新）：监听屏幕切换（只连一次）
         if not getattr(self, "_screen_sig_connected", False):
             wh = self.windowHandle()
             if wh is not None:
@@ -6276,7 +6547,7 @@ class CommTool(QMainWindow):
                 pass
 
     def _on_screen_changed(self, _screen):
-        # 窗口移到另一个显示器后强制重绘（含底部透明状态栏），
+        # 窗口移到另一个显示器后强制重绘（含底部状态栏），
         # 修复多屏 backing store 不刷新导致状态栏显示空白的问题。
         self.repaint()
         if hasattr(self, "status_bar"):
@@ -6297,7 +6568,7 @@ class CommTool(QMainWindow):
     def changeEvent(self, e):
         if e.type() == e.WindowStateChange and hasattr(self, "title_bar"):
             self.title_bar.update_max_icon()
-            # 最大化/还原后底部透明状态栏可能不重绘（尤其副屏），延迟一拍强制刷新
+            # 最大化/还原后底部状态栏可能不重绘（尤其副屏），延迟一拍强制刷新
             if hasattr(self, "status_bar"):
                 QTimer.singleShot(0, self.status_bar.repaint)
         super().changeEvent(e)

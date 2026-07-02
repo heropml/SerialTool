@@ -192,7 +192,9 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         self._on_auto_check_changed = on_auto_check_changed
         self._checker = None
         self._downloader = None
-        self._dl_url = ""
+        self._dl_url = ""          # Windows 下载直链(也用于推 releases 页 tag)
+        self._dl_cands = []        # 本平台下载候选(逐个试)：Win=[url]，mac=url_mac 列表
+        self._dl_idx = 0
         _flags = Qt.Dialog | Qt.FramelessWindowHint
         if sys.platform == "darwin":
             _flags |= Qt.NoDropShadowWindowHint  # 关掉 macOS 给无边框窗口的矩形系统阴影（与圆角卡片冲突）
@@ -320,6 +322,10 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             self._set_status(self._tr("update_latest", ver=info["version"]))
             return
         self._dl_url = info.get("url", "")
+        # 本平台下载候选：mac 用 url_mac(可为字符串或多源列表，逐个试)，其余用 url。仅收 https。
+        raw = info.get("url_mac", "") if sys.platform == "darwin" else self._dl_url
+        raw = [raw] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple)) else [])
+        self._dl_cands = [u for u in raw if isinstance(u, str) and u.lower().startswith("https://")]
         txt = self._tr("update_found", ver=info["version"])
         if info.get("notes"):
             txt += "\n" + info["notes"]
@@ -330,29 +336,33 @@ class AboutDialog(_DragFramelessMixin, QDialog):
 
     # ----- 下载 + 安装 -----
     def _download(self):
-        if not self._dl_url:
+        # Windows: 下载 Setup.exe → 跑安装向导；macOS: 下载 dmg → 打开挂载(拖入应用程序)。
+        # 下载地址按候选逐个试(mac 多源：Gitee 优先 + GitHub 兜底)。
+        if not self._dl_cands:
+            # 无平台专用直链(如老清单缺 url_mac) → 打开 releases 页兜底
+            if sys.platform != "win32" and self._dl_url:
+                QDesktopServices.openUrl(QUrl(self._releases_page_url()))
+                self._set_status(self._tr("update_open_page"))
             return
-        # macOS / Linux 没有对应安装包（latest.json 仅 Windows .exe）：不下载无用的 .exe，
-        # 改为在浏览器打开 GitHub releases 页，让用户自行下载对应平台的版本。
-        if sys.platform != "win32":
-            QDesktopServices.openUrl(QUrl(self._releases_page_url()))
-            self._set_status(self._tr("update_open_page"))
-            return
+        self._dl_idx = 0
+        self._start_download()
+
+    def _start_download(self):
         self.btn_action.setEnabled(False)
         self._set_status(self._tr("update_downloading", pct=0))
-        self._downloader = UpdateDownloader(self._dl_url, self)
+        self._downloader = UpdateDownloader(self._dl_cands[self._dl_idx], self)
         self._downloader.progress.connect(self._on_progress)
         self._downloader.finished.connect(self._on_downloaded)
         self._downloader.start()
 
     def _releases_page_url(self):
-        """从下载直链推导 GitHub releases 的 tag 页；推导失败则退回原始链接。"""
+        """打开 GitHub releases 的 tag 页(含各平台包，尤其 mac 的 .dmg —— Gitee 按策略只放
+        Setup.exe，故不指 Gitee 页)。从下载直链取 tag，拼固定 GitHub 仓库；取不到则退回原链接。"""
         url = self._dl_url or ""
         marker = "/releases/download/"
         if marker in url:
-            base, rest = url.split(marker, 1)
-            tag = rest.split("/", 1)[0]
-            return f"{base}/releases/tag/{tag}"
+            tag = url.split(marker, 1)[1].split("/", 1)[0]
+            return f"https://github.com/heropml/SerialTool/releases/tag/{tag}"
         return url
 
     def _on_progress(self, rec, total):
@@ -361,15 +371,31 @@ class AboutDialog(_DragFramelessMixin, QDialog):
 
     def _on_downloaded(self, path, err):
         if not path:
-            self._set_status(self._tr("update_dl_failed", e=err))
-            self.btn_action.setEnabled(True)
+            self._dl_idx += 1
+            if self._dl_idx < len(self._dl_cands):
+                self._start_download()          # 换下一个源重试(如 Gitee 失败→GitHub)
+                return
+            if sys.platform != "win32" and self._dl_url:
+                # 所有直链都下载失败 → 打开 releases 页让用户手动下
+                QDesktopServices.openUrl(QUrl(self._releases_page_url()))
+                self._set_status(self._tr("update_open_page"))
+            else:
+                self._set_status(self._tr("update_dl_failed", e=err))
+            self.btn_action.setEnabled(True)   # 两条失败路径都恢复「更新」按钮，避免卡灰
             return
-        self._set_status(self._tr("update_installing"))
-        if run_installer(path):
-            if self._on_quit:
-                QTimer.singleShot(500, self._on_quit)
+        if sys.platform == "win32":
+            self._set_status(self._tr("update_installing"))
+            if run_installer(path):
+                if self._on_quit:
+                    QTimer.singleShot(500, self._on_quit)
+            else:
+                self._set_status(self._tr("update_dl_failed", e="installer launch failed"))
+                self.btn_action.setEnabled(True)
         else:
-            self._set_status(self._tr("update_dl_failed", e="installer launch failed"))
+            # macOS: 打开下载好的 .dmg(挂载 → 用户拖入「应用程序」)。未公证首次打开需一次
+            # xattr 去隔离，这是无法再自动化的部分(见「关于」说明)。
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            self._set_status(self._tr("update_open_dmg"))
             self.btn_action.setEnabled(True)
 
     def _abort_inflight(self):
@@ -419,7 +445,8 @@ class InfoDialog(_DragFramelessMixin, QDialog):
     icon=✓(accent) 信息 / icon=✕(danger) 错误；标题 + 正文 + 单 OK 按钮，点击或 Esc 关闭。"""
 
     def __init__(self, title_text: str, body_text: str, ok_text: str = "OK",
-                 is_error: bool = False, theme_id: str = THEME_DEFAULT, parent=None):
+                 is_error: bool = False, theme_id: str = THEME_DEFAULT, parent=None,
+                 confirm: bool = False, cancel_text: str = "Cancel", danger: bool = False):
         super().__init__(parent)
         _flags = Qt.Dialog | Qt.FramelessWindowHint
         if sys.platform == "darwin":
@@ -473,15 +500,34 @@ class InfoDialog(_DragFramelessMixin, QDialog):
         self.lbl_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.lbl_body)
 
-        # OK 按钮（居中，单按钮对话框的对称做法）
+        # 按钮行：默认单 OK（信息/错误）；confirm=True 时前面再加一个「取消」(ghost)，构成二选一
+        # 确认框（exec_() 返回 Accepted/Rejected）。danger=True 时 OK 用红色(危险动作如删除)。
         self.btn_ok = QPushButton(ok_text)
-        self.btn_ok.setObjectName("DialogPrimaryBtn")
+        self.btn_ok.setObjectName("DialogDangerBtn" if danger else "DialogPrimaryBtn")
         self.btn_ok.setMinimumHeight(36)
         self.btn_ok.setMinimumWidth(120)
-        self.btn_ok.setDefault(True)
         self.btn_ok.clicked.connect(self.accept)
         btn_row = QHBoxLayout()
-        btn_row.addStretch(1); btn_row.addWidget(self.btn_ok); btn_row.addStretch(1)
+        btn_row.addStretch(1)
+        if confirm:
+            self.btn_cancel = QPushButton(cancel_text)
+            self.btn_cancel.setObjectName("DialogGhostBtn")
+            self.btn_cancel.setMinimumHeight(36)
+            self.btn_cancel.setMinimumWidth(120)
+            self.btn_cancel.clicked.connect(self.reject)
+            btn_row.addWidget(self.btn_cancel)
+        btn_row.addWidget(self.btn_ok)
+        btn_row.addStretch(1)
+        # 默认按钮 / Enter 目标：危险确认（如删除）给「取消」并令其获焦，避免弹框后一按 Enter
+        # 就执行了破坏性操作；其它（信息/普通确认）仍以 OK 为默认。
+        if confirm and danger:
+            self.btn_ok.setAutoDefault(False)
+            self.btn_ok.setDefault(False)
+            self.btn_cancel.setAutoDefault(True)
+            self.btn_cancel.setDefault(True)
+            self.btn_cancel.setFocus()
+        else:
+            self.btn_ok.setDefault(True)
         v.addLayout(btn_row)
 
         outer.addWidget(self._card)
@@ -500,6 +546,19 @@ class InfoDialog(_DragFramelessMixin, QDialog):
         }}
         QPushButton#DialogPrimaryBtn:hover  {{ background-color: {c['accent_hover']}; }}
         QPushButton#DialogPrimaryBtn:pressed{{ background-color: {c['accent_pressed']}; }}
+        QPushButton#DialogDangerBtn {{
+            background-color: {c['danger']}; color: white; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px;
+            font-weight: 600; padding: 6px 14px;
+        }}
+        QPushButton#DialogDangerBtn:hover {{ background-color: {c['danger_hover']}; }}
+        QPushButton#DialogGhostBtn {{
+            background-color: {c['ghost_bg']}; color: {c['text']}; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px;
+            font-weight: 500; padding: 6px 14px;
+        }}
+        QPushButton#DialogGhostBtn:hover  {{ background-color: {c['ghost_hover']}; }}
+        QPushButton#DialogGhostBtn:pressed{{ background-color: {c['ghost_pressed']}; }}
         """
 
 

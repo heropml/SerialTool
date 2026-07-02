@@ -14,6 +14,7 @@ import re
 import sys
 import json
 import glob
+import time
 import tempfile
 import ssl
 import urllib.request
@@ -72,12 +73,16 @@ def is_newer(remote, local):
 
 
 def cleanup_temp_installers():
-    """清理上次更新残留在 %TEMP% 的安装包（CommTool_Setup_*.exe）。
-    启动时调用一次；删不掉（可能仍被占用）就跳过，不影响启动。"""
+    """清理上次更新残留在 %TEMP% 的安装包（CommTool_Setup_*.exe）。启动时调用一次；
+    删不掉（可能仍被占用）就跳过，不影响启动。多窗口下**跳过最近 10 分钟内改动的文件**——
+    避免删掉另一个窗口正在下载 / 刚下载完还没启动安装的更新包。"""
     try:
+        now = time.time()
         pattern = os.path.join(tempfile.gettempdir(), "CommTool_Setup_*.exe")
         for f in glob.glob(pattern):
             try:
+                if now - os.path.getmtime(f) < 600:   # 近 10 分钟改动 → 可能别的窗口在用，跳过
+                    continue
                 os.remove(f)
             except OSError:
                 pass
@@ -138,6 +143,7 @@ class _ManifestWorker(QThread):
             self.got.emit({
                 "version": ver,
                 "url": str(m.get("url", "")),
+                "url_mac": m.get("url_mac", ""),      # macOS 专用下载(dmg)；可为字符串或多源列表
                 "notes": str(m.get("notes", "")),
                 "newer": is_newer(ver, self._cur),
                 "source": url,
@@ -222,17 +228,19 @@ class _DownloadWorker(QThread):
             self._remove()                        # 中止：删半成品
             self.done.emit("", _translate("updater_cancelled"))
             return
-        # 校验下载到的是不是真正的 Windows 可执行文件（防 404/错误页被当成功）
-        try:
-            with open(self._path, "rb") as f:
-                head = f.read(2)
-        except OSError as e:
-            self.done.emit("", str(e))
-            return
-        if head != b"MZ":
-            self._remove()
-            self.done.emit("", _translate("updater_bad_installer"))
-            return
+        # 校验下载到的是不是真正的 Windows 可执行文件（防 404/错误页被当成功）。
+        # 仅 Windows：mac 下的是 .dmg（非 MZ/PE），跳过此校验（错误页会在 HTTP 层 404、不会存下）。
+        if sys.platform == "win32":
+            try:
+                with open(self._path, "rb") as f:
+                    head = f.read(2)
+            except OSError as e:
+                self.done.emit("", str(e))
+                return
+            if head != b"MZ":
+                self._remove()
+                self.done.emit("", _translate("updater_bad_installer"))
+                return
         self.done.emit(self._path, "")
 
 
@@ -253,6 +261,9 @@ class UpdateDownloader(QObject):
             self.finished.emit("", _translate("updater_bad_url"))
             return
         name = os.path.basename(QUrl(self._url).path()) or "Setup.exe"
+        # 文件名插入 PID：多窗口同时下载各写各的文件、不会互相踩（清理仍按 CommTool_Setup_* 匹配）
+        stem, ext = os.path.splitext(name)
+        name = "%s_%d%s" % (stem, os.getpid(), ext)
         path = os.path.join(tempfile.gettempdir(), name)
         w = _DownloadWorker(self._url, path)
         w.progressed.connect(self._on_progress)
