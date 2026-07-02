@@ -683,6 +683,54 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w._terminal_on = old
 
+    def test_profile_lock_acquire_and_reclaim(self):
+        """配置槽位锁：临时目录隔离（不受外部已开窗口影响），依次分配 ''/2/3，释放中间槽后复用。"""
+        import main as _main
+        import tempfile
+        import shutil
+        import os as _os
+        d = tempfile.mkdtemp()
+        path_fn = lambda p: _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p)
+        p1, l1 = _main._acquire_profile(path_fn)
+        p2, l2 = _main._acquire_profile(path_fn)
+        p3, l3 = _main._acquire_profile(path_fn)
+        try:
+            self.assertEqual((p1, p2, p3), ("", "2", "3"))   # 干净环境 → 确定性槽位
+            l2.unlock()                                       # 释放中间槽位 2
+            p4, l4 = _main._acquire_profile(path_fn)
+            self.assertEqual(p4, "2")                         # 复用刚释放的槽位
+            l4.unlock()
+        finally:
+            l1.unlock()
+            l3.unlock()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_ensure_on_screen_pulls_offscreen_window_back(self):
+        """窗口被挪到屏幕外时，_ensure_on_screen 把它搬回可见屏幕内（防'进程在窗口看不见'）。"""
+        from PyQt5.QtWidgets import QApplication
+        w = _win()
+        old = w.geometry()
+        try:
+            w.move(-10000, -10000)   # 挪到任何屏幕都够不到的位置
+            w._ensure_on_screen()
+            fg = w.frameGeometry()
+            on = any(s.availableGeometry().intersects(fg) for s in QApplication.screens())
+            self.assertTrue(on)      # 已被搬回某个屏幕
+        finally:
+            w.setGeometry(old)
+
+    def test_settings_file_profile_isolation(self):
+        """多窗口配置隔离：主 profile=settings.ini，其余=settings-<N>.ini，同目录不同文件。"""
+        import os as _os
+        main = CommTool._settings_file("")
+        p2 = CommTool._settings_file("2")
+        p3 = CommTool._settings_file("3")
+        self.assertTrue(main.endswith("settings.ini"))
+        self.assertTrue(p2.endswith("settings-2.ini"))
+        self.assertTrue(p3.endswith("settings-3.ini"))
+        self.assertEqual(len({main, p2, p3}), 3)                       # 三个路径各不相同
+        self.assertEqual(_os.path.dirname(main), _os.path.dirname(p2))  # 隔离只体现在文件名、同目录
+
     def test_terminal_toggle_persists(self):
         """终端模式开关写盘 + 纳入配置导出键。"""
         w = _win()

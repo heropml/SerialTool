@@ -18,6 +18,8 @@ installer/
 
 # 运行时用户配置（每台机器不同）
 settings.ini
+settings-*.ini
+*.ini.lock
 
 # Gitee 发版长期令牌（release_gitee.py 读它）—— 绝不入库
 scripts/.gitee_token

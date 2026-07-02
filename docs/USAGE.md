@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.5
+
+**Multiple windows** — you can now run several independent CommTool windows at once, each debugging its own device without interfering:
+
+- **New Window** — "Help → New Window" opens another independent window (or just launch the program again); the title carries a `(2)` / `(3)` suffix (taskbar and tray too).
+- **Configs no longer clobber each other** — each window uses its own settings file (main = `settings.ini`, others = `settings-2.ini` / `settings-3.ini`…); a file lock auto-assigns a free slot, so even double-launching the exe auto-isolates (fixes the old "two windows overwrite each other's config" problem).
+- **Fully independent** — each window has its own connection, send/receive, auto-reply, Modbus master, terminal, etc. (note: a serial COM port can still only be opened by one window; opening the same port in a second window reports "busy" — that's expected, data never mixes).
+- **Multi-monitor safeguard** — if a window ends up off-screen (a disconnected/closed monitor), it's pulled back onto the primary screen on first show, avoiding a "process runs but no visible window" situation.
+
+---
+
 ## What's New in v1.2.4
 
 **Terminal mode** — a "Terminal mode" toggle in the **Send** settings turns the send box into a lightweight serial terminal, handy for logging into a Linux serial console and typing commands:
@@ -565,7 +576,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.4`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.5`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

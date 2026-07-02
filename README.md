@@ -143,7 +143,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.2.4`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.2.5`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -251,7 +251,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.2.4")
+│   └── version.py          版本号单点真源 (__version__ = "1.2.5")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -340,7 +340,7 @@ scripts\build_onefile.bat
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name CommTool_onefile_v1.2.4 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.2.5 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -373,7 +373,7 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.2.4"
+__version__ = "1.2.5"
 ```
 然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
@@ -558,6 +558,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v33 (v1.2.2)**: **多条发送拖拽排序 + 自动检查更新**。①**多条发送拖拽排序**：每行行首加 **☰ 拖拽手柄**，按住上下拖即可改变发送顺序、松手立即落盘；按落点上半/下半自动定位插入点（`_DragHandle` 发起 `QDrag` + 列表容器 `eventFilter` 接 drop 重排 `_rows`）。②**自动检查更新（类 Claude 的静默提示）**：启动后台静默查一次 + 之后**每 6 小时**再查（复用 v1.2.1 的 urllib + 系统证书检查器）；命中新版才提示、无新版/网络不通**全程静默不弹框**；发现新版时**右下角版本号变「● 可更新 vX」高亮可点徽标**，点击直接打开「关于」走下载安装；「关于」对话框新增 **「自动检查更新」开关**（默认开，可关闭、仍可手动「检查更新」，随会话配置档导入导出）。i18n 加 `update_badge`/`update_badge_tip`/`auto_check_update` 三语；经三轮 review 收敛（拖拽手柄事件透传、`DragLeave` 处理、空版本号边界防御）；headless 端到端测过 + 原回归全过；无新依赖。
 - **v34 (v1.2.3)**: **串口稳健性 + 对话框列宽记忆**（修复版）。①**串口选择防乱跳**：选中口被后台扫描偶发瞬时掉枚举时不再静默跳到别的口（去抖宽限内保留「未检测到」占位）；口长期不在则自动删占位、回落第一个真实口（修了「列表稳定后缺失计数停更、占位删不掉」的回归）。②**已连接串口被移除**（拔出/掉驱动）连续几次检测不到 → **自动断开 + 提示**「串口 X 已移除」。③**串口掉线不再自动重连**（物理事件、重连可能连错口；网络 TCP/UDP 仍按退避重连）。④**三对话框列宽持久化**：「多条发送 / Modbus 主机轮询 / 自动应答」拖动调整的列宽写入 settings（`multi_send_split`/`modbus_master_split`/`autoreply_split`），重开/重启保持、随会话配置档导入导出。⑤另修：启动扫描早于配置恢复时仍能选回上次串口（pending 不被「列表没变就 return」跳过）；连接出错处理改用 `_conn_proto`（实际连接协议）判断，避免连接中导入配置误判。`tests/test_script.py` 增至 58 项；无新依赖。
 - **v35 (v1.2.4)**: **终端模式（轻量串口终端）**。「发送区」设置新增「终端模式」开关，开启后：①**逐字符即时发送**——发送框作键盘捕获，每个按键即时转字节发给设备（回车 / Backspace / Tab / Ctrl+C / 方向键 ↑↓←→ / ESC / Home / End / Delete 透传，`_term_key_to_bytes` 映射 + eventFilter 拦截直发）。②**轻量 VT 渲染**——数据区按终端语义显示设备回显：`\b` 光标左移 + 覆盖式打印、`\r` 回行首、`\n` 换行，并解析行编辑常用 CSI（`ESC[J`/`ESC[K` 擦除、`ESC[C`/`ESC[D` 光标）；颜色 `ESC[..m` 等其它 CSI 忽略（带颜色输出显示干净、无 `^[[` 乱码）；跨数据块拼接 + 光标位置延续；CSI 缓冲 64 字符上限 + 无终止符洪水跨块丢弃防护。③**本地回显 / 回车映射**——「本地回显」开关 + 「回车」CR/LF/CRLF（默认 CR）。④开启时**淡化禁用用不上的格式设置**（HEX 显示/时间戳/分包/超时/HEX 发送/校验等，标签+控件整行淡化，IOSSwitch 禁用态变淡）、**停掉定时发送**；关闭恢复。三项随会话配置档导入导出、即时生效（`terminal_mode`/`terminal_echo`/`terminal_enter`）。i18n 三语；经六轮 review 加固（占位同步 / 导入重载 / 定时停止 / 标签字典防覆盖 / 大计数防冻 / 坏 ini 安全解析 / CSI 洪水）；`tests/test_script.py` 增至 66 项；无新依赖。局限：不解析全屏 TUI（`vi`/`top`）。
+- **v36 (v1.2.5)**: **多窗口（独立配置）**。可同时开多个独立窗口、各调各的设备、互不干扰。①**新建窗口**：「帮助 → 新建窗口」`subprocess.Popen` 起新进程（冻结版起 exe / 源码起 python+main.py）；标题 / 任务栏 / 托盘带 `(2)`/`(3)` 后缀。②**配置隔离**：`_settings_file(profile)` 主=`settings.ini`（含旧路径兼容）、其余=`settings-<N>.ini`；启动时 `main._acquire_profile()` 用 `QLockFile` 挑第一个空闲槽位（主/2..8，满则用 PID）并持锁到退出——双击开多个 / 新建窗口都自动分到不同配置，**退出不再互相覆盖**（解决"开两个窗口配置冲突"）；槽位释放后可被下个窗口复用。③**各自独立**：连接 / 收发 / 自动应答 / Modbus / 终端等状态本就挂在各自进程，天然隔离（同一串口仍只能被一个窗口打开）。④**多显示器兜底** `_ensure_on_screen`：首次显示后窗口若不在任何屏幕内（旧位置落到已断开的屏）→ 搬回主屏，避免"进程在、窗口看不见"；新窗口无保存位置时按 profile 序号层叠偏移防重叠。⑤更新临时包多窗口加固：`cleanup_temp_installers` 跳过近 10 分钟改动的文件、下载文件名加 PID，避免多窗口互删/同写。i18n 加 `new_window`；`.gitignore` 加 `settings-*.ini`/`*.ini.lock`；`tests/test_script.py` 增至 69 项（配置路径隔离 / 锁抢占复用 / 屏幕外搬回，均临时目录隔离不受运行窗口影响）；无新依赖。
 
 ---
 

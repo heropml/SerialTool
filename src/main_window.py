@@ -204,8 +204,12 @@ class CommTool(QMainWindow):
     _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
     _AR_SCRIPT_START_TIMEOUT = 5.0  # spawn/冻结版首启可较慢；与单次脚本超时分开
 
-    def __init__(self):
+    def __init__(self, profile=""):
         super().__init__()
+        # 多窗口配置隔离：""=主窗口(settings.ini)，其余用 settings-<profile>.ini；标题加 (N) 区分。
+        # 让「开多个窗口 / 新建窗口」各用各的配置、退出不再互相覆盖。
+        self._profile = str(profile or "")
+        self._title_suffix = "" if not self._profile else " (%s)" % self._profile
         # macOS 用原生窗口边框（红黄绿交通灯 + 系统原生缩放）；Windows/Linux 仍是自定义无边框
         if sys.platform == "darwin":
             self.setWindowFlags(Qt.Window)
@@ -266,7 +270,7 @@ class CommTool(QMainWindow):
         self._log_seg = 0         # 当前分包序号
         self._recv_font_size = 10
 
-        self.settings = QSettings(self._settings_file(), QSettings.IniFormat)
+        self.settings = QSettings(self._settings_file(self._profile), QSettings.IniFormat)
         self._ar_rules = self._load_ar_rules()       # 自动应答规则
         self._ar_on = self.settings.value("autoreply_on", False, type=bool)
         self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
@@ -423,7 +427,7 @@ class CommTool(QMainWindow):
 
     # ----- UI 构建 -----
     def init_ui(self):
-        self.setWindowTitle(self._t("app_title"))
+        self.setWindowTitle(self._t("app_title") + self._title_suffix)
         self.resize(1140, 740)
         self.setMinimumSize(960, 600)
 
@@ -437,7 +441,7 @@ class CommTool(QMainWindow):
 
         # 标题栏
         self.title_bar = TitleBar(self)
-        self.title_bar.set_title(self._t("app_title"))
+        self.title_bar.set_title(self._t("app_title") + self._title_suffix)
         self.title_bar.set_app_icon(get_app_icon())
 
         self.cb_language = self.title_bar.cb_language
@@ -597,6 +601,18 @@ class CommTool(QMainWindow):
             if b is not None:
                 b.setMinimumWidth(0)          # 先撤回旧值，让 sizeHint 反映当前文本自然宽度
                 b.setMinimumWidth(b.sizeHint().width())
+
+    def _ensure_on_screen(self):
+        """确保窗口落在某个屏幕的可见区域内。多显示器/分辨率变化后，恢复的旧位置或默认位置
+        可能落在已关闭/断开的屏幕外 → 表现为『进程在、窗口看不见』。不在任何屏幕内就搬回主屏。"""
+        try:
+            fg = self.frameGeometry()
+            if any(scr.availableGeometry().intersects(fg) for scr in QApplication.screens()):
+                return
+            avail = QApplication.primaryScreen().availableGeometry()
+            self.move(avail.left() + 60, avail.top() + 60)
+        except Exception:
+            pass
 
     def build_sidebar(self):
         host = QWidget()
@@ -5757,9 +5773,9 @@ class CommTool(QMainWindow):
         self._apply_language()
 
     def _apply_language(self):
-        self.setWindowTitle(self._t("app_title"))
+        self.setWindowTitle(self._t("app_title") + self._title_suffix)
         if hasattr(self, "title_bar"):
-            self.title_bar.set_title(self._t("app_title"))
+            self.title_bar.set_title(self._t("app_title") + self._title_suffix)
 
         for w in self.findChildren(QWidget):
             k = w.property("tr_text")
@@ -5831,7 +5847,7 @@ class CommTool(QMainWindow):
             self.cb_target.setItemText(0, self._t("client_all"))
 
         if self._tray:
-            self._tray.setToolTip(self._t("app_title"))
+            self._tray.setToolTip(self._t("app_title") + self._title_suffix)
             if hasattr(self, "_tray_show_action"):
                 self._tray_show_action.setText(self._t("tray_show"))
             if hasattr(self, "_tray_about_action"):
@@ -5870,21 +5886,25 @@ class CommTool(QMainWindow):
 
     # ----- 持久化 -----
     @staticmethod
-    def _settings_file() -> str:
+    def _settings_file(profile="") -> str:
         """
         优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
         场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
         macOS：不走绿色版逻辑（绝不写进 .app 包内 —— 会破坏签名、重装即丢），
         固定用 ~/Library/Application Support/CommTool/。
+        profile：多窗口配置隔离。""=主配置 settings.ini（含旧版路径兼容）；其余=settings-<profile>.ini
+        （只放主可写位置，不做旧版兼容——是新开的独立会话，本就该从默认起）。
         """
+        name = "settings.ini" if not profile else "settings-%s.ini" % profile
         if sys.platform == "darwin":
             cfg_dir = os.path.join(
                 os.path.expanduser("~/Library/Application Support"), "CommTool")
-            new_ini = os.path.join(cfg_dir, "settings.ini")
-            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失。
-            legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
-            if not os.path.exists(new_ini) and os.path.exists(legacy):
-                return legacy
+            new_ini = os.path.join(cfg_dir, name)
+            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失（仅主配置）。
+            if not profile:
+                legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
+                if not os.path.exists(new_ini) and os.path.exists(legacy):
+                    return legacy
             try:
                 os.makedirs(cfg_dir, exist_ok=True)
             except Exception:
@@ -5896,7 +5916,7 @@ class CommTool(QMainWindow):
         else:
             base = os.path.dirname(os.path.abspath(__file__))
 
-        portable = os.path.join(base, "settings.ini")
+        portable = os.path.join(base, name)
 
         # 判定 portable 路径可不可用：
         # - 文件已存在 → 测试能否打开追加写（覆盖只读文件场景）
@@ -5928,12 +5948,13 @@ class CommTool(QMainWindow):
         # 回退用户配置目录
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
         cfg_dir = os.path.join(appdata, "CommTool")
-        new_ini = os.path.join(cfg_dir, "settings.ini")
+        new_ini = os.path.join(cfg_dir, name)
         # 向后兼容：旧版 NetworkTool 的配置在 %APPDATA%\NetworkTool\。新目录尚无配置、
-        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（读写都走旧路径）。
-        old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
-        if not os.path.exists(new_ini) and os.path.exists(old_ini):
-            return old_ini
+        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（仅主配置）。
+        if not profile:
+            old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
+            if not os.path.exists(new_ini) and os.path.exists(old_ini):
+                return old_ini
         try:
             os.makedirs(cfg_dir, exist_ok=True)
         except Exception:
@@ -6007,6 +6028,14 @@ class CommTool(QMainWindow):
             geo = s.value("geometry")
             if geo:
                 self.restoreGeometry(geo)
+            elif self._profile:
+                # 新配置(无保存位置)：按 profile 序号层叠偏移，避免多窗口完全重叠、看着像只开了一个
+                try:
+                    n = int(self._profile)
+                except (ValueError, TypeError):
+                    n = 2
+                off = 40 * max(1, min(n - 1, 8))   # 钳 1..8 档，防 PID 型 profile 偏出屏幕
+                self.move(self.x() + off, self.y() + off)
             h_state = s.value("h_splitter")
             if h_state:
                 self.h_splitter.restoreState(h_state)
@@ -6126,7 +6155,7 @@ class CommTool(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self._tray = QSystemTrayIcon(get_app_icon(), self)
-        self._tray.setToolTip(self._t("app_title"))
+        self._tray.setToolTip(self._t("app_title") + self._title_suffix)
 
         menu = QMenu()
         self._tray_show_action = menu.addAction(self._t("tray_show"))
@@ -6169,12 +6198,31 @@ class CommTool(QMainWindow):
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
         """)
+        act_new = menu.addAction(self._t("new_window"))
+        act_new.triggered.connect(self._open_new_window)
+        menu.addSeparator()
         act = menu.addAction(self._t("about") + "…")
         act.triggered.connect(self.open_about)
         # 弹在按钮正下方
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_help.mapToGlobal(
             QPoint(0, self.btn_titlebar_help.height())))
+
+    def _open_new_window(self):
+        """再开一个独立窗口：新进程启动，自动占用下一个空闲配置槽位（settings-N.ini），
+        与当前窗口互不干扰、退出不互相覆盖。"""
+        import subprocess
+        try:
+            if getattr(sys, "frozen", False):
+                args = [sys.executable]                                  # 冻结版：exe 自身
+            else:
+                args = [sys.executable, os.path.abspath(sys.argv[0])]    # 源码运行：python + main.py
+            kwargs = {}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen(args, **kwargs)
+        except Exception as e:
+            self.toast(self._t("err_new_window", e=e), error=True)
 
     # ----- 自动检查更新（启动 + 每 6 小时静默查；有新版 → 右下角版本号亮可点徽标）-----
     def _auto_update_check(self):
@@ -6253,6 +6301,8 @@ class CommTool(QMainWindow):
             QTimer.singleShot(0, self._sync_right_send_height)
             # 数据区顶部工具栏按钮：样式生效后按内容宽度定宽，避免首次显示时文字被裁
             QTimer.singleShot(0, self._fit_data_toolbar)
+            # 兜底：窗口若落在屏幕外(多显示器/旧位置)则搬回主屏，避免"进程在、窗口看不见"
+            QTimer.singleShot(0, self._ensure_on_screen)
         # 跨显示器后状态栏等透明区域不重绘的修复：监听屏幕切换（只连一次）
         if not getattr(self, "_screen_sig_connected", False):
             wh = self.windowHandle()
