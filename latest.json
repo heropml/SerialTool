@@ -1,5 +1,5 @@
 {
-  "version": "1.2.5",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.5/CommTool_Setup_v1.2.5.exe",
-  "notes": "多窗口：现在可同时开多个独立窗口（帮助 → 新建窗口，或再运行一次程序），各自独立的连接 / 收发 / 自动应答 / Modbus / 终端状态、互不干扰；每个窗口用独立配置文件（settings.ini / settings-2.ini …），改设置关窗不再互相覆盖，靠文件锁自动分配、双击开两个也自动隔离。多显示器下窗口若落到屏幕外自动搬回主屏。"
+  "version": "1.2.4",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.4/CommTool_Setup_v1.2.4.exe",
+  "notes": "新增「终端模式」（轻量串口终端）：发送区开启后，在发送框直接键入即时发送（回车 / Backspace / Tab / Ctrl+C / 方向键等透传给设备），数据区按终端语义渲染（处理退格 / 光标 / ESC[J 擦除、忽略颜色码）；带本地回显与回车（CR/LF/CRLF）开关；开启时自动停掉定时发送并淡化禁用用不上的设置。适合登录 Linux 串口控制台敲命令调试。"
 }
