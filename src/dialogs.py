@@ -2,11 +2,12 @@
 """对话框：CloseDialog / MultiSendDialog / KeywordHighlightDialog + 共享样式 helper。"""
 import sys
 from PyQt5.QtCore import Qt, QTimer, QUrl, QMimeData, QEvent, QPoint
-from PyQt5.QtGui import QColor, QDesktopServices, QDrag
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontMetrics
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
                              QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea,
                              QGraphicsDropShadowEffect, QColorDialog,
-                             QListWidget, QListWidgetItem, QSplitter)
+                             QListWidget, QListWidgetItem, QSplitter,
+                             QTableWidget, QHeaderView, QAbstractItemView)
 from theme import chrome_for, THEME_DEFAULT
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
@@ -1475,5 +1476,568 @@ class KeywordHighlightDialog(QDialog):
             for key in ("mode", "scope"):
                 popup = r[key].view().window()
                 popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+
+
+# ============== 自动化测试序列对话框 ==============
+class SequenceDialog(_DragFramelessMixin, QDialog):
+    """自动化测试序列：表头 + 圆角卡片行（形制同多条发送/自动应答，复用 _dialog_list_qss）。
+    顺序执行 发送 → 等回包匹配 → 通过/失败。步骤存 app._seq_rules / settings['sequence_rules']；
+    运行引擎在 main_window（_seq_* 系列）。单实例非模态，复用主窗刷新主题/语言。
+    每行控件引用存 self._rows[i]（dict），读写走 _row_to_step。"""
+    _MODE_KEYS = ("seq_mode_contains", "seq_mode_equals", "seq_mode_prefix")
+    _ONFAIL_KEYS = ("seq_onfail_stop", "seq_onfail_continue")
+    # 只有「发送」「期望回包」两个数据框可拖宽：分别装进 2 面板 splitter 的左/右两组，组内数据框伸展、
+    # 其余控件固定宽度（拖它们没意义）。整行只有一个分隔条(两组之间)——拖它调两个数据框的相对宽。
+    # 形制同自动应答对话框。行布局：启用 | [ 名称 发送↔ HEX 校验 | 期望↔ HEX 模式 超时 超时动作 延时 ] | 结果 删除
+    _LEAD_W, _RESULT_W, _DEL_W = 22, 92, 24
+    # 定宽列。下拉列(校验/模式/超时动作)只给「最小宽」，实际宽在 __init__ 按各自选项文案自动算(见
+    # _combo_w)——以后往选项列表加更长的项，列宽自动跟着变，不用改代码。
+    _NAME_W, _HEX_W, _TO_W, _DL_W = 90, 34, 58, 54
+    _CS_MIN_W, _MODE_MIN_W, _OF_MIN_W = 60, 56, 56
+    _DATA_MIN_W = 60                # 发送/期望数据框最小宽（表头标签与行控件取同值 → 任何宽度都对齐）
+    _DEFAULT_SPLIT = [300, 440]     # 左组(名称+发送)/右组(期望+模式…) 初始宽；拖分隔条调二者、持久化
+
+    def __init__(self, app):
+        super().__init__(None)      # 不传 parent：与其它子对话框一致，避免干扰无边框主窗
+        self.app = app
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+                            | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        self.setWindowModality(Qt.NonModal)
+        self.setMinimumSize(880, 320)
+        self.resize(1140, 460)
+        self._loading = False
+        self._rows = []              # 每行控件引用 dict 列表（on/name/send/…/res/frame/split）
+        # 中间列的共享拖动比例，所有行 + 表头同步；从 settings 恢复上次拖好的列宽，没存过用默认
+        self._split_sizes = self._load_split_sizes()
+        self._syncing_split = False  # 防止同步分隔条递归
+        # 下拉列宽按各自选项文案自动算（含最长项，避免像 ModbusCRC16 被截断；日后加更长的项也自适应）
+        self._cs_w = self._combo_w(CHECKSUM_KEYS, self._CS_MIN_W)
+        self._mode_w = self._combo_w(self._MODE_KEYS, self._MODE_MIN_W)
+        self._of_w = self._combo_w(self._ONFAIL_KEYS, self._OF_MIN_W)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._commit)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(6)
+
+        top = QHBoxLayout()
+        self.btn_run = QPushButton()
+        self.btn_run.setObjectName("PlotGhostBtn")   # 普通灰按钮：空闲时不高亮，避免被误读成"运行中"
+        self.btn_run.setMinimumHeight(30)
+        self.btn_run.clicked.connect(self._on_run)
+        self.btn_stop = QPushButton()
+        self.btn_stop.setObjectName("PlotGhostBtn")
+        self.btn_stop.clicked.connect(lambda *_: self.app._seq_stop())
+        self.btn_add = QPushButton()
+        self.btn_add.setObjectName("PlotGhostBtn")
+        self.btn_add.clicked.connect(lambda *_: (self._add_row(), self._schedule()))
+        self.btn_help = QPushButton("?")        # 「?」→ 带例子的用法说明（形制同自动应答对话框）
+        self.btn_help.setObjectName("ArHelpBtn")
+        self.btn_help.setFixedSize(26, 26)
+        self.btn_help.setCursor(Qt.PointingHandCursor)
+        self.btn_help.clicked.connect(lambda *_: self._show_help_dlg())
+        top.addWidget(self.btn_run)
+        top.addWidget(self.btn_stop)
+        top.addWidget(self.btn_add)
+        top.addWidget(self.btn_help)
+        top.addStretch(1)
+        self.lbl_summary = QLabel("")
+        self.lbl_summary.setObjectName("SeqSummary")
+        self.lbl_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        top.addWidget(self.lbl_summary)
+        root.addLayout(top)
+
+        self.lbl_hint = QLabel()
+        self.lbl_hint.setObjectName("ArDesc")
+        self.lbl_hint.setWordWrap(True)
+        root.addWidget(self.lbl_hint)
+
+        # 表头：启用占位(固定) + [左组 | 右组](splitter，仅两数据列可拖) + 结果(固定) + 删除占位(固定)
+        self.hdr = QWidget()
+        self._hdr_layout = QHBoxLayout(self.hdr)
+        self._hdr_layout.setContentsMargins(10, 2, 10, 2)
+        self._hdr_layout.setSpacing(6)
+        self._hdr_labels = []
+        lead = QLabel()                     # 启用勾选列占位
+        lead.setFixedWidth(self._LEAD_W)
+        self._hdr_layout.addWidget(lead)
+        # 左组标签：名称(固定) 发送(伸展) HEX(固定) 校验(固定)；右组：期望(伸展) HEX 模式 超时 超时动作 延时(均固定)
+        hleft = self._mk_hdr_group([("seq_col_name", self._NAME_W), ("seq_col_send", None),
+                                    ("HEX", self._HEX_W), ("seq_col_cs", self._cs_w)])
+        hright = self._mk_hdr_group([("seq_col_expect", None), ("HEX", self._HEX_W),
+                                     ("seq_col_mode", self._mode_w), ("seq_col_timeout", self._TO_W),
+                                     ("seq_col_onfail", self._of_w), ("seq_col_delay", self._DL_W)])
+        self._hdr_split = self._make_split()
+        self._hdr_split.addWidget(hleft)
+        self._hdr_split.addWidget(hright)
+        self._hdr_split.setStretchFactor(0, 1)
+        self._hdr_split.setStretchFactor(1, 1)
+        self._hdr_split.setSizes(self._split_sizes or self._DEFAULT_SPLIT)
+        self._hdr_split.splitterMoved.connect(lambda *_: self._sync_splits(self._hdr_split))
+        self._hdr_layout.addWidget(self._hdr_split, 1)
+        lb_res = QLabel()                   # 结果：固定列，不在 splitter 内
+        lb_res.setObjectName("SeqHdr")
+        lb_res.setProperty("k", "seq_col_result")
+        lb_res.setFixedWidth(self._RESULT_W)
+        lb_res.setAlignment(Qt.AlignCenter)
+        self._hdr_layout.addWidget(lb_res)
+        self._hdr_labels.append(lb_res)
+        hdel = QWidget()                    # 删除按钮列占位
+        hdel.setFixedWidth(self._DEL_W)
+        self._hdr_layout.addWidget(hdel)
+        root.addWidget(self.hdr)
+
+        # 卡片行滚动区（形制同 多条发送/自动应答）
+        host = QWidget()
+        host.setObjectName("MsListHost")
+        self.rows_v = QVBoxLayout(host)
+        self.rows_v.setContentsMargins(0, 0, 0, 0)
+        self.rows_v.setSpacing(5)
+        self.rows_v.addStretch(1)
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("MsScroll")
+        self.scroll.setWidget(host)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.verticalScrollBar().rangeChanged.connect(self._update_header_scroll_margin)
+        root.addWidget(self.scroll, 1)
+
+        self.reload_rows()
+        self.retranslate()
+        self.refresh_theme()
+        QTimer.singleShot(0, self._update_header_scroll_margin)
+
+    def _combo_w(self, keys, min_w):
+        """按下拉选项里最长文案算列宽：最长项像素宽 + 下拉箭头/内边距余量，不小于 min_w。
+        选项列表加更长的项时列宽自动跟着变，无需手改常量。"""
+        f = QFont("Segoe UI")
+        f.setPixelSize(11)                             # 与 QComboBox 的 QSS 字号一致
+        fm = QFontMetrics(f)
+        need = max((fm.horizontalAdvance(self.app._t(k)) for k in keys), default=0)
+        return max(min_w, need + 32)                   # +32 = 下拉箭头(16)+内边距(12)+边框(~4)，刚好不截断
+
+    def _make_split(self):
+        sp = QSplitter(Qt.Horizontal)
+        sp.setObjectName("MsColSplit")
+        sp.setChildrenCollapsible(False)
+        sp.setHandleWidth(8)
+        return sp
+
+    def _mk_hdr_group(self, cols):
+        """建一个表头分组容器（放进 2 面板 splitter 的一侧）：cols=[(表头键, 固定宽或 None)]，
+        宽=None 的列(数据框)伸展、其余固定，与每行同组的控件逐列对齐。标签登记进 _hdr_labels 供翻译。"""
+        box = QWidget()
+        hb = QHBoxLayout(box)
+        hb.setContentsMargins(0, 0, 0, 0)
+        hb.setSpacing(6)
+        for key, w in cols:
+            lb = QLabel()
+            lb.setObjectName("SeqHdr")
+            lb.setProperty("k", key)
+            if w is None:
+                lb.setMinimumWidth(self._DATA_MIN_W)   # 与行数据框同最小宽 → 表头/行始终对齐
+                hb.addWidget(lb, 1)         # 数据列：伸展，占满该组剩余宽
+            else:
+                lb.setFixedWidth(w)
+                hb.addWidget(lb)
+            self._hdr_labels.append(lb)
+        return box
+
+    def _mk_row_group(self, cells):
+        """建一行的分组容器（放进 2 面板 splitter 一侧）：cells=[(控件, 固定宽或 None)]，宽=None(数据框)
+        伸展、其余固定，与表头同组逐列对齐。"""
+        box = QWidget()
+        hb = QHBoxLayout(box)
+        hb.setContentsMargins(0, 0, 0, 0)
+        hb.setSpacing(6)
+        for w, wd in cells:
+            if wd is None:
+                w.setMinimumWidth(self._DATA_MIN_W)    # 与表头数据标签同最小宽 → 表头/行始终对齐
+                hb.addWidget(w, 1)
+            else:
+                w.setFixedWidth(wd)
+                hb.addWidget(w)
+        return box
+
+    def _load_split_sizes(self):
+        """从 settings 读上次拖好的列宽 'w1,...,wN'；列数不符/非法则 None（用默认）。"""
+        raw = self.app.settings.value("sequence_split", "")
+        try:
+            parts = [int(x) for x in str(raw).split(",")]
+            if len(parts) == len(self._DEFAULT_SPLIT) and all(p > 0 for p in parts):
+                return parts
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _sync_splits(self, src):
+        """任一行(或表头)拖动分隔条 → 所有行 + 表头同步到相同比例（列对齐），并持久化列宽。"""
+        if self._syncing_split:
+            return
+        try:                       # 对话框已关(deleteLater)后 singleShot 仍可能触发 → C++ 已删，忽略
+            sizes = src.sizes()
+        except RuntimeError:
+            return
+        if not sizes or sum(sizes) <= 0:
+            return
+        self._split_sizes = sizes
+        self.app.settings.setValue("sequence_split", ",".join(str(s) for s in sizes))
+        self._syncing_split = True
+        try:
+            targets = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
+            for sp in targets:
+                if sp is not None and sp is not src:
+                    try:
+                        sp.setSizes(sizes)
+                    except RuntimeError:
+                        pass
+        finally:
+            self._syncing_split = False
+
+    def _update_header_scroll_margin(self, *_args):
+        """数据区出现垂直滚动条时，表头右侧预留同宽空间，保持 splitter 像素对齐。"""
+        try:                       # 同上：延迟触发时对话框可能已析构，静默跳过防止 PyQt 槽内异常 abort
+            bar = self.scroll.verticalScrollBar()
+            extra = bar.sizeHint().width() if bar.maximum() > bar.minimum() else 0
+            self._hdr_layout.setContentsMargins(10, 2, 10 + extra, 2)
+        except RuntimeError:
+            return
+        QTimer.singleShot(0, lambda: self._sync_splits(self._hdr_split))
+
+    # ---------------- 行读写 ----------------
+    @staticmethod
+    def _to_int(s, default):
+        try:
+            return max(0, int(str(s).strip()))
+        except (ValueError, TypeError):
+            return default
+
+    def _add_row(self, step=None):
+        step = step or {}
+        d = {}
+        frame = QFrame()
+        frame.setObjectName("MsRow")
+        d["frame"] = frame
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(10, 5, 10, 5)
+        h.setSpacing(6)
+
+        d["on"] = QCheckBox()                       # 启用：固定列，不在 splitter 内
+        d["on"].setFixedWidth(self._LEAD_W)
+        d["on"].setChecked(bool(step.get("on", True)))
+        d["on"].toggled.connect(self._schedule)
+        h.addWidget(d["on"])
+
+        d["name"] = QLineEdit(str(step.get("name", "") or ""))
+        d["name"].textChanged.connect(self._schedule)
+
+        d["send"] = QLineEdit(str(step.get("send", "") or ""))
+        d["send"].setPlaceholderText(self.app._t("seq_send_ph"))
+        d["send"].textChanged.connect(self._schedule)
+
+        d["shex"] = QCheckBox()
+        d["shex"].setChecked(bool(step.get("send_hex", False)))
+        d["shex"].toggled.connect(self._schedule)
+
+        cb_cs = QComboBox()
+        for k in CHECKSUM_KEYS:
+            cb_cs.addItem(self.app._t(k))
+        cs = self._to_int(step.get("cs", 0), 0)
+        cb_cs.setCurrentIndex(cs if 0 <= cs < cb_cs.count() else 0)
+        cb_cs.currentIndexChanged.connect(self._schedule)
+        d["cs"] = cb_cs
+
+        d["exp"] = QLineEdit(str(step.get("expect", "") or ""))
+        d["exp"].setPlaceholderText(self.app._t("seq_expect_ph"))
+        d["exp"].textChanged.connect(self._schedule)
+
+        d["ehex"] = QCheckBox()
+        d["ehex"].setChecked(bool(step.get("expect_hex", False)))
+        d["ehex"].toggled.connect(self._schedule)
+
+        cb_mode = QComboBox()
+        for k in self._MODE_KEYS:
+            cb_mode.addItem(self.app._t(k))
+        md = self._to_int(step.get("mode", 0), 0)
+        cb_mode.setCurrentIndex(md if 0 <= md < 3 else 0)
+        cb_mode.currentIndexChanged.connect(self._schedule)
+        d["mode"] = cb_mode
+
+        d["to"] = QLineEdit(str(step.get("timeout", 1000)))
+        d["to"].textChanged.connect(self._schedule)
+
+        cb_of = QComboBox()
+        for k in self._ONFAIL_KEYS:
+            cb_of.addItem(self.app._t(k))
+        cb_of.setCurrentIndex(1 if str(step.get("on_timeout", "stop")) == "continue" else 0)
+        cb_of.currentIndexChanged.connect(self._schedule)
+        d["of"] = cb_of
+
+        d["dl"] = QLineEdit(str(step.get("delay", 0)))
+        d["dl"].textChanged.connect(self._schedule)
+
+        # 只把两个数据框放进可拖：左组[名称 发送↔ HEX 校验] / 右组[期望↔ HEX 模式 超时 超时动作 延时]，
+        # 组内数据框伸展、其余固定；两组装进 2 面板 splitter，拖中间分隔条即调发送/期望相对宽（各行+表头同步）。
+        left = self._mk_row_group([(d["name"], self._NAME_W), (d["send"], None),
+                                   (d["shex"], self._HEX_W), (cb_cs, self._cs_w)])
+        right = self._mk_row_group([(d["exp"], None), (d["ehex"], self._HEX_W),
+                                    (cb_mode, self._mode_w), (d["to"], self._TO_W),
+                                    (cb_of, self._of_w), (d["dl"], self._DL_W)])
+        split = self._make_split()
+        split.addWidget(left)
+        split.addWidget(right)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setSizes(self._split_sizes or self._DEFAULT_SPLIT)
+        split.splitterMoved.connect(lambda *_: self._sync_splits(split))
+        d["split"] = split
+        h.addWidget(split, 1)
+
+        res = QLabel("—")                           # 结果：固定列，不在 splitter 内
+        res.setFixedWidth(self._RESULT_W)
+        res.setAlignment(Qt.AlignCenter)
+        d["res"] = res
+        h.addWidget(res)
+
+        btn_del = QPushButton("✕")                  # 删除：固定列
+        btn_del.setObjectName("MsDelBtn")
+        btn_del.setFixedWidth(self._DEL_W)
+        btn_del.setCursor(Qt.PointingHandCursor)
+        btn_del.clicked.connect(lambda *_, dd=d: self._del_row(dd))
+        d["del"] = btn_del
+        h.addWidget(btn_del)
+
+        self.rows_v.insertWidget(self.rows_v.count() - 1, frame)   # 插在末尾 stretch 之前
+        self._rows.append(d)
+        c = chrome_for(self.app._theme_id())      # 下拉弹出窗上色（QSS 罩不到弹窗框；新增行也覆盖）
+        for combo in (cb_cs, cb_mode, cb_of):
+            combo.view().window().setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+
+    def _del_row(self, d):
+        if d in self._rows:
+            self._rows.remove(d)
+        d["frame"].setParent(None)
+        d["frame"].deleteLater()
+        self._schedule()
+
+    def _row_to_step(self, d):
+        return {
+            "on": d["on"].isChecked(),
+            "name": d["name"].text(),
+            "send": d["send"].text(),
+            "send_hex": d["shex"].isChecked(),
+            "cs": d["cs"].currentIndex(),
+            "expect": d["exp"].text(),
+            "expect_hex": d["ehex"].isChecked(),
+            "mode": d["mode"].currentIndex(),
+            "timeout": self._to_int(d["to"].text(), 1000),
+            "on_timeout": "continue" if d["of"].currentIndex() == 1 else "stop",
+            "delay": self._to_int(d["dl"].text(), 0),
+        }
+
+    def _all_steps(self):
+        return [self._row_to_step(d) for d in self._rows]
+
+    # ---------------- 持久化 ----------------
+    def _schedule(self):
+        if self._loading:
+            return
+        # 编辑步骤后，上一次运行的结果/汇总不再对应当前步骤 → 清掉，避免「改了却仍显示旧的通过/失败」
+        # 或删行后结果按索引错位。运行中允许改字段但绝不能清在跑的实时结果，故仅非运行态清。
+        if not self.app._seq_running() and (getattr(self.app, "_seq_results", None)
+                                            or getattr(self.app, "_seq_summary", None)):
+            self.app._seq_results = []
+            self.app._seq_summary = None
+            self.update_results()
+        self._save_timer.start(400)
+
+    def _commit(self):
+        import json
+        steps = self._all_steps()
+        self.app._seq_rules = steps
+        self.app.settings.setValue("sequence_rules", json.dumps(steps, ensure_ascii=False))
+        self.app.settings.sync()
+
+    def reload_rows(self):
+        self._loading = True
+        for d in list(self._rows):    # 清掉现有卡片行
+            d["frame"].setParent(None)
+            d["frame"].deleteLater()
+        self._rows = []
+        for step in getattr(self.app, "_seq_rules", []) or []:
+            if isinstance(step, dict):
+                self._add_row(step)
+        if not self._rows:
+            self._add_row()           # 空则给一行空模板，方便直接填
+        self._loading = False
+        self.update_results()
+
+    # ---------------- 运行 / 结果 ----------------
+    def _on_run(self):
+        self._commit()              # 确保用当前表内容跑（含未到防抖窗、尚未落盘的编辑）
+        self.app._seq_start(self._all_steps())
+
+    def _status_display(self, st, res, c):
+        if st == "pass":
+            return "✓ %dms" % int(res.get("ms", 0)), c["accent"]
+        if st == "sent":
+            return self.app._t("seq_st_sent"), c["accent"]
+        if st == "fail":
+            return "✗ " + (res.get("detail") or self.app._t("seq_st_fail")), c["danger"]
+        if st == "waiting":
+            return self.app._t("seq_st_waiting"), c["text_sec"]
+        if st == "skip":
+            return self.app._t("seq_st_skip"), c["text_sec"]
+        if st == "stopped":
+            return self.app._t("seq_st_stopped"), c["text_sec"]
+        return self.app._t("seq_st_pending"), c["text_sec"]
+
+    def update_results(self):
+        """从 app._seq_results / _seq_summary 刷新结果列 + 汇总 + 运行按钮态（运行引擎回调）。"""
+        c = chrome_for(self.app._theme_id())
+        results = getattr(self.app, "_seq_results", []) or []
+        running = self.app._seq_running()
+        # 有已跑结果就一直显示（停止/断连后 _seq_summary 可能为空，但 _seq_results 仍在 → 结果不该丢）
+        show = running or bool(results)
+        for i, d in enumerate(self._rows):
+            res = results[i] if i < len(results) else {}
+            st = res.get("status", "pending") if show else "pending"
+            text, color = self._status_display(st, res, c)
+            d["res"].setText(text)
+            d["res"].setStyleSheet("color: %s; background: transparent;" % color)
+        summ = getattr(self.app, "_seq_summary", None)
+        if running:
+            n = len(getattr(self.app, "_seq_steps", []) or []) or len(results) or 1
+            i = min(max(1, getattr(self.app, "_seq_idx", 0) + 1), n)   # 当前第 i/n 步（随步进实时更新）
+            self.lbl_summary.setText(self.app._t("seq_running_at", i=i, n=n))
+            self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;" % c["accent"])
+        elif summ:
+            verdict = self.app._t("seq_pass" if summ.get("pass") else "seq_fail")
+            self.lbl_summary.setText(self.app._t("seq_summary", ok=summ.get("ok", 0),
+                                                 total=summ.get("total", 0), ms=summ.get("ms", 0),
+                                                 verdict=verdict))
+            self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;"
+                                           % (c["accent"] if summ.get("pass") else c["danger"]))
+        else:
+            self.lbl_summary.setText("")
+        self.btn_run.setEnabled(not running)
+        self.btn_stop.setEnabled(running)
+        # 运行中把「运行」点亮成绿色作「正在运行」指示（仍禁用防重复启动，故 :disabled 也显绿）；
+        # 空闲/结束回落普通灰按钮（清空内联样式 → 回到对话框级 PlotGhostBtn 样式）。
+        if running:
+            self.btn_run.setStyleSheet(
+                "QPushButton, QPushButton:disabled { background-color: %s; color: #fff;"
+                " border: 0px; border-radius: 8px; font-family: 'Segoe UI'; font-size: 12px;"
+                " font-weight: 600; padding: 5px 14px; }" % c["accent"])
+        else:
+            self.btn_run.setStyleSheet("")
+        self._set_editing_enabled(not running)   # 运行中锁住步骤编辑，避免改表/增删行与在跑的快照错位
+
+    def _set_editing_enabled(self, enabled):
+        """运行中只禁止「结构性改动」——增行 / 删行会改变行数、让结果按索引错位。步骤字段本身不锁：
+        运行用的是启动时的快照，改字段不影响在跑的步骤，也不会错位；且禁用勾选框会丢失选中蓝色渲染，
+        看着像被取消，反而误导。"""
+        self.btn_add.setEnabled(enabled)
+        for d in self._rows:
+            btn = d.get("del")
+            if btn is not None:
+                btn.setEnabled(enabled)
+
+    # ---------------- 语言 / 主题 ----------------
+    def retranslate(self):
+        self.setWindowTitle(self.app._t("seq_title"))
+        self.btn_run.setText(self.app._t("seq_run"))
+        self.btn_stop.setText(self.app._t("seq_stop"))
+        self.btn_add.setText(self.app._t("seq_add"))
+        self.btn_help.setToolTip(self.app._t("seq_help_btn"))   # 按钮固定 "?"，悬停/点开看完整说明
+        self.lbl_hint.setText(self.app._t("seq_hint"))
+        for lb in self._hdr_labels:                 # 表头列名（HEX 列不翻译）
+            k = lb.property("k")
+            lb.setText("" if not k else (k if k == "HEX" else self.app._t(k)))
+        for d in self._rows:                        # 下拉项/占位随语言刷新（保留选中项）
+            d["send"].setPlaceholderText(self.app._t("seq_send_ph"))
+            d["exp"].setPlaceholderText(self.app._t("seq_expect_ph"))
+            for i, k in enumerate(CHECKSUM_KEYS):
+                if i < d["cs"].count():
+                    d["cs"].setItemText(i, self.app._t(k))
+            for i, k in enumerate(self._MODE_KEYS):
+                d["mode"].setItemText(i, self.app._t(k))
+            for i, k in enumerate(self._ONFAIL_KEYS):
+                d["of"].setItemText(i, self.app._t(k))
+        self.update_results()
+
+    def _show_help_dlg(self):
+        """弹独立窗口展示「自动化序列」用法说明（富文本 + 举例，可滚动、可复制）。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.app._t("seq_help_title"))
+        dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+                           | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
+        dlg.resize(780, 560)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        lbl = QLabel(self.app._t("seq_help"))
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setAlignment(Qt.AlignTop)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)   # 让用户复制例子
+        scroll = QScrollArea()
+        scroll.setWidget(lbl)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        v.addWidget(scroll, 1)
+        btn_close = QPushButton({"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+        btn_close.setObjectName("PlotGhostBtn")
+        btn_close.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn_close)
+        v.addLayout(row)
+        c = chrome_for(self.app._theme_id())
+        dlg.setStyleSheet(localize_qss(f"""
+            QDialog {{ background-color: {c['window_bg']}; }}
+            QLabel {{ color: {c['text']}; background: transparent;
+                      font-family: 'Segoe UI'; font-size: 12px; }}
+            QScrollArea {{ background: transparent; border: 1px solid {c['separator']}; border-radius: 6px; }}
+            QScrollArea > QWidget > QWidget {{ background: transparent; }}
+            QPushButton#PlotGhostBtn {{ background-color: {c['ghost_bg']}; color: {c['text']}; border: 0px;
+                border-radius: 8px; font-family: 'Segoe UI'; font-size: 12px; padding: 6px 16px; }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+        """))
+        _set_win_titlebar_dark(dlg, c)
+        dlg.exec_()
+
+    def refresh_theme(self):
+        c = chrome_for(self.app._theme_id())
+        _set_win_titlebar_dark(self, c)
+        # 复用列表型弹窗基础样式（卡片行 MsRow / 蓝勾选 / 主题化输入下拉 / MsDelBtn），再补本弹窗特有按钮
+        self.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
+            QLabel#ArDesc {{ color: {c['text_sec']}; font-size: 11px; }}
+            QLabel#SeqHdr {{ color: {c['text_sec']}; font-size: 11px; font-weight: 600; }}
+            QLabel#SeqSummary {{ font-size: 12px; }}
+            QPushButton#PlotGhostBtn {{ background-color: {c['ghost_bg']}; color: {c['text']}; border: 0px;
+                border-radius: 8px; font-family: 'Segoe UI'; font-size: 12px; padding: 5px 14px; }}
+            QPushButton#PlotGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
+            QPushButton#PlotGhostBtn:disabled {{ color: {c['text_sec']}; }}
+            QPushButton#ArHelpBtn {{ background-color: {c['ghost_bg']}; color: {c['text_sec']}; border: 0px;
+                border-radius: 13px; font-family: 'Segoe UI'; font-size: 14px; font-weight: 600; }}
+            QPushButton#ArHelpBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['text']}; }}
+            QSplitter#MsColSplit {{ background: transparent; }}
+            QSplitter#MsColSplit::handle {{ background: {c['separator']}; margin: 5px 3px; border-radius: 1px; }}
+            QSplitter#MsColSplit::handle:hover {{ background: {c['accent']}; margin: 3px 3px; }}
+        """))
+        # 下拉弹出是独立顶层窗，QSS 罩不到弹窗边框 → 单独上色，避免深色主题露白边
+        for d in self._rows:
+            for combo in (d["cs"], d["mode"], d["of"]):
+                combo.view().window().setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+        self.update_results()   # 结果列颜色/运行绿按钮是内联样式，换主题后需按新强调色重刷
+
+    def closeEvent(self, e):
+        if self._save_timer.isActive():
+            self._commit()
+        self.app.settings.sync()
+        super().closeEvent(e)
 
 

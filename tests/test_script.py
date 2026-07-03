@@ -875,6 +875,416 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         ss = w.status_bar.styleSheet()
         self.assertNotIn("transparent", ss)   # 不透明底才能擦净隐藏标签的残留
 
+    @staticmethod
+    def _seq_pump(ms):
+        from PyQt5.QtCore import QEventLoop, QTimer
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec_()
+
+    def test_sequence_run_pass(self):
+        """自动化序列：发送→等回包(匹配)→纯发送 全过 → PASS 汇总；发送内容被真发出。"""
+        w = _win()
+        sends = []
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]   # 记录发送、恒成功
+        w._is_open = lambda: True
+        try:
+            w._seq_summary = None
+            w._seq_start([
+                {"on": True, "send": "AT", "expect": "OK", "mode": 0, "timeout": 500, "on_timeout": "stop", "delay": 0},
+                {"on": True, "send": "GO", "expect": "", "delay": 0},
+            ])
+            self.assertTrue(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            self.assertIn("AT", sends)
+            w.on_data_received(b"junk OK junk")   # 走真实收数据入口 → 序列运行时接管、匹配 step0
+            self.assertEqual(w._seq_results[0]["status"], "pass")
+            self._seq_pump(120)                    # 让延时/单次定时器推进 step1 + 完成
+            self.assertFalse(w._seq_running())
+            self.assertIsNotNone(w._seq_summary)
+            self.assertTrue(w._seq_summary["pass"])
+            self.assertIn("GO", sends)             # 第二步也发出去了
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_timeout_fail(self):
+        """期望回包超时（收到不匹配数据）→ 该步失败、on_timeout=stop → 整体 FAIL。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_summary = None
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "mode": 0,
+                           "timeout": 60, "on_timeout": "stop", "delay": 0}])
+            w._seq_feed(b"GARBAGE")                # 不含 OK → 不匹配、继续等
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            self._seq_pump(180)                    # 超过 60ms 超时
+            self.assertFalse(w._seq_running())
+            self.assertFalse(w._seq_summary["pass"])
+            self.assertEqual(w._seq_results[0]["status"], "fail")
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_timeout_continue_still_finishes_fail(self):
+        """超时选择继续只推进后续步骤；只要有失败步骤，最终汇总仍必须是 FAIL。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([
+                {"on": True, "send": "AT", "expect": "OK", "timeout": 30,
+                 "on_timeout": "continue", "delay": 0},
+                {"on": True, "send": "GO", "expect": "", "delay": 0},
+            ])
+            self._seq_pump(150)
+            self.assertFalse(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "fail")
+            self.assertEqual(w._seq_results[1]["status"], "sent")
+            self.assertFalse(w._seq_summary["pass"])
+            self.assertEqual(w._seq_summary["ok"], 1)
+            self.assertEqual(w._seq_summary["total"], 2)
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_pauses_modbus_and_cancels_delayed_autoreply(self):
+        """序列运行时 Modbus 不再活跃，且开始前排程的延迟自动应答不会穿插发送。"""
+        w = _win()
+        sends = []
+        o_send, o_open, o_ar_on = w._send_text, w._is_open, w._ar_on
+        o_mbm_on, o_mbm_rules = w._mbm_on, w._mbm_rules
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        w._ar_on = True
+        w._mbm_on = True
+        w._mbm_rules = [{"enabled": True}]
+        try:
+            w._ar_schedule_send(["OLD"], False, 0, [], (50, 50))
+            w._seq_start([{"on": True, "send": "AT", "expect": "NEVER", "timeout": 500}])
+            self.assertFalse(w._mbm_active())
+            self._seq_pump(120)
+            self.assertIn("AT", sends)
+            self.assertNotIn("OLD", sends)
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open, w._ar_on = o_send, o_open, o_ar_on
+            w._mbm_on, w._mbm_rules = o_mbm_on, o_mbm_rules
+
+    def test_sequence_needs_connection(self):
+        """未连接时运行序列被拒（不进入运行态）。"""
+        w = _win()
+        o_open = w._is_open
+        w._is_open = lambda: False
+        try:
+            w._seq_on = False
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 100}])
+            self.assertFalse(w._seq_running())
+        finally:
+            w._is_open = o_open
+
+    def test_sequence_dialog_smoke(self):
+        """序列对话框：构造 + 加行 + 读回步骤 + 重译/主题/结果刷新，均不抛异常。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules = w._seq_rules
+        dlg = None
+        try:
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            dlg._add_row({"on": True, "send": "AT", "expect": "OK", "mode": 0,
+                          "timeout": 300, "on_timeout": "continue", "delay": 10})
+            steps = dlg._all_steps()
+            self.assertTrue(any(s["send"] == "AT" and s["expect"] == "OK" for s in steps))
+            got = next(s for s in steps if s["send"] == "AT")
+            self.assertEqual(got["on_timeout"], "continue")
+            self.assertEqual(got["timeout"], 300)
+            dlg.retranslate()
+            dlg.refresh_theme()
+            dlg.update_results()
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_rules = o_rules   # 还原（对话框 _add_row 未落盘，但保险）
+
+    def test_sequence_dialog_columns_draggable_and_persist(self):
+        """只有发送/期望两数据框可拖：表头与每行都是 2 面板(左组/右组) splitter，拖动同步且列宽持久化。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules = w._seq_rules
+        dlg = None
+        try:
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            dlg._add_row({"on": True, "send": "AT", "expect": "OK"})
+            self.assertEqual(dlg._hdr_split.count(), 2)      # 左组 / 右组两面板
+            row = dlg._rows[-1]
+            self.assertIn("split", row)
+            self.assertEqual(row["split"].count(), 2)
+            # 模拟拖动表头分隔条 → 同步到行 + 持久化
+            sizes = [s + 12 for s in dlg._hdr_split.sizes()]
+            dlg._hdr_split.setSizes(sizes)
+            dlg._sync_splits(dlg._hdr_split)
+            self.assertEqual(row["split"].sizes(), dlg._hdr_split.sizes())
+            self.assertTrue(w.settings.value("sequence_split"))
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_rules = o_rules
+
+    def test_sequence_dialog_delete_then_pump_no_crash(self):
+        """回归（崩溃根因）：对话框 deleteLater 后，构造期/滚动条 rangeChanged 排的 singleShot
+        仍会触发；若回调对已析构的 splitter 调 sizes()/setSizes() 会因 PyQt 槽内异常 abort 硬崩溃。
+        删除后泵事件循环，不得崩溃。"""
+        from dialogs import SequenceDialog
+        from PyQt5.QtWidgets import QApplication
+        w = _win()
+        o_rules = w._seq_rules
+        try:
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            dlg._add_row({"on": True, "send": "AT", "expect": "OK"})
+            dlg._save_timer.stop()
+            dlg.deleteLater()
+            del dlg
+            for _ in range(4):        # 触发所有挂起的 singleShot(0)（含 _update_header_scroll_margin 链）
+                QApplication.instance().processEvents()
+            self.assertTrue(True)     # 走到这里=没崩
+        finally:
+            w._seq_rules = o_rules
+
+    def test_sequence_stop_keeps_results(self):
+        """回归：运行中点「停止」不能清空已跑结果；当前等回包的步应标记为 stopped 而非一直 waiting。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([
+                {"on": True, "send": "AT", "expect": "OK", "mode": 0, "timeout": 5000, "delay": 0},
+                {"on": True, "send": "GO", "expect": "OK2", "timeout": 5000, "delay": 0},
+            ])
+            w.on_data_received(b"OK")              # step0 通过
+            self.assertEqual(w._seq_results[0]["status"], "pass")
+            self._seq_pump(60)                     # 单次定时器推进到 step1 → 等回包
+            self.assertEqual(w._seq_results[1]["status"], "waiting")
+            w._seq_stop()
+            self.assertFalse(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "pass")     # 已跑结果保留
+            self.assertEqual(w._seq_results[1]["status"], "stopped")  # 等回包步标记已停止
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_disconnect_aborts_and_keeps_results(self):
+        """回归：运行中连接断开 → 序列中止但保留已跑结果，当前等回包步标记 stopped。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 5000, "delay": 0}])
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            w._is_open = lambda: False
+            w.close_conn()                          # 断开 → 触发 _seq_abort
+            self.assertFalse(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "stopped")
+        finally:
+            w._seq_on = False
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_skips_empty_enabled_step(self):
+        """回归：启用但发送与期望都为空的步骤应被跳过（skip），不误判「已发送」也不发数据。"""
+        w = _win()
+        sends = []
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._seq_start([
+                {"on": True, "send": "", "expect": "", "delay": 0},        # 空步骤 → 跳过
+                {"on": True, "send": "GO", "expect": "", "delay": 0},
+            ])
+            self._seq_pump(120)
+            self.assertFalse(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "skip")
+            self.assertEqual(w._seq_results[1]["status"], "sent")
+            self.assertNotIn("", sends)             # 空步骤没发出空串
+            self.assertIn("GO", sends)
+            # 关键回归：启用的空步骤=skip 不算失败(整体仍 PASS)，也不被计入「通过 X/Y」
+            self.assertTrue(w._seq_summary["pass"])
+            self.assertEqual(w._seq_summary["ok"], 1)      # 只有真正执行的 sent 步计入
+            self.assertEqual(w._seq_summary["total"], 1)   # skip 步不计入 total
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_isolates_inflight_modbus_response(self):
+        """启动时有在途 Modbus-TCP 请求：先由 Modbus 收完，随后才发送序列第 0 步。"""
+        w = _win()
+        o_send, o_open, o_inflight = w._send_text, w._is_open, w._mbm_inflight
+        o_guard = w._mbm_guard_until
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._mbm_inflight = {"i": 0, "variant": "tcp", "tid": 1, "unit": 1,
+                               "func": 0x03, "qty": 1, "addr": 0, "exp_write": None,
+                               "timeout_ms": 1000}
+            w._mbm_to.start(1000)
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "mode": 0,
+                           "timeout": 5000, "delay": 0}])
+            self.assertTrue(w._seq_running())
+            self.assertTrue(w._seq_waiting_mbm)
+            self.assertNotIn("AT", sends)        # 在途请求未完成前不发送序列
+            w.on_data_received(bytes.fromhex("0001000000050103021234"))
+            self.assertFalse(w._seq_waiting_mbm) # Modbus 响应完成 → 立即启动 step0
+            self.assertIn("AT", sends)
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            w.on_data_received(b"OK")           # 真正的回包 → 通过
+            self.assertEqual(w._seq_results[0]["status"], "pass")
+        finally:
+            w._seq_stop()
+            w._mbm_to.stop()
+            w._mbm_inflight = o_inflight
+            w._mbm_guard_until = o_guard
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_waits_through_modbus_rtu_late_guard(self):
+        """在途 RTU 请求超时后，序列须等完整迟到响应隔离期结束，不能在名义超时点立即启动。"""
+        w = _win()
+        o_send, o_open, o_inflight = w._send_text, w._is_open, w._mbm_inflight
+        o_guard = w._mbm_guard_until
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._mbm_inflight = {"i": 0, "variant": "rtu", "timeout_ms": 80}
+            w._mbm_to.start(30)
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 5000}])
+            w._mbm_on_timeout()                  # 名义超时 → 再进入至少 80ms 迟到隔离
+            self.assertTrue(w._seq_waiting_mbm)
+            self.assertNotIn("AT", sends)
+            w.on_data_received(b"late")         # 隔离期字节只用于延长排空，不喂给序列
+            self.assertNotIn("AT", sends)
+            self._seq_pump(140)
+            self.assertFalse(w._seq_waiting_mbm)
+            self.assertIn("AT", sends)
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+        finally:
+            w._seq_stop()
+            w._mbm_to.stop()
+            w._mbm_inflight = o_inflight
+            w._mbm_guard_until = o_guard
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_waits_through_modbus_tcp_late_guard(self):
+        """TCP 虽可用 TID 防轮询误配，但序列无 TID；在途请求超时后也须隔离迟到响应。"""
+        w = _win()
+        o_send, o_open, o_inflight = w._send_text, w._is_open, w._mbm_inflight
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._mbm_inflight = {"i": 0, "variant": "tcp", "timeout_ms": 80}
+            w._mbm_to.start(30)
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 5000}])
+            w._mbm_on_timeout()
+            self.assertTrue(w._seq_waiting_mbm)
+            self.assertNotIn("AT", sends)
+            w.on_data_received(b"late tcp response")
+            self.assertNotIn("AT", sends)
+            self._seq_pump(120)
+            self.assertFalse(w._seq_waiting_mbm)
+            self.assertIn("AT", sends)
+        finally:
+            w._seq_stop()
+            w._mbm_to.stop()
+            w._mbm_inflight = o_inflight
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_dialog_clears_stale_results_on_edit(self):
+        """非运行态编辑步骤 → 清掉上次运行的结果/汇总，避免旧「通过/失败」赖在改过的步骤上或删行后错位。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules = w._seq_rules
+        o_results = getattr(w, "_seq_results", [])
+        o_summary = getattr(w, "_seq_summary", None)
+        dlg = None
+        try:
+            w._seq_rules = []
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()                 # 空规则 → 1 行空模板
+            w._seq_results = [{"status": "pass", "ms": 5, "detail": ""}]   # 伪造上次运行结果
+            w._seq_summary = {"ok": 1, "total": 1, "ms": 5, "pass": True}
+            dlg.update_results()
+            self.assertIn("✓", dlg._rows[0]["res"].text())
+            dlg._rows[0]["send"].setText("ATZ")   # 非运行态编辑 → textChanged → _schedule → 清结果
+            self.assertEqual(w._seq_results, [])
+            self.assertIsNone(w._seq_summary)
+            self.assertEqual(dlg._rows[0]["res"].text(), w._t("seq_st_pending"))
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_rules, w._seq_results, w._seq_summary = o_rules, o_results, o_summary
+
+    def test_sequence_dialog_locks_editing_while_running(self):
+        """回归(P2)：运行中只锁「结构性改动」(增行/删行)防结果按索引错位；步骤字段/勾选框不锁
+        (改字段不影响在跑快照，且禁用勾选框会丢选中蓝色像被取消)。运行按钮变绿、结束后恢复。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules, o_running = w._seq_rules, w._seq_running
+        dlg = None
+        try:
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            dlg._add_row({"on": True, "send": "AT", "expect": "OK"})
+            row = dlg._rows[-1]
+            w._seq_running = lambda: True       # 模拟运行态
+            dlg.update_results()
+            self.assertFalse(dlg.btn_add.isEnabled())      # 结构性改动锁住
+            self.assertFalse(row["del"].isEnabled())
+            self.assertTrue(row["send"].isEnabled())       # 字段/勾选框不锁、不变灰
+            self.assertTrue(row["on"].isEnabled())
+            self.assertFalse(dlg.btn_run.isEnabled())      # 运行中：运行按钮禁用
+            self.assertIn("background-color", dlg.btn_run.styleSheet())  # 且点亮成绿色作运行指示
+            w._seq_running = lambda: False      # 结束 → 恢复
+            dlg.update_results()
+            self.assertTrue(dlg.btn_add.isEnabled())
+            self.assertTrue(row["del"].isEnabled())
+            self.assertEqual(dlg.btn_run.styleSheet(), "")  # 空闲：回落普通灰(无内联样式)
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_running = o_running
+            w._seq_rules = o_rules
+
+    def test_sequence_send_exception_is_fail_not_hang(self):
+        """回归：_send_text 抛异常时该步判失败并按 on_timeout 走，不能卡在等回包。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        def _boom(raw, **k):
+            raise RuntimeError("send blew up")
+        w._send_text = _boom
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK",
+                           "timeout": 5000, "on_timeout": "stop", "delay": 0}])
+            self.assertFalse(w._seq_running())      # 异常即失败 → stop → 立即结束，不进等回包
+            self.assertEqual(w._seq_results[0]["status"], "fail")
+            self.assertFalse(w._seq_summary["pass"])
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
     def test_profile_lock_does_not_deadlock_qsettings_sync(self):
         """回归（多窗口卡死根因）：配置槽位锁的文件名不能与 QSettings 内部写锁 <ini>.lock 撞名，
         否则同进程 settings.sync() 会与自己已持有的锁死锁——新配置窗口构造时(首次落盘迁移)

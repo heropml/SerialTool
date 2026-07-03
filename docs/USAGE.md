@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.6
+
+**Automated Test Sequence** — a new **Function menu → Automated Sequence** that runs a list of "send → wait for a matching reply" steps in order, judging each **Pass / Fail** and giving a summary at the end. Great for factory tests, device self-checks, batch acceptance, and protocol bring-up — anything repetitive:
+
+- **Per-step config** — Name, Send content (text / HEX), Checksum (CRC / sum, etc. auto-appended, same as the main window), Expected reply (**leave blank = send only, don't wait for a reply**), Match mode (contains / equals / prefix), Timeout ms, Timeout action (**Stop** = a failed step ends the whole run / **Continue** = mark it failed but keep going), Inter-step delay ms, and an Enable checkbox.
+- **Ordered run + step-by-step verdict** — each step is sent in order, then the tool waits for a reply and judges it by the match mode; the Result column updates live: Pending → Waiting… → **✓ Pass / ✗ Timeout**, with a Pass / Fail summary once the run finishes.
+- **Pauses auto-reply / Modbus master while running** — the sequence is the active driver (it shares the receive stream with auto-reply and the Modbus master), so both are **paused** for the duration and **restored** when it ends; a disconnect **aborts the sequence and keeps the results so far**.
+- **Card-style UI** — one card per step; only the **Send** and **Expected reply** fields are draggable (other columns fixed), matching the auto-reply dialog; a **?** help window (with AT-command / Modbus read-register / send-only examples); while running the **Run** button turns green and add/remove-row is locked, and steps are saved automatically.
+- No new dependencies.
+
+---
+
 ## What's New in v1.2.5
 
 **Multiple windows** — you can now run several independent CommTool windows at once, each debugging its own device without interfering, and manage multiple config sets:
@@ -580,7 +592,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.5`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.6`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

@@ -293,6 +293,25 @@ class CommTool(QMainWindow):
             self.settings.setValue("autoreply_on", False)
         self._mbm_variant = self.settings.value("modbus_master_variant", "", type=str)  # ""=按连接自动
         self._mbm_echo = self.settings.value("modbus_master_echo", False, type=bool)  # 串口本地回显模式
+        # 自动化测试序列：顺序执行每步（发送 → 等回包匹配 → 超时按动作走），出「通过/失败」。
+        # 运行态挂在这里，规则(步骤列表)存 settings；运行期抑制自动应答/Modbus（三者共用收流）。
+        self._seq_rules = self._load_seq_rules()
+        self._seq_on = False          # 是否正在运行
+        self._seq_steps = []          # 本次运行的步骤快照
+        self._seq_idx = 0             # 当前步
+        self._seq_buf = b""           # 当前步累积的回包字节（跨块匹配）
+        self._seq_results = []        # 每步结果 {status,ms,detail}
+        self._seq_summary = None      # 运行结束汇总 {ok,total,ms,pass}
+        self._seq_gen = 0             # 代际：start/stop 时 +1，作废在途的延时/超时续跑
+        self._seq_dlg = None
+        self._seq_t0 = 0.0
+        self._seq_step_t0 = 0.0
+        self._seq_waiting_mbm = False  # 启动时先等已有 Modbus 在途请求完成/超时隔离结束
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_timer = QTimer(self)   # 当前步「等回包」超时（单次）
+        self._seq_timer.setSingleShot(True)
+        self._seq_timer.timeout.connect(self._seq_on_timeout)
         # 终端模式：发送框逐字符即时发送 + 数据区纯字节流显示（轻量串口终端，不解析 ANSI 转义）
         self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
@@ -473,6 +492,16 @@ class CommTool(QMainWindow):
         self.title_bar.layout().insertWidget(
             self.title_bar.layout().indexOf(self.title_bar.btn_min),
             self.btn_titlebar_help)
+        # 「功能」下拉：放特殊/不常用功能（当前含「自动化序列」），插在「帮助」左侧
+        self.btn_titlebar_func = QPushButton(self._t("func_menu"))
+        self.btn_titlebar_func.setObjectName("TbHelpBtn")   # 复用帮助按钮样式
+        self.btn_titlebar_func.setProperty("tr_text", "func_menu")
+        self.btn_titlebar_func.setCursor(Qt.PointingHandCursor)
+        self.btn_titlebar_func.setFixedHeight(26)
+        self.btn_titlebar_func.clicked.connect(self._show_titlebar_func_menu)
+        self.title_bar.layout().insertWidget(
+            self.title_bar.layout().indexOf(self.btn_titlebar_help),
+            self.btn_titlebar_func)
 
         root.addWidget(self.title_bar)
 
@@ -2540,6 +2569,8 @@ class CommTool(QMainWindow):
                 pass
             conn.deleteLater()
 
+        if getattr(self, "_seq_on", False):   # 连接断开 → 中止运行中的序列（保留结果 + 提示，不静默）
+            self._seq_abort("seq_aborted_disc")
         self._reset_recv_state()   # 顺带补齐原先漏掉的 _inc_decoder / _txt_ends_with_nl
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
@@ -2819,16 +2850,29 @@ class CommTool(QMainWindow):
         # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）。
         # 但 Modbus 主机轮询激活时，收到的都是从机「响应」——绝不能再让自动应答(尤其内置
         # Modbus 从机)把它当请求回发，否则总线互相干扰。主机激活时整体跳过自动应答。
-        if not self._mbm_active():
+        # 自动化序列运行中：响应喂给序列匹配引擎，并临时抑制自动应答/Modbus 主机（三者共用收流，
+        # 序列是主动驱动方；序列结束后自动恢复，不改它们的开关）。
+        if self._seq_running():
             try:
-                self._auto_reply(data, reply_target=reply_target)
+                # 序列刚启动而 Modbus 尚有在途请求时，先让原请求完整收尾；超时后的迟到响应
+                # 隔离期也继续喂 _mbm_feed（RTU 会按最后一个迟到字节重新满足 t3.5）。
+                if getattr(self, "_seq_waiting_mbm", False):
+                    self._mbm_feed(data)
+                else:
+                    self._seq_feed(data)
             except Exception:
                 pass
-        # Modbus 主机轮询：若有在途请求，把响应喂给轮询引擎切帧/解析（兜底不影响主流程）
-        try:
-            self._mbm_feed(data)
-        except Exception:
-            pass
+        else:
+            if not self._mbm_active():
+                try:
+                    self._auto_reply(data, reply_target=reply_target)
+                except Exception:
+                    pass
+            # Modbus 主机轮询：若有在途请求，把响应喂给轮询引擎切帧/解析（兜底不影响主流程）
+            try:
+                self._mbm_feed(data)
+            except Exception:
+                pass
 
     def _on_data_received_impl(self, data: bytes):
         self.rx_bytes += len(data)
@@ -3300,6 +3344,266 @@ class CommTool(QMainWindow):
         self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
         self.btn_autoreply.style().unpolish(self.btn_autoreply)
         self.btn_autoreply.style().polish(self.btn_autoreply)
+
+    # ================= 自动化测试序列（send → 等回包匹配 → 通过/失败） =================
+    def _load_seq_rules(self):
+        """从 settings 读序列步骤列表（JSON）。每步 dict：见 SequenceDialog（发送/期望/超时…）。"""
+        raw = self.settings.value("sequence_rules", "")
+        try:
+            rules = json.loads(raw) if raw else []
+            return rules if isinstance(rules, list) else []
+        except Exception:
+            return []
+
+    def _seq_running(self):
+        return getattr(self, "_seq_on", False)
+
+    def _seq_pause_peer_engines(self):
+        """序列独占收发流前，作废自动应答旧任务并暂停 Modbus 主机调度；不改持久化开关。"""
+        # 已排程的延迟/多段自动应答会在未来直接发送，必须用代际使其永久失效。
+        self._ar_reset_buf()
+        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+        self._ar_sm_pending = None
+        self._ar_sm_queue.clear()
+        self._ar_sm_draining = False
+
+        # 已经发出的 Modbus 请求无法撤回。若有在途请求，保留 inflight/超时 timer，并在序列第 0 步
+        # 启动前继续把收包交给 Modbus；正常响应后立即释放，RTU 超时则沿用原有迟到响应隔离窗口。
+        info = self._mbm_inflight
+        self._seq_waiting_mbm = info is not None
+        self._seq_wait_mbm_variant = (str(info.get("variant", "")) if info is not None else "")
+        self._seq_wait_mbm_until = 0.0
+        self._mbm_sched.stop()
+        if info is None:
+            self._mbm_to.stop()
+            self._mbm_buf = b""
+        elif not self._mbm_to.isActive():
+            # 防御损坏/测试配置：有 inflight 却没有超时 timer 时不能让序列永久等住。
+            timeout_ms = max(1, int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
+            self._mbm_to.start(min(timeout_ms, self._MBM_QTIMER_MAX_MS))
+
+    def _seq_mbm_release_check(self, gen=None):
+        """在途 Modbus 已结束后，等迟到响应隔离期彻底结束，再启动序列第 0 步。"""
+        if gen is None:
+            gen = self._seq_gen
+        if (not self._seq_on or gen != self._seq_gen
+                or not getattr(self, "_seq_waiting_mbm", False)):
+            return
+        if self._mbm_inflight is not None:       # 仍在正常等响应/超时，由 Modbus 回调再次触发本检查
+            return
+        deadline = self._seq_wait_mbm_until
+        if self._seq_wait_mbm_variant == "rtu":
+            deadline = max(deadline, self._mbm_guard_until)
+        remain = deadline - time.monotonic()
+        if remain > 0:
+            delay = min(self._MBM_QTIMER_MAX_MS, max(1, int(remain * 1000) + 1))
+            QTimer.singleShot(delay, lambda: self._seq_mbm_release_check(gen))
+            return
+        self._seq_waiting_mbm = False
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_run_from(0)
+
+    def _seq_resume_peer_engines(self):
+        """序列释放收发流后，按原开关/连接状态恢复 Modbus 主机。"""
+        if not self._seq_on:
+            self._mbm_tick()
+
+    def open_sequence(self):
+        """打开自动化序列对话框（单实例，复用并刷新主题/语言）。"""
+        if self._seq_dlg is None:
+            from dialogs import SequenceDialog
+            self._seq_dlg = SequenceDialog(self)
+        dlg = self._seq_dlg
+        dlg.reload_rows()
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _seq_start(self, steps):
+        """开始运行一段序列（steps=步骤 dict 列表）。需已连接；运行期由 on_data_received 抑制
+        自动应答/Modbus 主机（三者共用收流，序列是主动驱动方，结束自动恢复、不改它们开关）。"""
+        if self._seq_on:
+            return
+        if not self._is_open():
+            self.toast(self._t("seq_need_conn"), error=True)
+            return
+        if not any(s.get("on", True) and (str(s.get("send", "")).strip() or str(s.get("expect", "")).strip())
+                   for s in steps):
+            self.toast(self._t("seq_no_steps"), error=True)
+            return
+        self._seq_steps = [dict(s) for s in steps]
+        self._seq_on = True
+        self._seq_gen += 1
+        self._seq_pause_peer_engines()
+        self._seq_summary = None
+        self._seq_t0 = time.monotonic()
+        self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
+                             for s in self._seq_steps]
+        self._seq_notify()
+        self.toast(self._t("seq_running_toast"))
+        if not self._seq_waiting_mbm:
+            self._seq_run_from(0)
+
+    def _seq_run_from(self, i):
+        """从第 i 步起找下一个启用步骤执行；没有更多 → 完成(通过)。"""
+        n = len(self._seq_steps)
+        while i < n and not self._seq_steps[i].get("on", True):
+            i += 1
+        if i >= n:
+            self._seq_finish(True)
+            return
+        self._seq_idx = i
+        self._seq_do_step(i)
+
+    def _seq_do_step(self, i):
+        """执行第 i 步：发送(有内容才发) → 有期望则开超时等回包、无期望则延时进下一步。"""
+        step = self._seq_steps[i]
+        self._seq_buf = b""
+        self._seq_step_t0 = time.monotonic()
+        send = str(step.get("send", "") or "")
+        expect = str(step.get("expect", "") or "").strip()
+        if not send.strip() and not expect:              # 发送和期望都空 → 跳过（什么都不做，不误显"已发送"）
+            self._seq_set_result(i, "skip", 0, "")
+            self._seq_schedule_next(step)
+            return
+        if send.strip():
+            try:
+                ok = self._send_text(send, hex_mode=bool(step.get("send_hex", False)),
+                                     checksum=self._ar_to_int(step.get("cs", 0)))
+            except Exception:                            # _send_text 抛异常也当失败，别让序列卡死在"等回包"
+                ok = False
+            if not ok:                                   # 发送失败（HEX 非法/未连接/异常）→ 判失败
+                self._seq_set_result(i, "fail", 0, self._t("seq_st_send_fail"))
+                self._seq_after_fail(step)
+                return
+        if not expect:                                   # 纯发送步骤：不等回包，延时后下一步
+            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
+            self._seq_set_result(i, "sent", ms, "")
+            self._seq_schedule_next(step)
+            return
+        self._seq_set_result(i, "waiting", 0, "")        # 等回包：开超时计时
+        self._seq_timer.stop()
+        self._seq_timer.start(max(1, self._ar_to_int(step.get("timeout", 1000))))
+
+    def _seq_feed(self, data):
+        """收到数据（on_data_received 在序列运行时调）：当前步在等回包则累积 + 匹配，命中→通过。"""
+        if not self._seq_on:
+            return
+        i = self._seq_idx
+        if not (0 <= i < len(self._seq_results)) or self._seq_results[i].get("status") != "waiting":
+            return
+        self._seq_buf += bytes(data)
+        if self._seq_step_match(self._seq_steps[i], self._seq_buf):
+            self._seq_timer.stop()
+            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
+            self._seq_set_result(i, "pass", ms, "")
+            self._seq_schedule_next(self._seq_steps[i])
+
+    def _seq_on_timeout(self):
+        """当前步等回包超时：判失败，按「超时动作」停止或继续。"""
+        if not self._seq_on:
+            return
+        i = self._seq_idx
+        if not (0 <= i < len(self._seq_results)) or self._seq_results[i].get("status") != "waiting":
+            return
+        ms = int((time.monotonic() - self._seq_step_t0) * 1000)
+        self._seq_set_result(i, "fail", ms, self._t("seq_st_fail"))
+        self._seq_after_fail(self._seq_steps[i])
+
+    def _seq_after_fail(self, step):
+        """一步失败后：on_timeout=continue → 继续下一步；否则整条序列结束(失败)。"""
+        if str(step.get("on_timeout", "stop")) == "continue":
+            self._seq_schedule_next(step)
+        else:
+            self._seq_finish(False)
+
+    def _seq_schedule_next(self, step):
+        """步间延时后进下一步（用代际作废停止/重启后残留的续跑）。"""
+        delay = max(0, self._ar_to_int(step.get("delay", 0)))
+        nxt = self._seq_idx + 1
+        gen = self._seq_gen
+        QTimer.singleShot(delay, lambda: self._seq_continue(gen, nxt))
+
+    def _seq_continue(self, gen, nxt):
+        if self._seq_on and gen == self._seq_gen:
+            self._seq_run_from(nxt)
+
+    def _seq_finish(self, ok):
+        """整条序列结束：出汇总 + toast。ok=True 全部按预期完成。"""
+        self._seq_on = False
+        self._seq_waiting_mbm = False
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_timer.stop()
+        # 只统计「启用且真正执行」的步骤：空步骤(send与expect都空)标记 skip，既不是测试项，也不该
+        # 被算作「通过」——从 total 与 passed 里都排除，汇总显示 通过 X/Y 才不会把跳过误显为通过。
+        enabled = [self._seq_results[i] for i, s in enumerate(self._seq_steps)
+                   if s.get("on", True) and i < len(self._seq_results)]
+        total = sum(1 for r in enabled if r.get("status") != "skip")
+        passed = sum(1 for r in enabled if r.get("status") in ("pass", "sent"))
+        # 失败后选择“继续”只影响流程，不改变最终结论：只有全部执行步骤都通过才算 PASS。
+        ok = bool(ok and passed == total)
+        ms = int((time.monotonic() - self._seq_t0) * 1000)
+        self._seq_summary = {"ok": passed, "total": total, "ms": ms, "pass": ok}
+        self._seq_notify()
+        self._seq_resume_peer_engines()
+        self.toast(self._t("seq_done_pass" if ok else "seq_done_fail"), error=not ok)
+
+    def _seq_stop(self):
+        """用户点「停止」：中止运行（保留已跑结果供查看，提示「已停止」）。"""
+        self._seq_abort("seq_stopped")
+
+    def _seq_abort(self, toast_key):
+        """中止运行中的序列（用户停止 / 连接断开）：**保留已跑结果供查看**（不清 _seq_results，
+        对话框据此仍显示各步通过/失败/超时）、当前"等回包"步标记为「已停止」（否则一直显示等回包）、
+        恢复对端引擎、出提示。代际 +1 作废在途续跑。"""
+        if not self._seq_on:
+            return
+        self._seq_on = False
+        self._seq_waiting_mbm = False
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_timer.stop()
+        self._seq_gen += 1
+        i = self._seq_idx
+        if 0 <= i < len(self._seq_results) and self._seq_results[i].get("status") == "waiting":
+            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
+            self._seq_results[i] = {"status": "stopped", "ms": ms, "detail": ""}
+        self._seq_resume_peer_engines()
+        self._seq_notify()
+        if toast_key:
+            self.toast(self._t(toast_key))
+
+    def _seq_step_match(self, step, buf):
+        """当前累积 buf 是否满足步骤期望（复用自动应答 _ar_hit_test：包含/相等/前缀 + HEX/文本）。"""
+        rule = {"match": step.get("expect", ""),
+                "match_hex": bool(step.get("expect_hex", False)),
+                "mode": self._ar_to_int(step.get("mode", 0))}
+        text = ""
+        if not rule["match_hex"]:
+            try:
+                codec = self._get_codec()
+                text = buf.decode("utf-8" if codec == "auto" else codec, errors="replace")
+            except Exception:
+                text = ""
+        return self._ar_hit_test(rule, buf, text)
+
+    def _seq_set_result(self, i, status, ms, detail):
+        if 0 <= i < len(self._seq_results):
+            self._seq_results[i] = {"status": status, "ms": ms, "detail": detail}
+        self._seq_notify()
+
+    def _seq_notify(self):
+        """结果变化 → 通知对话框刷新（对话框没开就算了）。"""
+        dlg = getattr(self, "_seq_dlg", None)
+        if dlg is not None:
+            try:
+                dlg.update_results()
+            except Exception:
+                pass
 
     def _update_mbm_btn(self):
         """Modbus 主机轮询开启时高亮「Modbus 主机」按钮（动态属性 mbmActive + 重新 polish）。"""
@@ -3942,7 +4246,8 @@ class CommTool(QMainWindow):
             if gen != getattr(self, "_ar_generation", 0):
                 finish_batch()
                 return
-            if not self._ar_on or not self._is_open() or idx >= len(parts):
+            if (not self._ar_on or not self._is_open() or self._seq_running()
+                    or idx >= len(parts)):
                 finish_batch()
                 return
             sent_ok = False
@@ -4377,6 +4682,8 @@ class CommTool(QMainWindow):
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
         "modbus_master_split",
+        # 自动化测试序列
+        "sequence_rules",
         # 终端模式
         "terminal_mode", "terminal_echo", "terminal_enter",
         # 杂项
@@ -4529,6 +4836,7 @@ class CommTool(QMainWindow):
         # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
         self._ar_on = s.value("autoreply_on", False, type=bool)
         self._update_autoreply_btn()
+        self._seq_rules = self._load_seq_rules()   # 自动化序列步骤随配置档导入（对话框下方单独刷新）
         # Modbus 主机也是 __init__ 期读入的运行缓存；导入后重载全部配置并重启调度。
         self._mbm_rules = self._load_mbm_rules()
         requested_mbm_on = s.value("modbus_master_on", False, type=bool)
@@ -4574,6 +4882,8 @@ class CommTool(QMainWindow):
             self._keyword_dlg._reload_rows()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.reload_config()
+        if getattr(self, "_seq_dlg", None) is not None:
+            self._seq_dlg.reload_rows()
         # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
         # 避免新配置和老缓冲数据/旧规则混在一起。
         if getattr(self, "_plot_dlg", None) is not None:
@@ -4770,6 +5080,7 @@ class CommTool(QMainWindow):
     def _mbm_active(self):
         return bool(self._mbm_connection_ready()
                     and self._mbm_on and self._is_open()
+                    and not getattr(self, "_seq_on", False)
                     and any(r.get("enabled") for r in self._mbm_rules))
 
     def _mbm_import_enabled(self, requested):
@@ -4778,6 +5089,7 @@ class CommTool(QMainWindow):
 
     def _mbm_restart(self):
         """开关/连接/规则/变体变化后：复位运行态并按需启动轮询。"""
+        old_info = getattr(self, "_mbm_inflight", None)
         if hasattr(self, "_mbm_to"):
             self._mbm_to.stop()
         if hasattr(self, "_mbm_sched"):
@@ -4786,6 +5098,18 @@ class CommTool(QMainWindow):
         self._mbm_buf = b""
         self._mbm_due = {}
         self._mbm_results = {}     # 规则增删/重排后清结果，避免旧结果按旧索引错位到新行
+        if getattr(self, "_seq_waiting_mbm", False):
+            # 序列等待在途请求时若用户切换了 Modbus 配置/开关，restart 会强制取消 inflight；
+            # 线路上的旧响应仍可能迟到，按该请求完整超时窗口隔离后再放行序列，避免永久等待或误配。
+            if old_info is not None:
+                guard_ms = max(self._MBM_MIN_GUARD_MS,
+                               int(old_info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
+                deadline = time.monotonic() + guard_ms / 1000.0
+                if self._seq_wait_mbm_variant == "rtu":
+                    self._mbm_guard_until = max(self._mbm_guard_until, deadline)
+                else:
+                    self._seq_wait_mbm_until = max(self._seq_wait_mbm_until, deadline)
+            self._seq_mbm_release_check()
         if self._mbm_active():
             self._mbm_tick()
 
@@ -5067,6 +5391,8 @@ class CommTool(QMainWindow):
         if info is not None and info.get("variant") == "rtu":
             self._mbm_guard_until = time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0
         self._mbm_tick()
+        if getattr(self, "_seq_waiting_mbm", False):
+            self._seq_mbm_release_check()
 
     def _mbm_on_timeout(self):
         info = self._mbm_inflight
@@ -5080,7 +5406,14 @@ class CommTool(QMainWindow):
         if info.get("variant") == "rtu":
             guard_ms = max(self._MBM_MIN_GUARD_MS, int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
             self._mbm_guard_until = time.monotonic() + guard_ms / 1000.0
+        elif getattr(self, "_seq_waiting_mbm", False):
+            # Modbus-TCP 平时可凭 TID 跳过迟到帧；序列匹配没有 TID，因此启动序列前也要留出
+            # 一个完整响应超时窗口，把超时后才到的旧 TCP 响应丢干净。
+            guard_ms = max(self._MBM_MIN_GUARD_MS, int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
+            self._seq_wait_mbm_until = time.monotonic() + guard_ms / 1000.0
         self._mbm_tick()
+        if getattr(self, "_seq_waiting_mbm", False):
+            self._seq_mbm_release_check()
 
     def _mbm_fmt_result(self, info, result):
         if "regs" in result:
@@ -6219,6 +6552,21 @@ class CommTool(QMainWindow):
         self._closing_real = True
         self.close()
 
+    def _show_titlebar_func_menu(self):
+        """标题栏「功能」按钮下拉：放特殊/不常用功能入口。当前含「自动化序列」，后续可继续加。"""
+        menu = QMenu(self)
+        c = chrome_for(self._theme_id())
+        menu.setStyleSheet(f"""
+            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
+                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
+            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+        """)
+        menu.addAction(self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
+        from PyQt5.QtCore import QPoint
+        menu.exec_(self.btn_titlebar_func.mapToGlobal(
+            QPoint(0, self.btn_titlebar_func.height())))
+
     def _show_titlebar_help_menu(self):
         """标题栏「帮助」按钮下拉：当前含「关于」一项（含检查更新），后续可继续加文档链接等。
         菜单使用项目主题色，弹在按钮正下方。"""
@@ -6737,9 +7085,10 @@ class CommTool(QMainWindow):
             self._tooltip_popup.hide()
             self._tooltip_popup.deleteLater()
             self._tooltip_popup = None
-        # 5 个子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
+        # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
-        for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg", "_mbm_dlg"):
+        for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
+                     "_mbm_dlg", "_seq_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

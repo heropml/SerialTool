@@ -1,9 +1,9 @@
 {
-  "version": "1.2.5",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.5/CommTool_Setup_v1.2.5.exe",
+  "version": "1.2.6",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_Setup_v1.2.6.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.5/CommTool_v1.2.5.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.5/CommTool_v1.2.5.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_v1.2.6.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_v1.2.6.dmg"
   ],
-  "notes": "多窗口：可同时开多个独立窗口、各调各的设备、互不干扰；每窗口独立配置文件、改设置关窗不再互相覆盖。新增「打开配置」切换当前窗口到已存配置、「删除配置」管理多套配置；开满 8 窗口有上限提示。修复：开着系统代理时连不上本机/局域网 TCP（现调试连接一律直连不走代理，TCP/UDP 均修）、底部状态栏提示与 RX/TX 统计文字重叠、多窗口开第二个/新配置窗口卡住等问题。"
+  "notes": "新增「自动化测试序列」（功能 → 自动化序列）：1) 每步可配 发送内容 / 校验 / 期望回包 / 匹配模式 / 超时 / 步间延时，按序执行、逐步判定通过 / 失败并出汇总；2) 运行时暂停自动应答与 Modbus 主机、结束自动恢复，断连中止并保留结果；3) 发送 / 期望框宽度可拖；4) 运行中「运行」变绿、锁定增删、带用法示例。无新依赖。"
 }

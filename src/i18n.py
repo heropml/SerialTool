@@ -100,6 +100,7 @@ TR = {
         "net_send_failed": "发送失败",
         "about": "关于",
         "help": "帮助",
+        "func_menu": "功能",
         "new_window": "新建窗口",
         "err_new_window": "打开新窗口失败：{e}",
         "profile_main": "主配置",
@@ -118,6 +119,97 @@ TR = {
         "profile_deleted": "已删除 {name}",
         "profile_delete_fail": "删除 {name} 失败",
         "max_windows": "最多同时打开 8 个窗口，请先关闭一个再新建。",
+        "seq_open": "序列",
+        "seq_btn_tip": "自动化测试序列：顺序发送 → 等回包匹配 → 通过/失败",
+        "seq_title": "自动化序列",
+        "seq_run": "运行",
+        "seq_stop": "停止",
+        "seq_add": "添加步骤",
+        "seq_del": "删除",
+        "seq_help_btn": "使用说明 / 举例",
+        "seq_help_title": "自动化序列 · 使用说明",
+        "seq_help": (
+            "<h3>这是什么</h3>"
+            "<p>把一组「发送 → 等回包」按顺序自动跑一遍，逐步判定<b>通过 / 失败</b>，"
+            "最后出汇总。适合出厂测试、设备自检、批量验机、协议联调等重复动作。</p>"
+            "<h3>怎么用</h3>"
+            "<p>先<b>建立连接</b>（串口 / TCP / UDP），再「添加步骤」逐条填写，点<b>运行</b>。"
+            "运行期间会<b>暂停自动应答 / Modbus 主机</b>（三者共用收流，序列是主动驱动方），结束后自动恢复。"
+            "连接断开会中止序列，已跑结果保留。</p>"
+            "<h3>每列含义</h3>"
+            "<ul>"
+            "<li><b>启用</b>：取消勾选则该步跳过。</li>"
+            "<li><b>名称</b>：给这步起个名，仅方便识别，可留空。</li>"
+            "<li><b>发送</b>：要发出去的内容；勾右侧 <b>HEX</b> 则按十六进制解析（如 <code>01 03 00 00 00 02</code>）。留空=这步不发、只等回包。</li>"
+            "<li><b>校验</b>：给发送内容自动追加校验（如 CRC16 / 累加和），与主界面一致。</li>"
+            "<li><b>期望回包</b>：期望收到的内容；勾 <b>HEX</b> 则按十六进制比对。<b>留空 = 纯发送、不等回包</b>，发完即算这步完成。</li>"
+            "<li><b>模式</b>：<b>包含</b>=回包里含有期望片段即通过；<b>相等</b>=整包完全一致；<b>前缀</b>=回包以期望开头。</li>"
+            "<li><b>超时ms</b>：等回包的最长时间，超过还没匹配到就算这步<b>超时</b>。</li>"
+            "<li><b>超时</b>（动作）：<b>停止</b>=该步超时即整体失败并结束；<b>继续</b>=记为失败但继续往下跑（最终只要有失败步，汇总仍为失败）。</li>"
+            "<li><b>延时ms</b>：这步完成后、进入下一步前等待的时间（给设备处理留间隔）。</li>"
+            "<li><b>结果</b>：运行时实时显示 待运行 / 等回包 / ✓用时 / ✗超时 / 已停止 / —(跳过)。</li>"
+            "</ul>"
+            "<h3>举例</h3>"
+            "<p><b>例 1 · AT 指令自检（文本）</b></p>"
+            "<ul>"
+            "<li>发送 <code>AT</code>，期望 <code>OK</code>，模式=包含，超时 1000，超时动作=停止</li>"
+            "<li>发送 <code>AT+CGMR</code>，期望 <code>OK</code>，模式=包含，超时 1000</li>"
+            "<li>发送 <code>AT+RST</code>，期望留空（纯发送复位，不等回包），延时 2000</li>"
+            "</ul>"
+            "<p><b>例 2 · Modbus 读保持寄存器（HEX + CRC）</b></p>"
+            "<ul>"
+            "<li>发送 <code>01 03 00 00 00 02</code>（勾 HEX，校验选 CRC16 自动补两字节），"
+            "期望 <code>01 03 04</code>（勾 HEX），模式=前缀，超时 500</li>"
+            "</ul>"
+            "<p><b>例 3 · 只发不等（初始化流程）</b></p>"
+            "<ul>"
+            "<li>发送 <code>init</code>，期望留空，延时 500</li>"
+            "<li>发送 <code>start</code>，期望 <code>running</code>，模式=包含，超时 800</li>"
+            "</ul>"
+            "<h3>小贴士</h3>"
+            "<ul>"
+            "<li>拿不准回包完整格式时，用<b>模式=包含</b>更稳（只要含关键字即可）。</li>"
+            "<li>设备回包慢就把<b>超时</b>调大；连着发多条给点<b>延时</b>避免丢包。</li>"
+            "<li>某步允许失败继续测后面，就把该步<b>超时动作</b>设为<b>继续</b>。</li>"
+            "<li>步骤会自动保存，下次打开还在。</li>"
+            "</ul>"
+        ),
+        "seq_hint": "顺序执行每步：发送 → 等回包匹配（期望留空 = 纯发送不等）→ 超时按动作走。运行时暂停自动应答 / Modbus 主机。",
+        "seq_col_name": "名称",
+        "seq_col_send": "发送",
+        "seq_col_cs": "校验",
+        "seq_col_expect": "期望回包",
+        "seq_col_mode": "模式",
+        "seq_col_timeout": "超时ms",
+        "seq_col_onfail": "超时",
+        "seq_col_delay": "延时ms",
+        "seq_col_result": "结果",
+        "seq_send_ph": "HEX 或文本",
+        "seq_expect_ph": "留空=不等回包",
+        "seq_mode_contains": "包含",
+        "seq_mode_equals": "相等",
+        "seq_mode_prefix": "前缀",
+        "seq_onfail_stop": "停止",
+        "seq_onfail_continue": "继续",
+        "seq_st_pending": "待运行",
+        "seq_st_sent": "已发送",
+        "seq_st_waiting": "等回包…",
+        "seq_st_pass": "通过",
+        "seq_st_fail": "超时",
+        "seq_st_send_fail": "发送失败",
+        "seq_st_skip": "—",
+        "seq_st_stopped": "已停止",
+        "seq_summary": "通过 {ok}/{total} · 用时 {ms}ms · {verdict}",
+        "seq_pass": "通过 ✓",
+        "seq_fail": "失败 ✗",
+        "seq_running_toast": "序列开始运行…",
+        "seq_running_at": "运行中 · 第 {i}/{n} 步",
+        "seq_done_pass": "序列完成：通过 ✓",
+        "seq_done_fail": "序列结束：失败 ✗",
+        "seq_stopped": "序列已停止",
+        "seq_aborted_disc": "连接断开，序列已中止",
+        "seq_no_steps": "没有可运行的步骤（发送和期望都空）",
+        "seq_need_conn": "请先建立连接再运行序列",
         "about_desc": "iOS 风格的串口 / 网络调试工具（串口 + TCP/UDP）",
         "term_open": "终端",
         "term_mode": "终端模式",
@@ -692,6 +784,7 @@ TR = {
         "net_send_failed": "Send failed",
         "about": "About",
         "help": "Help",
+        "func_menu": "Features",
         "new_window": "New Window",
         "err_new_window": "Failed to open a new window: {e}",
         "profile_main": "Main config",
@@ -710,6 +803,98 @@ TR = {
         "profile_deleted": "Deleted {name}",
         "profile_delete_fail": "Failed to delete {name}",
         "max_windows": "Up to 8 windows can be open at once. Close one before opening another.",
+        "seq_open": "Sequence",
+        "seq_btn_tip": "Automated test sequence: send → wait for response → pass/fail",
+        "seq_title": "Automated Sequence",
+        "seq_run": "Run",
+        "seq_stop": "Stop",
+        "seq_add": "Add Step",
+        "seq_del": "Delete",
+        "seq_help_btn": "How to use / examples",
+        "seq_help_title": "Automated Sequence · Guide",
+        "seq_help": (
+            "<h3>What it is</h3>"
+            "<p>Runs a list of «send → wait for response» steps in order, judging each one "
+            "<b>PASS / FAIL</b> and printing a summary. Great for factory tests, device self-checks, "
+            "batch verification and protocol bring-up — any repetitive sequence.</p>"
+            "<h3>How to use</h3>"
+            "<p>First <b>open a connection</b> (serial / TCP / UDP), then «Add Step», fill each row, and hit <b>Run</b>. "
+            "While running, <b>Auto-reply / Modbus master are paused</b> (they share the same receive stream; the "
+            "sequence is the active driver) and resume when it ends. Disconnecting aborts the run; results are kept.</p>"
+            "<h3>Columns</h3>"
+            "<ul>"
+            "<li><b>Enable</b>: unchecked → step is skipped.</li>"
+            "<li><b>Name</b>: a label for the step, optional.</li>"
+            "<li><b>Send</b>: what to transmit; tick <b>HEX</b> to parse as hex (e.g. <code>01 03 00 00 00 02</code>). Empty = don't send, only wait.</li>"
+            "<li><b>Checksum</b>: auto-append a checksum (CRC16 / sum, etc.) to the sent bytes, same as the main window.</li>"
+            "<li><b>Expect</b>: the response to look for; tick <b>HEX</b> to compare as hex. <b>Empty = send only, no wait</b> — the step completes once sent.</li>"
+            "<li><b>Mode</b>: <b>Contains</b> = response includes the expected fragment; <b>Equals</b> = whole frame matches; <b>Prefix</b> = response starts with expected.</li>"
+            "<li><b>Timeout ms</b>: max time to wait for a match; exceeding it marks the step <b>timed out</b>.</li>"
+            "<li><b>On timeout</b>: <b>Stop</b> = fail the whole run and end; <b>Continue</b> = mark failed but keep going (any failed step still makes the summary FAIL).</li>"
+            "<li><b>Delay ms</b>: wait after this step before the next one (gives the device time).</li>"
+            "<li><b>Result</b>: live status — pending / waiting / ✓time / ✗timeout / stopped / —(skipped).</li>"
+            "</ul>"
+            "<h3>Examples</h3>"
+            "<p><b>Ex 1 · AT self-check (text)</b></p>"
+            "<ul>"
+            "<li>Send <code>AT</code>, expect <code>OK</code>, mode Contains, timeout 1000, on-timeout Stop</li>"
+            "<li>Send <code>AT+CGMR</code>, expect <code>OK</code>, mode Contains, timeout 1000</li>"
+            "<li>Send <code>AT+RST</code>, expect empty (send-only reset), delay 2000</li>"
+            "</ul>"
+            "<p><b>Ex 2 · Modbus read holding registers (HEX + CRC)</b></p>"
+            "<ul>"
+            "<li>Send <code>01 03 00 00 00 02</code> (tick HEX, Checksum = CRC16 auto-appends 2 bytes), "
+            "expect <code>01 03 04</code> (tick HEX), mode Prefix, timeout 500</li>"
+            "</ul>"
+            "<p><b>Ex 3 · Send-only init flow</b></p>"
+            "<ul>"
+            "<li>Send <code>init</code>, expect empty, delay 500</li>"
+            "<li>Send <code>start</code>, expect <code>running</code>, mode Contains, timeout 800</li>"
+            "</ul>"
+            "<h3>Tips</h3>"
+            "<ul>"
+            "<li>Unsure of the exact frame? <b>Contains</b> is safest (just needs the keyword).</li>"
+            "<li>Slow device → raise <b>Timeout</b>; back-to-back sends → add <b>Delay</b> to avoid drops.</li>"
+            "<li>Want to keep testing past a failure? Set that step's on-timeout to <b>Continue</b>.</li>"
+            "<li>Steps are saved automatically and restored next time.</li>"
+            "</ul>"
+        ),
+        "seq_hint": "Runs each step in order: send → wait for a matching response (leave Expect empty = send only) → on timeout act. Auto-reply / Modbus master are paused while running.",
+        "seq_col_name": "Name",
+        "seq_col_send": "Send",
+        "seq_col_cs": "Checksum",
+        "seq_col_expect": "Expect",
+        "seq_col_mode": "Mode",
+        "seq_col_timeout": "Timeout ms",
+        "seq_col_onfail": "On timeout",
+        "seq_col_delay": "Delay ms",
+        "seq_col_result": "Result",
+        "seq_send_ph": "HEX or text",
+        "seq_expect_ph": "empty = no wait",
+        "seq_mode_contains": "Contains",
+        "seq_mode_equals": "Equals",
+        "seq_mode_prefix": "Prefix",
+        "seq_onfail_stop": "Stop",
+        "seq_onfail_continue": "Continue",
+        "seq_st_pending": "pending",
+        "seq_st_sent": "sent",
+        "seq_st_waiting": "waiting…",
+        "seq_st_pass": "pass",
+        "seq_st_fail": "timeout",
+        "seq_st_send_fail": "send failed",
+        "seq_st_skip": "—",
+        "seq_st_stopped": "stopped",
+        "seq_summary": "Passed {ok}/{total} · {ms}ms · {verdict}",
+        "seq_pass": "PASS ✓",
+        "seq_fail": "FAIL ✗",
+        "seq_running_toast": "Sequence started…",
+        "seq_running_at": "Running · step {i}/{n}",
+        "seq_done_pass": "Sequence done: PASS ✓",
+        "seq_done_fail": "Sequence ended: FAIL ✗",
+        "seq_stopped": "Sequence stopped",
+        "seq_aborted_disc": "Connection lost, sequence aborted",
+        "seq_no_steps": "No runnable steps (send and expect both empty)",
+        "seq_need_conn": "Connect first before running the sequence",
         "about_desc": "An iOS-style serial & network debugging tool (Serial + TCP/UDP)",
         "term_open": "Terminal",
         "term_mode": "Terminal mode",
@@ -1285,6 +1470,7 @@ TR = {
         "net_send_failed": "發送失敗",
         "about": "關於",
         "help": "幫助",
+        "func_menu": "功能",
         "new_window": "新建視窗",
         "err_new_window": "開啟新視窗失敗：{e}",
         "profile_main": "主設定",
@@ -1303,6 +1489,97 @@ TR = {
         "profile_deleted": "已刪除 {name}",
         "profile_delete_fail": "刪除 {name} 失敗",
         "max_windows": "最多同時開啟 8 個視窗，請先關閉一個再新增。",
+        "seq_open": "序列",
+        "seq_btn_tip": "自動化測試序列：順序發送 → 等回包匹配 → 通過/失敗",
+        "seq_title": "自動化序列",
+        "seq_run": "執行",
+        "seq_stop": "停止",
+        "seq_add": "新增步驟",
+        "seq_del": "刪除",
+        "seq_help_btn": "使用說明 / 舉例",
+        "seq_help_title": "自動化序列 · 使用說明",
+        "seq_help": (
+            "<h3>這是什麼</h3>"
+            "<p>把一組「發送 → 等回包」按順序自動跑一遍，逐步判定<b>通過 / 失敗</b>，"
+            "最後出彙總。適合出廠測試、裝置自檢、批量驗機、協定聯調等重複動作。</p>"
+            "<h3>怎麼用</h3>"
+            "<p>先<b>建立連線</b>（串口 / TCP / UDP），再「新增步驟」逐條填寫，點<b>執行</b>。"
+            "執行期間會<b>暫停自動應答 / Modbus 主機</b>（三者共用收流，序列是主動驅動方），結束後自動恢復。"
+            "連線中斷會中止序列，已跑結果保留。</p>"
+            "<h3>每列含義</h3>"
+            "<ul>"
+            "<li><b>啟用</b>：取消勾選則該步跳過。</li>"
+            "<li><b>名稱</b>：給這步起個名，僅方便識別，可留空。</li>"
+            "<li><b>發送</b>：要發出去的內容；勾右側 <b>HEX</b> 則按十六進位解析（如 <code>01 03 00 00 00 02</code>）。留空=這步不發、只等回包。</li>"
+            "<li><b>校驗</b>：給發送內容自動追加校驗（如 CRC16 / 累加和），與主介面一致。</li>"
+            "<li><b>期望回包</b>：期望收到的內容；勾 <b>HEX</b> 則按十六進位比對。<b>留空 = 純發送、不等回包</b>，發完即算這步完成。</li>"
+            "<li><b>模式</b>：<b>包含</b>=回包裡含有期望片段即通過；<b>相等</b>=整包完全一致；<b>前綴</b>=回包以期望開頭。</li>"
+            "<li><b>逾時ms</b>：等回包的最長時間，超過還沒匹配到就算這步<b>逾時</b>。</li>"
+            "<li><b>逾時</b>（動作）：<b>停止</b>=該步逾時即整體失敗並結束；<b>繼續</b>=記為失敗但繼續往下跑（最終只要有失敗步，彙總仍為失敗）。</li>"
+            "<li><b>延時ms</b>：這步完成後、進入下一步前等待的時間（給裝置處理留間隔）。</li>"
+            "<li><b>結果</b>：執行時即時顯示 待執行 / 等回包 / ✓用時 / ✗逾時 / 已停止 / —(跳過)。</li>"
+            "</ul>"
+            "<h3>舉例</h3>"
+            "<p><b>例 1 · AT 指令自檢（文字）</b></p>"
+            "<ul>"
+            "<li>發送 <code>AT</code>，期望 <code>OK</code>，模式=包含，逾時 1000，逾時動作=停止</li>"
+            "<li>發送 <code>AT+CGMR</code>，期望 <code>OK</code>，模式=包含，逾時 1000</li>"
+            "<li>發送 <code>AT+RST</code>，期望留空（純發送復位，不等回包），延時 2000</li>"
+            "</ul>"
+            "<p><b>例 2 · Modbus 讀保持暫存器（HEX + CRC）</b></p>"
+            "<ul>"
+            "<li>發送 <code>01 03 00 00 00 02</code>（勾 HEX，校驗選 CRC16 自動補兩位元組），"
+            "期望 <code>01 03 04</code>（勾 HEX），模式=前綴，逾時 500</li>"
+            "</ul>"
+            "<p><b>例 3 · 只發不等（初始化流程）</b></p>"
+            "<ul>"
+            "<li>發送 <code>init</code>，期望留空，延時 500</li>"
+            "<li>發送 <code>start</code>，期望 <code>running</code>，模式=包含，逾時 800</li>"
+            "</ul>"
+            "<h3>小提示</h3>"
+            "<ul>"
+            "<li>拿不準回包完整格式時，用<b>模式=包含</b>更穩（只要含關鍵字即可）。</li>"
+            "<li>裝置回包慢就把<b>逾時</b>調大；連著發多條給點<b>延時</b>避免丟包。</li>"
+            "<li>某步允許失敗繼續測後面，就把該步<b>逾時動作</b>設為<b>繼續</b>。</li>"
+            "<li>步驟會自動儲存，下次打開還在。</li>"
+            "</ul>"
+        ),
+        "seq_hint": "順序執行每步：發送 → 等回包匹配（期望留空 = 純發送不等）→ 逾時按動作走。執行時暫停自動應答 / Modbus 主機。",
+        "seq_col_name": "名稱",
+        "seq_col_send": "發送",
+        "seq_col_cs": "校驗",
+        "seq_col_expect": "期望回包",
+        "seq_col_mode": "模式",
+        "seq_col_timeout": "逾時ms",
+        "seq_col_onfail": "逾時",
+        "seq_col_delay": "延時ms",
+        "seq_col_result": "結果",
+        "seq_send_ph": "HEX 或文字",
+        "seq_expect_ph": "留空=不等回包",
+        "seq_mode_contains": "包含",
+        "seq_mode_equals": "相等",
+        "seq_mode_prefix": "前綴",
+        "seq_onfail_stop": "停止",
+        "seq_onfail_continue": "繼續",
+        "seq_st_pending": "待執行",
+        "seq_st_sent": "已發送",
+        "seq_st_waiting": "等回包…",
+        "seq_st_pass": "通過",
+        "seq_st_fail": "逾時",
+        "seq_st_send_fail": "發送失敗",
+        "seq_st_skip": "—",
+        "seq_st_stopped": "已停止",
+        "seq_summary": "通過 {ok}/{total} · 用時 {ms}ms · {verdict}",
+        "seq_pass": "通過 ✓",
+        "seq_fail": "失敗 ✗",
+        "seq_running_toast": "序列開始執行…",
+        "seq_running_at": "執行中 · 第 {i}/{n} 步",
+        "seq_done_pass": "序列完成：通過 ✓",
+        "seq_done_fail": "序列結束：失敗 ✗",
+        "seq_stopped": "序列已停止",
+        "seq_aborted_disc": "連線中斷，序列已中止",
+        "seq_no_steps": "沒有可執行的步驟（發送和期望都空）",
+        "seq_need_conn": "請先建立連線再執行序列",
         "about_desc": "iOS 風格的串口 / 網路偵錯工具（串口 + TCP/UDP）",
         "term_open": "終端",
         "term_mode": "終端模式",
