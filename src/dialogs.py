@@ -2,12 +2,12 @@
 """对话框：CloseDialog / MultiSendDialog / KeywordHighlightDialog + 共享样式 helper。"""
 import sys
 from PyQt5.QtCore import Qt, QTimer, QUrl, QMimeData, QEvent, QPoint
-from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontMetrics
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontMetrics, QIntValidator
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
                              QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea,
                              QGraphicsDropShadowEffect, QColorDialog,
                              QListWidget, QListWidgetItem, QSplitter,
-                             QTableWidget, QHeaderView, QAbstractItemView)
+                             QTableWidget, QHeaderView, QAbstractItemView, QFileDialog, QMenu)
 from theme import chrome_for, THEME_DEFAULT
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
@@ -1489,12 +1489,16 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
     # 只有「发送」「期望回包」两个数据框可拖宽：分别装进 2 面板 splitter 的左/右两组，组内数据框伸展、
     # 其余控件固定宽度（拖它们没意义）。整行只有一个分隔条(两组之间)——拖它调两个数据框的相对宽。
     # 形制同自动应答对话框。行布局：启用 | [ 名称 发送↔ HEX 校验 | 期望↔ HEX 模式 超时 超时动作 延时 ] | 结果 删除
-    _LEAD_W, _RESULT_W, _DEL_W = 22, 92, 24
+    _LEAD_W, _RESULT_W, _DEL_W = 22, 170, 24
     # 定宽列。下拉列(校验/模式/超时动作)只给「最小宽」，实际宽在 __init__ 按各自选项文案自动算(见
     # _combo_w)——以后往选项列表加更长的项，列宽自动跟着变，不用改代码。
-    _NAME_W, _HEX_W, _TO_W, _DL_W = 90, 34, 58, 54
+    _NAME_W, _HEX_W, _TO_W, _DL_W, _RETRY_W = 90, 34, 58, 54, 46
     _CS_MIN_W, _MODE_MIN_W, _OF_MIN_W = 60, 56, 56
     _DATA_MIN_W = 60                # 发送/期望数据框最小宽（表头标签与行控件取同值 → 任何宽度都对齐）
+    _MAX_IMPORT_STEPS = 500          # 导入会为每步创建整行 Qt 控件，限量防止误导入卡死 UI
+    _MAX_IMPORT_BYTES = 5 * 1024 * 1024  # json.load 前先限制文件大小，避免大文件占满内存
+    _MAX_RETRY = 999                 # 与重试输入框/引擎安全上限一致
+    _MAX_TIMER_MS = 2147483647        # QTimer 的 int 毫秒上限
     _DEFAULT_SPLIT = [300, 440]     # 左组(名称+发送)/右组(期望+模式…) 初始宽；拖分隔条调二者、持久化
 
     def __init__(self, app):
@@ -1510,6 +1514,9 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # 中间列的共享拖动比例，所有行 + 表头同步；从 settings 恢复上次拖好的列宽，没存过用默认
         self._split_sizes = self._load_split_sizes()
         self._syncing_split = False  # 防止同步分隔条递归
+        # 循环运行配置：循环次数 + 某轮失败即停（持久化，关窗 sync）
+        self._loops_cfg = max(1, self._to_int(app.settings.value("sequence_loops", 1), 1))
+        self._stopfail_cfg = str(app.settings.value("sequence_stop_on_fail", "")).lower() in ("1", "true")
         # 下拉列宽按各自选项文案自动算（含最长项，避免像 ModbusCRC16 被截断；日后加更长的项也自适应）
         self._cs_w = self._combo_w(CHECKSUM_KEYS, self._CS_MIN_W)
         self._mode_w = self._combo_w(self._MODE_KEYS, self._MODE_MIN_W)
@@ -1523,6 +1530,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         root.setSpacing(6)
 
         top = QHBoxLayout()
+        top.setSpacing(8)                       # 顶栏控件统一间距，避免个别处大小不一
         self.btn_run = QPushButton()
         self.btn_run.setObjectName("PlotGhostBtn")   # 普通灰按钮：空闲时不高亮，避免被误读成"运行中"
         self.btn_run.setMinimumHeight(30)
@@ -1533,20 +1541,39 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.btn_add = QPushButton()
         self.btn_add.setObjectName("PlotGhostBtn")
         self.btn_add.clicked.connect(lambda *_: (self._add_row(), self._schedule()))
+        self.btn_steps = QPushButton()          # 步骤 ▾：导入 / 导出整条序列(JSON)，便于分享/版本管理
+        self.btn_steps.setObjectName("PlotGhostBtn")
+        self.btn_steps.clicked.connect(self._show_steps_menu)
+        self.btn_export = QPushButton()         # 导出报告（跑完后可用，出 HTML/CSV 测试报告）
+        self.btn_export.setObjectName("PlotGhostBtn")
+        self.btn_export.clicked.connect(self._on_export)
         self.btn_help = QPushButton("?")        # 「?」→ 带例子的用法说明（形制同自动应答对话框）
         self.btn_help.setObjectName("ArHelpBtn")
         self.btn_help.setFixedSize(26, 26)
         self.btn_help.setCursor(Qt.PointingHandCursor)
         self.btn_help.clicked.connect(lambda *_: self._show_help_dlg())
-        top.addWidget(self.btn_run)
+        self.lbl_loops = QLabel()               # 循环次数：整条序列跑几轮
+        self.ed_loops = QLineEdit(str(self._loops_cfg))
+        self.ed_loops.setFixedWidth(46)
+        self.ed_loops.setValidator(QIntValidator(1, 100000, self))   # 1..10万(与引擎 _SEQ_MAX_LOOPS 一致)，挡字母/负号
+        self.ed_loops.editingFinished.connect(self._save_loop_cfg)
+        self.cb_stopfail = QCheckBox()          # 某轮失败即停止后续循环
+        self.cb_stopfail.setChecked(self._stopfail_cfg)
+        self.cb_stopfail.toggled.connect(lambda *_: self._save_loop_cfg())
+        top.addWidget(self.btn_run)             # 左侧：操作序列的按钮 + 循环配置，统一间距
         top.addWidget(self.btn_stop)
         top.addWidget(self.btn_add)
-        top.addWidget(self.btn_help)
-        top.addStretch(1)
-        self.lbl_summary = QLabel("")
+        top.addWidget(self.btn_steps)
+        top.addWidget(self.lbl_loops)
+        top.addWidget(self.ed_loops)
+        top.addWidget(self.cb_stopfail)
+        top.addStretch(1)                       # 与右侧输出区之间的分隔
+        self.lbl_summary = QLabel("")           # 运行状态/汇总
         self.lbl_summary.setObjectName("SeqSummary")
         self.lbl_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.lbl_summary)
+        top.addWidget(self.btn_export)          # 右侧：导出报告 + 帮助
+        top.addWidget(self.btn_help)
         root.addLayout(top)
 
         self.lbl_hint = QLabel()
@@ -1568,7 +1595,8 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                                     ("HEX", self._HEX_W), ("seq_col_cs", self._cs_w)])
         hright = self._mk_hdr_group([("seq_col_expect", None), ("HEX", self._HEX_W),
                                      ("seq_col_mode", self._mode_w), ("seq_col_timeout", self._TO_W),
-                                     ("seq_col_onfail", self._of_w), ("seq_col_delay", self._DL_W)])
+                                     ("seq_col_onfail", self._of_w), ("seq_col_delay", self._DL_W),
+                                     ("seq_col_retry", self._RETRY_W)])
         self._hdr_split = self._make_split()
         self._hdr_split.addWidget(hleft)
         self._hdr_split.addWidget(hright)
@@ -1766,6 +1794,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         d["mode"] = cb_mode
 
         d["to"] = QLineEdit(str(step.get("timeout", 1000)))
+        d["to"].setValidator(QIntValidator(0, self._MAX_TIMER_MS, self))
         d["to"].textChanged.connect(self._schedule)
 
         cb_of = QComboBox()
@@ -1776,15 +1805,22 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         d["of"] = cb_of
 
         d["dl"] = QLineEdit(str(step.get("delay", 0)))
+        d["dl"].setValidator(QIntValidator(0, self._MAX_TIMER_MS, self))
         d["dl"].textChanged.connect(self._schedule)
 
-        # 只把两个数据框放进可拖：左组[名称 发送↔ HEX 校验] / 右组[期望↔ HEX 模式 超时 超时动作 延时]，
+        d["retry"] = QLineEdit(str(self._to_int(step.get("retry", 0), 0)))   # 失败重试次数（0=不重试）
+        d["retry"].setValidator(QIntValidator(0, self._MAX_RETRY, self))
+        d["retry"].setToolTip(self.app._t("seq_retry_tip"))
+        d["retry"].textChanged.connect(self._schedule)
+
+        # 只把两个数据框放进可拖：左组[名称 发送↔ HEX 校验] / 右组[期望↔ HEX 模式 超时 超时动作 延时 重试]，
         # 组内数据框伸展、其余固定；两组装进 2 面板 splitter，拖中间分隔条即调发送/期望相对宽（各行+表头同步）。
         left = self._mk_row_group([(d["name"], self._NAME_W), (d["send"], None),
                                    (d["shex"], self._HEX_W), (cb_cs, self._cs_w)])
         right = self._mk_row_group([(d["exp"], None), (d["ehex"], self._HEX_W),
                                     (cb_mode, self._mode_w), (d["to"], self._TO_W),
-                                    (cb_of, self._of_w), (d["dl"], self._DL_W)])
+                                    (cb_of, self._of_w), (d["dl"], self._DL_W),
+                                    (d["retry"], self._RETRY_W)])
         split = self._make_split()
         split.addWidget(left)
         split.addWidget(right)
@@ -1832,9 +1868,10 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             "expect": d["exp"].text(),
             "expect_hex": d["ehex"].isChecked(),
             "mode": d["mode"].currentIndex(),
-            "timeout": self._to_int(d["to"].text(), 1000),
+            "timeout": min(self._MAX_TIMER_MS, self._to_int(d["to"].text(), 1000)),
             "on_timeout": "continue" if d["of"].currentIndex() == 1 else "stop",
-            "delay": self._to_int(d["dl"].text(), 0),
+            "delay": min(self._MAX_TIMER_MS, self._to_int(d["dl"].text(), 0)),
+            "retry": self._to_int(d["retry"].text(), 0),
         }
 
     def _all_steps(self):
@@ -1875,17 +1912,44 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.update_results()
 
     # ---------------- 运行 / 结果 ----------------
+    def _save_loop_cfg(self):
+        """循环次数 / 失败即停 变化时持久化（closeEvent 统一 sync）。非法(空/0)会纠正为 1 并 toast 提示。"""
+        loops = self._to_int(self.ed_loops.text(), 0)
+        if loops < 1:                           # 空 / 0（校验器已挡字母负号）→ 纠正 + 明确反馈，不静默
+            loops = 1
+            self.app.toast(self.app._t("seq_loops_invalid"))
+        self.ed_loops.setText(str(loops))
+        self.app.settings.setValue("sequence_loops", loops)
+        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
+
     def _on_run(self):
         self._commit()              # 确保用当前表内容跑（含未到防抖窗、尚未落盘的编辑）
-        self.app._seq_start(self._all_steps())
+        loops = max(1, self._to_int(self.ed_loops.text(), 1))
+        self.ed_loops.setText(str(loops))   # 清空/非法时回写实际生效值，别让框里留空白与真实 loops 不符
+        self.app._seq_start(self._all_steps(), loops=loops,
+                            stop_on_fail=self.cb_stopfail.isChecked())
+
+    def _result_detail(self, res):
+        """返回当前语言的结果详情。新结果保存 detail_key 以支持运行后切换语言；
+        detail 作为旧结果/外部构造数据的兼容回退。"""
+        key = str(res.get("detail_key", "") or "")
+        return self.app._t(key) if key else str(res.get("detail", "") or "")
+
+    def _attempt_suffix(self, res):
+        """通过/已发送若经过重试(第2次起) → 附「(第N次)」，让人看出这步是重试后才成的。"""
+        a = int(res.get("attempt", 1) or 1)
+        return (" " + self.app._t("seq_attempt", n=a)) if a > 1 else ""
 
     def _status_display(self, st, res, c):
         if st == "pass":
-            return "✓ %dms" % int(res.get("ms", 0)), c["accent"]
+            return "✓ %dms%s" % (int(res.get("ms", 0)), self._attempt_suffix(res)), c["accent"]
         if st == "sent":
-            return self.app._t("seq_st_sent"), c["accent"]
+            return self.app._t("seq_st_sent") + self._attempt_suffix(res), c["accent"]
+        if st == "retry":
+            return self.app._t("seq_st_retry", n=int(res.get("attempt", 2) or 2)), c["text_sec"]
         if st == "fail":
-            return "✗ " + (res.get("detail") or self.app._t("seq_st_fail")), c["danger"]
+            return ("✗ " + (self._result_detail(res) or self.app._t("seq_st_fail"))
+                    + self._attempt_suffix(res)), c["danger"]
         if st == "waiting":
             return self.app._t("seq_st_waiting"), c["text_sec"]
         if st == "skip":
@@ -1906,24 +1970,40 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             st = res.get("status", "pending") if show else "pending"
             text, color = self._status_display(st, res, c)
             d["res"].setText(text)
+            d["res"].setToolTip(text)
             d["res"].setStyleSheet("color: %s; background: transparent;" % color)
         summ = getattr(self.app, "_seq_summary", None)
         if running:
             n = len(getattr(self.app, "_seq_steps", []) or []) or len(results) or 1
             i = min(max(1, getattr(self.app, "_seq_idx", 0) + 1), n)   # 当前第 i/n 步（随步进实时更新）
-            self.lbl_summary.setText(self.app._t("seq_running_at", i=i, n=n))
+            loops = max(1, getattr(self.app, "_seq_loops", 1))
+            if loops > 1:                        # 循环运行：显示当前第 R/N 轮
+                r = min(max(1, getattr(self.app, "_seq_loop_i", 0) + 1), loops)
+                self.lbl_summary.setText(self.app._t("seq_running_round", r=r, n_loops=loops, i=i, n=n))
+            else:
+                self.lbl_summary.setText(self.app._t("seq_running_at", i=i, n=n))
             self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;" % c["accent"])
         elif summ:
             verdict = self.app._t("seq_pass" if summ.get("pass") else "seq_fail")
-            self.lbl_summary.setText(self.app._t("seq_summary", ok=summ.get("ok", 0),
-                                                 total=summ.get("total", 0), ms=summ.get("ms", 0),
-                                                 verdict=verdict))
+            if summ.get("loops", 1) > 1:         # 循环汇总：通过轮 R/N（提前停止标计划总数）· 累计步 X/Y
+                text = self._loop_summary_text(summ, verdict)
+            else:
+                text = self.app._t("seq_summary", ok=summ.get("ok", 0), total=summ.get("total", 0),
+                                   ms=summ.get("ms", 0), verdict=verdict)
+            self.lbl_summary.setText(text)
             self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;"
                                            % (c["accent"] if summ.get("pass") else c["danger"]))
         else:
             self.lbl_summary.setText("")
         self.btn_run.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        self.ed_loops.setEnabled(not running)   # 运行中不改循环参数
+        self.cb_stopfail.setEnabled(not running)
+        self.btn_steps.setEnabled(not running)  # 运行中不导入步骤（结构性变更会与在跑快照错位）
+        # 只有正常收尾并产生汇总才是完整报告；用户停止/断连时保留的部分结果
+        # 仍可在界面查看，但不应导出成缺少结论的测试报告。
+        self.btn_export.setEnabled(not running and bool(results)
+                                   and bool(getattr(self.app, "_seq_summary", None)))
         # 运行中把「运行」点亮成绿色作「正在运行」指示（仍禁用防重复启动，故 :disabled 也显绿）；
         # 空闲/结束回落普通灰按钮（清空内联样式 → 回到对话框级 PlotGhostBtn 样式）。
         if running:
@@ -1945,12 +2025,327 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             if btn is not None:
                 btn.setEnabled(enabled)
 
+    # ---------------- 导出测试报告 ----------------
+    def _status_report_text(self, res):
+        """结果状态 → 报告用的纯文本（无颜色）。"""
+        st = res.get("status", "pending")
+        t = self.app._t
+        if st == "pass":    return t("seq_st_pass") + self._attempt_suffix(res)   # 通过(第N次)
+        if st == "sent":    return t("seq_st_sent") + self._attempt_suffix(res)   # 已发送(第N次)
+        if st == "retry":   return t("seq_st_retry", n=int(res.get("attempt", 2) or 2))
+        if st == "fail":    return t("seq_report_fail") + self._attempt_suffix(res)  # 失败(第N次)
+        if st == "skip":    return t("seq_report_skip")                   # 跳过
+        if st == "stopped": return t("seq_st_stopped")                    # 已停止
+        if st == "waiting": return t("seq_st_waiting")                    # 等回包…
+        return t("seq_st_pending")                                        # 待运行
+
+    def _report_rows(self, steps, results):
+        """把运行快照(app._seq_steps) + 结果(app._seq_results) 整理成报告行 dict 列表。"""
+        t = self.app._t
+        rows = []
+        for i, s in enumerate(steps):
+            res = results[i] if i < len(results) else {}
+            send = str(s.get("send", "") or "")
+            if s.get("send_hex"):
+                send += " (HEX)"
+            exp = str(s.get("expect", "") or "").strip()
+            exp_disp = (exp + (" (HEX)" if s.get("expect_hex") else "")) if exp else "—"
+            cs = self._to_int(s.get("cs", 0), 0)
+            cs_name = t(CHECKSUM_KEYS[cs]) if 0 <= cs < len(CHECKSUM_KEYS) else ""
+            md = self._to_int(s.get("mode", 0), 0)
+            mode_name = t(self._MODE_KEYS[md]) if (exp and 0 <= md < len(self._MODE_KEYS)) else "—"
+            status = res.get("status", "pending")
+            rows.append({
+                "no": i + 1, "name": str(s.get("name", "") or ""),
+                "send": send, "cs": cs_name, "expect": exp_disp, "mode": mode_name,
+                "timeout": "%dms" % self._to_int(s.get("timeout", 1000), 1000),
+                "status": self._status_report_text(res),
+                "elapsed": "%dms" % int(res.get("ms", 0)),
+                "detail": self._result_detail(res),
+                "enabled": bool(s.get("on", True)),
+                "ok": status in ("pass", "sent", "skip"), "fail": status == "fail",
+            })
+        return rows
+
+    def _report_header(self):
+        """报告表头列名（HTML/CSV 共用）。"""
+        t = self.app._t
+        return ["#", t("seq_col_name"), t("seq_col_send"), t("seq_col_cs"), t("seq_col_expect"),
+                t("seq_col_mode"), t("seq_col_timeout"), t("seq_col_result"),
+                t("seq_report_elapsed"), t("seq_report_detail")]
+
+    def _report_is_loop(self):
+        return int((getattr(self.app, "_seq_summary", None) or {}).get("loops", 1) or 1) > 1
+
+    def _loop_summary_text(self, summ, verdict):
+        """循环汇总文案：通过轮 R/N；实际跑过轮数 < 计划(失败即停/中途停止)时标出「计划 M 轮」，避免误读。"""
+        rp, rt = summ.get("rounds_pass", 0), summ.get("rounds", 0)
+        loops = summ.get("loops", rt) or rt
+        frac = (self.app._t("seq_rounds_partial", rp=rp, rt=rt, loops=loops) if rt < loops
+                else self.app._t("seq_rounds_frac", rp=rp, rt=rt))
+        return self.app._t("seq_summary_loops", rounds=frac, ok=summ.get("ok", 0),
+                           total=summ.get("total", 0), ms=summ.get("ms", 0), verdict=verdict)
+
+    def _report_summary_line(self):
+        summ = getattr(self.app, "_seq_summary", None) or {}
+        if not summ:
+            return "", False       # 无汇总数据不当作"通过"，避免假绿（调用方一般已守卫，此为独立安全默认）
+        passed = bool(summ.get("pass"))
+        verdict = self.app._t("seq_pass" if passed else "seq_fail")
+        if int(summ.get("loops", 1) or 1) > 1:      # 循环：通过轮 R/N（提前停止标计划总数）· 累计步 X/Y
+            return self._loop_summary_text(summ, verdict), passed
+        return self.app._t("seq_summary", ok=summ.get("ok", 0), total=summ.get("total", 0),
+                           ms=summ.get("ms", 0), verdict=verdict), passed
+
+    def _report_table(self, rows):
+        """返回 (表头列名, 行列表[{cells,cls}])：循环运行→按轮次表；单次→按步骤表。"""
+        t = self.app._t
+        if self._report_is_loop():
+            header = [t("seq_report_round"), t("seq_report_round_steps"),
+                      t("seq_report_verdict"), t("seq_report_elapsed")]
+            body = []
+            for r in (getattr(self.app, "_seq_summary", None) or {}).get("round_list", []):
+                rp = bool(r.get("pass"))
+                body.append({"cells": [r.get("round", ""),
+                                       "%d/%d" % (r.get("ok", 0), r.get("total", 0)),
+                                       t("seq_pass" if rp else "seq_fail"),
+                                       "%dms" % int(r.get("ms", 0))],
+                             "cls": "ok" if rp else "fail"})
+            return header, body
+        header = self._report_header()
+        body = []
+        for r in rows:
+            cls = ("ok" if r["ok"] else ("fail" if r["fail"] else "")) if r["enabled"] else ""
+            body.append({"cells": [r["no"], r["name"], r["send"], r["cs"], r["expect"], r["mode"],
+                                   r["timeout"], r["status"], r["elapsed"], r["detail"]], "cls": cls})
+        return header, body
+
+    def _build_report_html(self, rows):
+        import html as _h
+        t = self.app._t
+        summ_line, passed = self._report_summary_line()
+        started = getattr(self.app, "_seq_started_at", "") or ""
+        header, body = self._report_table(rows)
+        th = "".join("<th>%s</th>" % _h.escape(str(x)) for x in header)
+        trs = []
+        for b in body:
+            tds = "".join("<td>%s</td>" % _h.escape(str(x)) for x in b["cells"])
+            trs.append('<tr class="%s">%s</tr>' % (b["cls"], tds))
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'><title>%(title)s</title><style>"
+            "body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;margin:24px;color:#222;}"
+            "h1{font-size:20px;margin:0 0 6px;}"
+            ".meta{color:#666;font-size:13px;margin-bottom:6px;}"
+            ".verdict{display:inline-block;padding:3px 12px;border-radius:6px;color:#fff;"
+            "font-weight:600;background:%(accent)s;}"
+            "table{border-collapse:collapse;width:100%%;font-size:13px;margin-top:12px;}"
+            "th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top;"
+            "word-break:break-all;}"
+            "th{background:#f4f5f7;font-weight:600;}"
+            "tr.ok td{background:#ebfbee;}tr.fail td{background:#fff0f0;}"
+            "td:first-child,th:first-child{text-align:center;width:36px;}"
+            ".foot{color:#aaa;font-size:11px;margin-top:16px;}"
+            "</style></head><body>"
+            "<h1>%(title)s</h1>"
+            "<div class='meta'>%(timelbl)s: %(started)s</div>"
+            "%(verdict_html)s"
+            "<table><thead><tr>%(th)s</tr></thead><tbody>%(rows)s</tbody></table>"
+            "<div class='foot'>CommTool · %(title)s</div></body></html>"
+        ) % {
+            "title": _h.escape(t("seq_report_title")),
+            "timelbl": _h.escape(t("seq_report_time")),
+            "started": _h.escape(started),
+            "verdict_html": ("<div><span class='verdict'>%s</span></div>" % _h.escape(summ_line))
+                            if summ_line else "",
+            "accent": "#2f9e44" if passed else "#e03131",
+            "th": th, "rows": "".join(trs),
+        }
+
+    def _build_report_csv(self, rows):
+        import csv, io
+        t = self.app._t
+        summ_line, _passed = self._report_summary_line()
+        header, body = self._report_table(rows)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([t("seq_report_title")])
+        w.writerow([t("seq_report_time"), getattr(self.app, "_seq_started_at", "") or ""])
+        if summ_line:
+            w.writerow([summ_line])
+        w.writerow([])
+        w.writerow([self._csv_safe(x) for x in header])
+        for b in body:
+            w.writerow([self._csv_safe(x) for x in b["cells"]])
+        return buf.getvalue()
+
+    @staticmethod
+    def _csv_safe(value):
+        """Excel 会把危险前缀的 CSV 单元格当作公式；前置单引号强制按文本打开。"""
+        if not isinstance(value, str):
+            return value
+        probe = value.lstrip()
+        if value and (value[0] in "=+-@\t\r\n" or (probe and probe[0] in "=+-@")):
+            return "'" + value
+        return value
+
+    @staticmethod
+    def _report_fmt(path, sel):
+        """决定导出格式 + 补扩展名：先看路径扩展名；扩展名不明时按对话框选中的过滤器(sel)决定
+        （部分平台/Qt 不会自动追加扩展名，避免选了 CSV 却写成 .html）。返回 (fmt, path)。"""
+        low = path.lower()
+        if low.endswith(".csv"):
+            return "csv", path
+        if low.endswith(".html") or low.endswith(".htm"):
+            return "html", path
+        if "csv" in (sel or "").lower():
+            return "csv", path + ".csv"
+        return "html", path + ".html"
+
+    def _on_export(self):
+        """导出上一次运行的测试报告（按保存对话框选的扩展名/过滤器出 HTML 或 CSV）。"""
+        steps = getattr(self.app, "_seq_steps", []) or []
+        results = getattr(self.app, "_seq_results", []) or []
+        summary = getattr(self.app, "_seq_summary", None)
+        if not steps or not results or not summary:
+            self.app.toast(self.app._t("seq_export_none"), error=True)
+            return
+        ts = (getattr(self.app, "_seq_started_at", "") or "").translate(str.maketrans("", "", "-: "))
+        # 默认名不预绑定 .html：切换到 CSV 过滤器时，某些平台不会替换已有扩展名。
+        # 留给 _report_fmt 根据过滤器补全，用户手动输入的扩展名仍优先。
+        default = "CommTool_seq_report_%s" % (ts or "report")
+        path, _sel = QFileDialog.getSaveFileName(self, self.app._t("seq_export"), default,
+                                                 "HTML (*.html);;CSV (*.csv)")
+        if not path:
+            return
+        try:
+            # 循环模式按轮次出表(_report_table 直接读 round_list)，逐步骤 rows 用不上，不白算
+            rows = [] if self._report_is_loop() else self._report_rows(steps, results)
+            fmt, path = self._report_fmt(path, _sel)
+            if fmt == "csv":
+                with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                    f.write(self._build_report_csv(rows))
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self._build_report_html(rows))
+        except Exception as e:
+            self.app.toast(self.app._t("seq_export_fail", e=e), error=True)
+            return
+        self.app.toast(self.app._t("seq_export_ok", path=path))
+
+    # ---------------- 步骤 导入 / 导出（JSON，便于分享/版本管理测试用例） ----------------
+    def _show_steps_menu(self):
+        menu = QMenu(self)
+        c = chrome_for(self.app._theme_id())
+        menu.setStyleSheet(
+            "QMenu { background: %s; color: %s; border: 1px solid %s; }"
+            " QMenu::item:selected { background: %s; color: #fff; }"
+            % (c["combo_dropdown_bg"], c["text"], c["separator"], c["accent"]))
+        menu.addAction(self.app._t("seq_steps_export")).triggered.connect(
+            lambda *_: self._export_steps())
+        menu.addAction(self.app._t("seq_steps_import")).triggered.connect(
+            lambda *_: self._import_steps())
+        menu.exec_(self.btn_steps.mapToGlobal(QPoint(0, self.btn_steps.height())))
+
+    def _export_steps(self):
+        import json
+        path, _sel = QFileDialog.getSaveFileName(self, self.app._t("seq_steps_export"),
+                                                 "CommTool_sequence.json", "JSON (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._all_steps(), f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.app.toast(self.app._t("seq_steps_export_fail", e=e), error=True)
+            return
+        self.app.toast(self.app._t("seq_steps_export_ok", path=path))
+
+    def _import_steps(self):
+        import json
+        if self.app._seq_running():                  # 运行中不改步骤（结构性变更会与在跑快照错位）
+            return
+        path, _sel = QFileDialog.getOpenFileName(self, self.app._t("seq_steps_import"),
+                                                 "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            import os
+            if os.path.getsize(path) > self._MAX_IMPORT_BYTES:
+                self.app.toast(self.app._t("seq_steps_import_large"), error=True)
+                return
+            with open(path, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except Exception as e:
+            self.app.toast(self.app._t("seq_steps_import_fail", e=e), error=True)
+            return
+        steps = self._validate_import_steps(data)
+        if steps is None:
+            self.app.toast(self.app._t("seq_steps_import_bad"), error=True)
+            return
+        # 覆盖当前所有步骤前确认（防误导入丢失现有用例）
+        if not self.app._confirm_dlg(self.app._t("seq_steps_import"),
+                                     self.app._t("seq_steps_import_confirm", n=len(steps)), danger=False):
+            return
+        self._apply_imported_steps(steps)
+        self.app.toast(self.app._t("seq_steps_imported", n=len(steps)))
+
+    def _validate_import_steps(self, data):
+        """校验并归一化导入数据。空列表会被 reload_rows 自动变成一个空步骤，
+        因此直接拒绝，避免「导入 0 步」与实际结果不一致。"""
+        if (not isinstance(data, list) or not data or len(data) > self._MAX_IMPORT_STEPS
+                or not all(isinstance(x, dict) for x in data)):
+            return None
+        out = []
+        for raw in data:
+            step = dict(raw)
+            # 严格校验已出现的字段；缺失字段仍由旧版兼容默认值补齐。
+            if any(k in step and not isinstance(step[k], bool)
+                   for k in ("on", "send_hex", "expect_hex")):
+                return None
+            if any(k in step and not isinstance(step[k], str)
+                   for k in ("name", "send", "expect")):
+                return None
+            if "on_timeout" in step and step["on_timeout"] not in ("stop", "continue"):
+                return None
+            int_ranges = {
+                "cs": (0, len(CHECKSUM_KEYS) - 1), "mode": (0, len(self._MODE_KEYS) - 1),
+                "timeout": (0, self._MAX_TIMER_MS), "delay": (0, self._MAX_TIMER_MS),
+                "retry": (0, self._MAX_RETRY),
+            }
+            for key, (lo, hi) in int_ranges.items():
+                if key not in step:
+                    continue
+                value = step[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+                    return None
+            retry = step.get("retry", 0)
+            if not 0 <= retry <= self._MAX_RETRY:
+                return None
+            step["retry"] = retry
+            out.append(step)
+        return out
+
+    def _apply_imported_steps(self, steps):
+        """覆盖当前步骤并清除已不对应的旧运行结果/汇总。"""
+        self.app._seq_rules = [dict(x) for x in steps]
+        self.app._seq_results = []
+        self.app._seq_summary = None
+        self.reload_rows()
+        self._commit()
+
     # ---------------- 语言 / 主题 ----------------
     def retranslate(self):
         self.setWindowTitle(self.app._t("seq_title"))
         self.btn_run.setText(self.app._t("seq_run"))
         self.btn_stop.setText(self.app._t("seq_stop"))
         self.btn_add.setText(self.app._t("seq_add"))
+        self.btn_steps.setText(self.app._t("seq_steps_menu"))
+        self.btn_export.setText(self.app._t("seq_export"))
+        self.lbl_loops.setText(self.app._t("seq_loops"))
+        self.ed_loops.setToolTip(self.app._t("seq_loops_tip"))
+        self.cb_stopfail.setText(self.app._t("seq_stop_on_fail"))
         self.btn_help.setToolTip(self.app._t("seq_help_btn"))   # 按钮固定 "?"，悬停/点开看完整说明
         self.lbl_hint.setText(self.app._t("seq_hint"))
         for lb in self._hdr_labels:                 # 表头列名（HEX 列不翻译）
@@ -1959,6 +2354,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         for d in self._rows:                        # 下拉项/占位随语言刷新（保留选中项）
             d["send"].setPlaceholderText(self.app._t("seq_send_ph"))
             d["exp"].setPlaceholderText(self.app._t("seq_expect_ph"))
+            d["retry"].setToolTip(self.app._t("seq_retry_tip"))
             for i, k in enumerate(CHECKSUM_KEYS):
                 if i < d["cs"].count():
                     d["cs"].setItemText(i, self.app._t(k))

@@ -975,6 +975,335 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._send_text, w._is_open, w._ar_on = o_send, o_open, o_ar_on
             w._mbm_on, w._mbm_rules = o_mbm_on, o_mbm_rules
 
+    def test_sequence_loop_runs_all_rounds(self):
+        """循环 N 轮：整条序列跑 N 遍，聚合汇总 loops/rounds/rounds_pass/累计步 正确，报告出按轮次表。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "GO", "expect": "", "delay": 0}], loops=3)
+            self._seq_pump(200)
+            self.assertFalse(w._seq_running())
+            s = w._seq_summary
+            self.assertEqual((s["loops"], s["rounds"], s["rounds_pass"]), (3, 3, 3))
+            self.assertEqual((s["ok"], s["total"]), (3, 3))    # 1 纯发送步 × 3 轮
+            self.assertTrue(s["pass"])
+            self.assertEqual(sends.count("GO"), 3)             # 每轮发一次
+            self.assertEqual(len(s["round_list"]), 3)
+            # 报告：循环时出按轮次表
+            from dialogs import SequenceDialog
+            dlg = SequenceDialog(w)
+            try:
+                self.assertTrue(dlg._report_is_loop())
+                html = dlg._build_report_html(dlg._report_rows(w._seq_steps, w._seq_results))
+                self.assertIn(w._t("seq_report_round"), html)
+                self.assertEqual(html.count("<tr"), 1 + 3)     # 表头 + 3 轮
+            finally:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_loop_stops_on_fail(self):
+        """失败即停：某轮失败 → 不再跑后续循环，只记录已跑的轮。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "NEVER", "mode": 0,
+                           "timeout": 30, "on_timeout": "stop", "delay": 0}],
+                         loops=5, stop_on_fail=True)
+            self._seq_pump(250)
+            self.assertFalse(w._seq_running())
+            s = w._seq_summary
+            self.assertEqual(s["loops"], 5)
+            self.assertEqual(s["rounds"], 1)          # 第一轮就失败 → 停，只跑了 1 轮
+            self.assertEqual(s["rounds_pass"], 0)
+            self.assertFalse(s["pass"])
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_loop_input_validation(self):
+        """循环次数非法(0/空)→ 纠正为 1 并 toast 提示，不静默；合法值不动也不提示。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules, o_toast = w._seq_rules, w.toast
+        toasts = []
+        w.toast = lambda msg, **k: toasts.append(msg)
+        dlg = None
+        try:
+            w._seq_rules = []
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            dlg.ed_loops.setText("0")
+            dlg._save_loop_cfg()
+            self.assertEqual(dlg.ed_loops.text(), "1")     # 非法 → 纠正为 1
+            self.assertTrue(toasts)                        # 且有提示
+            toasts.clear()
+            dlg.ed_loops.setText("5")
+            dlg._save_loop_cfg()
+            self.assertEqual(dlg.ed_loops.text(), "5")     # 合法值不动
+            self.assertFalse(toasts)                       # 合法不提示
+            # _on_run 也回写实际生效值：清空后点运行，框应显示 1（不留空白与真实 loops 不符）
+            dlg.ed_loops.setText("")
+            dlg._on_run()                                  # 空步骤/未连接会被 _seq_start 拒，但回写已先发生
+            self.assertEqual(dlg.ed_loops.text(), "1")
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w.toast, w._seq_rules = o_toast, o_rules
+
+    def test_sequence_loop_abort_builds_exportable_summary(self):
+        """回归(P1)：循环运行中停止/断连，已完成轮次要生成汇总(stopped=True)，让老化结果可导出。"""
+        w = _win()
+        o_summary, o_rounds = getattr(w, "_seq_summary", None), getattr(w, "_seq_rounds", [])
+        try:
+            w._seq_on = True
+            w._seq_steps = [{"on": True, "send": "GO", "expect": ""}]
+            w._seq_loops = 5
+            w._seq_t0 = 0.0
+            w._seq_idx = 0
+            w._seq_results = [{"status": "sent", "ms": 0, "detail": ""}]
+            w._seq_rounds = [{"round": 1, "ok": 1, "total": 1, "ms": 5, "pass": True},
+                             {"round": 2, "ok": 1, "total": 1, "ms": 5, "pass": True}]
+            w._seq_summary = None
+            w._seq_abort("seq_stopped")
+            s = w._seq_summary
+            self.assertIsNotNone(s)                        # 有汇总 → 导出按钮不被禁用
+            self.assertEqual((s["loops"], s["rounds"], s["rounds_pass"]), (5, 2, 2))
+            self.assertTrue(s["stopped"])
+            self.assertFalse(s["pass"])                    # 中止一律非 PASS
+        finally:
+            w._seq_on = False
+            w._seq_summary, w._seq_rounds = o_summary, o_rounds
+
+    def test_sequence_loop_summary_shows_planned_when_partial(self):
+        """回归(P2)：提前停止(失败即停/中途停)时汇总标出计划总轮数，避免"0/1"被误读；跑满不标。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        dlg = None
+        try:
+            dlg = SequenceDialog(w)
+            partial = {"loops": 5, "rounds": 1, "rounds_pass": 0, "ok": 0, "total": 1, "ms": 20}
+            txt = dlg._loop_summary_text(partial, w._t("seq_fail"))
+            self.assertIn(w._t("seq_rounds_partial", rp=0, rt=1, loops=5), txt)
+            full = {"loops": 3, "rounds": 3, "rounds_pass": 3, "ok": 6, "total": 6, "ms": 30}
+            txt2 = dlg._loop_summary_text(full, w._t("seq_pass"))
+            self.assertIn(w._t("seq_rounds_frac", rp=3, rt=3), txt2)
+            self.assertNotIn(w._t("seq_rounds_partial", rp=3, rt=3, loops=3), txt2)
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+
+    def test_sequence_loop_count_capped(self):
+        """回归(P2)：循环次数钳到上限 _SEQ_MAX_LOOPS，防无界内存/巨表。"""
+        import main_window
+        w = _win()
+        o_open, o_send = w._is_open, w._send_text
+        w._is_open = lambda: True
+        w._send_text = lambda raw, **k: True
+        try:
+            w._seq_start([{"on": True, "send": "GO", "expect": ""}], loops=99999999)
+            self.assertEqual(w._seq_loops, main_window._SEQ_MAX_LOOPS)
+        finally:
+            w._seq_stop()
+            w._is_open, w._send_text = o_open, o_send
+
+    def test_sequence_loop_config_keys_in_cfg(self):
+        """回归(P2)：循环参数键加入 _CFG_KEYS，会话配置导出/导入不丢。"""
+        from main_window import CommTool
+        self.assertIn("sequence_loops", CommTool._CFG_KEYS)
+        self.assertIn("sequence_stop_on_fail", CommTool._CFG_KEYS)
+
+    def test_sequence_step_retry_passes_on_second(self):
+        """步骤级重试：首次超时→重试，第2次收到匹配→通过，标记 attempt=2。
+        用手动触发超时(而非等真实计时器)避免墙钟竞态导致多触发一次。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "mode": 0,
+                           "timeout": 5000, "retry": 2, "delay": 40}])  # 重试间隔用于校验总耗时
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            w._seq_on_timeout()                   # 手动触发首次超时 → 进入重试
+            self._seq_pump(70)                    # 等 40ms 间隔后进入第2次尝试
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            self.assertEqual(w._seq_attempt, 2)
+            w.on_data_received(b"OK")             # 第2次收到匹配 → 通过
+            self._seq_pump(70)                    # 成功后仍有本步 delay，等待整体收尾
+            r = w._seq_results[0]
+            self.assertEqual(r["status"], "pass")
+            self.assertEqual(r.get("attempt"), 2)
+            self.assertGreaterEqual(r["ms"], 50)  # 含重试间隔；若只算第2次尝试会明显小于此值
+            self.assertTrue(w._seq_summary["pass"])
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_step_retry_exhausted_fails(self):
+        """重试用尽仍不匹配 → 该步失败(按超时动作走)，attempt 记为总尝试次数。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        w._send_text = lambda raw, **k: True
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "NEVER", "mode": 0,
+                           "timeout": 25, "retry": 1, "on_timeout": "stop", "delay": 0}])
+            self._seq_pump(220)                   # 首次+1重试都超时 → 失败
+            self.assertFalse(w._seq_running())
+            self.assertEqual(w._seq_results[0]["status"], "fail")
+            self.assertEqual(w._seq_results[0].get("attempt"), 2)   # 共尝试 2 次
+            self.assertFalse(w._seq_summary["pass"])
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_retry_quarantines_late_response(self):
+        """首次超时后的迟到响应不得命中第2次尝试；安静窗后才真正重发。"""
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 5000,
+                           "retry": 1, "delay": 0}])
+            w._seq_on_timeout()
+            self.assertEqual(w._seq_results[0]["status"], "retry")
+            w._seq_feed(b"OK")                    # 旧尝试迟到响应：只延长隔离窗
+            w._seq_retry(w._seq_gen, w._seq_idx, w._seq_attempt)  # 强制早到回调也不得重发
+            self.assertEqual(w._seq_results[0]["status"], "retry")
+            self._seq_pump(100)
+            self.assertEqual(w._seq_results[0]["status"], "waiting")
+            self.assertEqual(len(sends), 2)
+            w._seq_feed(b"OK")                    # 真正重发后的响应才能命中
+            self._seq_pump(20)
+            self.assertEqual(w._seq_results[0]["status"], "pass")
+            self.assertEqual(w._seq_results[0].get("attempt"), 2)
+        finally:
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_retry_quiet_wait_is_bounded(self):
+        """回归：重试静默窗有上限——对端持续 <50ms 刷数据也不会让该步永远卡在「↻ 重试」；
+        超过 _SEQ_RETRY_MAX_QUIET_MS 后照常重发。"""
+        import time as _t
+        import main_window
+        w = _win()
+        o_send, o_open = w._send_text, w._is_open
+        o_cap = main_window._SEQ_RETRY_MAX_QUIET_MS
+        sends = []
+        w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
+        w._is_open = lambda: True
+        main_window._SEQ_RETRY_MAX_QUIET_MS = 60      # 缩短上限便于测试
+        try:
+            w._seq_start([{"on": True, "send": "AT", "expect": "OK", "timeout": 5000,
+                           "retry": 1, "delay": 0}])
+            w._seq_on_timeout()                       # 首次超时 → 进入重试
+            self.assertEqual(w._seq_results[0]["status"], "retry")
+            # 持续刷迟到字节(每 <50ms 一次)本应无限延后静默窗；但有上限，最终仍重发
+            deadline = _t.monotonic() + 1.5
+            while w._seq_results[0]["status"] == "retry" and _t.monotonic() < deadline:
+                w._seq_feed(b"x")                     # 迟到字节：延长静默窗
+                self._seq_pump(15)
+            self.assertEqual(w._seq_results[0]["status"], "waiting")   # 上限到了 → 已重发
+            self.assertEqual(len(sends), 2)           # 首发 + 重发
+            self.assertEqual(w._seq_attempt, 2)
+        finally:
+            main_window._SEQ_RETRY_MAX_QUIET_MS = o_cap
+            w._seq_stop()
+            w._send_text, w._is_open = o_send, o_open
+
+    def test_sequence_abort_during_retry_marks_stopped(self):
+        """回归：重试延迟窗口(status=retry)被停止/断连 → 标记 stopped 且保留 attempt，
+        不会卡在「↻ 第N次…」。"""
+        w = _win()
+        o_summary, o_rounds = getattr(w, "_seq_summary", None), getattr(w, "_seq_rounds", [])
+        try:
+            w._seq_on = True
+            w._seq_steps = [{"on": True, "send": "AT", "expect": "OK"}]
+            w._seq_idx = 0
+            w._seq_step_total_t0 = 0.0
+            w._seq_rounds = []
+            w._seq_summary = None
+            w._seq_results = [{"status": "retry", "ms": 0, "detail": "",
+                               "detail_key": "seq_st_fail", "attempt": 2}]
+            w._seq_abort("seq_stopped")
+            r = w._seq_results[0]
+            self.assertEqual(r["status"], "stopped")   # 重试中被停 → 已停止
+            self.assertEqual(r.get("attempt"), 2)       # 保留尝试次数
+        finally:
+            w._seq_on = False
+            w._seq_summary, w._seq_rounds = o_summary, o_rounds
+
+    def test_sequence_steps_json_roundtrip(self):
+        """步骤导入/导出：真实 JSON 文件 → 文件选择/确认 → 应用，并清掉旧结果。"""
+        import json, tempfile
+        from unittest.mock import patch
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules = w._seq_rules
+        o_results = getattr(w, "_seq_results", [])
+        o_summary = getattr(w, "_seq_summary", None)
+        o_confirm = w._confirm_dlg
+        dlg = None
+        path = ""
+        try:
+            w._seq_rules = [{"on": True, "name": "握手", "send": "AT", "expect": "OK", "retry": 2,
+                             "mode": 0, "timeout": 500},
+                            {"on": True, "name": "读", "send": "01 03", "expect": "01 03",
+                             "send_hex": True, "expect_hex": True}]
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            data = json.loads(json.dumps(dlg._all_steps(), ensure_ascii=False))  # 导出再读回
+            with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8",
+                                             delete=False) as f:
+                json.dump(data, f, ensure_ascii=False)
+                path = f.name
+            w._seq_results = [{"status": "pass", "ms": 1, "detail": ""}]
+            w._seq_summary = {"ok": 1, "total": 1, "ms": 1, "pass": True}
+            w._confirm_dlg = lambda *a, **k: True
+            with patch("dialogs.QFileDialog.getOpenFileName", return_value=(path, "JSON (*.json)")):
+                dlg._import_steps()
+            got = dlg._all_steps()
+            self.assertEqual([s["name"] for s in got], ["握手", "读"])
+            self.assertEqual(got[0]["retry"], 2)
+            self.assertTrue(got[1]["send_hex"])
+            self.assertEqual(w._seq_results, [])
+            self.assertIsNone(w._seq_summary)
+            self.assertIsNone(dlg._validate_import_steps([]))
+            self.assertIsNone(dlg._validate_import_steps([{"retry": 1000}]))
+            self.assertIsNone(dlg._validate_import_steps([{}] * 501))
+            self.assertIsNone(dlg._validate_import_steps([{"on": "false"}]))
+            self.assertIsNone(dlg._validate_import_steps([{"send_hex": "false"}]))
+            self.assertIsNone(dlg._validate_import_steps([{"mode": 99}]))
+            dlg._rows[0]["to"].setText(str(2 ** 40))
+            dlg._rows[0]["dl"].setText(str(2 ** 40))
+            clamped = dlg._row_to_step(dlg._rows[0])
+            self.assertLessEqual(clamped["timeout"], dlg._MAX_TIMER_MS)
+            self.assertLessEqual(clamped["delay"], dlg._MAX_TIMER_MS)
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_rules = o_rules
+            w._seq_results, w._seq_summary = o_results, o_summary
+            w._confirm_dlg = o_confirm
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            w.settings.setValue("sequence_rules", json.dumps(o_rules, ensure_ascii=False))
+
     def test_sequence_needs_connection(self):
         """未连接时运行序列被拒（不进入运行态）。"""
         w = _win()
@@ -1234,6 +1563,73 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                 dlg._save_timer.stop()
                 dlg.deleteLater()
             w._seq_rules, w._seq_results, w._seq_summary = o_rules, o_results, o_summary
+
+    def test_sequence_dialog_export_report(self):
+        """导出测试报告：跑完(有结果)才可导出；HTML 含标题/步骤/结果/HEX 标记/失败底色，CSV 含表头与各步。"""
+        from dialogs import SequenceDialog
+        w = _win()
+        o_rules = w._seq_rules
+        o_steps = getattr(w, "_seq_steps", [])
+        o_results = getattr(w, "_seq_results", [])
+        o_summary = getattr(w, "_seq_summary", None)
+        o_started_at = getattr(w, "_seq_started_at", "")
+        dlg = None
+        try:
+            w._seq_rules = []
+            dlg = SequenceDialog(w)
+            dlg.reload_rows()
+            w._seq_results = []
+            dlg.update_results()
+            self.assertFalse(dlg.btn_export.isEnabled())     # 无结果 → 不可导出
+            # 伪造一次运行快照 + 结果 + 汇总
+            w._seq_steps = [{"on": True, "name": "握手", "send": "AT", "expect": "OK", "mode": 0,
+                             "cs": 5, "timeout": 1000},
+                            {"on": True, "name": "读值", "send": "01 03", "expect": "01 03",
+                             "mode": 2, "send_hex": True, "expect_hex": True, "timeout": 500}]
+            w._seq_results = [{"status": "pass", "ms": 12, "detail": ""},
+                              {"status": "fail", "ms": 500, "detail": "超时",
+                               "detail_key": "seq_st_fail"}]
+            w._seq_summary = None
+            dlg.update_results()
+            self.assertFalse(dlg.btn_export.isEnabled())      # 停止/断连的部分结果无汇总 → 不可导出
+            w._seq_summary = {"ok": 1, "total": 2, "ms": 520, "pass": False}
+            w._seq_started_at = "2026-07-04 21:15:30"
+            dlg.update_results()
+            self.assertTrue(dlg.btn_export.isEnabled())       # 有结果 → 可导出
+            rows = dlg._report_rows(w._seq_steps, w._seq_results)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[1]["status"], w._t("seq_report_fail"))
+            self.assertEqual(rows[1]["detail"], w._t("seq_st_fail"))
+            html = dlg._build_report_html(rows)
+            self.assertIn(w._t("seq_report_title"), html)
+            self.assertIn("握手", html)
+            self.assertIn("(HEX)", html)                      # HEX 步骤标注
+            self.assertIn('tr class="fail"', html)            # 失败步骤底色
+            self.assertIn("2026-07-04 21:15:30", html)        # 测试时间
+            csv = dlg._build_report_csv(rows)
+            self.assertIn(w._t("seq_report_time"), csv)
+            self.assertIn("握手", csv)
+            self.assertIn(w._t("seq_col_result"), csv)        # 表头
+            self.assertEqual(dlg._csv_safe("=2+2"), "'=2+2")
+            self.assertEqual(dlg._csv_safe("  @cmd"), "'  @cmd")
+            self.assertEqual(dlg._csv_safe("\tcmd"), "'\tcmd")
+            self.assertEqual(dlg._csv_safe("normal"), "normal")
+            # 格式判定：扩展名优先；无扩展名时按选中过滤器补扩展名（跨平台防错）
+            self.assertEqual(dlg._report_fmt("a.csv", "HTML (*.html)"), ("csv", "a.csv"))
+            self.assertEqual(dlg._report_fmt("a.html", "CSV (*.csv)"), ("html", "a.html"))
+            self.assertEqual(dlg._report_fmt("rep", "CSV (*.csv)"), ("csv", "rep.csv"))
+            self.assertEqual(dlg._report_fmt("rep", "HTML (*.html)"), ("html", "rep.html"))
+            # 无汇总数据不当作通过（独立安全默认）
+            w._seq_summary = None
+            self.assertEqual(dlg._report_summary_line(), ("", False))
+            self.assertNotIn("class='verdict'", dlg._build_report_html(rows))
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._seq_rules, w._seq_steps = o_rules, o_steps
+            w._seq_results, w._seq_summary = o_results, o_summary
+            w._seq_started_at = o_started_at
 
     def test_sequence_dialog_locks_editing_while_running(self):
         """回归(P2)：运行中只锁「结构性改动」(增行/删行)防结果按索引错位；步骤字段/勾选框不锁

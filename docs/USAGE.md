@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.7
+
+This release makes the **Automated Test Sequence** production-ready — loop/aging runs, per-step retries, exportable reports, and reusable test cases:
+
+- **Test report export (HTML / CSV)** — after a run, **Export Report** → HTML (pass/fail row shading, verdict summary, test time — archive or email it) or CSV (opens in Excel, formula-injection safe); loop runs produce a per-round table, single runs a per-step table; export is only available once a run finishes with a summary (partial results from a stop / disconnect aren't exported).
+- **Loop / aging runs** — a **Loops** count + **Stop on fail** in the top bar let a device self-check N rounds for aging / reliability; while running it shows round R/N · step i/n, and the summary gives "passed rounds R/N + cumulative steps" (flagging "of M planned" on an early stop); a mid-run stop / disconnect still summarizes the rounds done, and the result can be exported.
+- **Per-step retry** — each step can set a **Retry** count (0 = none): on failure (timeout / send error) it waits out the step's delay plus a short line-silence window, then resends; any passing attempt counts as pass, marked "(try N)"; a late reply from the previous attempt won't taint the next.
+- **Step import / export (JSON)** — the **Steps ▾** menu exports / imports the whole sequence as JSON for sharing and version-controlling test cases; import is strictly validated (step count, field types & ranges, file size) with a confirm before replacing current steps. No new dependencies.
+
+---
+
 ## What's New in v1.2.6
 
 **Automated Test Sequence** — a new **Function menu → Automated Sequence** that runs a list of "send → wait for a matching reply" steps in order, judging each **Pass / Fail** and giving a summary at the end. Great for factory tests, device self-checks, batch acceptance, and protocol bring-up — anything repetitive:
@@ -592,7 +603,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.6`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.7`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

@@ -46,6 +46,13 @@ from updater import UpdateChecker
 PROTO_SERIAL = "Serial"
 CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
 
+# 自动化序列循环次数上限：防止用户填百万/无穷导致 _seq_rounds 无界增长 + 导出表异常庞大。
+_SEQ_MAX_LOOPS = 100000
+_SEQ_MAX_RETRIES = 999       # 引擎端也必须限制，防止 JSON/旧配置绕过 UI validator
+_SEQ_QTIMER_MAX_MS = 0x7FFFFFFF
+_SEQ_RETRY_GUARD_MS = 50     # 重试前要求连续安静，迟到字节会重新起算该窗口
+_SEQ_RETRY_MAX_QUIET_MS = 2000  # 静默窗上限：对端持续 <50ms 刷数据也不致无限延后重发，超此照常重发
+
 
 def _ar_crc_impl(data, width=16, poly=0x1021, init=0x0000,
                  refin=False, refout=False, xorout=0x0000, byteorder="big"):
@@ -299,13 +306,23 @@ class CommTool(QMainWindow):
         self._seq_on = False          # 是否正在运行
         self._seq_steps = []          # 本次运行的步骤快照
         self._seq_idx = 0             # 当前步
+        self._seq_attempt = 1         # 当前步第几次尝试（含首次；步骤级重试用）
         self._seq_buf = b""           # 当前步累积的回包字节（跨块匹配）
         self._seq_results = []        # 每步结果 {status,ms,detail}
-        self._seq_summary = None      # 运行结束汇总 {ok,total,ms,pass}
+        self._seq_summary = None      # 运行结束汇总 {ok,total,ms,pass,loops,rounds,rounds_pass,round_list}
         self._seq_gen = 0             # 代际：start/stop 时 +1，作废在途的延时/超时续跑
         self._seq_dlg = None
+        self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
+        self._seq_loops = 1           # 循环次数（整条序列跑几轮）
+        self._seq_loop_i = 0          # 当前第几轮（0 基）
+        self._seq_stop_on_fail = False  # 某轮失败即停止后续循环
+        self._seq_rounds = []         # 每轮汇总 [{round,ok,total,ms,pass}]（供循环汇总/报告）
+        self._seq_round_t0 = 0.0      # 当前轮起始 monotonic
         self._seq_t0 = 0.0
-        self._seq_step_t0 = 0.0
+        self._seq_step_total_t0 = 0.0  # 当前步骤总起点（含所有失败尝试 + 重试间隔，用于耗时统计）
+        self._seq_retry_not_before = 0.0
+        self._seq_retry_quiet_until = 0.0
+        self._seq_retry_quiet_deadline = 0.0   # 静默窗最迟等到此刻，防对端不停刷数据卡死重试
         self._seq_waiting_mbm = False  # 启动时先等已有 Modbus 在途请求完成/超时隔离结束
         self._seq_wait_mbm_variant = ""
         self._seq_wait_mbm_until = 0.0
@@ -3402,6 +3419,7 @@ class CommTool(QMainWindow):
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
         self._seq_wait_mbm_until = 0.0
+        self._seq_round_t0 = time.monotonic()   # Modbus 隔离结束、真正开跑：本轮计时从此刻起（不含隔离等待）
         self._seq_run_from(0)
 
     def _seq_resume_peer_engines(self):
@@ -3422,8 +3440,9 @@ class CommTool(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
-    def _seq_start(self, steps):
-        """开始运行一段序列（steps=步骤 dict 列表）。需已连接；运行期由 on_data_received 抑制
+    def _seq_start(self, steps, loops=1, stop_on_fail=False):
+        """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
+        stop_on_fail=某轮失败即停后续循环。需已连接；运行期由 on_data_received 抑制
         自动应答/Modbus 主机（三者共用收流，序列是主动驱动方，结束自动恢复、不改它们开关）。"""
         if self._seq_on:
             return
@@ -3439,30 +3458,42 @@ class CommTool(QMainWindow):
         self._seq_gen += 1
         self._seq_pause_peer_engines()
         self._seq_summary = None
+        self._seq_loops = max(1, min(self._ar_to_int(loops), _SEQ_MAX_LOOPS))   # 钳上限，防无界内存/巨表
+        self._seq_loop_i = 0
+        self._seq_stop_on_fail = bool(stop_on_fail)
+        self._seq_rounds = []
         self._seq_t0 = time.monotonic()
+        self._seq_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 墙钟起始时间，供导出报告用
+        self.toast(self._t("seq_running_toast"))
+        self._seq_begin_round()
+
+    def _seq_begin_round(self):
+        """开始新一轮：重置本轮每步结果，从第 0 步跑起（首轮若在等 Modbus 在途则由释放检查触发）。"""
         self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
                              for s in self._seq_steps]
         self._seq_notify()
-        self.toast(self._t("seq_running_toast"))
-        if not self._seq_waiting_mbm:
+        if not self._seq_waiting_mbm:            # 本轮计时从"真正开跑"起；等 Modbus 释放的那段不计入本轮
+            self._seq_round_t0 = time.monotonic()
             self._seq_run_from(0)
 
     def _seq_run_from(self, i):
-        """从第 i 步起找下一个启用步骤执行；没有更多 → 完成(通过)。"""
+        """从第 i 步起找下一个启用步骤执行；没有更多 → 本轮完成(按各步结果判通过)。"""
         n = len(self._seq_steps)
         while i < n and not self._seq_steps[i].get("on", True):
             i += 1
         if i >= n:
-            self._seq_finish(True)
+            self._seq_round_done()
             return
         self._seq_idx = i
+        self._seq_attempt = 1          # 进入新步：尝试计数复位（重试不经此，故计数在失败时递增）
+        self._seq_step_total_t0 = time.monotonic()
         self._seq_do_step(i)
 
     def _seq_do_step(self, i):
-        """执行第 i 步：发送(有内容才发) → 有期望则开超时等回包、无期望则延时进下一步。"""
+        """执行第 i 步：发送(有内容才发) → 有期望则开超时等回包、无期望则延时进下一步。
+        重试会重入本方法但不重置总起点 _seq_step_total_t0（在 _seq_run_from 设，故耗时含所有尝试）。"""
         step = self._seq_steps[i]
         self._seq_buf = b""
-        self._seq_step_t0 = time.monotonic()
         send = str(step.get("send", "") or "")
         expect = str(step.get("expect", "") or "").strip()
         if not send.strip() and not expect:              # 发送和期望都空 → 跳过（什么都不做，不误显"已发送"）
@@ -3475,54 +3506,96 @@ class CommTool(QMainWindow):
                                      checksum=self._ar_to_int(step.get("cs", 0)))
             except Exception:                            # _send_text 抛异常也当失败，别让序列卡死在"等回包"
                 ok = False
-            if not ok:                                   # 发送失败（HEX 非法/未连接/异常）→ 判失败
-                self._seq_set_result(i, "fail", 0, self._t("seq_st_send_fail"))
-                self._seq_after_fail(step)
+            if not ok:                                   # 发送失败（HEX 非法/未连接/异常）→ 按重试策略处理
+                self._seq_step_failed("seq_st_send_fail")
                 return
         if not expect:                                   # 纯发送步骤：不等回包，延时后下一步
-            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
-            self._seq_set_result(i, "sent", ms, "")
+            ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
+            self._seq_set_result(i, "sent", ms, "", "", self._seq_attempt)
             self._seq_schedule_next(step)
             return
-        self._seq_set_result(i, "waiting", 0, "")        # 等回包：开超时计时
+        self._seq_set_result(i, "waiting", 0, "", "", self._seq_attempt)   # 等回包：开超时计时
         self._seq_timer.stop()
-        self._seq_timer.start(max(1, self._ar_to_int(step.get("timeout", 1000))))
+        timeout = min(_SEQ_QTIMER_MAX_MS, max(1, self._ar_to_int(step.get("timeout", 1000))))
+        self._seq_timer.start(timeout)
 
     def _seq_feed(self, data):
         """收到数据（on_data_received 在序列运行时调）：当前步在等回包则累积 + 匹配，命中→通过。"""
         if not self._seq_on:
             return
         i = self._seq_idx
-        if not (0 <= i < len(self._seq_results)) or self._seq_results[i].get("status") != "waiting":
+        if not (0 <= i < len(self._seq_results)):
+            return
+        status = self._seq_results[i].get("status")
+        if status == "retry":
+            # 上次尝试的迟到响应不参与新尝试匹配；每个迟到数据块都重置安静窗。
+            self._seq_retry_quiet_until = time.monotonic() + _SEQ_RETRY_GUARD_MS / 1000.0
+            return
+        if status != "waiting":
             return
         self._seq_buf += bytes(data)
         if self._seq_step_match(self._seq_steps[i], self._seq_buf):
             self._seq_timer.stop()
-            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
-            self._seq_set_result(i, "pass", ms, "")
+            ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
+            self._seq_set_result(i, "pass", ms, "", "", self._seq_attempt)
             self._seq_schedule_next(self._seq_steps[i])
 
     def _seq_on_timeout(self):
-        """当前步等回包超时：判失败，按「超时动作」停止或继续。"""
+        """当前步等回包超时：按重试策略处理（还有重试则重发，否则判失败按超时动作走）。"""
         if not self._seq_on:
             return
         i = self._seq_idx
         if not (0 <= i < len(self._seq_results)) or self._seq_results[i].get("status") != "waiting":
             return
-        ms = int((time.monotonic() - self._seq_step_t0) * 1000)
-        self._seq_set_result(i, "fail", ms, self._t("seq_st_fail"))
-        self._seq_after_fail(self._seq_steps[i])
+        self._seq_step_failed("seq_st_fail")
+
+    def _seq_step_failed(self, detail_key):
+        """当前步失败（发送失败 / 等回包超时）：还有重试次数则等间隔后重发本步；用尽则判失败按超时动作走。"""
+        i = self._seq_idx
+        step = self._seq_steps[i]
+        k = min(_SEQ_MAX_RETRIES, max(0, self._ar_to_int(step.get("retry", 0))))
+        ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
+        if self._seq_attempt <= k:
+            self._seq_attempt += 1
+            self._seq_set_result(i, "retry", ms, "", detail_key, self._seq_attempt)   # 显示"重试中"
+            delay = min(_SEQ_QTIMER_MAX_MS, max(0, self._ar_to_int(step.get("delay", 0))))
+            gen = self._seq_gen
+            now = time.monotonic()
+            self._seq_retry_not_before = now + delay / 1000.0
+            self._seq_retry_quiet_until = now + _SEQ_RETRY_GUARD_MS / 1000.0
+            self._seq_retry_quiet_deadline = self._seq_retry_not_before + _SEQ_RETRY_MAX_QUIET_MS / 1000.0
+            attempt = self._seq_attempt
+            QTimer.singleShot(max(delay, _SEQ_RETRY_GUARD_MS),
+                              lambda: self._seq_retry(gen, i, attempt))
+            return
+        self._seq_set_result(i, "fail", ms, self._t(detail_key), detail_key, self._seq_attempt)
+        self._seq_after_fail(step)
+
+    def _seq_retry(self, gen, i, attempt):
+        """隔离结束后重发本步；代际/步骤/尝试号/状态任一变化都作废回调。"""
+        if not (self._seq_on and gen == self._seq_gen and i == self._seq_idx
+                and attempt == self._seq_attempt and 0 <= i < len(self._seq_results)
+                and self._seq_results[i].get("status") == "retry"):
+            return
+        # 静默窗有上限：对端持续刷数据把 quiet_until 一直往后推时，用 deadline 兜底，避免永远卡在重试
+        quiet = min(self._seq_retry_quiet_until, self._seq_retry_quiet_deadline)
+        remain = max(self._seq_retry_not_before, quiet) - time.monotonic()
+        if remain > 0:
+            delay = min(_SEQ_QTIMER_MAX_MS, max(1, int(remain * 1000) + 1))
+            QTimer.singleShot(delay, lambda: self._seq_retry(gen, i, attempt))
+            return
+        self._seq_do_step(i)
 
     def _seq_after_fail(self, step):
-        """一步失败后：on_timeout=continue → 继续下一步；否则整条序列结束(失败)。"""
+        """一步失败后：on_timeout=continue → 继续下一步；否则本轮结束(失败)。"""
         if str(step.get("on_timeout", "stop")) == "continue":
             self._seq_schedule_next(step)
         else:
-            self._seq_finish(False)
+            self._seq_round_done()
 
     def _seq_schedule_next(self, step):
         """步间延时后进下一步（用代际作废停止/重启后残留的续跑）。"""
-        delay = max(0, self._ar_to_int(step.get("delay", 0)))
+        delay = min(_SEQ_QTIMER_MAX_MS, max(0, self._ar_to_int(step.get("delay", 0))))
         nxt = self._seq_idx + 1
         gen = self._seq_gen
         QTimer.singleShot(delay, lambda: self._seq_continue(gen, nxt))
@@ -3531,12 +3604,8 @@ class CommTool(QMainWindow):
         if self._seq_on and gen == self._seq_gen:
             self._seq_run_from(nxt)
 
-    def _seq_finish(self, ok):
-        """整条序列结束：出汇总 + toast。ok=True 全部按预期完成。"""
-        self._seq_on = False
-        self._seq_waiting_mbm = False
-        self._seq_wait_mbm_variant = ""
-        self._seq_wait_mbm_until = 0.0
+    def _seq_round_done(self):
+        """本轮所有启用步骤跑完（或失败停止）：记录本轮汇总，再决定跑下一轮还是整体收尾。"""
         self._seq_timer.stop()
         # 只统计「启用且真正执行」的步骤：空步骤(send与expect都空)标记 skip，既不是测试项，也不该
         # 被算作「通过」——从 total 与 passed 里都排除，汇总显示 通过 X/Y 才不会把跳过误显为通过。
@@ -3544,10 +3613,48 @@ class CommTool(QMainWindow):
                    if s.get("on", True) and i < len(self._seq_results)]
         total = sum(1 for r in enabled if r.get("status") != "skip")
         passed = sum(1 for r in enabled if r.get("status") in ("pass", "sent"))
-        # 失败后选择“继续”只影响流程，不改变最终结论：只有全部执行步骤都通过才算 PASS。
-        ok = bool(ok and passed == total)
+        # 本轮结论只看结果：全部执行步骤都通过才算本轮 PASS（失败停止时必有步骤未通过 → passed<total；
+        # on_timeout=continue 也是所有步跑完后按此判）。
+        round_ok = (passed == total)
+        round_ms = int((time.monotonic() - self._seq_round_t0) * 1000)
+        self._seq_rounds.append({"round": self._seq_loop_i + 1, "ok": passed,
+                                 "total": total, "ms": round_ms, "pass": round_ok})
+        self._seq_loop_i += 1
+        more = self._seq_loop_i < self._seq_loops and not (self._seq_stop_on_fail and not round_ok)
+        if more:
+            gen = self._seq_gen                          # 轮间让出事件循环再开下一轮（代际作废停止/断连残留）
+            QTimer.singleShot(0, lambda: self._seq_next_round(gen))
+        else:
+            self._seq_finalize()
+
+    def _seq_next_round(self, gen):
+        if self._seq_on and gen == self._seq_gen:
+            self._seq_begin_round()
+
+    def _seq_build_summary(self, stopped=False):
+        """按已完成轮次(_seq_rounds)聚合汇总。stopped=True（用户停止/断连）一律不判 PASS。
+        loops=计划轮数，rounds=实际跑过轮数（stop_on_fail / 中途停止可能 < loops）。"""
+        rounds = list(self._seq_rounds)
+        rounds_total = len(rounds)
+        rounds_pass = sum(1 for r in rounds if r.get("pass"))
+        steps_ok = sum(r.get("ok", 0) for r in rounds)
+        steps_total = sum(r.get("total", 0) for r in rounds)
+        # 整体 PASS：未被中止、至少跑过一轮、每一跑过的轮都通过（提前停止时 rounds_pass<rounds_total → 非 PASS）
+        ok = (not stopped) and rounds_total > 0 and rounds_pass == rounds_total
         ms = int((time.monotonic() - self._seq_t0) * 1000)
-        self._seq_summary = {"ok": passed, "total": total, "ms": ms, "pass": ok}
+        return {"ok": steps_ok, "total": steps_total, "ms": ms, "pass": ok,
+                "loops": self._seq_loops, "rounds": rounds_total,
+                "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped)}
+
+    def _seq_finalize(self):
+        """整条序列（全部循环）结束：出聚合汇总 + toast + 恢复对端引擎。"""
+        self._seq_on = False
+        self._seq_waiting_mbm = False
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_timer.stop()
+        self._seq_summary = self._seq_build_summary(stopped=False)
+        ok = bool(self._seq_summary.get("pass"))
         self._seq_notify()
         self._seq_resume_peer_engines()
         self.toast(self._t("seq_done_pass" if ok else "seq_done_fail"), error=not ok)
@@ -3558,8 +3665,8 @@ class CommTool(QMainWindow):
 
     def _seq_abort(self, toast_key):
         """中止运行中的序列（用户停止 / 连接断开）：**保留已跑结果供查看**（不清 _seq_results，
-        对话框据此仍显示各步通过/失败/超时）、当前"等回包"步标记为「已停止」（否则一直显示等回包）、
-        恢复对端引擎、出提示。代际 +1 作废在途续跑。"""
+        对话框据此仍显示各步通过/失败/超时）、当前"等回包/重试中"步标记为「已停止」（否则一直显示
+        等回包/↻第N次）、恢复对端引擎、出提示。代际 +1 作废在途续跑。"""
         if not self._seq_on:
             return
         self._seq_on = False
@@ -3569,9 +3676,13 @@ class CommTool(QMainWindow):
         self._seq_timer.stop()
         self._seq_gen += 1
         i = self._seq_idx
-        if 0 <= i < len(self._seq_results) and self._seq_results[i].get("status") == "waiting":
-            ms = int((time.monotonic() - self._seq_step_t0) * 1000)
-            self._seq_results[i] = {"status": "stopped", "ms": ms, "detail": ""}
+        if 0 <= i < len(self._seq_results) and self._seq_results[i].get("status") in ("waiting", "retry"):
+            ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
+            self._seq_results[i] = {"status": "stopped", "ms": ms, "detail": "",
+                                    "attempt": self._seq_results[i].get("attempt", 1)}
+        # 循环运行已完成 ≥1 轮就出汇总，让长时间老化的已跑结果可导出（否则中途停止=白跑，无法导出）。
+        if self._seq_rounds:
+            self._seq_summary = self._seq_build_summary(stopped=True)
         self._seq_resume_peer_engines()
         self._seq_notify()
         if toast_key:
@@ -3591,9 +3702,10 @@ class CommTool(QMainWindow):
                 text = ""
         return self._ar_hit_test(rule, buf, text)
 
-    def _seq_set_result(self, i, status, ms, detail):
+    def _seq_set_result(self, i, status, ms, detail, detail_key="", attempt=1):
         if 0 <= i < len(self._seq_results):
-            self._seq_results[i] = {"status": status, "ms": ms, "detail": detail}
+            self._seq_results[i] = {"status": status, "ms": ms, "detail": detail,
+                                    "detail_key": detail_key, "attempt": attempt}
         self._seq_notify()
 
     def _seq_notify(self):
@@ -4683,7 +4795,7 @@ class CommTool(QMainWindow):
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
         "modbus_master_split",
         # 自动化测试序列
-        "sequence_rules",
+        "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
         # 终端模式
         "terminal_mode", "terminal_echo", "terminal_enter",
         # 杂项

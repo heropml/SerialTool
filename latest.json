@@ -1,9 +1,9 @@
 {
-  "version": "1.2.6",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_Setup_v1.2.6.exe",
+  "version": "1.2.7",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_Setup_v1.2.7.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_v1.2.6.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.6/CommTool_v1.2.6.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_v1.2.7.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_v1.2.7.dmg"
   ],
-  "notes": "新增「自动化测试序列」（功能 → 自动化序列）：1) 每步可配 发送内容 / 校验 / 期望回包 / 匹配模式 / 超时 / 步间延时，按序执行、逐步判定通过 / 失败并出汇总；2) 运行时暂停自动应答与 Modbus 主机、结束自动恢复，断连中止并保留结果；3) 发送 / 期望框宽度可拖；4) 运行中「运行」变绿、锁定增删、带用法示例。无新依赖。"
+  "notes": "自动化测试序列升级到可上产线：1) 测试报告导出 —— 跑完可导 HTML（带通过/失败底色 + 汇总结论，可存档/发邮件）或 CSV（Excel 可开、防公式注入）；2) 循环运行 —— 整条序列跑 N 轮做老化/可靠性验证，可「失败即停」，中途停止/断连也为已跑轮出汇总；3) 步骤级重试 —— 每步可配重试次数，失败自动重发、迟到响应不污染下一次；4) 步骤导入/导出 JSON —— 测试用例可分享/版本管理，导入严格校验 + 二次确认。无新依赖。"
 }
