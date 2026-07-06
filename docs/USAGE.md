@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.8
+
+The **Frame Builder** (**Function → Frame Builder**) assembles a binary frame field by field, auto-computes length and checksum, and gives you the complete sendable HEX in real time:
+
+- **Field-based assembly** — endian-aware u8/i8/u16/u32/f32 integers and floats, ASCII, and raw HEX; one field per row, with the full HEX and byte count shown live and invalid input blocked from fill / send.
+- **Automatic length & checksum** — the length field counts the bytes after it; the checksum field covers everything before it (ADD8 / XOR8 / CRC8 / Modbus CRC16 / CCITT / CRC32, etc.).
+- **Built-in protocol templates** — Modbus read, Modbus write-single, and AT-command templates provide editable starting points; field definitions are auto-saved and refresh correctly across config import / switch.
+- **Drag to reorder & resizable columns** — drag a row's left handle to reorder fields (order = byte order); the Name / Type / Value columns are drag-resizable.
+- **Fill or send directly** — copy the result into the main send box or send it directly; Direct Send transmits the bytes unchanged, while filling the send box still respects the main window's visible newline / checksum settings. This release also fixes the receive view jumping away from a scrolled-up position when a selection exists and new data arrives. No new dependencies.
+
+---
+
 ## What's New in v1.2.7
 
 This release makes the **Automated Test Sequence** production-ready — loop/aging runs, per-step retries, exportable reports, and reusable test cases:
@@ -603,7 +615,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.7`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.8`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

@@ -1681,6 +1681,336 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._seq_stop()
             w._send_text, w._is_open = o_send, o_open
 
+    def test_recv_scroll_pinned_when_selected_and_scrolled_up(self):
+        """回归：数据区有选区且往上翻看时，来新数据不得把视图拽到选区/底部——恢复选区的 setTextCursor
+        会滚到选区，必须显式钉回原滚动位置；贴底时仍应跟随最新。"""
+        from PyQt5.QtCore import QEventLoop, QTimer
+        from PyQt5.QtGui import QTextCursor
+        w = _win()
+        te = w.txt_recv
+        o_groups, o_active = w._keyword_groups, w._keyword_active
+
+        def pump(ms):
+            loop = QEventLoop(); QTimer.singleShot(ms, loop.quit); loop.exec_()
+        try:
+            w.resize(900, 600); w.show(); pump(10)
+            w._keyword_groups = [{"name": "t", "rules": [
+                {"pattern": "ERR", "color": "#FFD60A", "mode": "bg", "scope": "both", "enabled": True}]}]
+            w._keyword_active = 0
+            te.clear()
+            for i in range(300):
+                w._append_block_data("line %d ERR\n" % i, "rx", True)
+            pump(200)
+            sb = te.verticalScrollBar()
+            self.assertGreater(sb.maximum(), 100)     # 确有可滚空间
+            c = QTextCursor(te.document())
+            c.setPosition(400); c.setPosition(460, QTextCursor.KeepAnchor)
+            te.setTextCursor(c)                       # 选中中间一段
+            sb.setValue(0)                            # 用户滚到顶
+            pump(10)
+            w._append_block_data("NEW ERR\n", "rx", True)   # 来新数据
+            pump(220)                                 # 含 150ms 高亮重扫
+            self.assertEqual(sb.value(), 0)           # 视图仍钉在顶（修前会跳到选区/底）
+            sb.setValue(sb.maximum())                 # 贴底则应跟随
+            pump(10)
+            w._append_block_data("BOTTOM ERR\n", "rx", True)
+            self.assertEqual(sb.value(), sb.maximum())
+        finally:
+            w._kw_timer.stop()
+            w._keyword_groups, w._keyword_active = o_groups, o_active
+            te.clear()
+            w.hide()
+
+    def test_binproto_pack_field(self):
+        """帧构造器打包：数值大小端 / 有符号 / ascii / hex / float / 溢出与坏 hex 报错。"""
+        import binproto
+        self.assertEqual(binproto.pack_field("0x03", "u8"), b"\x03")
+        self.assertEqual(binproto.pack_field("258", "u16be"), b"\x01\x02")
+        self.assertEqual(binproto.pack_field("258", "u16le"), b"\x02\x01")  # 大小端相反
+        self.assertEqual(binproto.pack_field("-1", "i8"), b"\xff")
+        self.assertEqual(binproto.pack_field("AT", "ascii"), b"AT")
+        self.assertEqual(binproto.pack_field("01 03", "hex"), b"\x01\x03")
+        self.assertEqual(binproto.pack_field("1.0", "f32le"), b"\x00\x00\x80\x3f")
+        with self.assertRaises(ValueError):
+            binproto.pack_field("999", "u8")        # u8 溢出
+        with self.assertRaises(ValueError):
+            binproto.pack_field("1e39", "f32le")    # f32 有限值溢出也统一成 ValueError
+        with self.assertRaises(ValueError):
+            binproto.pack_field("zz", "hex")        # 坏 hex
+
+    def test_binproto_build_frame(self):
+        """帧构造器拼帧：Modbus 读帧交叉核对 build_rtu_request；length 字段=其后字节数。"""
+        import binproto, modbus_master
+        from main_window import CommTool
+        modbus = [("num", "u8", 1), ("num", "u8", 3), ("num", "u16be", 0),
+                  ("num", "u16be", 1), ("checksum", 5, "")]
+        self.assertEqual(binproto.build_frame(modbus, CommTool.compute_checksum),
+                         modbus_master.build_rtu_request(1, 3, 0, 1))   # CRC 交叉核对
+        lenf = [("num", "u8", "0xAA"), ("length", "u8", ""), ("hex", "hex", "11 22 33")]
+        self.assertEqual(binproto.build_frame(lenf, CommTool.compute_checksum),
+                         b"\xAA\x03\x11\x22\x33")     # 长度字节=后续 3 字节
+        with self.assertRaisesRegex(ValueError, "preceding data"):
+            binproto.build_frame([("checksum", 5, "")], CommTool.compute_checksum)
+        with self.assertRaisesRegex(ValueError, "checksum algorithm"):   # typ=0(无校验) → 显式报错，不静默 0 字节
+            binproto.build_frame([("num", "u8", 1), ("checksum", 0, "")], CommTool.compute_checksum)
+        # kind/typ 必须配套，防导入的坏配置静默改变发送语义；长度仅支持 UI 暴露的两种编码。
+        for bad in ([('ascii', 'u8', '65')], [('num', 'ascii', '65')],
+                    [('hex', 'u8', 'AA')], [('length', 'f32le', '')]):
+            with self.subTest(fields=bad), self.assertRaises(ValueError):
+                binproto.build_frame(bad, CommTool.compute_checksum)
+
+    def test_frame_builder_dialog(self):
+        """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_send, o_toast, o_hex = w._send_text, w.toast, w.sw_tx_hex.isChecked()
+        o_nl, o_cs = w.sw_append_newline.isChecked(), w.cb_checksum.currentIndex()
+        o_txt = w.txt_send.toPlainText()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        sent = []
+        w._send_text = lambda raw, **k: (sent.append((raw, k)), True)[1]
+        dlg = None
+        try:
+            w.settings.remove("frame_builder_fields")
+            dlg = FrameBuilderDialog(w)
+            dlg.reload_rows()                    # 空 → 默认 Modbus 读模板
+            hexs, err = dlg._built_hex()
+            self.assertIsNone(err)
+            self.assertEqual(hexs, "01 03 00 00 00 01 84 0A")
+            w.sw_append_newline.setChecked(True)
+            w.cb_checksum.setCurrentIndex(3)
+            dlg._on_fill()
+            self.assertEqual(w.txt_send.toPlainText(), "01 03 00 00 00 01 84 0A")
+            self.assertTrue(w.sw_tx_hex.isChecked())   # 填入自动开 HEX 发送
+            self.assertTrue(w.sw_append_newline.isChecked())    # 不得篡改用户的全局发送设置
+            self.assertEqual(w.cb_checksum.currentIndex(), 3)
+            dlg._on_send()
+            self.assertEqual(sent, [("01 03 00 00 00 01 84 0A",
+                                     {"hex_mode": True, "newline": 0, "checksum": 0})])
+            notices = []
+            w._send_text = lambda *_a, **_k: False
+            w.toast = lambda *a, **k: notices.append((a, k))
+            dlg._on_send()
+            self.assertEqual(notices, [])             # _send_text 已报告具体失败原因，不再覆盖成通用提示
+            dlg._rows[0]["val"].setText("999")   # u8 溢出 → 有错误、发送/填入禁用
+            dlg._rebuild()
+            _h, e = dlg._built_hex()
+            self.assertIsNotNone(e)
+            self.assertFalse(dlg.btn_send.isEnabled())
+            self.assertIn("border", dlg._rows[0]["val"].styleSheet())
+            self.assertEqual(dlg._rows[1]["val"].styleSheet(), "")
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._send_text = o_send
+            w.toast = o_toast
+            w.sw_tx_hex.setChecked(o_hex)
+            w.sw_append_newline.setChecked(o_nl)
+            w.cb_checksum.setCurrentIndex(o_cs)
+            w.txt_send.setPlainText(o_txt)
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_reopen_keeps_saved_fields(self):
+        """回归：单实例对话框关闭/重开时，不得用构造时的旧快照覆盖刚保存的字段。"""
+        import json
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        dlg = None
+        try:
+            w.settings.remove("frame_builder_fields")
+            dlg = FrameBuilderDialog(w)
+            dlg._rows[0]["val"].setText("7")
+            dlg.reload_rows()                         # 模拟主窗再次打开单实例对话框
+            self.assertEqual(dlg._rows[0]["val"].text(), "7")
+            saved = json.loads(w.settings.value("frame_builder_fields", "[]"))
+            self.assertEqual(saved[0][2], "7")
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_external_config_discards_old_pending_edit(self):
+        """回归：导入/切换配置后，旧槽位的防抖草稿不得覆盖新配置。"""
+        import json
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        o_dlg = w._frame_builder_dlg
+        dlg = None
+        try:
+            old_cfg = [["num", "u8", "1", "old"]]
+            new_cfg = [["num", "u8", "9", "new"]]
+            w.settings.setValue("frame_builder_fields", json.dumps(old_cfg))
+            dlg = FrameBuilderDialog(w)
+            w._frame_builder_dlg = dlg
+            dlg._rows[0]["val"].setText("7")
+            self.assertTrue(dlg._save_timer.isActive())
+            w._save_settings()                        # 切槽前提交到旧 settings
+            self.assertFalse(dlg._save_timer.isActive())
+            self.assertEqual(json.loads(w.settings.value("frame_builder_fields"))[0][2], "7")
+
+            dlg._rows[0]["val"].setText("8")
+            w.settings.setValue("frame_builder_fields", json.dumps(new_cfg))
+            w._apply_loaded_settings()                # 导入/切槽后丢弃旧草稿、载入新配置
+            self.assertFalse(dlg._save_timer.isActive())
+            self.assertEqual(dlg._rows[0]["val"].text(), "9")
+            self.assertEqual(json.loads(w.settings.value("frame_builder_fields"))[0][2], "9")
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._frame_builder_dlg = o_dlg
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_load_numeric_zero_and_unknown_type(self):
+        """回归：①存成数值 0 的字段值要还原成 "0"（不能被 `x or ""` 吞成空串）；
+        ②未知/不支持的类型不得静默降级成 u8——原样保留、拼帧时报错标红（绝不改变发送字节）。"""
+        import json
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        dlg = None
+        try:
+            cfg = [["num", "u8", 0, "z"],          # 数值 0（JSON 数字，非字符串）
+                   ["num", "u64le", "1", "bad"]]   # u64le 不在类型表里
+            w.settings.setValue("frame_builder_fields", json.dumps(cfg))
+            dlg = FrameBuilderDialog(w)
+            dlg.reload_rows()
+            self.assertEqual(dlg._rows[0]["val"].text(), "0")              # 0 → "0"，非空
+            self.assertEqual(dlg._rows[1]["type"].currentData(), ("num", "u64le"))  # 未降级成 u8
+            _h, e = dlg._built_hex()
+            self.assertIsNotNone(e)                                        # 非静默：拼帧报错
+            self.assertEqual(dlg._error_row, 1)
+            self.assertFalse(dlg.btn_send.isEnabled())
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_template_apply_confirms(self):
+        """回归：套用协议模板会覆盖当前字段 → 先弹确认；取消则字段不动、下拉回到自定义。"""
+        from frame_builder_dialog import FrameBuilderDialog, _TEMPLATE_ORDER
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        o_confirm = w._confirm_dlg
+        dlg = None
+        try:
+            w.settings.remove("frame_builder_fields")
+            dlg = FrameBuilderDialog(w)                 # 默认 Modbus 读模板（5 字段）
+            before = dlg._all_fields()
+            idx_at = _TEMPLATE_ORDER.index("at")
+            w._confirm_dlg = lambda *a, **k: False      # 取消
+            dlg.cb_tmpl.setCurrentIndex(idx_at)
+            dlg._on_template(idx_at)
+            self.assertEqual(dlg._all_fields(), before)  # 字段不动
+            self.assertEqual(dlg.cb_tmpl.currentIndex(), 0)  # 下拉回自定义
+            w._confirm_dlg = lambda *a, **k: True        # 确认 → 套用 AT（2 字段）
+            dlg.cb_tmpl.setCurrentIndex(idx_at)
+            dlg._on_template(idx_at)
+            self.assertEqual([f[:2] for f in dlg._all_fields()],
+                             [("ascii", "ascii"), ("hex", "hex")])
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w._confirm_dlg = o_confirm
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_drag_reorder(self):
+        """字段行拖拽排序：拖第 0 行落到末尾 → _rows / HEX 顺序随之改变并落盘。"""
+        import json
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        dlg = None
+        try:
+            cfg = [["num", "u8", "0xAA", "a"], ["num", "u8", "0xBB", "b"],
+                   ["num", "u8", "0xCC", "c"]]
+            w.settings.setValue("frame_builder_fields", json.dumps(cfg))
+            dlg = FrameBuilderDialog(w)
+            self.assertEqual(dlg._built_hex()[0], "AA BB CC")
+            dlg._drag_frame = dlg._rows[0]["frame"]   # 模拟拖第 0 行
+            dlg._on_row_drop(10 ** 6)                  # 落点给超大 y → 插到末尾（不依赖控件几何）
+            self.assertEqual([r["val"].text() for r in dlg._rows], ["0xBB", "0xCC", "0xAA"])
+            self.assertEqual(dlg._built_hex()[0], "BB CC AA")
+            dlg._commit()
+            self.assertEqual(json.loads(w.settings.value("frame_builder_fields"))[2][2], "0xAA")
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_frame_builder_columns_draggable_and_persist(self):
+        """列宽拖拽：表头 + 每行都是 3 面板(名称/类型/值) splitter，拖动同步且列宽持久化。"""
+        import json
+        from frame_builder_dialog import FrameBuilderDialog
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        o_split = w.settings.value("frame_builder_split", "")
+        o_lang = w._lang
+        dlg = None
+        try:
+            w.settings.remove("frame_builder_fields")
+            dlg = FrameBuilderDialog(w)                   # 默认模板 → 有行
+            self.assertEqual(dlg._hdr_split.count(), 3)   # 名称 / 类型 / 值 三面板
+            row = dlg._rows[-1]
+            self.assertIn("split", row)
+            self.assertEqual(row["split"].count(), 3)
+            sizes = [s + 15 for s in dlg._hdr_split.sizes()]   # 模拟拖表头分隔条
+            dlg._hdr_split.setSizes(sizes)
+            dlg._sync_splits(dlg._hdr_split)
+            self.assertEqual(row["split"].sizes(), dlg._hdr_split.sizes())  # 同步到行
+            self.assertTrue(w.settings.value("frame_builder_split"))         # 已落盘
+            self.assertIn("frame_builder_split", w._CFG_KEYS)                # 随配置导入/导出
+
+            w.settings.setValue("frame_builder_split", "210,220,230")
+            dlg.reload_rows(discard_pending=True)                            # 模拟配置切换
+            self.assertEqual(dlg._split_sizes, [210, 220, 230])
+            QApplication.instance().processEvents()
+            QApplication.instance().processEvents()
+            self.assertEqual(dlg._rows[0]["split"].sizes(), dlg._hdr_split.sizes())
+
+            w._lang = "en"
+            dlg.retranslate()
+            self.assertEqual(dlg._rows[0]["grip"].toolTip(), "Drag to reorder")
+
+            w.settings.setValue("frame_builder_split", "999999999999999999999,1,1")
+            self.assertIsNone(dlg._load_split_sizes())                       # 不得传给 Qt C++ int 崩溃
+
+            oversized = [["num", "u8", "1", "x"]] * (dlg._MAX_FIELDS + 1)
+            w.settings.setValue("frame_builder_fields", json.dumps(oversized))
+            self.assertEqual(len(dlg._load_fields()), dlg._MAX_FIELDS)       # 海量行安全截断
+        finally:
+            if dlg is not None:
+                dlg._save_timer.stop()
+                dlg.deleteLater()
+            w.settings.setValue("frame_builder_fields", o_fields)
+            w.settings.setValue("frame_builder_split", o_split)
+            w._lang = o_lang
+
+    def test_frame_builder_delete_then_pump_no_crash(self):
+        """回归：对话框 deleteLater 后，构造期/滚动条 rangeChanged 排的 singleShot 仍会触发；
+        回调对已析构的 splitter 调 sizes()/setSizes() 须被 RuntimeError 守卫接住，不得崩溃。"""
+        from frame_builder_dialog import FrameBuilderDialog
+        from PyQt5.QtWidgets import QApplication
+        w = _win()
+        o_fields = w.settings.value("frame_builder_fields", "")
+        try:
+            dlg = FrameBuilderDialog(w)
+            dlg._save_timer.stop()
+            dlg.deleteLater()
+            del dlg
+            for _ in range(4):        # 触发所有挂起的 singleShot(0)（含 _update_header_scroll_margin 链）
+                QApplication.instance().processEvents()
+            self.assertTrue(True)     # 走到这里=没崩
+        finally:
+            w.settings.setValue("frame_builder_fields", o_fields)
+
     def test_profile_lock_does_not_deadlock_qsettings_sync(self):
         """回归（多窗口卡死根因）：配置槽位锁的文件名不能与 QSettings 内部写锁 <ini>.lock 撞名，
         否则同进程 settings.sync() 会与自己已持有的锁死锁——新配置窗口构造时(首次落盘迁移)

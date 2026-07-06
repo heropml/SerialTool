@@ -312,6 +312,7 @@ class CommTool(QMainWindow):
         self._seq_summary = None      # 运行结束汇总 {ok,total,ms,pass,loops,rounds,rounds_pass,round_list}
         self._seq_gen = 0             # 代际：start/stop 时 +1，作废在途的延时/超时续跑
         self._seq_dlg = None
+        self._frame_builder_dlg = None   # 帧构造器对话框（单实例）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -2785,6 +2786,10 @@ class CommTool(QMainWindow):
             self._ar_dlg.refresh_theme()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.refresh_theme()
+        if getattr(self, "_seq_dlg", None) is not None:
+            self._seq_dlg.refresh_theme()
+        if getattr(self, "_frame_builder_dlg", None) is not None:
+            self._frame_builder_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -2987,8 +2992,9 @@ class CommTool(QMainWindow):
         theme = self._theme()
         # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
-        # 滚动锁定：插入前先记住是否在底部；用独立游标插入，避免动可见光标/选区/视图
+        # 滚动锁定：插入前先记住是否在底部 + 当前滚动位置；用独立游标插入，避免动可见光标/选区/视图
         was_at_bottom = self._recv_at_bottom()
+        scroll_before = self.txt_recv.verticalScrollBar().value()   # 恢复选区时 setTextCursor 会滚到选区，需钉回
         # 记录用户可见选区(绝对偏移)：若选区端点落在文档末尾，末尾 insertText 会把该端点
         # (keepPositionOnInsert=False) 一起后移，导致选区"延伸"覆盖刚追加的新数据。插入后按原
         # 绝对偏移恢复，把选区钉死。无选区时跳过(光标在末尾跟随无所谓)，零开销。
@@ -3050,17 +3056,20 @@ class CommTool(QMainWindow):
                 self.txt_recv.document().markContentsDirty(
                     blk.position(), max(1, blk.length()))
 
-        # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，
-        # 钉在插入前的位置。setTextCursor 不会自动滚动视图，故放在 was_at_bottom 滚动之前。
+        # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，钉在插入前位置。
         if had_sel:
             tc = self.txt_recv.textCursor()
             tc.setPosition(sel_anchor)
             tc.setPosition(sel_pos, QTextCursor.KeepAnchor)
             self.txt_recv.setTextCursor(tc)
 
+        # 滚动定位：贴底则跟随到最新；否则钉回插入前的滚动位置——注意 setTextCursor 恢复选区会把视图
+        # 滚到选区处，若用户正往上翻看、且选区在下方，会被拽走(表现为"跳到最下边")，故这里显式钉回。
+        sb = self.txt_recv.verticalScrollBar()
         if was_at_bottom:
-            sb = self.txt_recv.verticalScrollBar()
             sb.setValue(sb.maximum())
+        else:
+            sb.setValue(scroll_before)
 
         self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
 
@@ -3439,6 +3448,25 @@ class CommTool(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def open_frame_builder(self):
+        """打开帧构造器对话框（单实例，复用并刷新主题/语言）。"""
+        if self._frame_builder_dlg is None:
+            from frame_builder_dialog import FrameBuilderDialog
+            self._frame_builder_dlg = FrameBuilderDialog(self)
+        dlg = self._frame_builder_dlg
+        dlg.reload_rows()
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _fb_fill_send(self, hexs):
+        """帧构造器「填入发送框」：把 HEX 填进主发送框并置 HEX 发送态。"""
+        self.sw_tx_hex.setChecked(True)
+        self.txt_send.setPlainText(hexs)
+        self.toast(self._t("fb_filled"))
 
     def _seq_start(self, steps, loops=1, stop_on_fail=False):
         """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
@@ -4796,6 +4824,8 @@ class CommTool(QMainWindow):
         "modbus_master_split",
         # 自动化测试序列
         "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
+        # 帧构造器
+        "frame_builder_fields", "frame_builder_split",
         # 终端模式
         "terminal_mode", "terminal_echo", "terminal_enter",
         # 杂项
@@ -4996,6 +5026,9 @@ class CommTool(QMainWindow):
             self._mbm_dlg.reload_config()
         if getattr(self, "_seq_dlg", None) is not None:
             self._seq_dlg.reload_rows()
+        if getattr(self, "_frame_builder_dlg", None) is not None:
+            # 配置已由导入/切换替换：丢弃旧槽位尚未落盘的草稿，禁止反写覆盖新配置。
+            self._frame_builder_dlg.reload_rows(discard_pending=True)
         # 波形图和帧解析：reload_cfg 内部清旧状态(曲线数据/规则行)再读 settings 重建，
         # 避免新配置和老缓冲数据/旧规则混在一起。
         if getattr(self, "_plot_dlg", None) is not None:
@@ -6359,6 +6392,10 @@ class CommTool(QMainWindow):
             self._ar_dlg.retranslate()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.retranslate()
+        if getattr(self, "_seq_dlg", None) is not None:
+            self._seq_dlg.retranslate()
+        if getattr(self, "_frame_builder_dlg", None) is not None:
+            self._frame_builder_dlg.retranslate()
         self.btn_mbm.setText(self._t("mbm_open"))
 
     # ----- 持久化 -----
@@ -6440,6 +6477,9 @@ class CommTool(QMainWindow):
 
     def _save_settings(self):
         try:
+            # 配置槽切换会在本函数返回后替换 self.settings；先让构造器把防抖中的编辑写回旧槽位。
+            if getattr(self, "_frame_builder_dlg", None) is not None:
+                self._frame_builder_dlg.commit_pending()
             s = self.settings
             s.setValue("geometry", self.saveGeometry())
             s.setValue("h_splitter", self.h_splitter.saveState())
@@ -6674,6 +6714,7 @@ class CommTool(QMainWindow):
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
         """)
+        menu.addAction(self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
         menu.addAction(self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_func.mapToGlobal(
@@ -7200,7 +7241,7 @@ class CommTool(QMainWindow):
         # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
-                     "_mbm_dlg", "_seq_dlg"):
+                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

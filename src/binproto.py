@@ -20,6 +20,13 @@ HEX_FMT = {
     "u32le": ("<I", 4), "u32be": (">I", 4), "i32le": ("<i", 4), "i32be": (">i", 4),
     "f32le": ("<f", 4), "f32be": (">f", 4),
 }
+
+
+class BuildFieldError(ValueError):
+    """帧构造失败，并携带出错字段的 0 基索引，供界面精确标红。"""
+    def __init__(self, field_index, cause):
+        self.field_index = field_index
+        super().__init__("field %d: %s" % (field_index + 1, cause))
 NUM_TYPES_TIP = " ".join(HEX_FMT.keys())            # 波形图只用数值类型
 # 帧解析表另支持 hexN / strN；数值类型后加 x = 十六进制显示（如 u8x → 0x69）
 ALL_TYPES_TIP = NUM_TYPES_TIP + " hexN strN  (数值后加 x=十六进制显示, 如 u8x)"
@@ -103,6 +110,89 @@ def parse_field_spec(text):
             raise ValueError(tok)
         specs.append((name or body, off, typ))
     return specs
+
+
+def _parse_build_int(s):
+    """构造侧数值解析：'0x1A'/'0X1A' 按十六进制，其余按十进制（负数、正负号均可）。"""
+    s = str(s).strip()
+    neg = s[:1] in "+-"
+    body = s[1:] if neg else s
+    if body[:2].lower() == "0x":
+        return int(s, 16)
+    return int(s, 10)
+
+
+def pack_field(value, typ):
+    """把 value 按 typ 打包成 bytes —— read_field 的镜像（帧构造器用）。
+    数值类型(HEX_FMT，如 u8/u16be/f32le) → struct.pack；'ascii' → ASCII 编码；'hex' → 解析 HEX 串。
+    非法输入 raise ValueError。"""
+    if typ in HEX_FMT:
+        fmt = HEX_FMT[typ][0]
+        try:
+            num = float(value) if typ.startswith("f") else _parse_build_int(value)
+            return struct.pack(fmt, num)
+        except (ValueError, OverflowError, struct.error) as e:
+            raise ValueError("%s: %s" % (typ, e))
+    if typ == "ascii":
+        try:
+            return str(value).encode("ascii")
+        except UnicodeEncodeError as e:
+            raise ValueError("ascii: %s" % e)
+    if typ == "hex":
+        return parse_hex_header(str(value))          # 复用：清空格/逗号后 bytes.fromhex，奇数/非法抛 ValueError
+    raise ValueError("unknown build type: %s" % typ)
+
+
+def build_frame(fields, checksum_fn):
+    """按字段列表拼一整帧 bytes（帧构造器用）。fields = [(kind, typ, value), ...]：
+      kind='num'/'ascii'/'hex' → 用 typ+value 经 pack_field 打包；
+      kind='length'            → typ 为宽度(数值类型 u8/u16be…)，值自动 = 其后所有字段字节数，按宽打包；
+      kind='checksum'          → typ 为算法下标(CHECKSUM_KEYS 的 index)，值自动 = checksum_fn(已拼字节, 下标)。
+    checksum_fn(data:bytes, algo_idx:int) -> bytes 注入（解耦，实参用 CommTool.compute_checksum）。
+    length 覆盖「其后全部字节」、checksum 覆盖「其前全部字节」（隐式范围，覆盖 Modbus CRC / NMEA XOR /
+    帧头+长度+载荷）。任一字段非法 raise ValueError。"""
+    sizes = []                                       # 先算每字段字节长，供 length 累加其后长度
+    for idx, (kind, typ, value) in enumerate(fields):
+        try:
+            if kind == "num":
+                if typ not in HEX_FMT:
+                    raise ValueError("numeric field requires numeric type: %s" % typ)
+                sizes.append(len(pack_field(value, typ)))
+            elif kind == "ascii":
+                if typ != "ascii":
+                    raise ValueError("ascii field requires ascii type: %s" % typ)
+                sizes.append(len(pack_field(value, typ)))
+            elif kind == "hex":
+                if typ != "hex":
+                    raise ValueError("hex field requires hex type: %s" % typ)
+                sizes.append(len(pack_field(value, typ)))
+            elif kind == "length":
+                if typ not in ("u8", "u16be"):
+                    raise ValueError("unsupported length width: %s" % typ)
+                sizes.append(HEX_FMT[typ][1])
+            elif kind == "checksum":
+                w = len(checksum_fn(b"\x00", int(typ)))   # 用非空数据探得该算法输出宽度
+                if w == 0:                                # typ=0(无校验)/非法下标 → 显式报错，不静默贡献 0 字节
+                    raise ValueError("invalid checksum algorithm: %s" % typ)
+                sizes.append(w)
+            else:
+                raise ValueError("unknown field kind: %s" % kind)
+        except Exception as e:
+            raise BuildFieldError(idx, e) from e
+    out = bytearray()
+    for idx, (kind, typ, value) in enumerate(fields):
+        try:
+            if kind in ("num", "ascii", "hex"):
+                out += pack_field(value, typ)
+            elif kind == "length":
+                out += pack_field(sum(sizes[idx + 1:]), typ)        # 其后字节数，按宽度编码
+            elif kind == "checksum":
+                if not out:
+                    raise ValueError("checksum requires preceding data")
+                out += checksum_fn(bytes(out), int(typ))            # 其前全部字节的校验
+        except Exception as e:
+            raise BuildFieldError(idx, e) from e
+    return bytes(out)
 
 
 def iter_frames(buf, header):

@@ -143,7 +143,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.2.7`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.2.8`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -251,7 +251,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.2.7")
+│   └── version.py          版本号单点真源 (__version__ = "1.2.8")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -340,7 +340,7 @@ scripts\build_onefile.bat
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name CommTool_onefile_v1.2.7 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.2.8 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -373,7 +373,7 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.2.7"
+__version__ = "1.2.8"
 ```
 然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
@@ -561,6 +561,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v36 (v1.2.5)**: **多窗口（独立配置）**。可同时开多个独立窗口、各调各的设备、互不干扰。①**新建窗口**：「帮助 → 新建窗口」`subprocess.Popen` 起新进程（冻结版起 exe / 源码起 python+main.py）；标题 / 任务栏 / 托盘带 `(2)`/`(3)` 后缀。②**配置隔离**：`_settings_file(profile)` 主=`settings.ini`（含旧路径兼容）、其余=`settings-<N>.ini`；启动时 `main._acquire_profile()` 用 `QLockFile` 挑第一个空闲槽位（主/2..8；开满 8 个则提示"已达上限"、不再新建，不用 PID 建菜单管不到的孤儿配置）并持锁到退出——双击开多个 / 新建窗口都自动分到不同配置，**退出不再互相覆盖**（解决"开两个窗口配置冲突"）；槽位释放后可被下个窗口复用。③**各自独立**：连接 / 收发 / 自动应答 / Modbus / 终端等状态本就挂在各自进程，天然隔离（同一串口仍只能被一个窗口打开）。④**多显示器兜底** `_ensure_on_screen`：首次显示后窗口若不在任何屏幕内（旧位置落到已断开的屏）→ 搬回主屏，避免"进程在、窗口看不见"；新窗口无保存位置时按 profile 序号层叠偏移防重叠。⑤更新临时包多窗口加固：`cleanup_temp_installers` 跳过近 10 分钟改动的文件、下载文件名加 PID，避免多窗口互删/同写。⑥**打开配置（切换）/ 删除配置**：「帮助 → 打开配置」子菜单列已存配置，点空闲的 `_switch_profile` 就地把当前窗口切到该配置（抢锁 → 存当前 + 断连 → 换 settings/标题 → `_apply_loaded_settings` 重载 → 保窗口几何；被别窗口用的 / 当前窗口的禁用）；「删除配置」`_delete_profile` 删 2..8 空闲配置（`QLockFile` 独占确认无人用 + 二次确认、确认框默认焦点「取消」防误删）；`--profile=<N>` 命令行 + `_acquire_profile(preferred=)` 支持指定槽位。⑦**关键修复**：① 开着系统代理时 Qt socket 被套 HTTP 代理致本机/局域网 TCP 连不上 → `main` 全局 `QNetworkProxy.setApplicationProxy(NoProxy)` 一律直连（TCP/UDP 全实测通）；② 状态栏 `showMessage` 提示与 RX/TX 统计文字重叠 → 状态栏底色 `transparent`→不透明 `window_bg` 擦底；③ `QLockFile` 与 `QSettings` 撞锁自死锁致多窗口开第二个卡住只剩进程没界面 / 关窗卡死 → 槽位锁后缀改 `.mwlock`（与 QSettings 内部 `.lock` 区分）；④ 切换配置时旧连接残留 / 缺失字段继承上一配置。i18n 加 `new_window`/`open_profile`/`profile_current`/`profile_busy`/`profile_switched`/`delete`/`delete_profile`/`profile_delete_*`/`new_window_auto`/`max_windows`；`.gitignore` 加 `settings-*.ini`/`*.ini.lock`/`*.mwlock`；`tests/test_script.py` 全量增至 164 项（配置隔离 / 锁抢占复用 / 自死锁回归 / 切换 / 删除 / 白名单 / 满窗上限 / 状态栏不透明 / 屏幕外搬回，均隔离不受运行窗口影响）；无新依赖。
 - **v37 (v1.2.6)**: **自动化测试序列**。菜单栏「功能 → 自动化序列」新增一个把「发送 → 等回包匹配」步骤按顺序自动跑一遍、逐步判定**通过 / 失败**并出汇总的功能，适合出厂测试、设备自检、批量验机、协议联调等重复动作。每步可配 **名称 / 发送内容（文本 / HEX）/ 校验（CRC / 累加和等自动追加，同主界面）/ 期望回包（留空 = 纯发送不等回包）/ 匹配模式（包含 / 相等 / 前缀）/ 超时 ms / 超时动作（停止 = 失败即整体结束、继续 = 记失败但往下跑）/ 步间延时 ms / 启用勾选**；按顺序发送每步、等回包并按匹配模式判定，结果列实时 待运行 → 等回包… → **✓ 通过 / ✗ 超时**，全部跑完出汇总。序列是主动驱动方（与自动应答、Modbus 主机共用收流），运行期间自动**暂停自动应答 / Modbus 主机**、结束自动恢复；**连接断开中止序列并保留已跑结果**。UI：卡片式每步一行，只有「发送」「期望回包」两个数据框可拖宽、其余列固定（形制同自动应答对话框）；带「?」用法说明弹窗（含 AT 指令 / Modbus 读寄存器 / 纯发送三个示例）；运行中「运行」按钮变绿并锁定增删行、结果列实时更新，步骤自动保存。`tests/test_script.py` 增至 181 项；无新依赖。
 - **v38 (v1.2.7)**: **自动化序列可上产线（报告导出 / 循环老化 / 步骤重试 / 导入导出）**。在 v1.2.6 序列基础上补齐上产线要素。①**测试报告导出（HTML / CSV）**：跑完点「导出报告」出 HTML（通过/失败底色 + 汇总结论 + 测试时间，可存档/发邮件）或 CSV（Excel 可开、已防 `=`/`+`/`@` 公式注入）；循环运行出「按轮次」表、单次出「按步骤」表；仅正常收尾（有汇总）才可导，停止/断连的残缺结果不导成缺结论报告。②**循环运行（老化 / 可靠性测试）**：顶栏「循环」次数（≥1，引擎钳 `_SEQ_MAX_LOOPS=10万`）+「失败即停」，让设备连续自检 N 轮做老化；运行中显示 第 R/N 轮 · 第 i/n 步，汇总给「通过轮 R/N + 累计步 X/Y」、提前停止标「计划 M 轮」防误读；轮间 `singleShot(0)` 让出事件循环、代际作废残留；**中途停止/断连也为已跑轮出汇总**（`stopped=True` 一律非 PASS）、结果可导。③**步骤级重试**：每步「重试」次数（0=不重试，引擎钳 `999`），失败（超时/发送失败）后等本步延时 + 线路连续静默 50ms 再重发、任一次通过即过、结果标「(第N次)」；耗时含所有尝试；上次尝试的**迟到响应不污染下次匹配**（retry 态字节只延长静默窗），静默等待有 2s 上限防对端狂刷卡死；重试窗被停止/断连标 `stopped` 并保留 attempt。④**步骤导入 / 导出（JSON）**：「步骤 ▾」导出/导入整条序列便于分享/版本管理用例；导入严格校验（1–500 步、字段类型与范围、限 5MB）、覆盖前二次确认；`timeout`/`delay` 钳 QTimer int 上限防 JSON/旧配置绕过 UI 校验器。`tests/test_script.py` 增至 195 项；三语使用文档补 v1.2.7 章节；无新依赖。
+- **v39 (v1.2.8)**: **帧构造器**。功能菜单新增按字段拼帧：支持带大小端的数值、ASCII、原始 HEX，以及自动长度和 ADD/XOR/CRC 校验；内置 Modbus 读、Modbus 写单、AT 模板，实时预览完整 HEX，可填入发送框或直接发送。字段行可拖拽排序、列宽可拖、配置自动保存；直接发送按构造结果原样发出，填入发送框后仍遵循主界面可见的换行/校验设置。数据区同时修复"有选区且向上翻看时，新数据把视图拽走"的滚动回归；无新依赖。
 
 ---
 

@@ -237,6 +237,62 @@ TR = {
         "seq_steps_import_large": "文件过大（最大 5MB）",
         "seq_steps_import_confirm": "将用文件中的 {n} 个步骤替换当前所有步骤，继续？",
         "seq_steps_imported": "已导入 {n} 个步骤",
+        "fb_title": "帧构造器",
+        "fb_template": "模板",
+        "fb_add": "加字段",
+        "fb_fill": "填入发送框",
+        "fb_send": "发送",
+        "fb_help_btn": "使用说明 / 举例",
+        "fb_hint": "按字段拼帧：数值(大小端) / ascii / hex，校验·长度自动算，底部实时出 HEX。可填入发送框或直接发送。",
+        "fb_out": "HEX 输出：",
+        "fb_bytes": "{n} 字节",
+        "fb_err": "字段错误：{e}",
+        "fb_auto": "(自动)",
+        "fb_col_name": "名称",
+        "fb_col_type": "类型",
+        "fb_col_value": "值",
+        "fb_type_checksum": "校验",
+        "fb_type_length": "长度",
+        "fb_filled": "已填入发送框（按 HEX 发送）",
+        "fb_sent": "已发送",
+        "fb_send_fail": "发送失败（未连接？）",
+        "fb_tmpl_custom": "自定义",
+        "fb_tmpl_modbus_read": "Modbus 读",
+        "fb_tmpl_modbus_write": "Modbus 写单",
+        "fb_tmpl_at": "AT 命令",
+        "fb_tmpl_apply": "套用模板",
+        "fb_tmpl_apply_confirm": "套用「{name}」模板会覆盖当前所有字段，继续？",
+        "fb_fields_limit": "字段数量最多 {n} 条，超出部分未加载",
+        "fb_config_too_large": "帧构造器配置过大，已拒绝加载",
+        "fb_help_title": "帧构造器 · 使用说明",
+        "fb_help": (
+            "<h3>这是什么</h3>"
+            "<p>按<b>字段</b>拼一帧、实时出 HEX，省得手敲十六进制。支持数值(带大小端) / 文本 / HEX，"
+            "外加<b>自动字段</b>（校验、长度），并内置常见协议模板一键填充。拼好可<b>填入发送框</b>或<b>直接发送</b>。</p>"
+            "<h3>字段类型</h3>"
+            "<ul>"
+            "<li><b>数值</b>：u8/i8/u16le/u16be/i16../u32../i32../f32le/f32be —— 类型名里的 le/be 是小端/大端；"
+            "值可填十进制或 <code>0x</code> 十六进制。</li>"
+            "<li><b>ascii</b>：把文本按 ASCII 编码（如 <code>AT</code>）。</li>"
+            "<li><b>hex</b>：直接填十六进制字节串（如 <code>01 03</code>）。</li>"
+            "<li><b>校验:算法</b>（自动）：对<b>它前面所有字节</b>算校验并追加（ModbusCRC16 / XOR8 / CRC8… 复用主程序校验）。</li>"
+            "<li><b>长度:u8 / u16be</b>（自动）：值 = <b>它后面所有字节</b>的个数，按所选宽度编码。</li>"
+            "</ul>"
+            "<h3>模板</h3>"
+            "<ul>"
+            "<li><b>Modbus 读</b>：从机 / 功能(03) / 起始地址(u16be) / 数量(u16be) / CRC16。改地址数量即可。</li>"
+            "<li><b>Modbus 写单</b>：从机 / 06 / 地址 / 值 / CRC16。</li>"
+            "<li><b>AT 命令</b>：ascii <code>AT</code> + <code>0D 0A</code>(CR LF)。</li>"
+            "</ul>"
+            "<h3>小贴士</h3>"
+            "<ul>"
+            "<li>校验放在最后一个字段，它会覆盖前面全部；长度放在载荷前面，它数后面的字节。</li>"
+            "<li>「填入发送框」会自动打开主界面的 HEX 发送开关。</li>"
+            "<li>拖动每行左侧 ☰ 手柄可调整字段顺序（顺序 = 拼帧字节序）。</li>"
+            "<li>拖名称/类型/值 之间的分隔条可调列宽，所有行一起变。</li>"
+            "<li>字段会自动保存，下次打开还在。</li>"
+            "</ul>"
+        ),
         "seq_stop_on_fail": "失败即停",
         "seq_running_round": "运行中 · 第 {r}/{n_loops} 轮 · 第 {i}/{n} 步",
         "seq_summary_loops": "{rounds} · 累计 {ok}/{total} 步 · 用时 {ms}ms · {verdict}",
@@ -957,6 +1013,63 @@ TR = {
         "seq_steps_import_large": "File is too large (maximum 5 MB)",
         "seq_steps_import_confirm": "Replace all current steps with {n} step(s) from the file?",
         "seq_steps_imported": "Imported {n} step(s)",
+        "fb_title": "Frame Builder",
+        "fb_template": "Template",
+        "fb_add": "Add field",
+        "fb_fill": "To send box",
+        "fb_send": "Send",
+        "fb_help_btn": "How to use / examples",
+        "fb_hint": "Build a frame field by field: numbers (endian) / ascii / hex, with auto checksum & length; live HEX below. Fill the send box or send directly.",
+        "fb_out": "HEX output:",
+        "fb_bytes": "{n} bytes",
+        "fb_err": "Field error: {e}",
+        "fb_auto": "(auto)",
+        "fb_col_name": "Name",
+        "fb_col_type": "Type",
+        "fb_col_value": "Value",
+        "fb_type_checksum": "Checksum",
+        "fb_type_length": "Length",
+        "fb_filled": "Filled into send box (HEX mode)",
+        "fb_sent": "Sent",
+        "fb_send_fail": "Send failed (not connected?)",
+        "fb_tmpl_custom": "Custom",
+        "fb_tmpl_modbus_read": "Modbus read",
+        "fb_tmpl_modbus_write": "Modbus write",
+        "fb_tmpl_at": "AT command",
+        "fb_tmpl_apply": "Apply template",
+        "fb_tmpl_apply_confirm": "Applying the \"{name}\" template overwrites all current fields. Continue?",
+        "fb_fields_limit": "Up to {n} fields are allowed; extra fields were not loaded",
+        "fb_config_too_large": "Frame Builder configuration is too large and was not loaded",
+        "fb_help_title": "Frame Builder · Guide",
+        "fb_help": (
+            "<h3>What it is</h3>"
+            "<p>Assemble a frame by <b>fields</b> and get live HEX — no hand-typing hex. Supports numbers "
+            "(with endianness) / text / hex, plus <b>auto fields</b> (checksum, length), and built-in protocol "
+            "templates. Then <b>fill the send box</b> or <b>send directly</b>.</p>"
+            "<h3>Field types</h3>"
+            "<ul>"
+            "<li><b>Numeric</b>: u8/i8/u16le/u16be/i16../u32../i32../f32le/f32be — le/be in the type name = "
+            "little/big endian; value as decimal or <code>0x</code> hex.</li>"
+            "<li><b>ascii</b>: encode text as ASCII (e.g. <code>AT</code>).</li>"
+            "<li><b>hex</b>: raw hex bytes (e.g. <code>01 03</code>).</li>"
+            "<li><b>Checksum:algo</b> (auto): over <b>all bytes before it</b> (ModbusCRC16 / XOR8 / CRC8…).</li>"
+            "<li><b>Length:u8 / u16be</b> (auto): value = count of <b>all bytes after it</b>, at the chosen width.</li>"
+            "</ul>"
+            "<h3>Templates</h3>"
+            "<ul>"
+            "<li><b>Modbus read</b>: unit / func(03) / addr(u16be) / qty(u16be) / CRC16.</li>"
+            "<li><b>Modbus write</b>: unit / 06 / addr / value / CRC16.</li>"
+            "<li><b>AT command</b>: ascii <code>AT</code> + <code>0D 0A</code> (CR LF).</li>"
+            "</ul>"
+            "<h3>Tips</h3>"
+            "<ul>"
+            "<li>Put checksum last (covers all preceding); put length before the payload (counts what follows).</li>"
+            "<li>«To send box» turns on the main HEX-send switch automatically.</li>"
+            "<li>Drag the ☰ handle on the left of a row to reorder fields (order = byte order).</li>"
+            "<li>Drag the dividers between Name/Type/Value to resize columns; all rows follow.</li>"
+            "<li>Fields are saved automatically and restored next time.</li>"
+            "</ul>"
+        ),
         "seq_stop_on_fail": "Stop on fail",
         "seq_running_round": "Running · round {r}/{n_loops} · step {i}/{n}",
         "seq_summary_loops": "{rounds} · {ok}/{total} steps · {ms}ms · {verdict}",
@@ -1677,6 +1790,62 @@ TR = {
         "seq_steps_import_large": "檔案過大（最大 5MB）",
         "seq_steps_import_confirm": "將用檔案中的 {n} 個步驟替換目前所有步驟，繼續？",
         "seq_steps_imported": "已匯入 {n} 個步驟",
+        "fb_title": "幀構造器",
+        "fb_template": "範本",
+        "fb_add": "加欄位",
+        "fb_fill": "填入發送框",
+        "fb_send": "發送",
+        "fb_help_btn": "使用說明 / 舉例",
+        "fb_hint": "按欄位拼一幀：數值(大小端) / ascii / hex，校驗·長度自動算，底部即時出 HEX。可填入發送框或直接發送。",
+        "fb_out": "HEX 輸出：",
+        "fb_bytes": "{n} 位元組",
+        "fb_err": "欄位錯誤：{e}",
+        "fb_auto": "(自動)",
+        "fb_col_name": "名稱",
+        "fb_col_type": "型別",
+        "fb_col_value": "值",
+        "fb_type_checksum": "校驗",
+        "fb_type_length": "長度",
+        "fb_filled": "已填入發送框（按 HEX 發送）",
+        "fb_sent": "已發送",
+        "fb_send_fail": "發送失敗（未連線？）",
+        "fb_tmpl_custom": "自訂",
+        "fb_tmpl_modbus_read": "Modbus 讀",
+        "fb_tmpl_modbus_write": "Modbus 寫單",
+        "fb_tmpl_at": "AT 命令",
+        "fb_tmpl_apply": "套用範本",
+        "fb_tmpl_apply_confirm": "套用「{name}」範本會覆蓋目前所有欄位，繼續？",
+        "fb_fields_limit": "欄位數量最多 {n} 筆，超出部分未載入",
+        "fb_config_too_large": "幀構造器設定過大，已拒絕載入",
+        "fb_help_title": "幀構造器 · 使用說明",
+        "fb_help": (
+            "<h3>這是什麼</h3>"
+            "<p>按<b>欄位</b>拼一幀、即時出 HEX，省得手敲十六進位。支援數值(帶大小端) / 文字 / HEX，"
+            "外加<b>自動欄位</b>（校驗、長度），並內建常見協定範本一鍵填充。拼好可<b>填入發送框</b>或<b>直接發送</b>。</p>"
+            "<h3>欄位型別</h3>"
+            "<ul>"
+            "<li><b>數值</b>：u8/i8/u16le/u16be/i16../u32../i32../f32le/f32be —— 型別名裡的 le/be 是小端/大端；"
+            "值可填十進位或 <code>0x</code> 十六進位。</li>"
+            "<li><b>ascii</b>：把文字按 ASCII 編碼（如 <code>AT</code>）。</li>"
+            "<li><b>hex</b>：直接填十六進位位元組串（如 <code>01 03</code>）。</li>"
+            "<li><b>校驗:演算法</b>（自動）：對<b>它前面所有位元組</b>算校驗並追加（ModbusCRC16 / XOR8 / CRC8…）。</li>"
+            "<li><b>長度:u8 / u16be</b>（自動）：值 = <b>它後面所有位元組</b>的個數，按所選寬度編碼。</li>"
+            "</ul>"
+            "<h3>範本</h3>"
+            "<ul>"
+            "<li><b>Modbus 讀</b>：從機 / 功能(03) / 起始位址(u16be) / 數量(u16be) / CRC16。</li>"
+            "<li><b>Modbus 寫單</b>：從機 / 06 / 位址 / 值 / CRC16。</li>"
+            "<li><b>AT 命令</b>：ascii <code>AT</code> + <code>0D 0A</code>(CR LF)。</li>"
+            "</ul>"
+            "<h3>小提示</h3>"
+            "<ul>"
+            "<li>校驗放在最後一個欄位，它會涵蓋前面全部；長度放在載荷前面，它數後面的位元組。</li>"
+            "<li>「填入發送框」會自動打開主介面的 HEX 發送開關。</li>"
+            "<li>拖動每行左側 ☰ 手柄可調整欄位順序（順序 = 拼幀位元組序）。</li>"
+            "<li>拖名稱/類型/值 之間的分隔條可調欄寬，所有列一起變。</li>"
+            "<li>欄位會自動儲存，下次打開還在。</li>"
+            "</ul>"
+        ),
         "seq_stop_on_fail": "失敗即停",
         "seq_running_round": "執行中 · 第 {r}/{n_loops} 輪 · 第 {i}/{n} 步",
         "seq_summary_loops": "{rounds} · 累計 {ok}/{total} 步 · 用時 {ms}ms · {verdict}",

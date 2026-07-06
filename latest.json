@@ -1,9 +1,9 @@
 {
-  "version": "1.2.7",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_Setup_v1.2.7.exe",
+  "version": "1.2.8",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_Setup_v1.2.8.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_v1.2.7.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.7/CommTool_v1.2.7.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_v1.2.8.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_v1.2.8.dmg"
   ],
-  "notes": "自动化测试序列升级到可上产线：1) 测试报告导出 —— 跑完可导 HTML（带通过/失败底色 + 汇总结论，可存档/发邮件）或 CSV（Excel 可开、防公式注入）；2) 循环运行 —— 整条序列跑 N 轮做老化/可靠性验证，可「失败即停」，中途停止/断连也为已跑轮出汇总；3) 步骤级重试 —— 每步可配重试次数，失败自动重发、迟到响应不污染下一次；4) 步骤导入/导出 JSON —— 测试用例可分享/版本管理，导入严格校验 + 二次确认。无新依赖。"
+  "notes": "新增「帧构造器」（功能 → 帧构造器）：按字段拼二进制帧、自动算长度和校验、实时得到可发送的完整 HEX。1) 字段类型 —— u8/i8/u16/u32/f32 带大小端、ASCII、原始 HEX，每行一个字段、底部实时出 HEX；2) 自动字段 —— 长度统计其后字节数、校验覆盖其前全部数据（ADD8 / XOR8 / CRC8 / Modbus CRC16 / CCITT / CRC32 等）；3) 内置模板 —— Modbus 读 / 写单 / AT 一键填充，可继续逐字段修改；4) 字段行可拖拽排序、列宽可拖调整，构造结果可填入发送框或直接发送。无新依赖。"
 }
