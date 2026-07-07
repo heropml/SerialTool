@@ -264,6 +264,75 @@ TR = {
         "fb_tmpl_apply_confirm": "套用「{name}」模板会覆盖当前所有字段，继续？",
         "fb_fields_limit": "字段数量最多 {n} 条，超出部分未加载",
         "fb_config_too_large": "帧构造器配置过大，已拒绝加载",
+        "tb_title": "工具箱",
+        "tb_tab_convert": "进制 / 编码转换",
+        "tb_tab_checksum": "校验计算",
+        "tb_seq_title": "字节序列",
+        "tb_seq_hex": "HEX",
+        "tb_seq_text": "文本",
+        "tb_seq_dec": "十进制",
+        "tb_seq_bin": "二进制",
+        "tb_interp_title": "字节解释",
+        "tb_endian": "字节序",
+        "tb_interp_ascii": "ASCII",
+        "tb_interp_u16": "u16",
+        "tb_interp_i16": "i16",
+        "tb_interp_u32": "u32",
+        "tb_interp_i32": "i32",
+        "tb_interp_f32": "f32",
+        "tb_val_title": "单值进制",
+        "tb_width": "位宽",
+        "tb_signed": "有符号",
+        "tb_val_dec": "十进制",
+        "tb_val_hex": "HEX",
+        "tb_val_bin": "二进制",
+        "tb_val_oct": "八进制",
+        "tb_bits": "置位 bit",
+        "tb_conv_hint": "改任一框，其余实时同步；文本里无法解码的字节显示为 \\xNN。",
+        "tb_ck_input": "输入数据",
+        "tb_ck_text": "文本",
+        "tb_ck_result": "校验结果（全算法）",
+        "tb_ck_custom": "自定义 CRC",
+        "tb_crc_width": "宽度",
+        "tb_crc_poly": "多项式 Poly",
+        "tb_crc_init": "初值 Init",
+        "tb_crc_xor": "异或 XorOut",
+        "tb_crc_refin": "输入反转 RefIn",
+        "tb_crc_refout": "输出反转 RefOut",
+        "tb_crc_order": "输出字节序",
+        "tb_crc_result": "结果",
+        "tb_crc_width_tip": "CRC 位宽（8/16/32/64 位），决定多项式和结果的位数。",
+        "tb_crc_poly_tip": "生成多项式（不含最高位系数），十六进制填。CRC-16 常用 0x8005 或 0x1021。",
+        "tb_crc_init_tip": "寄存器初值，十六进制。如 0xFFFF 或 0x0000。",
+        "tb_crc_xor_tip": "最终对结果整体异或的值，十六进制。如 0x0000 或 0xFFFF。",
+        "tb_crc_refin_tip": "输入反转：每个输入字节先按位镜像（bit0↔bit7）再参与运算，多数 LSB 优先的设备要开。",
+        "tb_crc_refout_tip": "输出反转：最终 CRC 整体按位镜像后再输出。",
+        "tb_crc_order_tip": "结果字节序：LE = 低字节在前（Modbus 常用），BE = 高字节在前。",
+        "tb_ck_hint": "把数据段贴进来，看哪一行结果 == 帧尾的校验字节，即可反推设备用的校验算法。",
+        "tb_help_btn": "使用说明",
+        "tb_help_title": "工具箱 · 使用说明",
+        "tb_help": (
+            "<h3>字节序列转换</h3>"
+            "<p>同一串字节的四种表示，改任意一框、其余三框实时同步：</p>"
+            "<ul>"
+            "<li><b>HEX</b>：十六进制字节，空格 / 逗号可省（如 <code>01 41 FF</code>）。</li>"
+            "<li><b>文本</b>：按 UTF-8 解码显示；无法解码的字节显示为 <code>\\xNN</code>。</li>"
+            "<li><b>十进制 / 二进制</b>：每字节一个数（0..255 / 8 位）。</li>"
+            "</ul>"
+            "<p>下方会按当前字节序即时解读前几个字节为 ASCII / 整数 / f32，方便看寄存器值和浮点值。</p>"
+            "<p>任一框非法（奇数长度 HEX、越界十进制…）会标红，不影响其它框。</p>"
+            "<h3>单值进制转换</h3>"
+            "<p>一个整数在 十进制 / HEX / 二进制 / 八进制 间转，算寄存器值、地址、位掩码用：</p>"
+            "<ul>"
+            "<li><b>位宽</b> 8/16/32/64：HEX、二进制按位宽补零。</li>"
+            "<li><b>有符号</b>：勾选后十进制按补码解读（8 位 <code>FF</code>=<code>-1</code>）；负数输入也按补码落进位宽。</li>"
+            "<li><b>置位 bit</b>：可输入 <code>0, 3, 7</code> 生成位掩码，也会随数值反显当前置位。</li>"
+            "</ul>"
+            "<h3>校验计算</h3>"
+            "<p>输入一段数据（HEX；勾「文本」则按文本编码），下方一次性列出<b>全部校验算法</b>的结果。</p>"
+            "<p><b>自定义 CRC</b> 可填宽度、多项式、初值、异或值、反射和输出字节序；参数按十六进制填写。</p>"
+            "<p>不知道设备用哪种校验？把帧里<b>参与校验的数据段</b>贴进来，看哪一行 == 帧里的校验字节，就反推出它用的算法。</p>"
+        ),
         "fb_help_title": "帧构造器 · 使用说明",
         "fb_help": (
             "<h3>这是什么</h3>"
@@ -622,7 +691,7 @@ TR = {
         "plot_header_ph": "帧头 hex 可空，如 54",
         "plot_header_bad": "帧头需为 hex，如 54 或 5400",
         "frame_open": "帧解析",
-        "mbm_open": "Modbus 主机",
+        "mbm_open": "Modbus主机",
         "mbm_title": "Modbus 主机轮询",
         "mbm_enable": "启用轮询",
         "mbm_variant": "传输",
@@ -1040,6 +1109,75 @@ TR = {
         "fb_tmpl_apply_confirm": "Applying the \"{name}\" template overwrites all current fields. Continue?",
         "fb_fields_limit": "Up to {n} fields are allowed; extra fields were not loaded",
         "fb_config_too_large": "Frame Builder configuration is too large and was not loaded",
+        "tb_title": "Toolbox",
+        "tb_tab_convert": "Convert",
+        "tb_tab_checksum": "Checksum",
+        "tb_seq_title": "Byte sequence",
+        "tb_seq_hex": "HEX",
+        "tb_seq_text": "Text",
+        "tb_seq_dec": "Decimal",
+        "tb_seq_bin": "Binary",
+        "tb_interp_title": "Byte decode",
+        "tb_endian": "Endian",
+        "tb_interp_ascii": "ASCII",
+        "tb_interp_u16": "u16",
+        "tb_interp_i16": "i16",
+        "tb_interp_u32": "u32",
+        "tb_interp_i32": "i32",
+        "tb_interp_f32": "f32",
+        "tb_val_title": "Single value",
+        "tb_width": "Width",
+        "tb_signed": "Signed",
+        "tb_val_dec": "Decimal",
+        "tb_val_hex": "HEX",
+        "tb_val_bin": "Binary",
+        "tb_val_oct": "Octal",
+        "tb_bits": "Set bits",
+        "tb_conv_hint": "Edit any field and the rest sync live; bytes that can't be decoded as text show as \\xNN.",
+        "tb_ck_input": "Input",
+        "tb_ck_text": "Text",
+        "tb_ck_result": "Checksums (all algorithms)",
+        "tb_ck_custom": "Custom CRC",
+        "tb_crc_width": "Width",
+        "tb_crc_poly": "Poly",
+        "tb_crc_init": "Init",
+        "tb_crc_xor": "XorOut",
+        "tb_crc_refin": "RefIn",
+        "tb_crc_refout": "RefOut",
+        "tb_crc_order": "Byte order",
+        "tb_crc_result": "Result",
+        "tb_crc_width_tip": "CRC width (8/16/32/64 bits) — sets the size of the polynomial and result.",
+        "tb_crc_poly_tip": "Generator polynomial (top bit omitted), in hex. Common CRC-16: 0x8005 or 0x1021.",
+        "tb_crc_init_tip": "Register initial value, in hex. E.g. 0xFFFF or 0x0000.",
+        "tb_crc_xor_tip": "Final value XORed with the whole result, in hex. E.g. 0x0000 or 0xFFFF.",
+        "tb_crc_refin_tip": "Reflect input: each input byte is bit-mirrored (bit0↔bit7) before processing; needed for most LSB-first devices.",
+        "tb_crc_refout_tip": "Reflect output: the final CRC is bit-mirrored before output.",
+        "tb_crc_order_tip": "Result byte order: LE = low byte first (common for Modbus), BE = high byte first.",
+        "tb_ck_hint": "Paste a data section; whichever row equals the frame's trailing checksum byte(s) tells you which algorithm the device uses.",
+        "tb_help_btn": "Guide",
+        "tb_help_title": "Toolbox · Guide",
+        "tb_help": (
+            "<h3>Byte-sequence conversion</h3>"
+            "<p>Four representations of the same bytes; edit any field and the other three sync live:</p>"
+            "<ul>"
+            "<li><b>HEX</b>: hex bytes, spaces / commas optional (e.g. <code>01 41 FF</code>).</li>"
+            "<li><b>Text</b>: decoded as UTF-8; bytes that can't be decoded show as <code>\\xNN</code>.</li>"
+            "<li><b>Decimal / Binary</b>: one number per byte (0..255 / 8 bits).</li>"
+            "</ul>"
+            "<p>The decode area interprets the leading bytes as ASCII / integers / f32 with the selected endianness.</p>"
+            "<p>An invalid field (odd-length HEX, out-of-range decimal…) turns red and doesn't affect the others.</p>"
+            "<h3>Single-value conversion</h3>"
+            "<p>One integer across Decimal / HEX / Binary / Octal — for register values, addresses, bit masks:</p>"
+            "<ul>"
+            "<li><b>Width</b> 8/16/32/64: HEX and binary are zero-padded to the width.</li>"
+            "<li><b>Signed</b>: decimal is read as two's complement (8-bit <code>FF</code>=<code>-1</code>); negative input also wraps into the width.</li>"
+            "<li><b>Set bits</b>: type <code>0, 3, 7</code> to build a mask; it also reflects the current value.</li>"
+            "</ul>"
+            "<h3>Checksum</h3>"
+            "<p>Enter data (HEX, or tick «Text» to encode as text); all checksum algorithms are listed below at once.</p>"
+            "<p><b>Custom CRC</b> accepts width, polynomial, init, xorout, reflection and output byte order; parameters are hexadecimal.</p>"
+            "<p>Not sure which checksum a device uses? Paste the <b>data covered by the checksum</b> and see which row equals the frame's checksum byte(s) — that's the algorithm.</p>"
+        ),
         "fb_help_title": "Frame Builder · Guide",
         "fb_help": (
             "<h3>What it is</h3>"
@@ -1817,6 +1955,75 @@ TR = {
         "fb_tmpl_apply_confirm": "套用「{name}」範本會覆蓋目前所有欄位，繼續？",
         "fb_fields_limit": "欄位數量最多 {n} 筆，超出部分未載入",
         "fb_config_too_large": "幀構造器設定過大，已拒絕載入",
+        "tb_title": "工具箱",
+        "tb_tab_convert": "進制 / 編碼轉換",
+        "tb_tab_checksum": "校驗計算",
+        "tb_seq_title": "位元組序列",
+        "tb_seq_hex": "HEX",
+        "tb_seq_text": "文字",
+        "tb_seq_dec": "十進制",
+        "tb_seq_bin": "二進制",
+        "tb_interp_title": "位元組解讀",
+        "tb_endian": "位元組序",
+        "tb_interp_ascii": "ASCII",
+        "tb_interp_u16": "u16",
+        "tb_interp_i16": "i16",
+        "tb_interp_u32": "u32",
+        "tb_interp_i32": "i32",
+        "tb_interp_f32": "f32",
+        "tb_val_title": "單值進制",
+        "tb_width": "位寬",
+        "tb_signed": "有符號",
+        "tb_val_dec": "十進制",
+        "tb_val_hex": "HEX",
+        "tb_val_bin": "二進制",
+        "tb_val_oct": "八進制",
+        "tb_bits": "置位 bit",
+        "tb_conv_hint": "改任一欄，其餘即時同步；文字裡無法解碼的位元組顯示為 \\xNN。",
+        "tb_ck_input": "輸入資料",
+        "tb_ck_text": "文字",
+        "tb_ck_result": "校驗結果（全演算法）",
+        "tb_ck_custom": "自訂 CRC",
+        "tb_crc_width": "寬度",
+        "tb_crc_poly": "多項式 Poly",
+        "tb_crc_init": "初值 Init",
+        "tb_crc_xor": "互斥或 XorOut",
+        "tb_crc_refin": "輸入反轉 RefIn",
+        "tb_crc_refout": "輸出反轉 RefOut",
+        "tb_crc_order": "輸出位元組序",
+        "tb_crc_result": "結果",
+        "tb_crc_width_tip": "CRC 位寬（8/16/32/64 位），決定多項式和結果的位數。",
+        "tb_crc_poly_tip": "生成多項式（不含最高位係數），十六進制填。CRC-16 常用 0x8005 或 0x1021。",
+        "tb_crc_init_tip": "暫存器初值，十六進制。如 0xFFFF 或 0x0000。",
+        "tb_crc_xor_tip": "最終對結果整體互斥或的值，十六進制。如 0x0000 或 0xFFFF。",
+        "tb_crc_refin_tip": "輸入反轉：每個輸入位元組先按位鏡像（bit0↔bit7）再參與運算，多數 LSB 優先的裝置要開。",
+        "tb_crc_refout_tip": "輸出反轉：最終 CRC 整體按位鏡像後再輸出。",
+        "tb_crc_order_tip": "結果位元組序：LE = 低位元組在前（Modbus 常用），BE = 高位元組在前。",
+        "tb_ck_hint": "把資料段貼進來，看哪一列結果 == 幀尾的校驗位元組，即可反推裝置用的校驗演算法。",
+        "tb_help_btn": "使用說明",
+        "tb_help_title": "工具箱 · 使用說明",
+        "tb_help": (
+            "<h3>位元組序列轉換</h3>"
+            "<p>同一串位元組的四種表示，改任一欄、其餘三欄即時同步：</p>"
+            "<ul>"
+            "<li><b>HEX</b>：十六進制位元組，空格 / 逗號可省（如 <code>01 41 FF</code>）。</li>"
+            "<li><b>文字</b>：按 UTF-8 解碼顯示；無法解碼的位元組顯示為 <code>\\xNN</code>。</li>"
+            "<li><b>十進制 / 二進制</b>：每位元組一個數（0..255 / 8 位）。</li>"
+            "</ul>"
+            "<p>下方會按目前位元組序即時解讀前幾個位元組為 ASCII / 整數 / f32，方便看暫存器值和浮點值。</p>"
+            "<p>任一欄非法（奇數長度 HEX、越界十進制…）會標紅，不影響其它欄。</p>"
+            "<h3>單值進制轉換</h3>"
+            "<p>一個整數在 十進制 / HEX / 二進制 / 八進制 間轉，算暫存器值、位址、位元遮罩用：</p>"
+            "<ul>"
+            "<li><b>位寬</b> 8/16/32/64：HEX、二進制按位寬補零。</li>"
+            "<li><b>有符號</b>：勾選後十進制按補碼解讀（8 位 <code>FF</code>=<code>-1</code>）；負數輸入也按補碼落進位寬。</li>"
+            "<li><b>置位 bit</b>：可輸入 <code>0, 3, 7</code> 生成位元遮罩，也會隨數值反顯目前置位。</li>"
+            "</ul>"
+            "<h3>校驗計算</h3>"
+            "<p>輸入一段資料（HEX；勾「文字」則按文字編碼），下方一次性列出<b>全部校驗演算法</b>的結果。</p>"
+            "<p><b>自訂 CRC</b> 可填寬度、多項式、初值、異或值、反射和輸出位元組序；參數按十六進制填寫。</p>"
+            "<p>不知道裝置用哪種校驗？把幀裡<b>參與校驗的資料段</b>貼進來，看哪一列 == 幀裡的校驗位元組，就反推出它用的演算法。</p>"
+        ),
         "fb_help_title": "幀構造器 · 使用說明",
         "fb_help": (
             "<h3>這是什麼</h3>"
@@ -2175,7 +2382,7 @@ TR = {
         "plot_header_ph": "幀頭 hex 可空，如 54",
         "plot_header_bad": "幀頭需為 hex，如 54 或 5400",
         "frame_open": "幀解析",
-        "mbm_open": "Modbus 主機",
+        "mbm_open": "Modbus主機",
         "mbm_title": "Modbus 主機輪詢",
         "mbm_enable": "啟用輪詢",
         "mbm_variant": "傳輸",

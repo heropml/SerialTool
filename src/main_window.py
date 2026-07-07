@@ -313,6 +313,7 @@ class CommTool(QMainWindow):
         self._seq_gen = 0             # 代际：start/stop 时 +1，作废在途的延时/超时续跑
         self._seq_dlg = None
         self._frame_builder_dlg = None   # 帧构造器对话框（单实例）
+        self._toolbox_dlg = None         # 工具箱对话框（进制转换 + 校验计算，单实例）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -646,8 +647,7 @@ class CommTool(QMainWindow):
         """数据区顶部工具栏按钮按各自内容宽度显示，避免首次显示 / 语言切换时文字被裁：
         初次 apply_style 时 widget 还没 show、QSS 未完全传到子控件，按钮 sizeHint 偏窄、
         布局按此分配后不再重排 → 文字被挤裁。首次显示(样式已生效)后按 sizeHint 定 minimumWidth。"""
-        for name in ("btn_keyword", "btn_filter_hl", "btn_plot", "btn_frame",
-                     "btn_mbm", "btn_font_dec", "btn_font_inc"):
+        for name in ("btn_keyword", "btn_filter_hl", "btn_font_dec", "btn_font_inc"):
             b = getattr(self, name, None)
             if b is not None:
                 b.setMinimumWidth(0)          # 先撤回旧值，让 sizeHint 反映当前文本自然宽度
@@ -1140,31 +1140,9 @@ class CommTool(QMainWindow):
         title_row.addWidget(self.btn_filter_hl)
         title_row.addSpacing(6)
 
-        # 波形图：放在高亮按钮组右侧（与「关键字高亮 / 只显高亮行」分开）
-        self.btn_plot = QPushButton(self._t("plot_open"))
-        self.btn_plot.setObjectName("GhostBtn")
-        self.btn_plot.setProperty("tr_text", "plot_open")
-        self.btn_plot.clicked.connect(self.open_plot)
-        title_row.addWidget(self.btn_plot)
-        title_row.addSpacing(6)
-
-        # 帧解析表：把每帧按模板（帧头 + 名称=偏移:类型）解析成字段表格
-        self.btn_frame = QPushButton(self._t("frame_open"))
-        self.btn_frame.setObjectName("GhostBtn")
-        self.btn_frame.setProperty("tr_text", "frame_open")
-        self.btn_frame.clicked.connect(self.open_frame_parse)
-        title_row.addWidget(self.btn_frame)
-        title_row.addSpacing(6)
-
-        # Modbus 主机轮询：按每行周期轮询从机、实时显示寄存器/线圈值
-        self.btn_mbm = QPushButton(self._t("mbm_open"))
-        self.btn_mbm.setObjectName("GhostBtn")
-        self.btn_mbm.setProperty("tr_text", "mbm_open")
-        # 启用轮询时按钮高亮（动态属性 mbmActive 配 QSS [mbmActive="true"]，同自动应答按钮）
-        self.btn_mbm.setProperty("mbmActive", "true" if getattr(self, "_mbm_on", False) else "false")
-        self.btn_mbm.clicked.connect(self._open_modbus_master)
-        title_row.addWidget(self.btn_mbm)
-        title_row.addSpacing(8)
+        # 波形图 / 帧解析 / Modbus 主机 已挪到标题栏「功能」菜单（见 _show_titlebar_func_menu），
+        # 数据区工具栏只留数据显示相关（关键字高亮 / 只显高亮行 / 字号）。
+        title_row.addSpacing(2)
 
         self.btn_font_dec = QPushButton("A−")
         self.btn_font_dec.setObjectName("IconBtn")
@@ -2099,8 +2077,6 @@ class CommTool(QMainWindow):
         QPushButton#GhostBtn:checked {{ background-color: {c['accent']}; color: white; }}
         QPushButton#GhostBtn[arActive="true"] {{ background-color: {c['accent']}; color: white; }}
         QPushButton#GhostBtn[arActive="true"]:hover {{ background-color: {c['accent_hover']}; }}
-        QPushButton#GhostBtn[mbmActive="true"] {{ background-color: {c['accent']}; color: white; }}
-        QPushButton#GhostBtn[mbmActive="true"]:hover {{ background-color: {c['accent_hover']}; }}
         QPushButton#IconBtn {{
             background-color: {c['ghost_bg']};
             color: {c['text_sec']};
@@ -2790,6 +2766,8 @@ class CommTool(QMainWindow):
             self._seq_dlg.refresh_theme()
         if getattr(self, "_frame_builder_dlg", None) is not None:
             self._frame_builder_dlg.refresh_theme()
+        if getattr(self, "_toolbox_dlg", None) is not None:
+            self._toolbox_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -3355,7 +3333,6 @@ class CommTool(QMainWindow):
         self._mbm_on = enabled
         self.settings.setValue("modbus_master_on", enabled)
         self.settings.sync()
-        self._update_mbm_btn()
         if getattr(self, "_mbm_dlg", None) is not None:
             cb = self._mbm_dlg.cb_enable
             cb.blockSignals(True)
@@ -3467,6 +3444,18 @@ class CommTool(QMainWindow):
         self.sw_tx_hex.setChecked(True)
         self.txt_send.setPlainText(hexs)
         self.toast(self._t("fb_filled"))
+
+    def open_toolbox(self):
+        """打开工具箱（进制/编码转换 + 校验计算；单实例，复用并刷新主题/语言）。"""
+        if self._toolbox_dlg is None:
+            from toolbox_dialog import ToolboxDialog
+            self._toolbox_dlg = ToolboxDialog(self)
+        dlg = self._toolbox_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _seq_start(self, steps, loops=1, stop_on_fail=False):
         """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
@@ -3744,14 +3733,6 @@ class CommTool(QMainWindow):
                 dlg.update_results()
             except Exception:
                 pass
-
-    def _update_mbm_btn(self):
-        """Modbus 主机轮询开启时高亮「Modbus 主机」按钮（动态属性 mbmActive + 重新 polish）。"""
-        if not hasattr(self, "btn_mbm"):
-            return
-        self.btn_mbm.setProperty("mbmActive", "true" if self._mbm_on else "false")
-        self.btn_mbm.style().unpolish(self.btn_mbm)
-        self.btn_mbm.style().polish(self.btn_mbm)
 
     def _load_ar_rules(self):
         raw = self.settings.value("autoreply_rules", "")
@@ -4997,7 +4978,6 @@ class CommTool(QMainWindow):
             # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
             self._set_autoreply_enabled(False)
             s.sync()
-        self._update_mbm_btn()
         self._mbm_restart()
         # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
         # 后续编辑（commit 走旧内存）把加载的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
@@ -6396,7 +6376,8 @@ class CommTool(QMainWindow):
             self._seq_dlg.retranslate()
         if getattr(self, "_frame_builder_dlg", None) is not None:
             self._frame_builder_dlg.retranslate()
-        self.btn_mbm.setText(self._t("mbm_open"))
+        if getattr(self, "_toolbox_dlg", None) is not None:
+            self._toolbox_dlg.retranslate()
 
     # ----- 持久化 -----
     @staticmethod
@@ -6705,7 +6686,8 @@ class CommTool(QMainWindow):
         self.close()
 
     def _show_titlebar_func_menu(self):
-        """标题栏「功能」按钮下拉：放特殊/不常用功能入口。当前含「自动化序列」，后续可继续加。"""
+        """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.自动化序列 5.工具箱
+        6.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -6714,8 +6696,14 @@ class CommTool(QMainWindow):
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
         """)
-        menu.addAction(self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
-        menu.addAction(self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
+        menu.addAction("1. " + self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
+        menu.addAction("2. " + self._t("frame_open")).triggered.connect(lambda *_: self.open_frame_parse())
+        menu.addAction("3. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
+        menu.addAction("4. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
+        menu.addAction("5. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
+        # Modbus 主机放最后；轮询开启时项末加「 ●」，替代原工具栏按钮的高亮态
+        mbm_label = "6. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_func.mapToGlobal(
             QPoint(0, self.btn_titlebar_func.height())))
@@ -7241,7 +7229,7 @@ class CommTool(QMainWindow):
         # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
-                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg"):
+                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

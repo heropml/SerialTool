@@ -314,7 +314,6 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.settings.setValue("autoreply_on", old_ar)
             w.settings.setValue("modbus_master_on", old_mbm)
             w._update_autoreply_btn()
-            w._update_mbm_btn()
             w._mbm_restart()
 
     def test_physical_close_clears_old_guard(self):
@@ -1759,6 +1758,110 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             with self.subTest(fields=bad), self.assertRaises(ValueError):
                 binproto.build_frame(bad, CommTool.compute_checksum)
 
+    def test_convert_byte_sequences(self):
+        """工具箱：字节序列 HEX / 文本 / 十进制 / 二进制 互转 + 非法输入报错。"""
+        import convert as C
+        self.assertEqual(C.hex_to_bytes("01 41 FF"), b"\x01\x41\xff")
+        self.assertEqual(C.hex_to_bytes("0141ff"), b"\x01\x41\xff")
+        self.assertEqual(C.bytes_to_hex(b"\x01\x41\xff"), "01 41 FF")
+        self.assertEqual(C.text_to_bytes("AB"), b"AB")
+        self.assertEqual(C.bytes_to_text(b"AB"), "AB")
+        self.assertEqual(C.bytes_to_text(b"\xff"), "\\xff")          # 不可解码字节 → 转义
+        self.assertEqual(C.dec_to_bytes("1 65 255"), b"\x01\x41\xff")
+        self.assertEqual(C.bytes_to_dec(b"\x01\x41\xff"), "1 65 255")
+        self.assertEqual(C.bin_to_bytes("00000001 01000001"), b"\x01\x41")
+        self.assertEqual(C.bytes_to_bin(b"\x01\x41"), "00000001 01000001")
+        self.assertEqual(C.interpret_bytes(b"\x01\x02AB", "be")["u16"], "258")
+        self.assertEqual(C.interpret_bytes(b"\x01\x02AB", "le")["u16"], "513")
+        self.assertEqual(C.interpret_bytes(b"\x01\x02AB", "be")["ascii"], "..AB")
+        self.assertEqual(C.custom_crc(C.hex_to_bytes("01 03 00 00 00 01"), 16, 0x8005,
+                                      0xFFFF, True, True, 0, "little").hex(" ").upper(), "84 0A")
+        for fn, bad in [(C.hex_to_bytes, "XY"), (C.hex_to_bytes, "012"),
+                        (C.dec_to_bytes, "256"), (C.dec_to_bytes, "-1"),
+                        (C.bin_to_bytes, "012"), (C.bin_to_bytes, "111111111")]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                fn(bad)
+
+    def test_convert_single_value(self):
+        """工具箱：单值多进制转换（位宽 + 有无符号；负数按补码落进位宽）。"""
+        import convert as C
+        self.assertEqual(C.parse_value("255", "dec", 8), 255)
+        self.assertEqual(C.parse_value("FF", "hex", 8), 255)
+        self.assertEqual(C.parse_value("11111111", "bin", 8), 255)
+        self.assertEqual(C.parse_value("-1", "dec", 8), 255)         # 补码落进 8 位
+        self.assertEqual(C.parse_value("-1", "dec", 16), 0xFFFF)
+        self.assertEqual(C.format_value(255, 8, False),
+                         {"dec": "255", "hex": "FF", "bin": "11111111", "oct": "377"})
+        self.assertEqual(C.format_value(255, 8, True)["dec"], "-1")  # 有符号解读
+        self.assertEqual(C.format_value(0x1234, 16, False),
+                         {"dec": "4660", "hex": "1234", "bin": "0001001000110100", "oct": "11064"})
+        self.assertEqual(C.parse_bits("0, 3 7", 8), 0x89)
+        self.assertEqual(C.bits_from_value(0x89, 8), "0, 3, 7")
+        for base, s in [("hex", "GG"), ("dec", ""), ("bin", "2"),
+                        ("dec", "256"), ("hex", "100"), ("bin", "100000000")]:
+            with self.subTest(s=s), self.assertRaises(ValueError):
+                C.parse_value(s, base, 8)
+        with self.assertRaises(ValueError):
+            C.parse_bits("8", 8)
+
+    def test_convert_custom_crc(self):
+        """通用 CRC（Rocksoft 参数）拿多个已知标准值核对 + 交叉核对主程序 compute_checksum。"""
+        import convert as C
+        from main_window import CommTool
+        d = b"123456789"
+        self.assertEqual(C.custom_crc(d, 16, 0x8005, 0xFFFF, True, True, 0, "big").hex().upper(), "4B37")   # CRC-16/MODBUS
+        self.assertEqual(C.custom_crc(d, 16, 0x1021, 0xFFFF, False, False, 0, "big").hex().upper(), "29B1") # CCITT-FALSE
+        self.assertEqual(C.custom_crc(d, 16, 0x1021, 0x0000, False, False, 0, "big").hex().upper(), "31C3") # XMODEM
+        self.assertEqual(C.custom_crc(d, 8, 0x07, 0x00, False, False, 0, "big").hex().upper(), "F4")        # CRC-8/SMBus
+        # MODBUS（小端字节序）== 主程序 compute_checksum 的 ModbusCRC16
+        self.assertEqual(C.custom_crc(d, 16, 0x8005, 0xFFFF, True, True, 0, "little").hex(" ").upper(),
+                         CommTool.compute_checksum(d, 5).hex(" ").upper())
+
+    def test_toolbox_dialog(self):
+        """工具箱对话框：字节序列互转同步、单值进制(位宽/符号)、校验计算(ModbusCRC16 交叉核对)、菜单入口。"""
+        from toolbox_dialog import ToolboxDialog
+        from PyQt5.QtWidgets import QMenu
+        w = _win()
+        dlg = None
+        try:
+            dlg = ToolboxDialog(w)
+            # 字节序列：编辑 HEX → 其余实时同步
+            dlg._seq["hex"][1].setText("41 42 FF")
+            dlg._on_seq_edit("hex")
+            self.assertEqual(dlg._seq["dec"][1].text(), "65 66 255")
+            self.assertEqual(dlg._seq["text"][1].text(), "AB\\xff")          # 不可解码字节转义
+            self.assertEqual(dlg._seq["bin"][1].text(), "01000001 01000010 11111111")
+            self.assertEqual(dlg._interp["ascii"][1].text(), "AB.")
+            self.assertEqual(dlg._interp["u16"][1].text(), str(0x4142))
+            # 单值进制（8 位）：编辑 HEX FF → dec 255；勾有符号 → -1
+            dlg.cb_width.setCurrentText("8")
+            dlg._val["hex"][1].setText("FF")
+            dlg._on_val_edit("hex")
+            self.assertEqual(dlg._val["dec"][1].text(), "255")
+            self.assertEqual(dlg._val["bin"][1].text(), "11111111")
+            self.assertEqual(dlg.ed_bits.text(), "0, 1, 2, 3, 4, 5, 6, 7")
+            dlg.chk_signed.setChecked(True)
+            self.assertEqual(dlg._val["dec"][1].text(), "-1")
+            dlg.ed_bits.setText("0, 3, 7")
+            dlg._on_bits_edit()
+            self.assertEqual(dlg._val["hex"][1].text(), "89")
+            # 校验：ModbusCRC16(01 03 00 00 00 01) == 84 0A（同 Modbus 读帧尾 CRC）
+            dlg.ed_ck_in.setText("01 03 00 00 00 01")
+            crc = [res.text() for idx, _n, res in dlg._ck_rows if idx == 5]
+            self.assertEqual(crc, ["84 0A"])
+            self.assertEqual(dlg.ed_crc_result.text(), "84 0A")
+            # 功能菜单含「工具箱」入口
+            cap, orig = {}, QMenu.exec_
+            QMenu.exec_ = lambda self, *a, **k: cap.setdefault("t", [x.text() for x in self.actions()])
+            try:
+                w._show_titlebar_func_menu()
+            finally:
+                QMenu.exec_ = orig
+            self.assertTrue(any(w._t("tb_title") in t for t in cap.get("t", [])))
+        finally:
+            if dlg is not None:
+                dlg.deleteLater()
+
     def test_frame_builder_dialog(self):
         """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""
         from frame_builder_dialog import FrameBuilderDialog
@@ -2010,6 +2113,36 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertTrue(True)     # 走到这里=没崩
         finally:
             w.settings.setValue("frame_builder_fields", o_fields)
+
+    def test_data_tools_moved_to_func_menu(self):
+        """波形图 / 帧解析 / Modbus 主机 从数据区工具栏挪进标题栏「功能」菜单：工具栏不再有这三个
+        按钮；菜单项带序号、Modbus 主机排最后；Modbus 轮询开启时该项末尾加「 ●」。"""
+        from PyQt5.QtWidgets import QMenu
+        w = _win()
+        self.assertFalse(any(hasattr(w, b) for b in ("btn_plot", "btn_frame", "btn_mbm")))
+
+        def menu_texts():
+            cap, orig = {}, QMenu.exec_
+            QMenu.exec_ = lambda self, *a, **k: cap.setdefault("t", [x.text() for x in self.actions()])
+            try:
+                w._show_titlebar_func_menu()
+            finally:
+                QMenu.exec_ = orig
+            return cap.get("t", [])
+
+        o_on = w._mbm_on
+        try:
+            w._mbm_on = False
+            texts = menu_texts()
+            for k in ("plot_open", "frame_open", "mbm_open"):
+                self.assertTrue(any(w._t(k) in t for t in texts))   # 三项都进了菜单
+            self.assertTrue(all(t[:1].isdigit() for t in texts))    # 每项前带序号
+            self.assertIn(w._t("mbm_open"), texts[-1])              # Modbus 主机排最后
+            self.assertFalse(texts[-1].endswith("●"))               # 未轮询 → 末项无 ●
+            w._mbm_on = True
+            self.assertTrue(menu_texts()[-1].endswith("●"))         # 轮询中 → 末项带 ●
+        finally:
+            w._mbm_on = o_on
 
     def test_profile_lock_does_not_deadlock_qsettings_sync(self):
         """回归（多窗口卡死根因）：配置槽位锁的文件名不能与 QSettings 内部写锁 <ini>.lock 撞名，

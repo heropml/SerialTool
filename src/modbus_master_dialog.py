@@ -389,7 +389,6 @@ class ModbusMasterDialog(QDialog):
                 self.app.settings.sync()
             except Exception:
                 pass
-            self.app._update_mbm_btn()
             self.app.toast(self.app._t("mbm_reconnect_first"), error=True)
             return
         self.app._set_mbm_enabled(checked)
