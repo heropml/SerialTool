@@ -62,6 +62,113 @@ class CrcTests(unittest.TestCase):
         self.assertEqual(len(self.C(b"x", 32, 0x04C11DB7)), 4)
 
 
+class _XInbox:
+    """线程安全字节缓冲：put 追加、read(n,timeout) 攒够 n 才回、超时 None、剩余留存。供 xfer loopback 用。"""
+    def __init__(self):
+        import threading
+        self._buf = bytearray()
+        self._cv = threading.Condition()
+
+    def put(self, data):
+        with self._cv:
+            self._buf.extend(data)
+            self._cv.notify_all()
+
+    def read(self, n, timeout):
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while len(self._buf) < n:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    return None
+                self._cv.wait(remain)
+            out = bytes(self._buf[:n])
+            del self._buf[:n]
+            return out
+
+
+class XferTests(unittest.TestCase):
+    """XMODEM/XMODEM-1K/YMODEM 协议（纯逻辑，无 Qt）：CRC 标准值 + 全模式 loopback + 有损重传/去重。"""
+
+    def _run(self, mode, data, drop_send=(), drop_recv=(), corrupt_send=()):
+        import threading
+        import xfer
+        a2b, b2a = _XInbox(), _XInbox()      # a=发→收, b=收→发
+        sc, rc, res = {"n": 0}, {"n": 0}, {}
+
+        def send_putc(d):
+            sc["n"] += 1
+            if sc["n"] in drop_send:
+                return
+            if sc["n"] in corrupt_send and len(d) > 5:
+                d = bytearray(d); d[4] ^= 0xFF; d = bytes(d)
+            a2b.put(d)
+
+        def recv_putc(d):
+            rc["n"] += 1
+            if rc["n"] not in drop_recv:
+                b2a.put(d)
+
+        def do_send():
+            try:
+                xfer.send_file(b2a.read, send_putc, data, mode=mode, name="fw.bin"); res["s"] = "ok"
+            except Exception as e:
+                res["s"] = repr(e)
+
+        def do_recv():
+            try:
+                res["r"] = xfer.recv_file(a2b.read, recv_putc, mode=mode)
+            except Exception as e:
+                res["r"] = repr(e)
+
+        ts, tr = threading.Thread(target=do_send), threading.Thread(target=do_recv)
+        tr.start(); time.sleep(0.02); ts.start()
+        ts.join(30); tr.join(30)
+        return res
+
+    def test_crc16_standard(self):
+        import xfer
+        self.assertEqual(xfer._crc16(b"123456789"), 0x31C3)   # XMODEM CRC-16 标准校验值
+
+    def test_loopback_all_modes(self):
+        import xfer
+        for mode in xfer.MODES:
+            for sz in (0, 1, 128, 1024, 3000):
+                data = bytes((i * 7 + 3) & 0xFF for i in range(sz))
+                res = self._run(mode, data)
+                self.assertIsInstance(res.get("r"), tuple, "%s sz=%d recv err: %r" % (mode, sz, res.get("r")))
+                got, meta = res["r"]
+                self.assertEqual(res.get("s"), "ok", "%s sz=%d send err" % (mode, sz))
+                if mode == xfer.MODE_YMODEM:
+                    self.assertEqual(got, data)
+                    self.assertEqual(meta.get("size"), sz)
+                    if sz:
+                        self.assertEqual(meta.get("name"), "fw.bin")
+                else:
+                    self.assertEqual(got.rstrip(bytes([xfer.SUB])), data.rstrip(bytes([xfer.SUB])))
+                    self.assertGreaterEqual(len(got), sz)
+
+    def test_lossy_retransmit_and_dedup(self):
+        import xfer
+        saved = (xfer.START_TIMEOUT, xfer.ACK_TIMEOUT, xfer.BLOCK_TIMEOUT)
+        xfer.START_TIMEOUT = xfer.ACK_TIMEOUT = xfer.BLOCK_TIMEOUT = 0.3   # 调小超时跑快
+        try:
+            data = bytes((i * 13 + 1) & 0xFF for i in range(4100))        # ymodem: 头块 + 4×1K + 尾
+            for label, kw in (
+                ("drop data frame", dict(drop_send=(3,))),                # 丢帧 → 超时 → NAK 重发
+                ("drop ACK → dup block", dict(drop_recv=(4,))),           # 丢 ACK → 重发 → 重复块去重
+                ("corrupt frame", dict(corrupt_send=(4,))),               # 坏 CRC → NAK 重发
+                ("multi fault", dict(drop_send=(3,), drop_recv=(6,), corrupt_send=(5,))),
+            ):
+                res = self._run(xfer.MODE_YMODEM, data, **kw)
+                self.assertIsInstance(res.get("r"), tuple, "%s: recv err %r" % (label, res.get("r")))
+                got, meta = res["r"]
+                self.assertEqual(got, data, "%s: data mismatch" % label)
+                self.assertEqual(meta.get("size"), len(data), "%s: size" % label)
+        finally:
+            xfer.START_TIMEOUT, xfer.ACK_TIMEOUT, xfer.BLOCK_TIMEOUT = saved
+
+
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_config_whitelist_contains_all_master_settings(self):
@@ -1902,6 +2009,70 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.conn, w._conn_proto = o_conn, o_proto
             w.cb_proto.setCurrentIndex(o_idx)
             if hasattr(w, "_ctrl_poll_timer"): w._ctrl_poll_timer.stop()
+
+    def test_xfer_worker_loopback(self):
+        """两个真实 XferWorker(QThread) 经 sig_send↔feed 直连对拼：验证线程 + 信号桥端到端收发一致。"""
+        import xfer
+        from xfer_dialog import XferWorker
+        from PyQt5.QtCore import Qt
+        _win()   # 确保 QApplication 存在
+        for mode in (xfer.MODE_XMODEM_CRC, xfer.MODE_YMODEM):
+            payload = bytes((i * 5 + 1) & 0xFF for i in range(2500))
+            snd = XferWorker("send", mode, payload=payload, name="fw.bin")
+            rcv = XferWorker("recv", mode)
+            snd.sig_send.connect(rcv.feed, Qt.DirectConnection)   # 直连：跨线程即时投递（feed 仅线程安全 put）
+            rcv.sig_send.connect(snd.feed, Qt.DirectConnection)
+            box = {}
+            rcv.sig_done.connect(lambda ok, msg, res: box.update(ok=ok, res=res), Qt.DirectConnection)
+            rcv.start(); snd.start()
+            snd.wait(15000); rcv.wait(15000)
+            self.assertTrue(box.get("ok"), "%s: recv not ok" % mode)
+            data, meta = box["res"]
+            if mode == xfer.MODE_YMODEM:
+                self.assertEqual(data, payload)
+                self.assertEqual(meta.get("size"), len(payload))
+                self.assertEqual(meta.get("name"), "fw.bin")
+            else:
+                self.assertEqual(data.rstrip(bytes([xfer.SUB])), payload.rstrip(bytes([xfer.SUB])))
+
+    def test_xfer_bridge_takeover(self):
+        """主窗桥接：传输中 on_data_received 把收流喂 worker、不进正常显示；worker 发字节经 sig_send→conn.send；detach 后复原。"""
+        from PyQt5.QtCore import QObject, pyqtSignal
+        w = _win()
+
+        class _FakeWorker(QObject):
+            sig_send = pyqtSignal(bytes)
+            def __init__(s): super().__init__(); s.fed = bytearray(); s._run = True
+            def isRunning(s): return s._run
+            def feed(s, d): s.fed.extend(d)
+
+        class _MockConn:
+            def __init__(s): s.sent = []
+            def send(s, data, target=None): s.sent.append((bytes(data), target)); return len(data)
+
+        fake, mock = _FakeWorker(), _MockConn()
+        o_conn, o_worker = w.conn, w._xfer_worker
+        o_rx, o_pkt = w.rx_bytes, w.rx_packets
+        try:
+            w.conn = mock
+            w._xfer_attach(fake)
+            self.assertIs(w._xfer_worker, fake)
+            # 传输中：收到的数据喂 worker，且不计入正常接收统计（未走显示路径）
+            w.on_data_received(b"\x01\x02\x03")
+            self.assertEqual(bytes(fake.fed), b"\x01\x02\x03")
+            self.assertEqual(w.rx_bytes, o_rx)
+            # worker 要发的字节经桥回到 conn.send
+            fake.sig_send.emit(b"ACK")
+            self.assertEqual(mock.sent[-1][0], b"ACK")
+            # detach 后恢复正常收流
+            w._xfer_detach()
+            self.assertIsNone(w._xfer_worker)
+            w.on_data_received(b"hello")
+            self.assertGreater(w.rx_bytes, o_rx)
+        finally:
+            w._xfer_detach()
+            w.conn, w._xfer_worker = o_conn, o_worker
+            w.rx_bytes, w.rx_packets = o_rx, o_pkt
 
     def test_frame_builder_dialog(self):
         """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""

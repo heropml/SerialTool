@@ -58,6 +58,50 @@ TR = {
         "ctrl_reset_tip": "DTR 拉低约 120ms 再拉高，触发多数 Arduino / ESP 的自动复位；不同板子复位方式或异，可用上面 DTR / RTS 手动控制。",
         "ctrl_dtr_tip": "DTR 输出线（Data Terminal Ready）：主机拉高 / 拉低。常用于复位 MCU、控制外设使能。",
         "ctrl_rts_tip": "RTS 输出线（Request To Send）：主机拉高 / 拉低。用于硬件流控或复位 / 引脚控制。",
+        # ---- 文件传输（XMODEM / XMODEM-1K / YMODEM 收发）----
+        "xfer_title": "文件传输",
+        "xfer_hint": "XMODEM / XMODEM-1K / YMODEM 收发文件（常用于向 bootloader 上传固件）。需先打开串口 / 连接；传输期间数据区暂停显示。",
+        "xfer_help_btn": "用法说明",
+        "xfer_dir": "方向",
+        "xfer_dir_send": "发送（本机 → 设备）",
+        "xfer_dir_recv": "接收（设备 → 本机）",
+        "xfer_proto": "协议",
+        "xfer_proto_xmodem": "XMODEM（128 字节 · 校验和）",
+        "xfer_proto_xmodem_crc": "XMODEM（128 字节 · CRC）",
+        "xfer_proto_1k": "XMODEM-1K（1024 字节 · CRC）",
+        "xfer_proto_ymodem": "YMODEM（带文件名 / 大小）",
+        "xfer_file": "文件",
+        "xfer_save": "保存到",
+        "xfer_browse": "浏览…",
+        "xfer_start": "开始",
+        "xfer_cancel": "取消",
+        "xfer_pick_send": "选择要发送的文件",
+        "xfer_pick_recv": "选择保存位置",
+        "xfer_need_conn": "请先打开串口 / 连接",
+        "xfer_need_file": "请先选择要发送的文件",
+        "xfer_need_save": "请先选择保存位置",
+        "xfer_read_err": "读取文件失败：{msg}",
+        "xfer_write_err": "写入文件失败：{msg}",
+        "xfer_log_send": "发送 {name}（{n} 字节）· {proto}",
+        "xfer_log_recv": "等待发送方开始…· {proto}",
+        "xfer_log_meta": "对方文件名：{name}（{n} 字节）",
+        "xfer_cancelling": "正在取消…",
+        "xfer_done_send": "发送完成。",
+        "xfer_toast_send": "文件已发送",
+        "xfer_done_recv": "已保存：{path}（{n} 字节）",
+        "xfer_toast_recv": "已接收 {n} 字节",
+        "xfer_cancelled": "已取消。",
+        "xfer_failed": "传输失败：{msg}",
+        "xfer_help_title": "文件传输 · 用法",
+        "xfer_help": "<html><body><b>XMODEM / YMODEM</b> 是串口逐块传文件的经典协议，常用于给 bootloader / 单片机上传固件，或从设备取回数据。<br><br>"
+                     "<b>发送（本机 → 设备）：</b><br>1) 选「发送」，点「浏览…」选文件；<br>2) 选与设备一致的协议；<br>"
+                     "3) 让设备进入接收等待（如 bootloader 菜单选 XMODEM 接收），再点「开始」。<br><br>"
+                     "<b>接收（设备 → 本机）：</b><br>1) 选「接收」，点「浏览…」选保存位置；<br>"
+                     "2) 选协议后点「开始」；本工具会不断发起始字符等待设备开始发送。<br><br>"
+                     "<b>协议怎么选（要和设备一致）：</b><br>· XMODEM（校验和）：最老，128 字节块、1 字节累加校验；<br>"
+                     "· XMODEM（CRC）：128 字节块 + CRC-16，更可靠；<br>· XMODEM-1K：1024 字节块 + CRC，大文件更快；<br>"
+                     "· YMODEM：在 1K 基础上先传文件名 / 大小，可自动定长。<br><br>"
+                     "<b>说明：</b>传输期间数据区暂停显示、自动应答 / 序列 / Modbus 主机暂停；中途断开连接会取消传输。</body></html>",
         "no_ports": "无可用串口",
         "port_missing": "{port}（未检测到）",
         "serial_removed": "串口 {port} 已移除，连接已断开",
@@ -907,6 +951,50 @@ TR = {
         "ctrl_reset_tip": "Pulses DTR low for ~120ms then high — resets most Arduino / ESP boards; reset wiring varies, use the DTR / RTS switches above for manual control.",
         "ctrl_dtr_tip": "DTR output line (Data Terminal Ready): drive high / low. Often used to reset an MCU or enable a peripheral.",
         "ctrl_rts_tip": "RTS output line (Request To Send): drive high / low. For hardware flow control or reset / pin control.",
+        # ---- File transfer (XMODEM / XMODEM-1K / YMODEM) ----
+        "xfer_title": "File Transfer",
+        "xfer_hint": "Send / receive files over XMODEM / XMODEM-1K / YMODEM (often used to upload firmware to a bootloader). Open a connection first; the data view pauses during transfer.",
+        "xfer_help_btn": "How to use",
+        "xfer_dir": "Direction",
+        "xfer_dir_send": "Send (PC → device)",
+        "xfer_dir_recv": "Receive (device → PC)",
+        "xfer_proto": "Protocol",
+        "xfer_proto_xmodem": "XMODEM (128 B · checksum)",
+        "xfer_proto_xmodem_crc": "XMODEM (128 B · CRC)",
+        "xfer_proto_1k": "XMODEM-1K (1024 B · CRC)",
+        "xfer_proto_ymodem": "YMODEM (with filename / size)",
+        "xfer_file": "File",
+        "xfer_save": "Save to",
+        "xfer_browse": "Browse…",
+        "xfer_start": "Start",
+        "xfer_cancel": "Cancel",
+        "xfer_pick_send": "Choose a file to send",
+        "xfer_pick_recv": "Choose where to save",
+        "xfer_need_conn": "Open a serial / network connection first",
+        "xfer_need_file": "Pick a file to send first",
+        "xfer_need_save": "Pick a save location first",
+        "xfer_read_err": "Failed to read file: {msg}",
+        "xfer_write_err": "Failed to write file: {msg}",
+        "xfer_log_send": "Sending {name} ({n} bytes) · {proto}",
+        "xfer_log_recv": "Waiting for sender… · {proto}",
+        "xfer_log_meta": "Remote filename: {name} ({n} bytes)",
+        "xfer_cancelling": "Cancelling…",
+        "xfer_done_send": "Send complete.",
+        "xfer_toast_send": "File sent",
+        "xfer_done_recv": "Saved: {path} ({n} bytes)",
+        "xfer_toast_recv": "Received {n} bytes",
+        "xfer_cancelled": "Cancelled.",
+        "xfer_failed": "Transfer failed: {msg}",
+        "xfer_help_title": "File Transfer · Help",
+        "xfer_help": "<html><body><b>XMODEM / YMODEM</b> are classic block-oriented serial file-transfer protocols, commonly used to upload firmware to bootloaders / MCUs or pull data back from a device.<br><br>"
+                     "<b>Send (PC → device):</b><br>1) Pick \"Send\", click \"Browse…\" to choose a file;<br>2) Choose the protocol your device expects;<br>"
+                     "3) Put the device into receive-wait (e.g. select XMODEM receive in its bootloader menu), then click \"Start\".<br><br>"
+                     "<b>Receive (device → PC):</b><br>1) Pick \"Receive\", click \"Browse…\" to choose a save path;<br>"
+                     "2) Choose the protocol and click \"Start\"; the tool repeatedly sends the start character and waits for the device to begin.<br><br>"
+                     "<b>Which protocol (must match the device):</b><br>· XMODEM (checksum): oldest, 128-byte blocks, 1-byte additive checksum;<br>"
+                     "· XMODEM (CRC): 128-byte blocks + CRC-16, more reliable;<br>· XMODEM-1K: 1024-byte blocks + CRC, faster for large files;<br>"
+                     "· YMODEM: sends filename / size first (auto length) on top of 1K.<br><br>"
+                     "<b>Note:</b> during transfer the data view, auto-reply, sequence and Modbus master are paused; disconnecting cancels the transfer.</body></html>",
         "no_ports": "No ports",
         "port_missing": "{port} (not detected)",
         "serial_removed": "Serial port {port} removed — disconnected",
@@ -1759,6 +1847,50 @@ TR = {
         "ctrl_reset_tip": "DTR 拉低約 120ms 再拉高，觸發多數 Arduino / ESP 的自動復位；不同板子復位方式或異，可用上方 DTR / RTS 手動控制。",
         "ctrl_dtr_tip": "DTR 輸出線（Data Terminal Ready）：主機拉高 / 拉低。常用於復位 MCU、控制外設致能。",
         "ctrl_rts_tip": "RTS 輸出線（Request To Send）：主機拉高 / 拉低。用於硬體流控或復位 / 腳位控制。",
+        # ---- 檔案傳輸（XMODEM / XMODEM-1K / YMODEM 收發）----
+        "xfer_title": "檔案傳輸",
+        "xfer_hint": "XMODEM / XMODEM-1K / YMODEM 收發檔案（常用於向 bootloader 上傳韌體）。需先開啟串口 / 連線；傳輸期間資料區暫停顯示。",
+        "xfer_help_btn": "使用說明",
+        "xfer_dir": "方向",
+        "xfer_dir_send": "傳送（本機 → 裝置）",
+        "xfer_dir_recv": "接收（裝置 → 本機）",
+        "xfer_proto": "協定",
+        "xfer_proto_xmodem": "XMODEM（128 位元組 · 校驗和）",
+        "xfer_proto_xmodem_crc": "XMODEM（128 位元組 · CRC）",
+        "xfer_proto_1k": "XMODEM-1K（1024 位元組 · CRC）",
+        "xfer_proto_ymodem": "YMODEM（帶檔名 / 大小）",
+        "xfer_file": "檔案",
+        "xfer_save": "儲存至",
+        "xfer_browse": "瀏覽…",
+        "xfer_start": "開始",
+        "xfer_cancel": "取消",
+        "xfer_pick_send": "選擇要傳送的檔案",
+        "xfer_pick_recv": "選擇儲存位置",
+        "xfer_need_conn": "請先開啟串口 / 連線",
+        "xfer_need_file": "請先選擇要傳送的檔案",
+        "xfer_need_save": "請先選擇儲存位置",
+        "xfer_read_err": "讀取檔案失敗：{msg}",
+        "xfer_write_err": "寫入檔案失敗：{msg}",
+        "xfer_log_send": "傳送 {name}（{n} 位元組）· {proto}",
+        "xfer_log_recv": "等待傳送方開始…· {proto}",
+        "xfer_log_meta": "對方檔名：{name}（{n} 位元組）",
+        "xfer_cancelling": "正在取消…",
+        "xfer_done_send": "傳送完成。",
+        "xfer_toast_send": "檔案已傳送",
+        "xfer_done_recv": "已儲存：{path}（{n} 位元組）",
+        "xfer_toast_recv": "已接收 {n} 位元組",
+        "xfer_cancelled": "已取消。",
+        "xfer_failed": "傳輸失敗：{msg}",
+        "xfer_help_title": "檔案傳輸 · 使用說明",
+        "xfer_help": "<html><body><b>XMODEM / YMODEM</b> 是串口逐塊傳檔的經典協定，常用於為 bootloader / 單晶片上傳韌體，或從裝置取回資料。<br><br>"
+                     "<b>傳送（本機 → 裝置）：</b><br>1) 選「傳送」，點「瀏覽…」選檔案；<br>2) 選與裝置一致的協定；<br>"
+                     "3) 讓裝置進入接收等待（如 bootloader 選單選 XMODEM 接收），再點「開始」。<br><br>"
+                     "<b>接收（裝置 → 本機）：</b><br>1) 選「接收」，點「瀏覽…」選儲存位置；<br>"
+                     "2) 選協定後點「開始」；本工具會不斷發起始字元等待裝置開始傳送。<br><br>"
+                     "<b>協定怎麼選（要和裝置一致）：</b><br>· XMODEM（校驗和）：最舊，128 位元組塊、1 位元組累加校驗；<br>"
+                     "· XMODEM（CRC）：128 位元組塊 + CRC-16，更可靠；<br>· XMODEM-1K：1024 位元組塊 + CRC，大檔更快；<br>"
+                     "· YMODEM：在 1K 基礎上先傳檔名 / 大小，可自動定長。<br><br>"
+                     "<b>說明：</b>傳輸期間資料區暫停顯示、自動應答 / 序列 / Modbus 主機暫停；中途斷開連線會取消傳輸。</body></html>",
         "no_ports": "無可用串口",
         "port_missing": "{port}（未偵測到）",
         "serial_removed": "串口 {port} 已移除，連線已斷開",

@@ -314,6 +314,9 @@ class CommTool(QMainWindow):
         self._seq_dlg = None
         self._frame_builder_dlg = None   # 帧构造器对话框（单实例）
         self._toolbox_dlg = None         # 工具箱对话框（进制转换 + 校验计算，单实例）
+        self._xfer_dlg = None            # 文件传输对话框（XMODEM/YMODEM，单实例）
+        self._xfer_worker = None         # 传输后台线程；非 None 且运行中时 on_data_received 接管收流
+        self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -2639,6 +2642,9 @@ class CommTool(QMainWindow):
         self._last_direction = "rx"
 
     def close_conn(self):
+        # 传输中断连 → 取消传输（连接没了协议无法继续；worker 收到取消会尽快收尾并复位收流）
+        if self._xfer_worker is not None and self._xfer_worker.isRunning():
+            self._xfer_worker.cancel()
         if self.sw_period.isChecked():
             self.sw_period.setChecked(False)
         # 停多条发送循环定时器：否则非 closeEvent 路径(点断开/对端断开/连接错误)断连后，
@@ -2872,6 +2878,8 @@ class CommTool(QMainWindow):
             self._frame_builder_dlg.refresh_theme()
         if getattr(self, "_toolbox_dlg", None) is not None:
             self._toolbox_dlg.refresh_theme()
+        if getattr(self, "_xfer_dlg", None) is not None:
+            self._xfer_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -2930,6 +2938,14 @@ class CommTool(QMainWindow):
             return text
 
     def on_data_received(self, data: bytes, reply_target=None):
+        # 文件传输(XMODEM/YMODEM)进行中：整段接管收流喂协议引擎，不进显示区/自动应答/序列/Modbus
+        w = self._xfer_worker
+        if w is not None and w.isRunning():
+            try:
+                w.feed(data)
+            except Exception:
+                pass
+            return
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
             self._on_data_received_impl(data)
@@ -3560,6 +3576,43 @@ class CommTool(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def open_xfer(self):
+        """打开文件传输（XMODEM/XMODEM-1K/YMODEM 收发；单实例，复用并刷新主题/语言）。"""
+        if self._xfer_dlg is None:
+            from xfer_dialog import XferDialog
+            self._xfer_dlg = XferDialog(self)
+        dlg = self._xfer_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    # ----- 文件传输 ⇄ 连接层桥接（对话框调） -----
+    def _xfer_attach(self, worker):
+        """传输开始：主窗接管收流并把 worker 的发送经 GUI 线程转到 conn.send。"""
+        self._xfer_worker = worker
+        self._xfer_target = self._send_target()          # 起始时捕获目标（串口为 None）
+        worker.sig_send.connect(self._xfer_send)
+
+    def _xfer_detach(self):
+        """传输结束：断开发送桥、恢复正常收流。"""
+        w = self._xfer_worker
+        if w is not None:
+            try:
+                w.sig_send.disconnect(self._xfer_send)
+            except (TypeError, RuntimeError):
+                pass
+        self._xfer_worker = None
+
+    def _xfer_send(self, data):
+        """worker 线程经队列信号回到 GUI 线程发字节（连接可能已断，兜底不崩）。"""
+        if self.conn is not None:
+            try:
+                self.conn.send(bytes(data), self._xfer_target)
+            except Exception:
+                pass
 
     def _seq_start(self, steps, loops=1, stop_on_fail=False):
         """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
@@ -6483,6 +6536,8 @@ class CommTool(QMainWindow):
             self._frame_builder_dlg.retranslate()
         if getattr(self, "_toolbox_dlg", None) is not None:
             self._toolbox_dlg.retranslate()
+        if getattr(self, "_xfer_dlg", None) is not None:
+            self._xfer_dlg.retranslate()
 
     # ----- 持久化 -----
     @staticmethod
@@ -6792,7 +6847,7 @@ class CommTool(QMainWindow):
 
     def _show_titlebar_func_menu(self):
         """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.自动化序列 5.工具箱
-        6.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
+        6.文件传输 7.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -6806,8 +6861,9 @@ class CommTool(QMainWindow):
         menu.addAction("3. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
         menu.addAction("4. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         menu.addAction("5. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
+        menu.addAction("6. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
         # Modbus 主机放最后；轮询开启时项末加「 ●」，替代原工具栏按钮的高亮态
-        mbm_label = "6. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        mbm_label = "7. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_func.mapToGlobal(
@@ -7334,7 +7390,7 @@ class CommTool(QMainWindow):
         # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
-                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg"):
+                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:
