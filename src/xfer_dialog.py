@@ -10,9 +10,9 @@
 import os
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QLineEdit, QComboBox, QRadioButton,
-                             QButtonGroup, QPushButton, QProgressBar, QTextEdit, QScrollArea,
-                             QFileDialog, QHBoxLayout, QVBoxLayout)
+from PyQt5.QtWidgets import (QApplication, QDialog, QWidget, QLabel, QLineEdit, QComboBox,
+                             QRadioButton, QButtonGroup, QPushButton, QProgressBar,
+                             QTextEdit, QScrollArea, QFileDialog, QHBoxLayout, QVBoxLayout)
 
 import xfer
 from theme import chrome_for
@@ -213,18 +213,26 @@ class XferDialog(QDialog):
         if not self.app._is_open():
             self.app.toast(t("xfer_need_conn"), error=True)
             return
+        if getattr(self.app, "_seq_on", False):
+            self.app.toast(t("xfer_need_seq_off"), error=True)
+            return
         if not self._path:
             self.app.toast(t("xfer_need_file" if self._is_send() else "xfer_need_save"), error=True)
             return
         mode = self.cb_proto.currentData()
         if self._is_send():
             try:
-                with open(self._path, "rb") as f:
-                    payload = f.read()
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                try:
+                    with open(self._path, "rb") as f:
+                        payload = f.read()
+                finally:
+                    QApplication.restoreOverrideCursor()
             except OSError as e:
                 self.app.toast(t("xfer_read_err", msg=e), error=True)
                 return
             worker = XferWorker("send", mode, payload=payload, name=os.path.basename(self._path))
+            self.bar.setFormat("%p%")                  # 切回百分比（上次若为接收则可能残留字节格式）
             self.bar.setRange(0, max(1, len(payload)))
             self._log(t("xfer_log_send", name=os.path.basename(self._path), n=len(payload),
                         proto=self.cb_proto.currentText()))
@@ -258,6 +266,7 @@ class XferDialog(QDialog):
         self.app._xfer_detach()
         if self.bar.maximum() == 0:             # 结束忙碌态
             self.bar.setRange(0, 1)
+            self.bar.setFormat("%p%")           # 还原百分比格式（接收过程中设了字节格式）
         if ok:
             if self._is_send():
                 self.bar.setValue(self.bar.maximum())
@@ -270,8 +279,12 @@ class XferDialog(QDialog):
                 if meta.get("name"):
                     self._log(t("xfer_log_meta", name=meta.get("name", ""), n=meta.get("size", len(data))))
                 try:
-                    with open(out, "wb") as f:
-                        f.write(data)
+                    QApplication.setOverrideCursor(Qt.WaitCursor)
+                    try:
+                        with open(out, "wb") as f:
+                            f.write(data)
+                    finally:
+                        QApplication.restoreOverrideCursor()
                     self.bar.setRange(0, max(1, len(data)))
                     self.bar.setValue(len(data))
                     self._log(t("xfer_done_recv", path=out, n=len(data)))
@@ -310,7 +323,7 @@ class XferDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         v.addWidget(scroll, 1)
-        btn = QPushButton({"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+        btn = QPushButton(self.app._t("dlg_close"))
         btn.setObjectName("PlotGhostBtn")
         btn.clicked.connect(dlg.accept)
         row = QHBoxLayout()
@@ -366,10 +379,22 @@ class XferDialog(QDialog):
                 cb.view().window().setStyleSheet("background-color: %s;" % c["combo_dropdown_bg"])
 
     def closeEvent(self, e):
-        # 传输中关窗：先取消 worker 并等它退出，避免线程悬挂
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(2000)
+        # 关窗时若还挂着 worker（运行中、或刚结束 sig_done 尚未处理）：先断桥——putc 的 sig_send 之后落空、
+        # 不再碰连接，也不会在已关闭对话框上触发桥回调；再断开 dialog 侧的回调防 sig_done/progress 在已关闭
+        # 对话框上执行；运行中的再取消并等它退出，避免悬挂线程。
+        w = self._worker
+        if w is not None:
             self.app._xfer_detach()
+            try:
+                w.sig_done.disconnect(self._on_done)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                w.sig_progress.disconnect(self._on_progress)
+            except (TypeError, RuntimeError):
+                pass
+            if w.isRunning():
+                w.cancel()
+                w.wait(3000)
         self.app.settings.sync()
         super().closeEvent(e)

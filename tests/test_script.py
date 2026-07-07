@@ -168,6 +168,63 @@ class XferTests(unittest.TestCase):
         finally:
             xfer.START_TIMEOUT, xfer.ACK_TIMEOUT, xfer.BLOCK_TIMEOUT = saved
 
+    def test_ymodem_send_tolerates_missing_end_handshake(self):
+        """YMODEM 发送端：数据 + EOT 已确认交付后，接收方不发批次结束块的 C，也不应把「已成功交付」判为失败。"""
+        import xfer
+        q = [xfer.C]                     # 接收方回发队列（单字节）；预置起传 C
+        blocks = []
+
+        def getc(n, timeout):            # 单线程反应式 stub：有则取、空则超时 None
+            if len(q) >= n:
+                out = bytes(q[:n]); del q[:n]; return out
+            return None
+
+        def putc(frame):
+            b0 = frame[0]
+            if b0 in (xfer.SOH, xfer.STX):
+                seq = frame[1]; blocks.append(seq)
+                q.append(xfer.ACK)
+                if seq == 0:             # 头块 → ACK 后补一个 C 起数据阶段
+                    q.append(xfer.C)
+            elif b0 == xfer.EOT:
+                q.append(xfer.ACK)       # EOT ACK（数据已交付）；此后不再发 C（模拟对端已收尾）
+
+        data = b"hello ymodem end handshake"
+        n = xfer.send_file(getc, putc, data, mode=xfer.MODE_YMODEM, name="fw.bin")
+        self.assertEqual(n, len(data))   # 缺末尾握手仍返回成功、不抛异常
+        self.assertIn(0, blocks)         # 头块确已发出
+
+    def test_loopback_block_number_wrap(self):
+        """块号回绕：>256 块的传输要走过 seq 255→0 边界，数据仍完整（mod 256、send/recv 两端一致）。
+        loopback 常规用例尺寸 ≤3000B 绕不到，这里用 XMODEM-CRC 128B/块 × ~313 块专门覆盖回绕。"""
+        import xfer
+        data = bytes((i * 7 + 3) & 0xFF for i in range(40000))
+        res = self._run(xfer.MODE_XMODEM_CRC, data)
+        self.assertIsInstance(res.get("r"), tuple, "recv err: %r" % (res.get("r"),))
+        got, _ = res["r"]
+        self.assertGreaterEqual(len(got) // 128, 257)     # 确实 >256 块（越过 255→0 回绕）
+        self.assertEqual(got[:len(data)], data)           # 回绕两侧数据完整无错位
+
+    def test_send_block_number_is_mod256(self):
+        """发送端线上块号回绕为 mod 256：255 之后是 0（标准 XMODEM/YMODEM），不是 255→1。
+        loopback 两端一致时 255→1 也会自洽通过，故这里直接断言线上块号值、把标准钉死。"""
+        import xfer
+        seqs, q = [], [xfer.C]            # 反应式 stub：预置起传 C；逐块 / EOT 回 ACK
+        def getc(n, timeout):
+            if len(q) >= n:
+                out = bytes(q[:n]); del q[:n]; return out
+            return None
+        def putc(frame):
+            b0 = frame[0]
+            if b0 in (xfer.SOH, xfer.STX):
+                seqs.append(frame[1]); q.append(xfer.ACK)
+            elif b0 == xfer.EOT:
+                q.append(xfer.ACK)
+        xfer.send_file(getc, putc, bytes(300 * 128), mode=xfer.MODE_XMODEM_CRC)   # 300 块，越过 255
+        self.assertEqual(seqs[254], 255)  # 第 255 块
+        self.assertEqual(seqs[255], 0)    # 回绕 → 0（mod 256），不是 1
+        self.assertEqual(seqs[256], 1)
+
 
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class ModbusMasterIntegrationTests(unittest.TestCase):
@@ -1993,10 +2050,21 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertIn("2ecc71", w._ctrl_dots["cts"].styleSheet().lower())
             self.assertIn("2ecc71", w._ctrl_dots["dcd"].styleSheet().lower())
             self.assertNotIn("2ecc71", w._ctrl_dots["dsr"].styleSheet().lower())
-            # 复位脉冲：立即拉低 DTR（随后 singleShot 拉高，此处只验证起始沿）
+            # 复位脉冲：立即拉低 DTR（随后定时器恢复，此处只验证起始沿）
             rec["dtr"].clear()
+            w.sw_dtr.blockSignals(True); w.sw_dtr.setChecked(True); w.sw_dtr.blockSignals(False)
             w._pulse_reset()
             self.assertEqual(rec["dtr"], [False])
+            # 释放恢复到「开关当前状态」而非硬置高：脉冲期间用户把 DTR 关掉 → 释放应恢复为 False（尊重用户、不覆盖）
+            rec["dtr"].clear()
+            w.sw_dtr.blockSignals(True); w.sw_dtr.setChecked(False); w.sw_dtr.blockSignals(False)
+            w._pulse_reset_release()
+            self.assertEqual(rec["dtr"], [False])
+            # 开关为高时释放恢复为高（正常空闲态）
+            rec["dtr"].clear()
+            w.sw_dtr.blockSignals(True); w.sw_dtr.setChecked(True); w.sw_dtr.blockSignals(False)
+            w._pulse_reset_release()
+            self.assertEqual(rec["dtr"], [True])
             # 显隐：串口 + 已连接 → 显示；断开 → 隐藏
             self.assertIn(PROTO_SERIAL, [w.cb_proto.itemText(i) for i in range(w.cb_proto.count())])
             w.conn = _Mock(); w.cb_proto.setCurrentText(PROTO_SERIAL)
@@ -2009,6 +2077,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.conn, w._conn_proto = o_conn, o_proto
             w.cb_proto.setCurrentIndex(o_idx)
             if hasattr(w, "_ctrl_poll_timer"): w._ctrl_poll_timer.stop()
+            if getattr(w, "_reset_timer", None): w._reset_timer.stop()
 
     def test_xfer_worker_loopback(self):
         """两个真实 XferWorker(QThread) 经 sig_send↔feed 直连对拼：验证线程 + 信号桥端到端收发一致。"""
@@ -2064,6 +2133,15 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             # worker 要发的字节经桥回到 conn.send
             fake.sig_send.emit(b"ACK")
             self.assertEqual(mock.sent[-1][0], b"ACK")
+            # attach 第二个 worker 应先断开第一个的发送桥：旧 worker 再 emit 不应再到 conn（防两个 worker 同发）
+            fake2 = _FakeWorker()
+            w._xfer_attach(fake2)
+            self.assertIs(w._xfer_worker, fake2)
+            before = len(mock.sent)
+            fake.sig_send.emit(b"STALE")
+            self.assertEqual(len(mock.sent), before)          # 旧桥已断，STALE 未发出
+            fake2.sig_send.emit(b"NEW")
+            self.assertEqual(mock.sent[-1][0], b"NEW")        # 新桥正常
             # detach 后恢复正常收流
             w._xfer_detach()
             self.assertIsNone(w._xfer_worker)

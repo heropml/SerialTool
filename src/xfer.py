@@ -156,13 +156,15 @@ def _send_block(getc, putc, seq, payload, use_crc, cancel):
 
 
 def _send_eot(getc, putc, cancel):
-    """发 EOT 等 ACK（YMODEM 首个 EOT 可能被 NAK，重发即可）。"""
+    """发 EOT 等 ACK（YMODEM 首个 EOT 可能被 NAK，重发即可）。CAN 取消。"""
     for _ in range(MAX_RETRY):
         _check_cancel(cancel)
         putc(bytes([EOT]))
         c = getc(1, ACK_TIMEOUT)
         if c and c[0] == ACK:
             return
+        if c and c[0] == CAN:
+            raise XferCancelled("remote cancelled")
     raise XferError("EOT not acknowledged")
 
 
@@ -178,7 +180,7 @@ def _send_data(getc, putc, data, block_size, use_crc, cancel, progress, seq0=1):
         payload = chunk + bytes([SUB]) * (bs - len(chunk))
         _send_block(getc, putc, seq, payload, use_crc, cancel)
         off += len(chunk)
-        seq = (seq + 1) & 0xFF
+        seq = (seq + 1) & 0xFF            # 块号 mod 256（255→0）—— 标准 XMODEM/YMODEM（Forsberg 规范 / lrzsz / xmodem 库一致）
         if progress:
             progress(off, total)
     return seq
@@ -204,8 +206,15 @@ def send_file(getc, putc, data, mode=MODE_YMODEM, name="", cancel=None, progress
         _wait_start(getc, cancel, True)
         _send_data(getc, putc, data, 1024, True, cancel, progress, seq0=1)
         _send_eot(getc, putc, cancel)
-        _wait_start(getc, cancel, True)          # 接收方为下一文件再发 C
-        _send_block(getc, putc, 0, b"\x00" * 128, True, cancel)  # 全零块=批次结束
+        # 批次结束块：数据在 EOT 已确认交付，末尾「等 C + 全零块」只是批次终止符。对端若已收尾、不再发 C，
+        # 则这里会超时——但不应据此把「已成功交付」的传输判为失败。故尽力而为、失败静默（取消仍照常抛出）。
+        try:
+            _wait_start(getc, cancel, True)          # 接收方为下一文件再发 C
+            _send_block(getc, putc, 0, b"\x00" * 128, True, cancel)  # 全零块=批次结束
+        except XferCancelled:
+            raise
+        except XferError:
+            pass
     else:
         use_crc = _wait_start(getc, cancel, force_crc)
         _send_data(getc, putc, data, block_size, use_crc, cancel, progress, seq0=1)
@@ -231,6 +240,7 @@ def _recv_block(getc, header, use_crc, cancel):
     bs = 1024 if header == STX else 128
     rest = getc(bs + 2 + (2 if use_crc else 1), BLOCK_TIMEOUT)
     if not rest or len(rest) < bs + 2 + (2 if use_crc else 1):
+        _check_cancel(cancel)        # getc 返回 None 可能是 inbox 已关闭 → 抛 XferCancelled
         return None
     seq, cseq = rest[0], rest[1]
     payload = rest[2:2 + bs]
@@ -247,18 +257,20 @@ def _recv_block(getc, header, use_crc, cancel):
 
 
 def _parse_ymodem_header(payload):
-    """解析第 0 块 → (name, size)；空名（全零块）返回 ("", 0)。"""
+    """解析第 0 块 → (name, size)；size 解析失败为 None（与"空文件 size=0"区分）。
+    空名（全零块）返回 ("", None)，由上层处理。"""
     nul = payload.find(b"\x00")
     name = payload[:nul].decode("utf-8", "replace") if nul > 0 else ""
-    size = 0
+    size = None
     if nul >= 0:
         tail = payload[nul + 1:].split(b"\x00", 1)[0].strip()
         tok = tail.split()
         if tok:
             try:
-                size = int(tok[0])
+                v = int(tok[0])
+                size = v if v >= 0 else None
             except ValueError:
-                size = 0
+                pass                         # 解析失败 → size 保持 None，上层不截断
     return name, size
 
 
@@ -285,7 +297,8 @@ def recv_file(getc, putc, mode=MODE_YMODEM, cancel=None, progress=None):
             putc(bytes([ACK]))
             return b"", {}
         meta["name"] = name
-        meta["size"] = size
+        if size is not None:
+            meta["size"] = size
         putc(bytes([ACK]))
         # 头块确认后，为数据阶段再发一次 C，并读下一头字节
         header = _recv_open(getc, putc, use_crc, cancel)
@@ -315,7 +328,7 @@ def recv_file(getc, putc, mode=MODE_YMODEM, cancel=None, progress=None):
             seq, payload = blk
             if seq == expected:
                 data.extend(payload)
-                expected = (expected + 1) & 0xFF
+                expected = (expected + 1) & 0xFF     # 块号 mod 256（255→0），与发送端一致
                 putc(bytes([ACK]))
                 if progress:
                     progress(len(data), size)
@@ -343,6 +356,8 @@ def recv_file(getc, putc, mode=MODE_YMODEM, cancel=None, progress=None):
             if hh in (SOH, STX):
                 b2 = _recv_block(getc, hh, use_crc, cancel)
                 putc(bytes([ACK]))
+        except XferCancelled:
+            raise                              # 取消必须透传，不被下面的 XferError 兜住
         except XferError:
-            pass                          # 对端未发结束块也不影响已收数据
+            pass                               # 对端未发结束块也不影响已收数据
     return out, meta

@@ -865,6 +865,7 @@ class CommTool(QMainWindow):
         self._ctrl_poll_timer = QTimer(self)
         self._ctrl_poll_timer.setInterval(200)
         self._ctrl_poll_timer.timeout.connect(self._poll_ctrl_lines)
+        self._reset_timer = None   # 复位脉冲的单次定时器（懒建、挂 self 上，关窗随之销毁，不会在已析构对象上回调）
 
         self._update_net_fields()
         return card
@@ -2441,17 +2442,22 @@ class CommTool(QMainWindow):
             self.conn.set_rts(on)
 
     def _pulse_reset(self):
-        """DTR 拉低 ~120ms 再拉高，触发 Arduino 等的自动复位电路（不同板子复位方式或异，可用 DTR/RTS 手动控制）。"""
+        """DTR 拉低 ~120ms 再恢复到开关状态，触发 Arduino 等的自动复位电路（不同板子复位方式或异，可用 DTR/RTS 手动控制）。"""
         if self._conn_proto != PROTO_SERIAL or self.conn is None:
             return
         self.conn.set_dtr(False)
-        QTimer.singleShot(120, self._pulse_reset_release)
+        # 用挂在 self 上的单次定时器（非 QTimer.singleShot）：脉冲窗口内若关窗/断连，定时器随 self 销毁、
+        # 不会在已析构的 C++ 对象上回调；懒建复用。
+        if self._reset_timer is None:
+            self._reset_timer = QTimer(self)
+            self._reset_timer.setSingleShot(True)
+            self._reset_timer.timeout.connect(self._pulse_reset_release)
+        self._reset_timer.start(120)
 
     def _pulse_reset_release(self):
+        # 恢复 DTR 到「开关当前状态」而非硬置高：脉冲 120ms 内用户若手动改过 DTR，开关已反映其意图，尊重之、不覆盖。
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
-            self.conn.set_dtr(True)
-            self.sw_dtr.blockSignals(True); self.sw_dtr.setChecked(True); self.sw_dtr.blockSignals(False)
-            self.settings.setValue("serial_dtr", True)
+            self.conn.set_dtr(self.sw_dtr.isChecked())
 
     def _poll_ctrl_lines(self):
         """轮询串口输入状态线，刷新 CTS/DSR/DCD/RI 状态灯。"""
@@ -3592,12 +3598,22 @@ class CommTool(QMainWindow):
     # ----- 文件传输 ⇄ 连接层桥接（对话框调） -----
     def _xfer_attach(self, worker):
         """传输开始：主窗接管收流并把 worker 的发送经 GUI 线程转到 conn.send。"""
+        if self._xfer_worker is not None:
+            self._xfer_detach()                          # 防御：先断掉可能残留的上一个 worker 的发送桥，避免两个 worker 同时发数据
         self._xfer_worker = worker
         self._xfer_target = self._send_target()          # 起始时捕获目标（串口为 None）
         worker.sig_send.connect(self._xfer_send)
+        # 暂停 Modbus 定时器：传输期间收流喂协议引擎，Modbus 响应进不来；在途请求的定时器
+        # 也会误触发超时——清掉 inflight，待传输结束再恢复。
+        if hasattr(self, "_mbm_to"):
+            self._mbm_to.stop()
+        if hasattr(self, "_mbm_sched"):
+            self._mbm_sched.stop()
+        self._mbm_inflight = None
+        self._mbm_buf = b""
 
     def _xfer_detach(self):
-        """传输结束：断开发送桥、恢复正常收流。"""
+        """传输结束：断开发送桥、恢复正常收流、恢复 Modbus 轮询（不清结果，只重启调度）。"""
         w = self._xfer_worker
         if w is not None:
             try:
@@ -3605,6 +3621,8 @@ class CommTool(QMainWindow):
             except (TypeError, RuntimeError):
                 pass
         self._xfer_worker = None
+        if hasattr(self, "_mbm_tick"):
+            self._mbm_tick()           # 恢复 Modbus 轮询（若已启用）；不调 _mbm_restart 避免清掉已有结果
 
     def _xfer_send(self, data):
         """worker 线程经队列信号回到 GUI 线程发字节（连接可能已断，兜底不崩）。"""
@@ -5361,9 +5379,11 @@ class CommTool(QMainWindow):
                     and getattr(self, "_conn_cfg", None) == self._conn_config_signature(configured))
 
     def _mbm_active(self):
+        _xw = getattr(self, "_xfer_worker", None)
         return bool(self._mbm_connection_ready()
                     and self._mbm_on and self._is_open()
                     and not getattr(self, "_seq_on", False)
+                    and not (_xw is not None and _xw.isRunning())
                     and any(r.get("enabled") for r in self._mbm_rules))
 
     def _mbm_import_enabled(self, requested):
