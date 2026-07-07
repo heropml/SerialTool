@@ -126,6 +126,36 @@ class SerialConn(QObject):
     def is_open(self):
         return self._ser is not None and self._ser.is_open
 
+    # ----- 控制线（仅串口有；NetConn 无这些方法，上层按类型调用）-----
+    def set_dtr(self, on):
+        """设 DTR 输出线（高=True/低=False）。未连接则忽略。"""
+        if self._ser and self._ser.is_open:
+            try:
+                self._ser.dtr = bool(on)
+            except Exception:
+                pass
+
+    def set_rts(self, on):
+        """设 RTS 输出线（高=True/低=False）。未连接则忽略。"""
+        if self._ser and self._ser.is_open:
+            try:
+                self._ser.rts = bool(on)
+            except Exception:
+                pass
+
+    def read_lines(self):
+        """读输入状态线 → {'cts','dsr','dcd','ri'}: bool；未连接/读失败该项为 None。
+        键用显示惯例 dcd（Data Carrier Detect），底层读 pyserial 的 cd 属性。"""
+        attr = {"cts": "cts", "dsr": "dsr", "dcd": "cd", "ri": "ri"}
+        out = {k: None for k in attr}
+        if self._ser and self._ser.is_open:
+            for k, a in attr.items():
+                try:
+                    out[k] = bool(getattr(self._ser, a))
+                except Exception:
+                    out[k] = None
+        return out
+
 
 # ============== 后台串口扫描线程 ==============
 class PortScannerThread(QThread):

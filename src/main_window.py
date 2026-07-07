@@ -812,6 +812,57 @@ class CommTool(QMainWindow):
         self.btn_open.clicked.connect(self.toggle_conn)
         layout.addWidget(self.btn_open)
 
+        # 控制线（仅串口 + 已连接时显示）：DTR/RTS 输出开关 + 复位脉冲 + CTS/DSR/DCD/RI 状态灯
+        self.box_ctrl = QWidget()
+        cl = QVBoxLayout(self.box_ctrl)
+        cl.setContentsMargins(0, 8, 0, 0)
+        cl.setSpacing(6)
+        self.lbl_ctrl_head = self._tr_label("ctrl_line", 12, bold=True)
+        cl.addWidget(self.lbl_ctrl_head)
+        r_out = QHBoxLayout()
+        r_out.setSpacing(6)
+        self.sw_dtr = IOSSwitch(True)
+        self.sw_dtr.toggled.connect(self._on_dtr_toggled)
+        self.sw_dtr.setProperty("tr_tooltip", "ctrl_dtr_tip")
+        self.sw_dtr.setToolTip(self._t("ctrl_dtr_tip"))
+        self.sw_rts = IOSSwitch(True)
+        self.sw_rts.toggled.connect(self._on_rts_toggled)
+        self.sw_rts.setProperty("tr_tooltip", "ctrl_rts_tip")
+        self.sw_rts.setToolTip(self._t("ctrl_rts_tip"))
+        _dtr_l = QLabel("DTR"); _dtr_l.setObjectName("CtrlLbl")
+        _rts_l = QLabel("RTS"); _rts_l.setObjectName("CtrlLbl")
+        r_out.addWidget(_dtr_l); r_out.addWidget(self.sw_dtr)
+        r_out.addSpacing(14)
+        r_out.addWidget(_rts_l); r_out.addWidget(self.sw_rts)
+        r_out.addStretch(1)
+        self.btn_reset = QPushButton(self._t("ctrl_reset"))
+        self.btn_reset.setObjectName("GhostBtn")
+        self.btn_reset.setProperty("tr_text", "ctrl_reset")
+        self.btn_reset.setProperty("tr_tooltip", "ctrl_reset_tip")
+        self.btn_reset.setToolTip(self._t("ctrl_reset_tip"))
+        self.btn_reset.clicked.connect(self._pulse_reset)
+        r_out.addWidget(self.btn_reset)
+        cl.addLayout(r_out)
+        r_in = QHBoxLayout()
+        r_in.setSpacing(0)
+        self._ctrl_dots = {}
+        _dot_keys = ("cts", "dsr", "dcd", "ri")
+        for _i, k in enumerate(_dot_keys):
+            lb = QLabel(k.upper()); lb.setObjectName("CtrlLbl")
+            dot = QLabel("●"); dot.setObjectName("CtrlDot")
+            self._ctrl_dots[k] = dot
+            r_in.addWidget(lb)
+            r_in.addSpacing(5)               # 标签与其状态点之间固定小间距
+            r_in.addWidget(dot)
+            if _i < len(_dot_keys) - 1:
+                r_in.addStretch(1)           # 组间等分弹簧 → 四组两端对齐、均匀铺满整行
+        cl.addLayout(r_in)
+        layout.addWidget(self.box_ctrl)
+        # 输入状态线轮询定时器（连接期间 ~5Hz 刷新状态灯）
+        self._ctrl_poll_timer = QTimer(self)
+        self._ctrl_poll_timer.setInterval(200)
+        self._ctrl_poll_timer.timeout.connect(self._poll_ctrl_lines)
+
         self._update_net_fields()
         return card
 
@@ -820,6 +871,8 @@ class CommTool(QMainWindow):
         proto = self.cb_proto.currentText()
         engaged = self.conn is not None
         is_serial = proto == PROTO_SERIAL
+        if hasattr(self, "box_ctrl"):           # 控制线小节：仅串口 + 已连接时显示
+            self.box_ctrl.setVisible(is_serial and engaged)
         is_srv = proto == PROTO_TCP_SERVER
         is_cli = proto == PROTO_TCP_CLIENT
         is_udp = proto == PROTO_UDP
@@ -2360,6 +2413,55 @@ class CommTool(QMainWindow):
         # 记录已连接的串口设备名 + 复位掉线去抖计数，供后台扫描检测物理移除
         self._serial_device = port if proto == PROTO_SERIAL else None
         self._serial_missing_count = 0
+        if proto == PROTO_SERIAL:
+            self._apply_ctrl_lines_on_open()   # 应用持久化 DTR/RTS + 启动状态线轮询
+
+    def _apply_ctrl_lines_on_open(self):
+        """串口连上：按持久化的 DTR/RTS 状态应用到硬件 + 同步开关 + 启动输入状态线轮询。"""
+        dtr = str(self.settings.value("serial_dtr", "true")).lower() in ("1", "true")
+        rts = str(self.settings.value("serial_rts", "true")).lower() in ("1", "true")
+        for sw, val in ((self.sw_dtr, dtr), (self.sw_rts, rts)):
+            sw.blockSignals(True); sw.setChecked(val); sw.blockSignals(False)
+        self.conn.set_dtr(dtr)
+        self.conn.set_rts(rts)
+        self._poll_ctrl_lines()
+        self._ctrl_poll_timer.start()
+
+    def _on_dtr_toggled(self, on):
+        self.settings.setValue("serial_dtr", bool(on))
+        if self._conn_proto == PROTO_SERIAL and self.conn is not None:
+            self.conn.set_dtr(on)
+
+    def _on_rts_toggled(self, on):
+        self.settings.setValue("serial_rts", bool(on))
+        if self._conn_proto == PROTO_SERIAL and self.conn is not None:
+            self.conn.set_rts(on)
+
+    def _pulse_reset(self):
+        """DTR 拉低 ~120ms 再拉高，触发 Arduino 等的自动复位电路（不同板子复位方式或异，可用 DTR/RTS 手动控制）。"""
+        if self._conn_proto != PROTO_SERIAL or self.conn is None:
+            return
+        self.conn.set_dtr(False)
+        QTimer.singleShot(120, self._pulse_reset_release)
+
+    def _pulse_reset_release(self):
+        if self._conn_proto == PROTO_SERIAL and self.conn is not None:
+            self.conn.set_dtr(True)
+            self.sw_dtr.blockSignals(True); self.sw_dtr.setChecked(True); self.sw_dtr.blockSignals(False)
+            self.settings.setValue("serial_dtr", True)
+
+    def _poll_ctrl_lines(self):
+        """轮询串口输入状态线，刷新 CTS/DSR/DCD/RI 状态灯。"""
+        if self._conn_proto != PROTO_SERIAL or self.conn is None:
+            return
+        lines = self.conn.read_lines()
+        for k, dot in self._ctrl_dots.items():
+            self._set_dot(dot, lines.get(k))
+
+    def _set_dot(self, dot, state):
+        c = chrome_for(self._theme_id())
+        col = "#2ecc71" if state is True else c["separator"]   # 绿=有效 / 灰=无效或未知
+        dot.setStyleSheet("color: %s; font-size: 13px;" % col)
 
     def _reset_recv_state(self):
         """统一重置接收解析状态：连接打开/关闭、清空数据区时调用，保证三处一致。"""
@@ -2569,6 +2671,8 @@ class CommTool(QMainWindow):
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
         self._mbm_restart()        # 断开 → 停止 Modbus 主机轮询（_mbm_active 此时为假）
+        if hasattr(self, "_ctrl_poll_timer"):
+            self._ctrl_poll_timer.stop()   # 断开 → 停止控制线状态轮询
 
         self.btn_open.setProperty("state", "")
         self.btn_open.style().unpolish(self.btn_open)
@@ -4782,6 +4886,7 @@ class CommTool(QMainWindow):
         "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
         # 串口连接
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
+        "serial_dtr", "serial_rts",
         # 数据区显示
         "rx_hex", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",

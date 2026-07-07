@@ -1862,6 +1862,47 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             if dlg is not None:
                 dlg.deleteLater()
 
+    def test_serial_control_lines(self):
+        """串口控制线：DTR/RTS 开关调 conn.set_dtr/set_rts + 持久化；轮询按 read_lines 刷状态灯；复位先拉低 DTR；仅串口+已连接时显示。"""
+        from main_window import PROTO_SERIAL
+        w = _win()
+        rec = {"dtr": [], "rts": []}
+        class _Mock:
+            def set_dtr(s, on): rec["dtr"].append(on)
+            def set_rts(s, on): rec["rts"].append(on)
+            def read_lines(s): return {"cts": True, "dsr": False, "dcd": True, "ri": True}
+        o_conn, o_proto, o_idx = w.conn, w._conn_proto, w.cb_proto.currentIndex()
+        try:
+            w.conn = _Mock(); w._conn_proto = PROTO_SERIAL
+            # 开关 → 调 conn.set_dtr/set_rts + 落到设置
+            w._on_dtr_toggled(False)
+            self.assertEqual(rec["dtr"], [False])
+            self.assertEqual(str(w.settings.value("serial_dtr")).lower(), "false")
+            w._on_rts_toggled(True)
+            self.assertEqual(rec["rts"], [True])
+            # 轮询 → 状态灯颜色随 read_lines：有效(True)→绿、无效(False)→非绿
+            # dcd 特别校验：读的是 pyserial 的 cd 属性、灯键是 dcd，两侧键名须对齐（否则永不亮）
+            w._poll_ctrl_lines()
+            self.assertIn("2ecc71", w._ctrl_dots["cts"].styleSheet().lower())
+            self.assertIn("2ecc71", w._ctrl_dots["dcd"].styleSheet().lower())
+            self.assertNotIn("2ecc71", w._ctrl_dots["dsr"].styleSheet().lower())
+            # 复位脉冲：立即拉低 DTR（随后 singleShot 拉高，此处只验证起始沿）
+            rec["dtr"].clear()
+            w._pulse_reset()
+            self.assertEqual(rec["dtr"], [False])
+            # 显隐：串口 + 已连接 → 显示；断开 → 隐藏
+            self.assertIn(PROTO_SERIAL, [w.cb_proto.itemText(i) for i in range(w.cb_proto.count())])
+            w.conn = _Mock(); w.cb_proto.setCurrentText(PROTO_SERIAL)
+            w._update_net_fields()
+            self.assertFalse(w.box_ctrl.isHidden())
+            w.conn = None
+            w._update_net_fields()
+            self.assertTrue(w.box_ctrl.isHidden())
+        finally:
+            w.conn, w._conn_proto = o_conn, o_proto
+            w.cb_proto.setCurrentIndex(o_idx)
+            if hasattr(w, "_ctrl_poll_timer"): w._ctrl_poll_timer.stop()
+
     def test_frame_builder_dialog(self):
         """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""
         from frame_builder_dialog import FrameBuilderDialog
