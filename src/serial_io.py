@@ -61,13 +61,14 @@ class SerialConn(QObject):
     error_occurred = pyqtSignal(str)
     state_changed = pyqtSignal(bool)
 
-    def __init__(self, port, baud, bytesize, parity, stopbits, parent=None):
+    def __init__(self, port, baud, bytesize, parity, stopbits, parent=None, flow="none"):
         super().__init__(parent)
         self._port = port
         self._baud = baud
         self._bytesize = bytesize
         self._parity = parity
         self._stopbits = stopbits
+        self._flow = flow          # "none" / "rtscts"（硬件 RTS/CTS）/ "xonxoff"（软件 XON/XOFF）
         self._ser = None
         self._reader = None
 
@@ -76,6 +77,7 @@ class SerialConn(QObject):
             self._ser = serial.Serial(
                 port=self._port, baudrate=self._baud, bytesize=self._bytesize,
                 parity=self._parity, stopbits=self._stopbits, timeout=0,
+                rtscts=(self._flow == "rtscts"), xonxoff=(self._flow == "xonxoff"),
             )
         except Exception as e:
             self.error_occurred.emit(str(e))
@@ -140,6 +142,14 @@ class SerialConn(QObject):
         if self._ser and self._ser.is_open:
             try:
                 self._ser.rts = bool(on)
+            except Exception:
+                pass
+
+    def send_break(self, duration=0.25):
+        """发送 Break 信号（TX 线保持间隔电平 duration 秒）。未连接则忽略。"""
+        if self._ser and self._ser.is_open:
+            try:
+                self._ser.send_break(duration)
             except Exception:
                 pass
 

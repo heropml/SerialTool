@@ -314,7 +314,7 @@ class CommTool(QMainWindow):
         self._seq_dlg = None
         self._frame_builder_dlg = None   # 帧构造器对话框（单实例）
         self._toolbox_dlg = None         # 工具箱对话框（进制转换 + 校验计算，单实例）
-        self._xfer_dlg = None            # 文件传输对话框（XMODEM/YMODEM，单实例）
+        self._xfer_dlg = None            # 文件传输对话框（协议收发 / 原始字节流，单实例）
         self._xfer_worker = None         # 传输后台线程；非 None 且运行中时 on_data_received 接管收流
         self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
@@ -765,6 +765,13 @@ class CommTool(QMainWindow):
         self.cb_stopbits.setCurrentText("1")
         self.row_stopbits = make_row("stop_bits", self.cb_stopbits)
 
+        # 硬件/软件流控：None / RTS-CTS（硬件）/ XON-XOFF（软件）
+        self.cb_flow = QComboBox()
+        self.cb_flow.addItems(["None", "RTS/CTS", "XON/XOFF"])
+        self.cb_flow.setCurrentText("None")
+        self.cb_flow.currentIndexChanged.connect(self._on_flow_changed)
+        self.row_flow = make_row("flow_control", self.cb_flow)
+
         # 本地 IP（TCP Server / UDP）— 下拉本机网卡 IP，可编辑
         self.cb_local_ip = QComboBox()
         self.cb_local_ip.setEditable(True)
@@ -822,8 +829,9 @@ class CommTool(QMainWindow):
         cl.setSpacing(6)
         self.lbl_ctrl_head = self._tr_label("ctrl_line", 12, bold=True)
         cl.addWidget(self.lbl_ctrl_head)
+        # DTR / RTS 输出开关 + 复位 / Break 按钮同一行（紧凑排布，按钮用小号 GhostBtnSm 省横向空间）
         r_out = QHBoxLayout()
-        r_out.setSpacing(6)
+        r_out.setSpacing(4)
         self.sw_dtr = IOSSwitch(True)
         self.sw_dtr.toggled.connect(self._on_dtr_toggled)
         self.sw_dtr.setProperty("tr_tooltip", "ctrl_dtr_tip")
@@ -834,17 +842,26 @@ class CommTool(QMainWindow):
         self.sw_rts.setToolTip(self._t("ctrl_rts_tip"))
         _dtr_l = QLabel("DTR"); _dtr_l.setObjectName("CtrlLbl")
         _rts_l = QLabel("RTS"); _rts_l.setObjectName("CtrlLbl")
-        r_out.addWidget(_dtr_l); r_out.addWidget(self.sw_dtr)
-        r_out.addSpacing(14)
-        r_out.addWidget(_rts_l); r_out.addWidget(self.sw_rts)
-        r_out.addStretch(1)
         self.btn_reset = QPushButton(self._t("ctrl_reset"))
-        self.btn_reset.setObjectName("GhostBtn")
+        self.btn_reset.setObjectName("GhostBtnSm")
         self.btn_reset.setProperty("tr_text", "ctrl_reset")
         self.btn_reset.setProperty("tr_tooltip", "ctrl_reset_tip")
         self.btn_reset.setToolTip(self._t("ctrl_reset_tip"))
         self.btn_reset.clicked.connect(self._pulse_reset)
+        self.btn_break = QPushButton(self._t("ctrl_break"))
+        self.btn_break.setObjectName("GhostBtnSm")
+        self.btn_break.setProperty("tr_text", "ctrl_break")
+        self.btn_break.setProperty("tr_tooltip", "ctrl_break_tip")
+        self.btn_break.setToolTip(self._t("ctrl_break_tip"))
+        self.btn_break.clicked.connect(self._send_break)
+        # DTR / RTS / 复位 / 中断 四组两端对齐、均匀铺满整行（与下方 CTS/DSR/DCD/RI 状态灯行同分布，上下一致）
+        r_out.addWidget(_dtr_l); r_out.addWidget(self.sw_dtr)
+        r_out.addStretch(1)
+        r_out.addWidget(_rts_l); r_out.addWidget(self.sw_rts)
+        r_out.addStretch(1)
         r_out.addWidget(self.btn_reset)
+        r_out.addStretch(1)
+        r_out.addWidget(self.btn_break)
         cl.addLayout(r_out)
         r_in = QHBoxLayout()
         r_in.setSpacing(0)
@@ -883,7 +900,7 @@ class CommTool(QMainWindow):
         is_grp = proto == PROTO_UDP_MULTICAST
         # 串口字段：仅串口类型显示
         for row in (self.row_port, self.row_baud, self.row_databits,
-                    self.row_parity, self.row_stopbits):
+                    self.row_parity, self.row_stopbits, self.row_flow):
             row.setVisible(is_serial)
         if is_serial:
             # 串口类型下网络行全部隐藏，按钮文案走串口键，提前返回
@@ -2131,6 +2148,19 @@ class CommTool(QMainWindow):
         }}
         QPushButton#GhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QPushButton#GhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
+        QPushButton#GhostBtnSm {{
+            background-color: {c['ghost_bg']};
+            color: {c['accent']};
+            border: 0px;
+            border-radius: 7px;
+            font-family: 'Segoe UI';
+            font-size: 12px;
+            font-weight: 500;
+            padding: 3px 8px;
+            min-height: 16px;
+        }}
+        QPushButton#GhostBtnSm:hover {{ background-color: {c['ghost_hover']}; }}
+        QPushButton#GhostBtnSm:pressed {{ background-color: {c['ghost_pressed']}; }}
         QPushButton#GhostBtn:checked {{ background-color: {c['accent']}; color: white; }}
         QPushButton#GhostBtn[arActive="true"] {{ background-color: {c['accent']}; color: white; }}
         QPushButton#GhostBtn[arActive="true"]:hover {{ background-color: {c['accent_hover']}; }}
@@ -2308,7 +2338,8 @@ class CommTool(QMainWindow):
             except (ValueError, TypeError):
                 baud = None
             return (proto, self.cb_port.currentData(), baud, self.cb_databits.currentText(),
-                    self.cb_parity.currentText(), self.cb_stopbits.currentText())
+                    self.cb_parity.currentText(), self.cb_stopbits.currentText(),
+                    self.cb_flow.currentText())
         if proto == PROTO_TCP_CLIENT:
             return (proto, self.ed_remote_ip.text().strip(), self._parse_port(self.ed_remote_port.text()))
         return (proto,)
@@ -2332,9 +2363,11 @@ class CommTool(QMainWindow):
                             "2": serial.STOPBITS_TWO}
             databits_map = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
                             "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
+            flow_map = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
             conn = SerialConn(port, baud, databits_map[self.cb_databits.currentText()],
                               parity_map[self.cb_parity.currentText()],
-                              stopbits_map[self.cb_stopbits.currentText()])
+                              stopbits_map[self.cb_stopbits.currentText()],
+                              flow=flow_map.get(self.cb_flow.currentText(), "none"))
         elif proto == PROTO_TCP_SERVER:
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
@@ -2441,6 +2474,11 @@ class CommTool(QMainWindow):
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
             self.conn.set_rts(on)
 
+    def _on_flow_changed(self, *_):
+        # RTS/CTS 硬件流控时 RTS 由硬件自动管理，禁用手动 RTS 开关避免误解（软件 / 无流控时可手动控制）
+        if hasattr(self, "sw_rts"):
+            self.sw_rts.setEnabled(self.cb_flow.currentText() != "RTS/CTS")
+
     def _pulse_reset(self):
         """DTR 拉低 ~120ms 再恢复到开关状态，触发 Arduino 等的自动复位电路（不同板子复位方式或异，可用 DTR/RTS 手动控制）。"""
         if self._conn_proto != PROTO_SERIAL or self.conn is None:
@@ -2458,6 +2496,11 @@ class CommTool(QMainWindow):
         # 恢复 DTR 到「开关当前状态」而非硬置高：脉冲 120ms 内用户若手动改过 DTR，开关已反映其意图，尊重之、不覆盖。
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
             self.conn.set_dtr(self.sw_dtr.isChecked())
+
+    def _send_break(self):
+        """发送 Break 信号（TX 线拉低约 250ms）：常用于唤醒 / 触发进入 bootloader 等。仅串口 + 已连接。"""
+        if self._conn_proto == PROTO_SERIAL and self.conn is not None:
+            self.conn.send_break()
 
     def _poll_ctrl_lines(self):
         """轮询串口输入状态线，刷新 CTS/DSR/DCD/RI 状态灯。"""
@@ -2944,13 +2987,15 @@ class CommTool(QMainWindow):
             return text
 
     def on_data_received(self, data: bytes, reply_target=None):
-        # 文件传输(XMODEM/YMODEM)进行中：整段接管收流喂协议引擎，不进显示区/自动应答/序列/Modbus
+        # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
+        # 协议传输(XMODEM/YMODEM)喂给引擎当 getc 源；原始字节流(raw)只发不收，收流直接丢弃。
         w = self._xfer_worker
         if w is not None and w.isRunning():
-            try:
-                w.feed(data)
-            except Exception:
-                pass
+            if getattr(w, "takes_input", True):
+                try:
+                    w.feed(data)
+                except Exception:
+                    pass
             return
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
@@ -4957,7 +5002,7 @@ class CommTool(QMainWindow):
         "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
         # 串口连接
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
-        "serial_dtr", "serial_rts",
+        "ser_flow", "serial_dtr", "serial_rts",
         # 数据区显示
         "rx_hex", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",
@@ -6676,6 +6721,7 @@ class CommTool(QMainWindow):
             s.setValue("ser_databits", self.cb_databits.currentText())
             s.setValue("ser_parity", self.cb_parity.currentText())
             s.setValue("ser_stopbits", self.cb_stopbits.currentText())
+            s.setValue("ser_flow", self.cb_flow.currentText())
             s.sync()
         except Exception:
             pass
@@ -6823,6 +6869,7 @@ class CommTool(QMainWindow):
         restore_combo(self.cb_databits, "ser_databits")
         restore_combo(self.cb_parity, "ser_parity")
         restore_combo(self.cb_stopbits, "ser_stopbits")
+        restore_combo(self.cb_flow, "ser_flow")
         # cb_port 由后台扫描异步填充，此刻多半还空 → 记下待恢复端口，
         # 首次扫描结果到达时(_on_port_scan_complete)再按设备名选回上次端口。
         self._pending_restore_port = (s.value("ser_port", "") or None)

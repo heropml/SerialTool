@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""文件传输对话框 XferDialog + 后台线程 XferWorker —— XMODEM / XMODEM-1K / YMODEM 收发。
+"""文件传输对话框 XferDialog + 后台线程 XferWorker —— 协议收发 / 原始字节流发送。
 
 协议纯逻辑在 xfer.py（可单测）；本模块做 GUI 与串口/网络连接的桥接：
-- XferWorker(QThread) 跑 xfer.send_file/recv_file，getc 从 ByteInbox 取（主窗把收到的数据 feed 进来），
+- XferWorker(QThread) 跑 xfer.send_file/recv_file 或 raw 分块发送，协议 getc 从 ByteInbox 取（主窗把收到的数据 feed 进来），
   putc 经 sig_send 信号回到 GUI 线程由主窗 conn.send 发出（连接生命周期只在 GUI 线程动，避免竞态）。
 - 传输期间主窗 on_data_received 整段接管收流喂 worker、不进显示区/自动应答/序列/Modbus。
 单实例非模态，随主窗刷新主题/语言。
@@ -11,7 +11,7 @@ import os
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QDialog, QWidget, QLabel, QLineEdit, QComboBox,
-                             QRadioButton, QButtonGroup, QPushButton, QProgressBar,
+                             QRadioButton, QButtonGroup, QPushButton, QProgressBar, QSpinBox,
                              QTextEdit, QScrollArea, QFileDialog, QHBoxLayout, QVBoxLayout)
 
 import xfer
@@ -19,12 +19,15 @@ from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
 
+MODE_RAW = "raw"            # 原始字节流：无协议、按分块 + 块间延时直接发送（只发不收）
+
 # 协议下拉项 → xfer 模式
 _PROTOS = (
     ("xfer_proto_xmodem", xfer.MODE_XMODEM),
     ("xfer_proto_xmodem_crc", xfer.MODE_XMODEM_CRC),
     ("xfer_proto_1k", xfer.MODE_XMODEM_1K),
     ("xfer_proto_ymodem", xfer.MODE_YMODEM),
+    ("xfer_proto_raw", MODE_RAW),
 )
 
 
@@ -34,12 +37,15 @@ class XferWorker(QThread):
     sig_done = pyqtSignal(bool, str, object)     # ok, msg, (data,meta)|None
     sig_send = pyqtSignal(bytes)
 
-    def __init__(self, direction, mode, payload=b"", name=""):
+    def __init__(self, direction, mode, payload=b"", name="", chunk=1024, delay=0):
         super().__init__()
         self.direction = direction               # "send" / "recv"
         self.mode = mode
         self.payload = bytes(payload)
         self.name = name
+        self.chunk = max(1, int(chunk))          # raw 分块字节数
+        self.delay = max(0, int(delay))          # raw 块间延时 ms
+        self.takes_input = (mode != MODE_RAW)    # 协议传输接管收流喂 getc；raw 只发不收、不接管
         self.inbox = xfer.ByteInbox()
         self._cancel = False
 
@@ -51,6 +57,9 @@ class XferWorker(QThread):
         self.inbox.close()                       # 唤醒阻塞的 getc，让协议尽快看到取消
 
     def run(self):
+        if self.mode == MODE_RAW:
+            self._run_raw()
+            return
         getc = self.inbox.read
         putc = lambda d: self.sig_send.emit(bytes(d))
         cancel = lambda: self._cancel
@@ -67,6 +76,30 @@ class XferWorker(QThread):
             self.sig_done.emit(False, "__cancelled__", None)
         except Exception as e:                   # 协议/IO 异常 → 失败收尾（不崩 GUI）
             self.sig_done.emit(False, str(e), None)
+
+    def _run_raw(self):
+        """原始字节流：无协议、按 chunk 分块 sig_send，块间延时 delay ms（可取消）。"""
+        total, off = len(self.payload), 0
+        try:
+            while off < total:
+                if self._cancel:
+                    self.sig_done.emit(False, "__cancelled__", None)
+                    return
+                piece = self.payload[off:off + self.chunk]
+                self.sig_send.emit(bytes(piece))
+                off += len(piece)
+                self.sig_progress.emit(off, total)
+                if self.delay and off < total:
+                    self._sleep_cancellable(self.delay)
+            self.sig_done.emit(True, "", None)
+        except Exception as e:
+            self.sig_done.emit(False, str(e), None)
+
+    def _sleep_cancellable(self, ms):
+        left = ms
+        while left > 0 and not self._cancel:     # 分段睡，最多 20ms 内响应取消
+            self.msleep(min(20, left))
+            left -= 20
 
 
 class XferDialog(QDialog):
@@ -129,6 +162,27 @@ class XferDialog(QDialog):
         r_proto.addWidget(self.cb_proto, 1)
         root.addLayout(r_proto)
 
+        # 原始字节流参数（仅「原始字节流」协议显示）：分块大小 + 块间延时
+        self.row_raw = QWidget()
+        rr = QHBoxLayout(self.row_raw)
+        rr.setContentsMargins(0, 0, 0, 0)
+        self.lbl_chunk = QLabel()
+        self.sp_chunk = QSpinBox()
+        self.sp_chunk.setRange(1, 65535)
+        self.sp_chunk.setValue(1024)
+        self.sp_chunk.setSuffix(" B")
+        self.lbl_delay = QLabel()
+        self.sp_delay = QSpinBox()
+        self.sp_delay.setRange(0, 10000)
+        self.sp_delay.setValue(0)
+        self.sp_delay.setSuffix(" ms")
+        rr.addWidget(self.lbl_chunk); rr.addSpacing(6); rr.addWidget(self.sp_chunk)
+        rr.addSpacing(16)
+        rr.addWidget(self.lbl_delay); rr.addSpacing(6); rr.addWidget(self.sp_delay)
+        rr.addStretch(1)
+        root.addWidget(self.row_raw)
+        self.row_raw.setVisible(False)
+
         # 文件 / 保存路径
         r_file = QHBoxLayout()
         self.lbl_file = QLabel()
@@ -170,13 +224,25 @@ class XferDialog(QDialog):
         r_btn.addWidget(self.btn_cancel)
         root.addLayout(r_btn)
 
+        self.cb_proto.currentIndexChanged.connect(self._on_proto_changed)
         self.retranslate()
         self.refresh_theme()
         self._on_dir_changed()
+        self._on_proto_changed()
 
     # ---------- 交互 ----------
     def _is_send(self):
         return self.rb_send.isChecked()
+
+    def _on_proto_changed(self, *_):
+        # 原始字节流：只发不收 → 显示分块/延时行、强制发送方向、禁用接收
+        raw = self.cb_proto.currentData() == MODE_RAW
+        self.row_raw.setVisible(raw)
+        if raw:
+            self.rb_send.setChecked(True)
+            self.rb_recv.setEnabled(False)
+        else:
+            self.rb_recv.setEnabled(True)
 
     def _on_dir_changed(self, *_):
         t = self.app._t
@@ -204,7 +270,12 @@ class XferDialog(QDialog):
         self.log.append(msg)
 
     def _set_busy(self, busy):
-        for w in (self.rb_send, self.rb_recv, self.cb_proto, self.btn_browse, self.btn_start):
+        raw = self.cb_proto.currentData() == MODE_RAW
+        self.rb_send.setEnabled(not busy)
+        self.rb_recv.setEnabled((not busy) and (not raw))
+        if raw:
+            self.rb_send.setChecked(True)
+        for w in (self.cb_proto, self.btn_browse, self.btn_start):
             w.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy)
 
@@ -231,7 +302,8 @@ class XferDialog(QDialog):
             except OSError as e:
                 self.app.toast(t("xfer_read_err", msg=e), error=True)
                 return
-            worker = XferWorker("send", mode, payload=payload, name=os.path.basename(self._path))
+            worker = XferWorker("send", mode, payload=payload, name=os.path.basename(self._path),
+                                chunk=self.sp_chunk.value(), delay=self.sp_delay.value())
             self.bar.setFormat("%p%")                  # 切回百分比（上次若为接收则可能残留字节格式）
             self.bar.setRange(0, max(1, len(payload)))
             self._log(t("xfer_log_send", name=os.path.basename(self._path), n=len(payload),
@@ -354,10 +426,17 @@ class XferDialog(QDialog):
         self.lbl_proto.setText(t("xfer_proto"))
         for i, (key, _mode) in enumerate(_PROTOS):
             self.cb_proto.setItemText(i, t(key))
+        self.lbl_chunk.setText(t("xfer_chunk"))
+        self.lbl_delay.setText(t("xfer_delay"))
         self.lbl_file.setText(t("xfer_file") if self._is_send() else t("xfer_save"))
         self.btn_browse.setText(t("xfer_browse"))
         self.btn_start.setText(t("xfer_start"))
         self.btn_cancel.setText(t("xfer_cancel"))
+        # 方向 / 协议 / 文件(保存) 行标签定宽成一列 → 输入框在发送 / 接收、各语言下都对齐
+        fm = self.lbl_dir.fontMetrics()
+        wmax = max(fm.horizontalAdvance(t(k)) for k in ("xfer_dir", "xfer_proto", "xfer_file", "xfer_save")) + 2
+        for lb in (self.lbl_dir, self.lbl_proto, self.lbl_file):
+            lb.setFixedWidth(wmax)
 
     def refresh_theme(self):
         c = chrome_for(self.app._theme_id())

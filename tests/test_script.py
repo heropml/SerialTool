@@ -352,15 +352,20 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         old_cfg, old_proto, old_on = w._conn_cfg, w._conn_proto, w._mbm_on
         old_rules, old_open = w._mbm_rules, w._is_open
         old_ui_proto, old_baud = w.cb_proto.currentText(), w.cb_baud.currentText()
+        old_flow = w.cb_flow.currentText()
         try:
             w.cb_proto.setCurrentText("Serial")
             w.cb_baud.setCurrentText("9600")
+            w.cb_flow.setCurrentText("None")
             w._conn_proto = "Serial"
             w._conn_cfg = w._conn_config_signature("Serial")
             w._mbm_on = True
             w._mbm_rules = [{"enabled": True}]
             w._is_open = lambda: True
             self.assertTrue(w._mbm_active())
+            w.cb_flow.setCurrentText("RTS/CTS")
+            self.assertFalse(w._mbm_active())
+            w.cb_flow.setCurrentText("None")
             w.cb_baud.setCurrentText("19200")
             self.assertFalse(w._mbm_active())
             w._mbm_on = False
@@ -372,6 +377,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w.cb_proto.setCurrentText(old_ui_proto)
             w.cb_baud.setCurrentText(old_baud)
+            w.cb_flow.setCurrentText(old_flow)
             w._conn_cfg, w._conn_proto, w._mbm_on = old_cfg, old_proto, old_on
             w._mbm_rules, w._is_open = old_rules, old_open
 
@@ -2079,6 +2085,29 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             if hasattr(w, "_ctrl_poll_timer"): w._ctrl_poll_timer.stop()
             if getattr(w, "_reset_timer", None): w._reset_timer.stop()
 
+    def test_serial_break_and_flow(self):
+        """Break 走 conn.send_break；流控下拉 RTS/CTS 禁用手动 RTS；SerialConn 存 flow 参数。"""
+        from main_window import PROTO_SERIAL
+        import serial_io
+        w = _win()
+        rec = {"break": 0}
+        class _Mock:
+            def send_break(s, d=0.25): rec["break"] += 1
+        o_conn, o_proto = w.conn, w._conn_proto
+        try:
+            w.conn = _Mock(); w._conn_proto = PROTO_SERIAL
+            w._send_break()
+            self.assertEqual(rec["break"], 1)                     # Break 走 conn.send_break
+            w.cb_flow.setCurrentText("RTS/CTS")
+            self.assertFalse(w.sw_rts.isEnabled())                # 硬件流控 → 禁用手动 RTS
+            w.cb_flow.setCurrentText("None")
+            self.assertTrue(w.sw_rts.isEnabled())
+        finally:
+            w.conn, w._conn_proto = o_conn, o_proto
+            w.cb_flow.setCurrentText("None")
+        sc = serial_io.SerialConn("COMx", 9600, 8, "N", 1, flow="rtscts")
+        self.assertEqual(sc._flow, "rtscts")                      # 流控参数落到 SerialConn
+
     def test_xfer_worker_loopback(self):
         """两个真实 XferWorker(QThread) 经 sig_send↔feed 直连对拼：验证线程 + 信号桥端到端收发一致。"""
         import xfer
@@ -2104,6 +2133,72 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             else:
                 self.assertEqual(data.rstrip(bytes([xfer.SUB])), payload.rstrip(bytes([xfer.SUB])))
 
+    def test_xfer_raw_send(self):
+        """原始字节流：XferWorker raw 模式按 chunk 分块 sig_send、逐字节拼回等于原文、末块为余数；takes_input=False。"""
+        from xfer_dialog import XferWorker, MODE_RAW
+        from PyQt5.QtCore import Qt
+        _win()   # 确保 QApplication 存在
+        payload = bytes((i * 3 + 1) & 0xFF for i in range(5000))
+        sent, chunks, box = bytearray(), [], {}
+        wk = XferWorker("send", MODE_RAW, payload=payload, chunk=1024, delay=0)
+        self.assertFalse(wk.takes_input)                          # raw 只发不收、不接管收流
+        wk.sig_send.connect(lambda b: (sent.extend(b), chunks.append(len(b))), Qt.DirectConnection)
+        wk.sig_done.connect(lambda ok, msg, r: box.update(ok=ok), Qt.DirectConnection)
+        wk.start(); wk.wait(5000)
+        self.assertTrue(box.get("ok"))
+        self.assertEqual(bytes(sent), payload)                    # 全部字节按序发出
+        self.assertEqual(chunks, [1024, 1024, 1024, 1024, 904])   # 5000 = 4×1024 + 904
+
+    def test_xfer_raw_keeps_recv_disabled_after_busy(self):
+        """原始字节流只支持发送：忙碌状态恢复后也不能把接收单选框重新启用。"""
+        from xfer_dialog import XferDialog, MODE_RAW
+        w = _win()
+        dlg = XferDialog(w)
+        try:
+            for i in range(dlg.cb_proto.count()):
+                if dlg.cb_proto.itemData(i) == MODE_RAW:
+                    dlg.cb_proto.setCurrentIndex(i)
+                    break
+            self.assertTrue(dlg.rb_send.isChecked())
+            self.assertFalse(dlg.rb_recv.isEnabled())
+            dlg._set_busy(True)
+            self.assertFalse(dlg.rb_recv.isEnabled())
+            dlg._set_busy(False)
+            self.assertTrue(dlg.rb_send.isChecked())
+            self.assertFalse(dlg.rb_recv.isEnabled())
+        finally:
+            dlg.close()
+
+    def test_xfer_proto_change_preserves_send_path(self):
+        """发送方向切换协议不应清空已选文件；只有切到 raw 导致方向变化时才清路径。"""
+        import xfer
+        from xfer_dialog import XferDialog, MODE_RAW
+        w = _win()
+        dlg = XferDialog(w)
+        try:
+            dlg.rb_send.setChecked(True)
+            dlg._path = r"C:\tmp\fw.bin"
+            dlg.ed_path.setText(dlg._path)
+            for i in range(dlg.cb_proto.count()):
+                if dlg.cb_proto.itemData(i) == xfer.MODE_YMODEM:
+                    dlg.cb_proto.setCurrentIndex(i)
+                    break
+            self.assertEqual(dlg._path, r"C:\tmp\fw.bin")
+            self.assertEqual(dlg.ed_path.text(), r"C:\tmp\fw.bin")
+
+            dlg.rb_recv.setChecked(True)
+            dlg._path = r"C:\tmp\recv.bin"
+            dlg.ed_path.setText(dlg._path)
+            for i in range(dlg.cb_proto.count()):
+                if dlg.cb_proto.itemData(i) == MODE_RAW:
+                    dlg.cb_proto.setCurrentIndex(i)
+                    break
+            self.assertTrue(dlg.rb_send.isChecked())
+            self.assertEqual(dlg._path, "")
+            self.assertEqual(dlg.ed_path.text(), "")
+        finally:
+            dlg.close()
+
     def test_xfer_bridge_takeover(self):
         """主窗桥接：传输中 on_data_received 把收流喂 worker、不进正常显示；worker 发字节经 sig_send→conn.send；detach 后复原。"""
         from PyQt5.QtCore import QObject, pyqtSignal
@@ -2111,7 +2206,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
         class _FakeWorker(QObject):
             sig_send = pyqtSignal(bytes)
-            def __init__(s): super().__init__(); s.fed = bytearray(); s._run = True
+            def __init__(s): super().__init__(); s.fed = bytearray(); s._run = True; s.takes_input = True
             def isRunning(s): return s._run
             def feed(s, d): s.fed.extend(d)
 
@@ -2133,6 +2228,13 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             # worker 要发的字节经桥回到 conn.send
             fake.sig_send.emit(b"ACK")
             self.assertEqual(mock.sent[-1][0], b"ACK")
+            # raw worker（takes_input=False）：收流不喂给它，但仍被吞掉、不进正常显示
+            fake.takes_input = False
+            fed_before = bytes(fake.fed)
+            w.on_data_received(b"\x09\x09")
+            self.assertEqual(bytes(fake.fed), fed_before)     # raw 不喂
+            self.assertEqual(w.rx_bytes, o_rx)                # 仍吞掉、不计入正常接收
+            fake.takes_input = True
             # attach 第二个 worker 应先断开第一个的发送桥：旧 worker 再 emit 不应再到 conn（防两个 worker 同发）
             fake2 = _FakeWorker()
             w._xfer_attach(fake2)
