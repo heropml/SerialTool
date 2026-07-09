@@ -1,9 +1,9 @@
 {
-  "version": "1.2.8",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_Setup_v1.2.8.exe",
+  "version": "1.2.9",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.9/CommTool_Setup_v1.2.9.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_v1.2.8.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.8/CommTool_v1.2.8.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.2.9/CommTool_v1.2.9.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.2.9/CommTool_v1.2.9.dmg"
   ],
-  "notes": "新增「帧构造器」（功能 → 帧构造器）：按字段拼二进制帧、自动算长度和校验、实时得到可发送的完整 HEX。1) 字段类型 —— u8/i8/u16/u32/f32 带大小端、ASCII、原始 HEX，每行一个字段、底部实时出 HEX；2) 自动字段 —— 长度统计其后字节数、校验覆盖其前全部数据（ADD8 / XOR8 / CRC8 / Modbus CRC16 / CCITT / CRC32 等）；3) 内置模板 —— Modbus 读 / 写单 / AT 一键填充，可继续逐字段修改；4) 字段行可拖拽排序、列宽可拖调整，构造结果可填入发送框或直接发送。无新依赖。"
+  "notes": "本版一次带来多项实用增强。1) 工具箱 — 进制/编码转换 + 校验计算（含自定义 CRC）；2) 功能菜单重组 — 波形图/帧解析/Modbus 主机移入「功能」菜单；3) 串口控制线 — DTR/RTS、复位、中断(Break)、CTS/DSR/DCD/RI 状态灯 + 硬件/软件流控；4) 文件传输 — XMODEM/XMODEM-1K/YMODEM 收发 + 原始字节流；5) HEX 转储 — 数据区 偏移+HEX+ASCII 三列、每行字节数可选。无新依赖。"
 }

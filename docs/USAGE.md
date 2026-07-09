@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.2.9
+
+This release brings several practical enhancements at once:
+
+- **Toolbox** — Function → Toolbox: base / encoding conversion (a byte sequence converts live between HEX ⇄ text ⇄ decimal ⇄ binary, interpreted as ascii/u16/i16/u32/i32/f32, plus single-value bases and a bit mask) and checksum calculation (lists every built-in algorithm at once so you can spot which one a device uses, plus a custom Rocksoft CRC).
+- **Function menu reorg** — the waveform plot, frame parser and Modbus master move from the data-area toolbar into the title-bar **Function** menu, numbered alongside the others; the toolbar is trimmed to highlight / font-size only.
+- **Serial control lines** — once a port is open, a **Control lines** section appears under the Open button: DTR / RTS output switches, Reset (pulses DTR low ~120ms to trigger the Arduino / ESP auto-reset), Break (holds TX low ~250ms), and CTS / DSR / DCD / RI status LEDs polled ~5Hz. The serial settings gain a **Flow control** dropdown (none / RTS-CTS hardware / XON-XOFF software).
+- **File transfer** — Function → File Transfer: XMODEM (128 B, checksum / CRC), XMODEM-1K and YMODEM (with filename / size) in both directions (often used to upload firmware to a bootloader), plus a raw-byte mode that dumps a file directly with a configurable chunk size and inter-chunk gap. Progress + log + cancel; the data view, auto-reply, sequence and Modbus master pause during transfer.
+- **HEX dump view** — a **HEX dump** toggle in the data-area options renders RX / TX in hex-editor style: offset (8 hex) + HEX (8 / 16 / 32 / 64 bytes per row, split at the midpoint) + |ASCII|, integrated with the highlight-only filter. No new dependencies.
+
+---
+
 ## What's New in v1.2.8
 
 The **Frame Builder** (**Function → Frame Builder**) assembles a binary frame field by field, auto-computes length and checksum, and gives you the complete sendable HEX in real time:
@@ -615,7 +627,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.8`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.2.9`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
