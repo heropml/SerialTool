@@ -2254,6 +2254,123 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.conn, w._xfer_worker = o_conn, o_worker
             w.rx_bytes, w.rx_packets = o_rx, o_pkt
 
+    def test_hexdump_view(self):
+        """HEX dump 视图：_format_hexdump 三列格式（偏移 / HEX 分两半 / ASCII、短行补齐对齐、多行偏移、空串）；RX 开启时渲染转储。"""
+        w = _win()
+        line = w._format_hexdump(b"Hello World\r\n\x01\x02\x03")     # 16 字节整行
+        self.assertEqual(line, "00000000  48 65 6C 6C 6F 20 57 6F  72 6C 64 0D 0A 01 02 03 |Hello World.....|")
+        short = w._format_hexdump(b"AB")                             # 短行补齐 → ASCII 列与整行同列对齐
+        self.assertTrue(short.startswith("00000000  41 42"))
+        self.assertTrue(short.endswith("|AB|"))
+        self.assertEqual(short.index("|"), line.index("|"))
+        two = w._format_hexdump(bytes(range(17)))                    # 17 字节 → 两行，次行偏移 00000010
+        self.assertEqual(len(two.split("\n")), 2)
+        self.assertTrue(two.split("\n")[1].startswith("00000010  10 "))
+        self.assertEqual(w._format_hexdump(b""), "")
+        # 每行字节数可变：per=8 → 每行 8 字节、中缝在第 4 字节后；per=32 → 32 字节一行
+        rows8 = w._format_hexdump(bytes(range(20)), per=8).split("\n")
+        self.assertEqual(len(rows8), 3)                             # 20 / 8 = 3 行
+        self.assertTrue(rows8[1].startswith("00000008  08 09 0A 0B  0C 0D 0E 0F |"))
+        self.assertEqual(len(w._format_hexdump(bytes(range(32)), per=32).split("\n")), 1)
+        # 下拉驱动 _hexdump_block 的每行字节数
+        o_w = w.cb_hexdump_width.currentText()
+        try:
+            w.cb_hexdump_width.setCurrentText("8")
+            self.assertEqual(len(w._hexdump_block(bytes(range(16))).lstrip("\n").split("\n")), 2)  # 16/8=2
+        finally:
+            w.cb_hexdump_width.setCurrentText(o_w)
+        o_hd = w._hexdump_on
+        try:
+            w._hexdump_on = True; w._reset_recv_state()              # RX 渲染：开 hexdump → 出现偏移 + ASCII 列
+            w._on_data_received_impl(b"\x00\x01\x02ABC")
+            txt = w.txt_recv.toPlainText()
+            self.assertIn("00000000  00 01 02 41 42 43", txt)
+            self.assertIn("|...ABC|", txt)
+        finally:
+            w._hexdump_on = o_hd
+            w._reset_recv_state()
+
+    def test_hexdump_toggle_disables_hex_display(self):
+        """HEX dump 开启接管 HEX 显示 → 灰掉 HEX 显示开关（明确优先级）；关闭后恢复（非终端模式）。"""
+        w = _win()
+        o_hd, o_term = w.sw_hexdump.isChecked(), w._terminal_on
+        try:
+            if o_term:
+                w._set_terminal_enabled(False)
+            w.sw_hexdump.setChecked(False)
+            self.assertTrue(w.sw_rx_hex.isEnabled())
+            w.sw_hexdump.setChecked(True)
+            self.assertFalse(w.sw_rx_hex.isEnabled())     # 被 hexdump 接管 → 灰
+            w.sw_hexdump.setChecked(False)
+            self.assertTrue(w.sw_rx_hex.isEnabled())      # 恢复
+        finally:
+            w.sw_hexdump.setChecked(o_hd)
+            if o_term:
+                w._set_terminal_enabled(True)
+
+    def test_hexdump_filter_multiblock(self):
+        """多行 hexdump 块 + 只显高亮行：每一行立即按关键字定可见性（不只最后一行）；
+        时间戳开启时纯装饰 prefix 行不受过滤影响（不会被误隐藏）。"""
+        w = _win()
+        o_hd, o_rules, o_flt = w._hexdump_on, w._active_rules, w.btn_filter_hl.isChecked()
+        o_ts = w.sw_show_timestamp.isChecked()
+        try:
+            # ---- 场景 A：时间戳关，测多行 hexdump 逐行过滤 ----
+            w._hexdump_on = True
+            w.sw_show_timestamp.setChecked(False)
+            w.btn_filter_hl.setChecked(True)
+            w._active_rules = lambda: [{"pattern": "ABC", "enabled": True, "scope": "both"}]
+            w.txt_recv.clear(); w._reset_recv_state()
+            # 32 字节 → 两行：首行(0x00..0x0F)无 "ABC"、次行含 "ABC"
+            w._on_data_received_impl(bytes(range(16)) + b"ABC" + bytes(13))
+            doc = w.txt_recv.document(); vis = {}
+            blk = doc.begin()
+            while blk.isValid():
+                t = blk.text()
+                if t.startswith("00000000"): vis["row1"] = blk.isVisible()
+                if t.startswith("00000010"): vis["row2"] = blk.isVisible()
+                blk = blk.next()
+            self.assertEqual(vis.get("row1"), False, "A-首行无关键字应立即隐藏")
+            self.assertEqual(vis.get("row2"), True, "A-次行含关键字应可见")
+
+            # ---- 场景 B：时间戳开，纯装饰 prefix 行不受过滤影响 ----
+            w.sw_show_timestamp.setChecked(True)
+            w.txt_recv.clear(); w._reset_recv_state()
+            # 同一数据；timestamp ON 时 _hexdump_block 在 dump 前插 \n → prefix 独占一个 block
+            w._on_data_received_impl(bytes(range(16)) + b"ABC" + bytes(13))
+            doc = w.txt_recv.document(); vis.clear()
+            blk = doc.begin()
+            while blk.isValid():
+                t = blk.text()
+                if "ABC" in t and t.startswith("00000010"):
+                    vis["row2_abc"] = blk.isVisible()          # 含关键字 → 可见
+                if t.startswith("00000000"):
+                    vis["row1"] = blk.isVisible()              # 无关键字 → 隐藏
+                if t.startswith("[") and "←" in t:
+                    vis["ts"] = blk.isVisible()                # 纯装饰 prefix → 不受过滤
+                blk = blk.next()
+            self.assertEqual(vis.get("row1"), False, "B-首行无关键字应隐藏")
+            self.assertEqual(vis.get("row2_abc"), True, "B-次行含关键字应可见")
+            self.assertTrue(vis.get("ts"), "B-时间戳 prefix 应始终可见（不被过滤误隐藏）")
+            # 触发异步重扫（150ms 的同款逻辑）：装饰行须仍可见——否则时间戳先闪后消失（即时修了、重扫又隐藏）
+            w._refresh_extra_selections(rebuild_search=True)
+            def _vis(pred):
+                b = doc.begin()
+                while b.isValid():
+                    if pred(b.text()):
+                        return b.isVisible()
+                    b = b.next()
+                return None
+            self.assertTrue(_vis(lambda t: t.startswith("[") and "←" in t), "B-重扫后时间戳行仍应可见")
+            self.assertTrue(_vis(lambda t: t.startswith("00000010") and "ABC" in t), "B-重扫后命中行仍可见")
+            self.assertEqual(_vis(lambda t: t.startswith("00000000")), False, "B-重扫后无关键字行仍隐藏")
+        finally:
+            w._hexdump_on = o_hd
+            w._active_rules = o_rules
+            w.btn_filter_hl.setChecked(o_flt)
+            w.sw_show_timestamp.setChecked(o_ts)
+            w.txt_recv.clear(); w._reset_recv_state()
+
     def test_frame_builder_dialog(self):
         """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""
         from frame_builder_dialog import FrameBuilderDialog
@@ -2643,19 +2760,21 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_terminal_disables_irrelevant_settings(self):
         """终端模式开启时不生效的显示/发送格式设置变不可配置，关闭后恢复；编码/自动换行不受影响。"""
         w = _win()
-        old = w._terminal_on
+        old, old_hd = w._terminal_on, w.sw_hexdump.isChecked()
         try:
+            w.sw_hexdump.setChecked(False)   # 控制变量：hexdump 关，专测终端对 HEX 显示等的禁用/恢复
             w._set_terminal_enabled(True)
-            for name in ("sw_rx_hex", "sw_show_timestamp", "sw_line_split",
+            for name in ("sw_rx_hex", "sw_hexdump", "sw_show_timestamp", "sw_line_split",
                          "sw_tx_hex", "sw_append_newline", "cb_checksum"):
                 self.assertFalse(getattr(w, name).isEnabled(), name + " 应不可配置")
             self.assertTrue(w.cb_encoding.isEnabled())   # 编码仍可用
             self.assertTrue(w.sw_wrap.isEnabled())       # 自动换行仍可用
             w._set_terminal_enabled(False)
-            for name in ("sw_rx_hex", "sw_tx_hex", "cb_checksum"):
+            for name in ("sw_rx_hex", "sw_hexdump", "sw_tx_hex", "cb_checksum"):
                 self.assertTrue(getattr(w, name).isEnabled(), name + " 应恢复可配置")
         finally:
             w._set_terminal_enabled(old)
+            w.sw_hexdump.setChecked(old_hd)
 
     def test_import_reloads_terminal_settings(self):
         """配置导入后终端三项即时生效（不必重启）：状态 + UI 开关 + 禁用态都同步。"""

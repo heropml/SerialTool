@@ -337,6 +337,7 @@ class CommTool(QMainWindow):
         # 终端模式：发送框逐字符即时发送 + 数据区纯字节流显示（轻量串口终端，不解析 ANSI 转义）
         self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
+        self._hexdump_on = self.settings.value("hexdump_view", False, type=bool)        # HEX dump 视图（偏移+HEX+ASCII 三列）
         self._terminal_enter = self._safe_enter_idx(self.settings.value("terminal_enter", 0))   # 0=CR 1=LF 2=CRLF
         self._term_esc = ""    # 终端渲染：跨块未完成的 ANSI/CSI 转义序列缓冲
         self._term_discard_csi = False  # 超长 CSI：跨块丢弃到终止字节，避免残片显示
@@ -984,6 +985,20 @@ class CommTool(QMainWindow):
         # ——两害取其轻，是有意行为，勿当 bug 移除（移除会把"丢一字符"换成"乱码一片"）。
         self.sw_rx_hex.toggled.connect(lambda _=False: self._on_encoding_changed())
         sw_row(row, "hex_display", self.sw_rx_hex); row += 1
+
+        # HEX dump 视图：偏移 + HEX + ASCII 三列（二进制协议调试；开启时优先于 HEX 显示 / 换行分包）
+        # 同行右侧带「每行字节数」下拉(8/16/32/64)，仅 hexdump 开启时可选
+        self.sw_hexdump = IOSSwitch(self._hexdump_on)
+        self.sw_hexdump.toggled.connect(self._on_hexdump_toggled)
+        self.cb_hexdump_width = QComboBox()
+        self.cb_hexdump_width.addItems(["8", "16", "32", "64"])
+        self.cb_hexdump_width.setCurrentText("16")
+        self.cb_hexdump_width.setFixedWidth(MAIN_W)
+        self.cb_hexdump_width.setProperty("tr_tooltip", "hexdump_width_tip")
+        self.cb_hexdump_width.setToolTip(self._t("hexdump_width_tip"))
+        self.cb_hexdump_width.currentIndexChanged.connect(self._on_hexdump_width_changed)
+        # 同「换行分包 / 实时记录」风格：开关在中列、下拉在最右列（与其它下拉右对齐）
+        sw_extra_row(row, "hexdump_view", self.sw_hexdump, self.cb_hexdump_width); row += 1
 
         # 字符编码 — 影响 RX 解码、TX 编码、文件加载
         self.cb_encoding = QComboBox()
@@ -1717,8 +1732,13 @@ class CommTool(QMainWindow):
                     it += 1
                     if capped:
                         break
-            # 过滤：开启时只留命中行；关闭时所有行可见（恢复）
-            want_vis = block_has_match if filter_on else True
+            # 过滤：开启时只留命中行；关闭时所有行可见（恢复）。纯装饰块（时间戳/箭头行，无 RX/TX 正文，
+            # hexdump+时间戳时独占一块）不参与过滤、始终可见——与 _append_block_data 即时判定一致，
+            # 否则重扫会把时间戳行隐藏（先闪后消失）。
+            if not filter_on:
+                want_vis = True
+            else:
+                want_vis = block_has_match or not self._block_has_body_role(block)
             if block.isVisible() != want_vis:
                 block.setVisible(want_vis)
                 dirty = True
@@ -1871,6 +1891,18 @@ class CommTool(QMainWindow):
             return False
         return any(r.get("enabled", True) and r.get("pattern")
                    for r in self._active_rules())
+
+    @staticmethod
+    def _block_has_body_role(block) -> bool:
+        """block 内是否有 RX/TX 正文片段（非纯时间戳/箭头等装饰）。"""
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
+            if role in (ROLE_RX, ROLE_TX):
+                return True
+            it += 1
+        return False
 
     def _block_has_keyword_match(self, block) -> bool:
         """单个块的 RX/TX 正文是否命中生效分组里任一启用规则(按 scope 限定 收/发)"""
@@ -2320,6 +2352,57 @@ class CommTool(QMainWindow):
         """字节序列 → 'AA BB CC' 十六进制串（不含尾随空格，调用方按需自加）。
         data 两处调用方都是 bytes（接收信号 / do_send 构造），直接用 bytes.hex。"""
         return data.hex(" ").upper()   # C 级实现，大块数据明显快于逐字节 f-string
+
+    @staticmethod
+    def _format_hexdump(data, per=16):
+        """字节 → hex 编辑器风格转储：每行「偏移(8位) + per 字节 HEX(半程加宽中缝) + |ASCII|」。
+        per=每行字节数(8/16/32/64…)；多行以 \\n 分隔、不含尾随 \\n；短行补齐定宽让 ASCII 列对齐。空→''。"""
+        data = bytes(data)
+        per = per if per in (8, 16, 32, 64) else 16
+        half = per // 2
+        hex_w = per * 3   # per*2 hex + (per-1) 间隔 + 1 中缝 = 3*per
+        lines = []
+        for off in range(0, len(data), per):
+            chunk = data[off:off + per]
+            hexs = ["%02X" % b for b in chunk]
+            hex_col = (" ".join(hexs[:half]) + "  " + " ".join(hexs[half:])).ljust(hex_w)
+            ascii_col = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+            lines.append("%08X  %s |%s|" % (off, hex_col, ascii_col))
+        return "\n".join(lines)
+
+    def _hexdump_block(self, data):
+        """转储串；时间戳/箭头开启时前置 \\n 让它们单独成行 —— 否则首行被时间戳推右、续行(00000010…)
+        在行首，多行帧纵向错位。时间戳关时转储各行本就从行首起、无需前置。"""
+        try:
+            per = int(self.cb_hexdump_width.currentText())
+        except (ValueError, AttributeError):
+            per = 16
+        dump = self._format_hexdump(data, per)
+        if dump and self.sw_show_timestamp.isChecked():
+            dump = "\n" + dump
+        return dump
+
+    def _on_hexdump_toggled(self, on):
+        self._hexdump_on = bool(on)
+        self.settings.setValue("hexdump_view", self._hexdump_on)
+        self._refresh_hex_toggle_state()   # hexdump 接管 HEX 显示 → 灰掉 HEX 显示开关，明确优先级
+        self._reset_recv_state()   # 切视图 → 下一数据块从干净状态起（新 block、重置增量解码）
+
+    def _on_hexdump_width_changed(self, *_):
+        self.settings.setValue("hexdump_width", self.cb_hexdump_width.currentText())
+        self._reset_recv_state()   # 换每行字节数 → 下一块按新宽度起新 block（不重排已有内容）
+
+    def _refresh_hex_toggle_state(self):
+        """集中管理 HEX 显示 / HEX dump 两开关的可用性：终端模式两者都禁用；hexdump 开启时
+        HEX 显示被其接管 → 灰掉（避免「关了 HEX 显示为何还是十六进制」的困惑）。每行字节数下拉仅
+        hexdump 开启(且非终端)时可选。"""
+        term = getattr(self, "_terminal_on", False)
+        if hasattr(self, "sw_hexdump"):
+            self.sw_hexdump.setEnabled(not term)
+        if hasattr(self, "sw_rx_hex"):
+            self.sw_rx_hex.setEnabled(not term and not self._hexdump_on)
+        if hasattr(self, "cb_hexdump_width"):
+            self.cb_hexdump_width.setEnabled(not term and self._hexdump_on)
 
     @staticmethod
     def _parse_port(text):
@@ -3056,6 +3139,16 @@ class CommTool(QMainWindow):
             self._terminal_append(self._decode_rx(data))
             return
 
+        # HEX dump 视图：每个收包整段转储为「偏移 + HEX + ASCII」多行块（各块 force_new：独立起行、
+        # 可选时间戳/箭头头，偏移按块从 0 起），优先于 HEX/文本/分行/分包 的文本渲染。
+        if self._hexdump_on:
+            self._append_block_data(self._hexdump_block(data), direction="rx",
+                                    force_new_block=True)
+            self._last_direction = "rx"
+            self._last_recv_time = time.monotonic()
+            self._pending_line_break = False
+            return
+
         use_hex = self.sw_rx_hex.isChecked()
         use_line_split = self.sw_line_split.isChecked() and not use_hex
         now = time.monotonic()
@@ -3186,6 +3279,7 @@ class CommTool(QMainWindow):
         body_fmt.setForeground(QColor(body_color))
         body_fmt.setProperty(ROLE_PROP, body_role)
         cursor.setCharFormat(body_fmt)
+        first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
         cursor.insertText(text)
         log_pieces.append(text)
         if text:
@@ -3198,12 +3292,22 @@ class CommTool(QMainWindow):
         # 过滤开启时，立即决定刚追加这行的可见性 —— 在滚动到底之前完成，
         # 避免"先显示→滚到底→150ms后异步隐藏→高度收缩跳动"的抖动
         if self._filter_active():
-            blk = cursor.block()
-            vis = self._block_has_keyword_match(blk)
-            if blk.isVisible() != vis:
-                blk.setVisible(vis)
-                self.txt_recv.document().markContentsDirty(
-                    blk.position(), max(1, blk.length()))
+            # 本次插入可能跨多个 block（hexdump 多行块），逐个立即定可见性——只判最后一行会让前几行
+            # 短暂错显、要等 150ms 异步重扫才纠正。普通单行文本时循环只跑一次，与原逻辑等价。
+            doc = self.txt_recv.document()
+            for bn in range(first_body_block, cursor.blockNumber() + 1):
+                blk = doc.findBlockByNumber(bn)
+                if not blk.isValid():
+                    continue
+                # 跳过纯装饰 block（时间戳/箭头等 ROLE_TS），只对含 RX/TX 正文的行做过滤。
+                # hexdump+时间戳同时开启时，prefix 独占一个 block，与首行 hexdump 不在同块，
+                # 若不跳过会因无正文命中而被错误隐藏。
+                if not self._block_has_body_role(blk):
+                    continue
+                vis = self._block_has_keyword_match(blk)
+                if blk.isVisible() != vis:
+                    blk.setVisible(vis)
+                    doc.markContentsDirty(blk.position(), max(1, blk.length()))
 
         # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，钉在插入前位置。
         if had_sel:
@@ -5004,7 +5108,7 @@ class CommTool(QMainWindow):
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
         "ser_flow", "serial_dtr", "serial_rts",
         # 数据区显示
-        "rx_hex", "wrap", "show_timestamp", "packet_split", "packet_timeout",
+        "rx_hex", "hexdump_view", "hexdump_width", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",
         "log_split", "filter_highlight", "recv_font_size",
         # 发送区
@@ -5633,7 +5737,9 @@ class CommTool(QMainWindow):
         self.tx_bytes += len(frame)
         self.tx_packets += 1
         try:
-            if self.sw_rx_hex.isChecked():
+            if self._hexdump_on:
+                disp = self._hexdump_block(frame)
+            elif self.sw_rx_hex.isChecked():
                 disp = self._bytes_to_hex(frame) + " "
             else:
                 disp = frame.decode(self._send_codec(), errors="replace")
@@ -5896,7 +6002,9 @@ class CommTool(QMainWindow):
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
-        if self.sw_rx_hex.isChecked():
+        if self._hexdump_on:
+            display = self._hexdump_block(data)
+        elif self.sw_rx_hex.isChecked():
             display = self._bytes_to_hex(data) + " "
         else:
             display = data.decode(self._send_codec(), errors="replace")
@@ -5947,15 +6055,16 @@ class CommTool(QMainWindow):
         起作用。终端是纯字节流逐字符直发：HEX 显示 / 时间戳 / 分包 / 超时 / 换行分包，以及
         HEX 发送 / 追加换行 / 定时 / 校验 全被绕过。仍有用的（字符编码 / 自动换行 / 最大行数 /
         实时记录）不动。关闭终端模式后全部恢复可配置。"""
-        for name in ("sw_rx_hex", "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
+        for name in ("sw_rx_hex", "sw_hexdump", "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
                      "sw_line_split", "cb_line_nl",
                      "sw_tx_hex", "sw_append_newline", "cb_append_nl",
                      "sw_period", "ed_period_ms", "cb_checksum"):
             w = getattr(self, name, None)
             if w is not None:
                 w.setEnabled(not on)
+        self._refresh_hex_toggle_state()   # 退出终端后按 hexdump 状态复算 HEX 显示可用性（否则被上面一律置回可用）
         # 连同标签文字一起淡化，让禁用的整行统一「暗下去」（只灰控件、标签还满色 → 不明显）
-        for k in ("hex_display", "show_timestamp", "packet_split", "timeout", "line_split",
+        for k in ("hex_display", "hexdump_view", "show_timestamp", "packet_split", "timeout", "line_split",
                   "hex_send", "append_newline", "period", "checksum"):
             for lab in self._setting_labels.get(k, ()):
                 if on:
@@ -6691,6 +6800,8 @@ class CommTool(QMainWindow):
             s.setValue("h_splitter", self.h_splitter.saveState())
             s.setValue("recv_font_size", self._recv_font_size)
             s.setValue("rx_hex", self.sw_rx_hex.isChecked())
+            s.setValue("hexdump_view", self.sw_hexdump.isChecked())
+            s.setValue("hexdump_width", self.cb_hexdump_width.currentText())
             s.setValue("wrap", self.sw_wrap.isChecked())
             s.setValue("show_timestamp", self.sw_show_timestamp.isChecked())
             s.setValue("packet_split", self.sw_packet_split.isChecked())
@@ -6777,6 +6888,10 @@ class CommTool(QMainWindow):
         show_ts_raw = s.value("show_timestamp", legacy_ts if legacy_ts is not None else False)
         pkt_split_raw = s.value("packet_split", False)   # 不继承旧 timestamp 键：分包与时间戳互相独立，老用户升级不该被强制开分包
         self.sw_rx_hex.setChecked(to_bool(s.value("rx_hex", False)), animate=False)
+        self.sw_hexdump.setChecked(to_bool(s.value("hexdump_view", False)), animate=False)
+        self._hexdump_on = self.sw_hexdump.isChecked()
+        restore_combo(self.cb_hexdump_width, "hexdump_width")
+        self._refresh_hex_toggle_state()   # 启动/切配置后按 hexdump 状态同步 HEX 显示 / 每行字节数可用性
         self.sw_wrap.setChecked(to_bool(s.value("wrap", True)), animate=False)
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)
         self.sw_packet_split.setChecked(to_bool(pkt_split_raw), animate=False)
