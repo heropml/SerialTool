@@ -621,6 +621,10 @@ def _dialog_list_qss(c):
         selection-background-color: {c['accent']};
     }}
     QLineEdit:focus {{ border: 1px solid {c['accent']}; background-color: {c['input_focus_bg']}; }}
+    QComboBox:disabled, QLineEdit:disabled {{
+        background-color: {c['window_bg']}; color: {c['text_sec']};
+        border: 1px solid {c['separator']};
+    }}
     QCheckBox {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 11px; spacing: 4px; }}
     QCheckBox::indicator {{
         width: 14px; height: 14px; border-radius: 3px;
@@ -637,6 +641,13 @@ def _dialog_list_qss(c):
     }}
     QComboBox:focus {{ border: 1px solid {c['accent']}; }}
     QComboBox::drop-down {{ border: none; width: 16px; }}
+    QComboBox::down-arrow {{
+        image: none;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid {c['text_sec']};
+        margin-right: 5px;
+    }}
     QComboBox QAbstractItemView {{
         background-color: {c['combo_dropdown_bg']}; color: {c['text']};
         border: 1px solid {c['separator']}; border-radius: 0px; padding: 2px;

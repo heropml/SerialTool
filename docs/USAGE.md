@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.0
+
+**Bridge forwarding** (**Function → Bridge**) connects any two endpoints — serial / TCP client / TCP server / UDP — and passes bytes through in both directions, for protocol relaying, putting a serial device on the network, or tapping a stream:
+
+- **Any two endpoints** — Side A and Side B each pick serial / TCP client / TCP server / UDP independently; once both are up, bytes flow both ways (serial↔serial, serial↔network, network↔network).
+- **Robust forwarding** — a disconnect / error on either side auto-stops the bridge, with live A→B / B→A byte counts and rates. The TCP server broadcasts to all clients with write-buffer backpressure, UDP splits large streams into valid ≤65507-byte datagrams, and send failures are logged (never silently dropped).
+- **Pre-start check** — before starting, each side is checked for a reachable send target (TCP must be connected, UDP must have a peer); if not ready, it tells you which side.
+- **Forward log** — an optional log at the bottom: text / HEX, clearable, adjustable line cap; incremental UTF-8 decoding (multi-byte characters split across packets don't garble) and a per-entry byte cap. No new dependencies.
+
+---
+
 ## What's New in v1.2.9
 
 This release brings several practical enhancements at once:
@@ -627,7 +638,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.2.9`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

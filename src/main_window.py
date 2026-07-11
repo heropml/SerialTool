@@ -317,6 +317,7 @@ class CommTool(QMainWindow):
         self._xfer_dlg = None            # 文件传输对话框（协议收发 / 原始字节流，单实例）
         self._xfer_worker = None         # 传输后台线程；非 None 且运行中时 on_data_received 接管收流
         self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
+        self._bridge_dlg = None          # 桥接转发对话框（两端任意 串口/TCP/UDP 组合，单实例）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -3012,6 +3013,8 @@ class CommTool(QMainWindow):
             self._toolbox_dlg.refresh_theme()
         if getattr(self, "_xfer_dlg", None) is not None:
             self._xfer_dlg.refresh_theme()
+        if getattr(self, "_bridge_dlg", None) is not None:
+            self._bridge_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -3726,6 +3729,18 @@ class CommTool(QMainWindow):
             from toolbox_dialog import ToolboxDialog
             self._toolbox_dlg = ToolboxDialog(self)
         dlg = self._toolbox_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_bridge(self):
+        """打开桥接转发（A/B 两端任意 串口/TCP/UDP 双向透传；单实例，复用并刷新主题/语言）。"""
+        if self._bridge_dlg is None:
+            from bridge_dialog import BridgeDialog
+            self._bridge_dlg = BridgeDialog(self)
+        dlg = self._bridge_dlg
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.show()
@@ -6712,6 +6727,8 @@ class CommTool(QMainWindow):
             self._toolbox_dlg.retranslate()
         if getattr(self, "_xfer_dlg", None) is not None:
             self._xfer_dlg.retranslate()
+        if getattr(self, "_bridge_dlg", None) is not None:
+            self._bridge_dlg.retranslate()
 
     # ----- 持久化 -----
     @staticmethod
@@ -7029,7 +7046,7 @@ class CommTool(QMainWindow):
 
     def _show_titlebar_func_menu(self):
         """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.自动化序列 5.工具箱
-        6.文件传输 7.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
+        6.文件传输 7.桥接 8.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -7044,8 +7061,9 @@ class CommTool(QMainWindow):
         menu.addAction("4. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         menu.addAction("5. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
         menu.addAction("6. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("7. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
         # Modbus 主机放最后；轮询开启时项末加「 ●」，替代原工具栏按钮的高亮态
-        mbm_label = "7. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        mbm_label = "8. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_func.mapToGlobal(
@@ -7572,7 +7590,8 @@ class CommTool(QMainWindow):
         # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
-                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg"):
+                     "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
+                     "_bridge_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

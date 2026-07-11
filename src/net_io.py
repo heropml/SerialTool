@@ -34,6 +34,8 @@ ERR_CONN_TIMEOUT = "__conn_timeout__"
 # TCP Client 连接超时(毫秒)：异步 connectToHost 对不可达地址默认要等 OS ~20s 才报
 # errorOccurred，这里主动设上限，超时即 abort 并提示，避免界面长时间无反馈卡在「连接中」。
 _TCP_CONNECT_TIMEOUT_MS = 10000
+_BRIDGE_MAX_PENDING_BYTES = 4 * 1024 * 1024
+_UDP_MAX_PAYLOAD = 65507
 
 
 def local_ipv4_list():
@@ -107,6 +109,11 @@ class NetConn(QObject):
     @property
     def is_open(self):
         return False
+
+    @property
+    def bridge_ready(self):
+        """双向桥接是否已有可发送目标；普通连接状态与发送目标状态分开。"""
+        return self.is_open
 
 
 # ============== TCP Server ==============
@@ -195,6 +202,33 @@ class TcpServerConn(NetConn):
             self._emit_clients()
         return len(data) if any_ok else 0
 
+    def send_bridge(self, data):
+        """桥接广播要求所有当前客户端都接收，并限制 Qt 待发送缓冲。"""
+        if not self._clients:
+            return SEND_NO_TARGET
+        all_ok = True
+        poisoned = []
+        for sock in list(self._clients):
+            if sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
+                all_ok = False
+                continue
+            n = sock.write(data)
+            if n != len(data):
+                all_ok = False
+                if 0 < n < len(data):
+                    poisoned.append(sock)
+        for sock in poisoned:
+            try:
+                sock.abort()
+                if sock in self._clients:
+                    self._clients.remove(sock)
+                sock.deleteLater()
+            except Exception:
+                pass
+        if poisoned:
+            self._emit_clients()
+        return len(data) if all_ok else 0
+
     def close(self):
         for s in list(self._clients):
             try:
@@ -211,6 +245,10 @@ class TcpServerConn(NetConn):
     @property
     def is_open(self):
         return self._server is not None and self._server.isListening()
+
+    @property
+    def bridge_ready(self):
+        return self.is_open and bool(self._clients)
 
 
 # ============== TCP Client ==============
@@ -278,6 +316,13 @@ class TcpClientConn(NetConn):
             return n if n > 0 else 0
         return 0
 
+    def send_bridge(self, data):
+        if not self.bridge_ready:
+            return SEND_NO_TARGET
+        if self._sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
+            return 0
+        return self.send(data)
+
     def close(self):
         # 先置 _connected=False + 解绑 _sock，再 abort()：abort 可能触发 errorOccurred，
         # 此时 _on_error 的 `self._sock` 已为 None，杜绝虚假错误通知（不再仅依赖外层 blockSignals）
@@ -344,6 +389,19 @@ class UdpConn(NetConn):
             return SEND_NO_TARGET   # 没填远程地址，也还没收到过任何对端
         return n if n != -1 else 0   # writeDatagram 失败(网络不可达等)返回 -1
 
+    def send_bridge(self, data):
+        """超大流块拆成合法 UDP 数据报；返回成功写入的总字节数。"""
+        if not self.bridge_ready:
+            return SEND_NO_TARGET
+        total = 0
+        for offset in range(0, len(data), _UDP_MAX_PAYLOAD):
+            chunk = data[offset:offset + _UDP_MAX_PAYLOAD]
+            n = self.send(chunk)
+            if n != len(chunk):
+                return total if total else n
+            total += n
+        return total
+
     def close(self):
         if self._sock:
             try:
@@ -360,6 +418,11 @@ class UdpConn(NetConn):
     @property
     def is_open(self):
         return self._sock is not None
+
+    @property
+    def bridge_ready(self):
+        return self.is_open and bool(
+            (self._remote_ip and self._remote_port) or self._last_peer)
 
 
 # ============== UDP 组播 (multicast) ==============
