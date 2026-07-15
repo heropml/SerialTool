@@ -2108,6 +2108,37 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         sc = serial_io.SerialConn("COMx", 9600, 8, "N", 1, flow="rtscts")
         self.assertEqual(sc._flow, "rtscts")                      # 流控参数落到 SerialConn
 
+    def test_port_label_format(self):
+        """端口标签 = '设备名  系统描述  [芯片型号]'；型号已在描述内不重复，认不出芯片/无描述时降级。"""
+        import serial_io
+        # _chip_ident：精确型号 / 厂商退路 / 认不出 / 虚拟口
+        self.assertEqual(serial_io._chip_ident(0x0403, 0x6001), "FT232R")   # 精确
+        self.assertEqual(serial_io._chip_ident(0x1A86, 0x9999), "WCH")      # 未收录 pid→厂商
+        self.assertEqual(serial_io._chip_ident(0xFFFF, 0x0000), "")         # 全未知
+        self.assertEqual(serial_io._chip_ident(None, None), "")             # 虚拟/蓝牙口
+
+        class _P:
+            def __init__(s, dev, desc, vid=None, pid=None):
+                s.device, s.description, s.vid, s.pid = dev, desc, vid, pid
+        import serial.tools.list_ports as _LP
+        orig = _LP.comports
+        _LP.comports = lambda: [
+            _P("COM29", "USB Serial Port", 0x0403, 0x6001),        # 泛化描述→补型号 FT232R
+            _P("COM3", "USB-SERIAL CH340 (COM3)", 0x1A86, 0x7523),  # 描述已含 CH340→不重复
+            _P("COM2", "JLink CDC UART Port (COM2)", 0x1366, 0x0105),  # 未收录→只留描述
+            _P("COM1", "通信端口 (COM1)"),                          # 无 vid→只留描述
+            _P("COM9", ""),                                         # 无描述、无 vid→只显示设备名
+        ]
+        try:
+            labels = dict(serial_io._scan_ports())
+        finally:
+            _LP.comports = orig
+        self.assertEqual(labels["COM29"], "COM29  USB Serial Port  FT232R")  # 补型号
+        self.assertEqual(labels["COM3"], "COM3  USB-SERIAL CH340")           # 型号不重复
+        self.assertEqual(labels["COM2"], "COM2  JLink CDC UART Port")        # 认不出→只描述
+        self.assertEqual(labels["COM1"], "COM1  通信端口")
+        self.assertEqual(labels["COM9"], "COM9")                             # 只设备名
+
     def test_xfer_worker_loopback(self):
         """两个真实 XferWorker(QThread) 经 sig_send↔feed 直连对拼：验证线程 + 信号桥端到端收发一致。"""
         import xfer

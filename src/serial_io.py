@@ -5,14 +5,69 @@ import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 
+# USB-UART 转换芯片 VID/PID → 芯片型号。系统描述常是泛化的 "USB Serial Port"，
+# 在其后补上精确型号（FT232R/CH340…），插着多个同类转接头时更好认。
+_USB_UART_CHIPS = {
+    (0x1A86, 0x7523): "CH340",       # WCH CH340（最常见）
+    (0x1A86, 0x7522): "CH340K",
+    (0x1A86, 0x5523): "CH341",
+    (0x1A86, 0x5512): "CH341",
+    (0x1A86, 0x55D3): "CH343",
+    (0x1A86, 0x55D4): "CH9102",
+    (0x1A86, 0x55D2): "CH9102",
+    (0x1A86, 0x55D5): "CH9103",
+    (0x10C4, 0xEA60): "CP2102",      # Silicon Labs
+    (0x10C4, 0xEA61): "CP2102N",
+    (0x10C4, 0xEA63): "CP2102N",
+    (0x10C4, 0xEA70): "CP2105",
+    (0x10C4, 0xEA71): "CP2108",
+    (0x0403, 0x6001): "FT232R",      # FTDI
+    (0x0403, 0x6010): "FT2232",
+    (0x0403, 0x6011): "FT4232",
+    (0x0403, 0x6014): "FT232H",
+    (0x0403, 0x6015): "FT-X",
+    (0x067B, 0x2303): "PL2303",      # Prolific
+    (0x067B, 0x23A3): "PL2303GC",
+    (0x067B, 0x23C3): "PL2303GT",
+    (0x067B, 0x23D3): "PL2303GS",
+}
+
+# VID → 厂商名，作为未收录 PID 时的退路（至少认出厂家/芯片系）。
+_USB_UART_VENDORS = {
+    0x1A86: "WCH",
+    0x10C4: "Silicon Labs",
+    0x0403: "FTDI",
+    0x067B: "Prolific",
+    0x2341: "Arduino",
+    0x239A: "Adafruit",
+    0x1B4F: "SparkFun",
+    0x303A: "Espressif",
+    0x2E8A: "Raspberry Pi",
+    0x1FC9: "NXP",
+    0x0483: "STMicro",
+}
+
+
+def _chip_ident(vid, pid):
+    """VID/PID → 芯片型号（精确）或厂商名（退路）；认不出返回 ''。虚拟/蓝牙口 vid=None→''。"""
+    if vid is None:
+        return ""
+    return _USB_UART_CHIPS.get((vid, pid)) or _USB_UART_VENDORS.get(vid, "")
+
+
 def _scan_ports():
-    """枚举可用串口 → [(device, label), ...]，label 形如 'COM3  USB-SERIAL CH340'。
-    后台轮询(PortScannerThread)与手动一次性扫描(OneShotPortScanner)共用，
-    避免两处各写一份 label 拼接逻辑、改一处漏另一处导致显示格式漂移。"""
+    """枚举可用串口 → [(device, label), ...]，label 形如 'COM29  USB Serial Port  FT232R'；
+    系统描述已含芯片名则不重复补，描述为空时只显示设备名（如 'COM1'）。后台轮询
+    (PortScannerThread)与手动一次性扫描(OneShotPortScanner)共用，避免两处各写一份拼接逻辑。"""
     result = []
     for p in serial.tools.list_ports.comports():
         desc = p.description.replace(p.device, "").strip(" ()-")
-        label = f"{p.device}  {desc}" if desc else p.device
+        chip = _chip_ident(getattr(p, "vid", None), getattr(p, "pid", None))
+        # 在系统描述后补精确型号；desc 里已含该型号（如 "USB-SERIAL CH340"）就不重复。
+        parts = [desc] if desc else []
+        if chip and chip.lower() not in desc.lower():
+            parts.append(chip)
+        label = f"{p.device}  " + "  ".join(parts) if parts else p.device
         result.append((p.device, label))
     return result
 
