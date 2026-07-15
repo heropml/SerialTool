@@ -81,6 +81,21 @@ def read_field(buf, off, typ):
     return None
 
 
+def field_size(typ):
+    """字段占用字节数：数值类型按 HEX_FMT、hexN/strN 按 N；未知/无固定长度→0。
+    是 read_field 的字节跨度镜像——协议高亮据此把字段映射回数据区对应的字节区间。"""
+    base, _ = _base_type(typ)
+    if base in HEX_FMT:
+        return HEX_FMT[base][1]
+    m = _HEXN.match(base)
+    if m:
+        return int(m.group(1))
+    m = _STRN.match(base)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
 def parse_hex_header(text):
     """'54' / '54 00' / '5400' → bytes；空→b''；非法 hex/奇数长度抛 ValueError。"""
     t = text.replace(" ", "").replace(",", "")

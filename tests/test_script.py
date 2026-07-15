@@ -3177,5 +3177,158 @@ class ImportGateTests(unittest.TestCase):
         self.assertEqual(called["n"], 0)
 
 
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class ProtoHighlightTests(unittest.TestCase):
+    """协议高亮：HEX 模式下按 frame_rules 把收到帧各字段映射成数据区字符区间 + 悬浮标签。"""
+
+    # Modbus 读响应帧 01 03 + 地址 006B + 数量 0001 + CRC D5 D9
+    FRAME = bytes([0x01, 0x03, 0x00, 0x6B, 0x00, 0x01, 0xD5, 0xD9])
+    RULE = "01 03 | slave=0:u8x, func=1:u8x, addr=2:u16be, crc=6:hex2"
+
+    def _setup(self, rule=None):
+        w = _win()
+        w.settings.setValue("frame_rules", rule if rule is not None else self.RULE)
+        w._proto_rules_raw = None            # 强制重解析（清缓存）
+        w._proto_fields.clear()
+        w.sw_rx_hex.setChecked(True)
+        w._hexdump_on = False
+        w.sw_line_split.setChecked(False)
+        # 开关已挪到「帧解析」对话框；这里用主窗 API 置位（与对话框勾选框驱动的是同一路径）
+        w.set_proto_highlight(True)
+        w._proto_fields.clear()
+        w.txt_recv.clear()
+        w._reset_recv_state()
+        return w
+
+    def test_rules_parsed_and_cached(self):
+        w = self._setup()
+        r1 = w._proto_rules()
+        self.assertEqual(len(r1), 1)
+        self.assertEqual(r1[0]["header"], b"\x01\x03")
+        self.assertEqual([f[0] for f in r1[0]["fields"]], ["slave", "func", "addr", "crc"])
+        self.assertIs(w._proto_rules(), r1)   # raw 未变 → 命中缓存返回同对象
+
+    def test_field_char_ranges(self):
+        """每字段 cursor 选中的正是该字段字节对应的 hex 子串。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        got = {f["label"].split("·")[1].split("=")[0].strip():
+               f["cursor"].selectedText() for f in w._proto_fields}
+        self.assertEqual(got["slave"], "01")
+        self.assertEqual(got["func"], "03")
+        self.assertEqual(got["addr"], "00 6B")
+        self.assertEqual(got["crc"], "D5 D9")
+
+    def test_field_labels(self):
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        labels = [f["label"] for f in w._proto_fields]
+        self.assertIn("01 03 · slave=0x1", labels)     # u8x → 十六进制
+        self.assertIn("01 03 · func=0x3", labels)
+        self.assertIn("01 03 · addr=107", labels)      # u16be 0x006B=107，无 x → 十进制
+        self.assertIn("01 03 · crc=D5 D9", labels)     # hex2 → 原样 HEX 串
+
+    def test_hover_field_at(self):
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        cur = next(f["cursor"] for f in w._proto_fields if "addr=" in f["label"])
+        mid = (cur.selectionStart() + cur.selectionEnd()) // 2
+        self.assertIn("addr=107", w._proto_field_at(mid))
+        self.assertIsNone(w._proto_field_at(w.txt_recv.document().characterCount() + 50))
+
+    def test_extra_selections_emitted(self):
+        w = self._setup()
+        orig = w._active_rules
+        w._active_rules = lambda: []          # 无关键字规则，隔离出字段选区
+        try:
+            w._on_data_received_impl(self.FRAME)
+            w._refresh_extra_selections()
+            palette = {c.upper() for c in w._PROTO_PALETTE}
+            field_sels = [s for s in w.txt_recv.extraSelections()
+                          if s.format.background().color().name().upper() in palette]
+            self.assertEqual(len(field_sels), 4)
+        finally:
+            w._active_rules = orig
+
+    def test_text_mode_hides_highlight(self):
+        """切到文本模式立即撤掉协议高亮（区间按 HEX 渲染算得，文本模式无意义）；切回 HEX 恢复。"""
+        w = self._setup()
+        orig = w._active_rules
+        w._active_rules = lambda: []
+        try:
+            palette = {c.upper() for c in w._PROTO_PALETTE}
+            fc = lambda: sum(1 for s in w.txt_recv.extraSelections()
+                             if s.format.background().color().name().upper() in palette)
+            w._on_data_received_impl(self.FRAME)
+            w._refresh_extra_selections()
+            self.assertEqual(fc(), 4, "HEX 模式应画 4 字段")
+            w.sw_rx_hex.setChecked(False)     # → _on_hex_display_changed 立即重画
+            self.assertEqual(fc(), 0, "文本模式不应残留协议高亮")
+            w.sw_rx_hex.setChecked(True)       # 切回 HEX
+            self.assertEqual(fc(), 4, "切回 HEX 高亮应恢复")
+        finally:
+            w._active_rules = orig
+            w.sw_rx_hex.setChecked(True)
+
+    def test_hexdump_mode_hides_highlight(self):
+        """开启 HEX 转储 → 立即清掉普通 HEX 的协议色块（转储是另一种排版，不适用），不残留到下一包。"""
+        w = self._setup()
+        orig = w._active_rules
+        w._active_rules = lambda: []
+        try:
+            palette = {c.upper() for c in w._PROTO_PALETTE}
+            fc = lambda: sum(1 for s in w.txt_recv.extraSelections()
+                             if s.format.background().color().name().upper() in palette)
+            w._on_data_received_impl(self.FRAME)
+            w._refresh_extra_selections()
+            self.assertEqual(fc(), 4, "普通 HEX 应画 4 字段")
+            w._on_hexdump_toggled(True)         # 开转储 → 立即清 + 重画
+            self.assertEqual(fc(), 0, "转储模式不应残留协议色块")
+            self.assertEqual(len(w._proto_fields), 0)
+        finally:
+            w._on_hexdump_toggled(False)         # 复原到普通 HEX
+            w._active_rules = orig
+
+    def test_header_mismatch_no_fields(self):
+        w = self._setup()
+        w._on_data_received_impl(bytes([0x02, 0x03, 0x00, 0x6B]))   # 帧头非 01 03
+        self.assertEqual(len(w._proto_fields), 0)
+
+    def test_off_clears_and_no_emit(self):
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self.assertTrue(w._proto_fields)
+        w.set_proto_highlight(False)          # 关闭 → 清空已存字段
+        self.assertEqual(len(w._proto_fields), 0)
+        self.assertFalse(w._proto_hl_on)
+
+    def test_frame_dialog_checkbox_drives(self):
+        """「帧解析」对话框的勾选框 ↔ 主窗 _proto_hl_on 双向同步。"""
+        from frame_dialog import FrameParseDialog
+        w = self._setup()                 # _proto_hl_on = True
+        old = getattr(w, "_frame_dlg", None)
+        dlg = FrameParseDialog(w)
+        w._frame_dlg = dlg
+        try:
+            dlg.sync_highlight()
+            self.assertTrue(dlg.chk_highlight.isChecked())    # 跟随主窗 True
+            dlg.chk_highlight.setChecked(False)               # 勾选框驱动 → set_proto_highlight(False)
+            self.assertFalse(w._proto_hl_on)
+            dlg.chk_highlight.setChecked(True)
+            self.assertTrue(w._proto_hl_on)
+            w.set_proto_highlight(False)                      # 主窗端改动 → 反映回勾选框
+            self.assertFalse(dlg.chk_highlight.isChecked())
+        finally:
+            w._frame_dlg = old
+            dlg.deleteLater()
+
+    def test_out_of_range_field_skipped(self):
+        """字段偏移超出帧长 → 跳过不崩（截断帧）。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME[:3])   # 只有 3 字节，addr/crc 越界
+        got = {f["label"].split("·")[1].split("=")[0].strip() for f in w._proto_fields}
+        self.assertEqual(got, {"slave", "func"})   # 仅前两个在范围内
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

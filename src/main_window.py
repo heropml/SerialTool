@@ -339,6 +339,10 @@ class CommTool(QMainWindow):
         self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
         self._hexdump_on = self.settings.value("hexdump_view", False, type=bool)        # HEX dump 视图（偏移+HEX+ASCII 三列）
+        self._proto_hl_on = self.settings.value("proto_highlight", False, type=bool)     # 协议高亮（HEX 模式按帧解析规则给字段上色）
+        self._proto_fields = deque(maxlen=3000)   # [{cursor, color, label}]：已上色字段(带 keepPositionOnInsert 的 QTextCursor)，供高亮+悬浮
+        self._proto_rules_raw = None              # frame_rules 上次解析时的原始串（变了才重解析）
+        self._proto_rules_cache = []              # 解析后的规则缓存
         self._terminal_enter = self._safe_enter_idx(self.settings.value("terminal_enter", 0))   # 0=CR 1=LF 2=CRLF
         self._term_esc = ""    # 终端渲染：跨块未完成的 ANSI/CSI 转义序列缓冲
         self._term_discard_csi = False  # 超长 CSI：跨块丢弃到终止字节，避免残片显示
@@ -984,7 +988,7 @@ class CommTool(QMainWindow):
         # _on_data_received_impl)，若不复位，文本模式残留的半个多字节会和切回文本后的
         # 新数据错位拼接 → 整段乱码。代价仅是丢掉那个正好跨切换点、注定要被劈开的字符
         # ——两害取其轻，是有意行为，勿当 bug 移除（移除会把"丢一字符"换成"乱码一片"）。
-        self.sw_rx_hex.toggled.connect(lambda _=False: self._on_encoding_changed())
+        self.sw_rx_hex.toggled.connect(self._on_hex_display_changed)
         sw_row(row, "hex_display", self.sw_rx_hex); row += 1
 
         # HEX dump 视图：偏移 + HEX + ASCII 三列（二进制协议调试；开启时优先于 HEX 显示 / 换行分包）
@@ -1000,6 +1004,9 @@ class CommTool(QMainWindow):
         self.cb_hexdump_width.currentIndexChanged.connect(self._on_hexdump_width_changed)
         # 同「换行分包 / 实时记录」风格：开关在中列、下拉在最右列（与其它下拉右对齐）
         sw_extra_row(row, "hexdump_view", self.sw_hexdump, self.cb_hexdump_width); row += 1
+
+        # 协议高亮开关不在此卡片——挪进「帧解析」对话框（复用其 frame_rules、不常用），见
+        # FrameParseDialog.chk_highlight 与 set_proto_highlight()。
 
         # 字符编码 — 影响 RX 解码、TX 编码、文件加载
         self.cb_encoding = QComboBox()
@@ -1453,6 +1460,17 @@ class CommTool(QMainWindow):
                 elif (event.type() == QEvent.MouseButtonPress
                       and event.button() == Qt.LeftButton):
                     self._highlight_recv_line(event.pos())
+                # 悬浮到协议高亮字段上 → 弹「规则 · 字段=值」解析气泡（仅普通 HEX 模式 + 协议高亮开启 + 有字段时接管）
+                elif (event.type() == QEvent.ToolTip and self._proto_hl_on
+                      and self.sw_rx_hex.isChecked() and not self._hexdump_on
+                      and self._proto_fields):
+                    pos = self.txt_recv.cursorForPosition(event.pos()).position()
+                    label = self._proto_field_at(pos)
+                    if label:
+                        QToolTip.showText(event.globalPos(), label, self.txt_recv.viewport())
+                    else:
+                        QToolTip.hideText()
+                    return True
         return super().eventFilter(obj, event)
 
     def _show_mac_tooltip(self, obj, event):
@@ -1663,10 +1681,14 @@ class CommTool(QMainWindow):
         """收到新数据时调用：生效分组有规则 或 搜索栏活跃 → 启动节流定时器重扫"""
         if self._kw_timer.isActive():
             return
-        if self._active_rules() or getattr(self, "_search_term", ""):
+        if self._active_rules() or getattr(self, "_search_term", "") or self._proto_hl_on:
             self._kw_timer.start()
 
     _KW_MAX_SELECTIONS = 2000  # 安全上限，避免像 '00' 这种在 HEX 流里匹配出上万条
+
+    # 协议高亮字段调色板：中饱和色，作背景时配亮度自适应黑/白文字，深浅主题下都清晰、彼此可辨
+    _PROTO_PALETTE = ("#4C8DFF", "#34C759", "#FF9F0A", "#FF375F",
+                      "#AF52DE", "#5AC8FA", "#FFD60A", "#FF6482")
 
     def _refresh_extra_selections(self, rebuild_search=True):
         """统一构建数据区叠加高亮：关键字着色(背景/文字，分收/发范围) + 单击行高亮(最上层)；
@@ -1747,6 +1769,26 @@ class CommTool(QMainWindow):
         if dirty:
             doc.markContentsDirty(0, doc.characterCount())
             self.txt_recv.viewport().update()
+        # 1.5 协议字段高亮（HEX 模式；复用帧解析规则；每字段调色板背景 + 亮度自适应文字）。
+        # 用接收时存下的 QTextCursor（带 keepPositionOnInsert）直接建选区；文档截满被顶掉的帧
+        # 其 cursor 会塌缩成空选区，跳过即可。叠在关键字之上、单击行/搜索高亮之下。
+        # 必须限定「普通 HEX 显示」模式：字段区间是按 HEX 渲染算的——切到文本模式位置无意义，
+        # HEX 转储是另一种排版（偏移+HEX+ASCII）也不适用，两种都不画（切回普通 HEX 自动重现）。
+        if (self._proto_hl_on and self.sw_rx_hex.isChecked()
+                and not self._hexdump_on and not capped):
+            for fld in self._proto_fields:
+                cur = fld["cursor"]
+                if cur.selectionStart() == cur.selectionEnd():
+                    continue
+                col = QColor(fld["color"])
+                sel = QTextEdit.ExtraSelection()
+                sel.format.setBackground(col)
+                lum = 0.299 * col.red() + 0.587 * col.green() + 0.114 * col.blue()
+                sel.format.setForeground(QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
+                sel.cursor = cur
+                sels.append(sel)
+                if len(sels) >= self._KW_MAX_SELECTIONS:
+                    break
         # 2. 单击行高亮（放最后 → 画在最上层），中性半透明，不跟文字撞色
         if self._recv_highlight_line >= 0:
             block = doc.findBlockByNumber(self._recv_highlight_line)
@@ -1892,6 +1934,100 @@ class CommTool(QMainWindow):
             return False
         return any(r.get("enabled", True) and r.get("pattern")
                    for r in self._active_rules())
+
+    # ----- 协议高亮：复用「帧解析」规则，HEX 模式下给收到的帧各字段上色 + 悬浮解析 -----
+    def _proto_rules(self):
+        """解析 frame_rules（与「帧解析」对话框共用同一份配置）→
+        [{header(bytes), header_str, fields:[(name,off,typ)]}]。按原始串缓存，内容变了自动重解析。"""
+        raw = self.settings.value("frame_rules", "") or ""
+        if raw == self._proto_rules_raw:
+            return self._proto_rules_cache
+        rules = []
+        for ln in raw.splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            hdr_s, fld_s = (ln.split("|", 1) if "|" in ln else ("", ln))
+            try:
+                header = binproto.parse_hex_header(hdr_s.strip())
+                fields = binproto.parse_field_spec(fld_s.strip())
+            except (ValueError, TypeError):
+                continue
+            if fields:
+                rules.append({"header": header, "header_str": hdr_s.strip() or "*",
+                              "fields": fields})
+        self._proto_rules_raw = raw
+        self._proto_rules_cache = rules
+        return rules
+
+    @staticmethod
+    def _proto_field_disp(typ, v):
+        """字段值 → 悬浮显示文本：hexN/strN 串原样；数值带 x → 十六进制；否则十进制/浮点。"""
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v
+        if binproto.is_hex_num(typ) and isinstance(v, int):
+            return f"0x{v:X}" if v >= 0 else f"-0x{-v:X}"
+        return f"{v:.6g}" if isinstance(v, float) else str(v)
+
+    def _add_proto_fields(self, data: bytes, body_pos: int):
+        """HEX 模式收到一帧后：按 frame_rules 首条命中规则解析，各字段映射成数据区字符区间存起来，
+        供 _refresh_extra_selections 上色、eventFilter 悬浮提示。
+        body_pos = 正文「AA BB …」在文档中的起始字符位置，字节 i → 字符 [body_pos+3i, body_pos+3i+2)。"""
+        rules = self._proto_rules()
+        if not rules:
+            return
+        rule = next((r for r in rules if not r["header"] or data.startswith(r["header"])), None)
+        if rule is None:
+            return
+        doc = self.txt_recv.document()
+        n = len(data)
+        for fi, (name, off, typ) in enumerate(rule["fields"]):
+            size = binproto.field_size(typ)
+            if size <= 0 or off < 0 or off + size > n:
+                continue
+            val = binproto.read_field(data, off, typ)
+            if val is None:
+                continue
+            cur = QTextCursor(doc)
+            cur.setPosition(body_pos + 3 * off)
+            # 末字节只取 2 个 hex 字符、不含其后空格；区间含字段内部各字节间的空格
+            cur.setPosition(body_pos + 3 * (off + size) - 1, QTextCursor.KeepAnchor)
+            cur.setKeepPositionOnInsert(True)
+            self._proto_fields.append({
+                "cursor": cur,
+                "color": self._PROTO_PALETTE[fi % len(self._PROTO_PALETTE)],
+                "label": "%s · %s=%s" % (rule["header_str"], name,
+                                         self._proto_field_disp(typ, val)),
+            })
+
+    def _proto_field_at(self, pos: int):
+        """文档字符位置 pos 落在哪个已上色字段上 → 返回其 label；都不在 → None（供悬浮提示）。"""
+        for fld in self._proto_fields:
+            cur = fld["cursor"]
+            if cur.selectionStart() <= pos < cur.selectionEnd():
+                return fld["label"]
+        return None
+
+    def set_proto_highlight(self, on: bool):
+        """设置「协议高亮」开关（由「帧解析」对话框的 chk_highlight 驱动）：仅 HEX 模式生效、
+        需帧解析里有规则，否则给出提示。关闭时清掉已存字段。落盘 + 立即重画 + 同步对话框勾选态。"""
+        on = bool(on)
+        self._proto_hl_on = on
+        if on:
+            if not self.sw_rx_hex.isChecked():
+                self.toast(self._t("proto_hl_need_hex"))
+            elif not self._proto_rules():
+                self.toast(self._t("proto_hl_no_rules"))
+        else:
+            self._proto_fields.clear()
+        self.settings.setValue("proto_highlight", on)
+        dlg = getattr(self, "_frame_dlg", None)
+        if dlg is not None:
+            dlg.sync_highlight()      # 配置切换/别处改动时让对话框勾选态跟上
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
 
     @staticmethod
     def _block_has_body_role(block) -> bool:
@@ -2387,7 +2523,11 @@ class CommTool(QMainWindow):
         self._hexdump_on = bool(on)
         self.settings.setValue("hexdump_view", self._hexdump_on)
         self._refresh_hex_toggle_state()   # hexdump 接管 HEX 显示 → 灰掉 HEX 显示开关，明确优先级
-        self._reset_recv_state()   # 切视图 → 下一数据块从干净状态起（新 block、重置增量解码）
+        self._reset_recv_state()   # 切视图 → 下一数据块从干净状态起（新 block、重置增量解码；含清 _proto_fields）
+        # 立即重画：_reset_recv_state 已清 _proto_fields，但旧的 ExtraSelection 还挂在视图上，
+        # 不刷新则旧协议色块残留到下一包才消失（协议高亮仅普通 HEX、转储不适用）
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
 
     def _on_hexdump_width_changed(self, *_):
         self.settings.setValue("hexdump_width", self.cb_hexdump_width.currentText())
@@ -2608,6 +2748,8 @@ class CommTool(QMainWindow):
         self._rx_pending_cr = False
         self._inc_decoder = None
         self._txt_ends_with_nl = True
+        if hasattr(self, "_proto_fields"):
+            self._proto_fields.clear()    # 清屏/重连：旧帧的字段高亮 cursor 一并清掉
 
     def _on_conn_error(self, msg):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
@@ -3028,6 +3170,14 @@ class CommTool(QMainWindow):
         c = self._get_codec()
         return "utf-8" if c == "auto" else c
 
+    def _on_hex_display_changed(self, _=False):
+        """切换 HEX/文本 显示：复位增量解码 + 立即重画叠加高亮。
+        协议高亮的字段区间按 HEX 渲染算得，切到文本模式须立刻撤掉旧高亮（refresh 里按当前
+        模式判定），否则旧色块残留在已渲染的 HEX 文本上。"""
+        self._on_encoding_changed()
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+
     def _on_encoding_changed(self):
         """切换编码时重置增量解码状态，悬挂字节别用新 codec 错误解码"""
         self._rx_decode_buffer = b""
@@ -3224,8 +3374,11 @@ class CommTool(QMainWindow):
             if is_last and seg == "" and use_line_split and len(segments) > 1:
                 continue
 
-            self._append_block_data(seg, direction="rx", force_new_block=force_new_block)
+            body_pos = self._append_block_data(seg, direction="rx", force_new_block=force_new_block)
             self._last_direction = "rx"
+            # 协议高亮：HEX 模式下整段=一帧（seg 即 hex(data)），按帧解析规则给字段上色
+            if use_hex and self._proto_hl_on and body_pos is not None:
+                self._add_proto_fields(data, body_pos)
 
         if use_line_split:
             self._pending_line_break = (segments[-1] == "" and len(segments) > 1)
@@ -3283,6 +3436,7 @@ class CommTool(QMainWindow):
         body_fmt.setProperty(ROLE_PROP, body_role)
         cursor.setCharFormat(body_fmt)
         first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
+        body_start_pos = cursor.position()         # 正文起始字符位置（供协议高亮做字节→字符映射）
         cursor.insertText(text)
         log_pieces.append(text)
         if text:
@@ -3338,6 +3492,8 @@ class CommTool(QMainWindow):
                 self.toast(self._t("err_log_write", e=e), error=True)
                 self._close_log_file()
                 self.sw_log_file.setChecked(False)
+
+        return body_start_pos    # 正文起始字符位置，供协议高亮做字节→字符映射
 
     # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
     def _load_ms_groups(self):
@@ -3546,6 +3702,7 @@ class CommTool(QMainWindow):
         dlg = self._frame_dlg
         dlg.refresh_theme()
         dlg.retranslate()
+        dlg.sync_highlight()      # 勾选态跟随主窗当前 _proto_hl_on
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -5123,7 +5280,7 @@ class CommTool(QMainWindow):
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
         "ser_flow", "serial_dtr", "serial_rts",
         # 数据区显示
-        "rx_hex", "hexdump_view", "hexdump_width", "wrap", "show_timestamp", "packet_split", "packet_timeout",
+        "rx_hex", "hexdump_view", "hexdump_width", "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",
         "log_split", "filter_highlight", "recv_font_size",
         # 发送区
@@ -6819,6 +6976,7 @@ class CommTool(QMainWindow):
             s.setValue("rx_hex", self.sw_rx_hex.isChecked())
             s.setValue("hexdump_view", self.sw_hexdump.isChecked())
             s.setValue("hexdump_width", self.cb_hexdump_width.currentText())
+            s.setValue("proto_highlight", self._proto_hl_on)
             s.setValue("wrap", self.sw_wrap.isChecked())
             s.setValue("show_timestamp", self.sw_show_timestamp.isChecked())
             s.setValue("packet_split", self.sw_packet_split.isChecked())
@@ -6908,6 +7066,10 @@ class CommTool(QMainWindow):
         self.sw_hexdump.setChecked(to_bool(s.value("hexdump_view", False)), animate=False)
         self._hexdump_on = self.sw_hexdump.isChecked()
         restore_combo(self.cb_hexdump_width, "hexdump_width")
+        self._proto_hl_on = to_bool(s.value("proto_highlight", False))   # 开关在「帧解析」对话框，这里只同步状态
+        self._proto_fields.clear()    # 切配置时清掉上一配置遗留的字段高亮
+        if getattr(self, "_frame_dlg", None) is not None:
+            self._frame_dlg.sync_highlight()
         self._refresh_hex_toggle_state()   # 启动/切配置后按 hexdump 状态同步 HEX 显示 / 每行字节数可用性
         self.sw_wrap.setChecked(to_bool(s.value("wrap", True)), animate=False)
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)

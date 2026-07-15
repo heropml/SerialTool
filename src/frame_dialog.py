@@ -16,7 +16,7 @@ from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
                              QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
                              QAbstractItemView, QFileDialog, QMenu, QShortcut, QApplication,
-                             QTabWidget, QScrollArea, QFrame, QSplitter)
+                             QTabWidget, QScrollArea, QFrame, QSplitter, QCheckBox)
 
 import binproto
 from theme import chrome_for
@@ -252,6 +252,12 @@ class FrameParseDialog(QDialog):
         bar.addWidget(self.btn_add)
         bar.addWidget(self.btn_apply)
         bar.addStretch(1)
+        # 数据区协议高亮开关：勾上则用上面这些规则给主界面数据区收到的帧上色（HEX 模式）。
+        # 状态存主窗 _proto_hl_on，本勾选框只是控制面，关掉对话框后高亮仍生效。
+        self.chk_highlight = QCheckBox()
+        self.chk_highlight.setObjectName("FrameHlChk")
+        self.chk_highlight.toggled.connect(self._on_highlight_toggled)
+        bar.addWidget(self.chk_highlight)
         self.btn_pause = QPushButton()
         self.btn_pause.setObjectName("PlotGhostBtn")
         self.btn_pause.clicked.connect(self._toggle_pause)
@@ -279,6 +285,7 @@ class FrameParseDialog(QDialog):
         self._load_cfg()                 # 建规则行
         self._apply_rules(save=False)    # 按规则建标签
         self.refresh_theme()
+        self.sync_highlight()            # 勾选态跟随主窗 _proto_hl_on
 
     # ---------------- 规则行（列表）----------------
     def _add_rule_row(self, header="", fields=""):
@@ -479,6 +486,17 @@ class FrameParseDialog(QDialog):
         self._paused = not self._paused
         self.btn_pause.setText(self.app._t("plot_resume" if self._paused else "plot_pause"))
 
+    # ---------------- 数据区协议高亮开关 ----------------
+    def _on_highlight_toggled(self, on):
+        """勾选框改变 → 驱动主窗协议高亮（含 HEX 模式/无规则的提示、落盘、重画）。"""
+        self.app.set_proto_highlight(bool(on))
+
+    def sync_highlight(self):
+        """让勾选态跟随主窗 _proto_hl_on（打开/切配置/别处改动时；阻断信号避免回环）。"""
+        self.chk_highlight.blockSignals(True)
+        self.chk_highlight.setChecked(bool(self.app._proto_hl_on))
+        self.chk_highlight.blockSignals(False)
+
     def _clear(self):
         if self._all_table:
             self._all_table.clear_rows()
@@ -541,6 +559,9 @@ class FrameParseDialog(QDialog):
             border-radius: 13px; padding: 4px 12px; font-family: 'Segoe UI'; font-size: 11px;
         }}
         QPushButton#PlotToBottom:hover {{ background-color: {c['accent_hover']}; }}
+        QCheckBox#FrameHlChk {{
+            color: {c['text']}; font-family: 'Segoe UI'; font-size: 12px; spacing: 5px;
+        }}
         QScrollArea#FrameRulesScroll {{
             background: transparent; border: 1px solid {c['separator']}; border-radius: 6px;
         }}
@@ -577,6 +598,8 @@ class FrameParseDialog(QDialog):
         self.btn_help.setToolTip(t("frame_help_btn"))
         self.btn_add.setText(t("frame_add_rule"))
         self.btn_apply.setText(t("frame_apply"))
+        self.chk_highlight.setText(t("proto_highlight"))
+        self.chk_highlight.setToolTip(t("proto_hl_tip"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         self.btn_export.setText(t("plot_export"))
