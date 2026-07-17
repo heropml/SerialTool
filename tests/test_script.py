@@ -2863,12 +2863,13 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.sw_period.blockSignals(False)
             w._set_terminal_enabled(old[0])
 
-    def test_serial_runtime_error_no_autoreconnect(self):
-        """串口运行时掉线(拔出)不自动重连；网络掉线仍重连。"""
+    def test_serial_runtime_error_autoreconnects_original_config(self):
+        """串口运行时掉线会排队重连，并保存实际连接签名而不是稍后读取 UI。"""
         w = _win()
         n = {"reconnect": 0}
         old = (w._schedule_reconnect, w.conn, w._conn_engaged, w._reconnect_attempts,
-               w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto)
+               w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto,
+               w._conn_cfg, w._serial_reconnect_cfg)
         try:
             w._schedule_reconnect = lambda: n.__setitem__("reconnect", n["reconnect"] + 1)
             w.close_conn = lambda: None
@@ -2877,32 +2878,39 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.conn = None
             w._conn_engaged = True            # 曾连上 → 运行时掉线
             w._reconnect_attempts = 0
-            # 串口掉线 → 不重连（_on_conn_error 以 _conn_proto 为准，不看下拉框）
+            serial_cfg = ("Serial", "COM1", 115200, "8", "None", "1", "None")
             w._conn_proto = "Serial"
+            w._conn_cfg = serial_cfg
             w._on_conn_error("device disconnected")
-            self.assertEqual(n["reconnect"], 0)
+            self.assertEqual(n["reconnect"], 1)
+            self.assertEqual(w._serial_reconnect_cfg, serial_cfg)
             # 网络(TCP Client)掉线 → 仍重连
             w._conn_engaged = True
             w._reconnect_attempts = 0
             w._conn_proto = "TCP Client"
+            w._conn_cfg = ("TCP Client", "127.0.0.1", 502)
             w._on_conn_error("connection reset")
-            self.assertEqual(n["reconnect"], 1)
+            self.assertEqual(n["reconnect"], 2)
         finally:
             (w._schedule_reconnect, w.conn, w._conn_engaged, w._reconnect_attempts,
-             w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto) = old
+             w.close_conn, w.toast, w._refresh_stat_labels, w._conn_proto,
+             w._conn_cfg, w._serial_reconnect_cfg) = old
 
     def test_serial_removal_disconnects_after_debounce(self):
         """已连接的串口在后台扫描里连续 N 次检测不到 → 断开；单次抖动不误断。"""
         w = _win()
-        calls = {"close": 0, "toast": 0}
+        calls = {"close": 0, "toast": 0, "reconnect": 0}
         old = (w.conn, w._conn_proto, w._serial_device, w._serial_missing_count,
-               w.close_conn, w.toast)
+               w.close_conn, w.toast, w._schedule_reconnect, w._conn_cfg,
+               w._serial_reconnect_cfg, w._available_serial_devices)
         try:
             w.close_conn = lambda: calls.__setitem__("close", calls["close"] + 1)
             w.toast = lambda *a, **k: calls.__setitem__("toast", calls["toast"] + 1)
+            w._schedule_reconnect = lambda: calls.__setitem__("reconnect", calls["reconnect"] + 1)
             w.conn = object()                      # 假装已连接
             w._conn_proto = "Serial"               # PROTO_SERIAL
             w._serial_device = "COM1"
+            w._conn_cfg = ("Serial", "COM1", 9600, "8", "None", "1", "None")
             w._serial_missing_count = 0
             # 口在 → 计数清零，不断开
             w._on_port_scan_complete([("COM1", "COM1"), ("COM2", "COM2")])
@@ -2916,6 +2924,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._on_port_scan_complete([("COM2", "COM2")])
             self.assertEqual(calls["close"], 1)
             self.assertEqual(calls["toast"], 1)
+            self.assertEqual(calls["reconnect"], 1)
+            self.assertEqual(w._serial_reconnect_cfg, w._conn_cfg)
             # 单次抖动后口回来 → 计数清零，不会断
             w._serial_missing_count = 0
             w._on_port_scan_complete([("COM2", "COM2")])    # 缺 1 次
@@ -2924,7 +2934,243 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertEqual(calls["close"], 1)             # 没有再断
         finally:
             (w.conn, w._conn_proto, w._serial_device, w._serial_missing_count,
-             w.close_conn, w.toast) = old
+             w.close_conn, w.toast, w._schedule_reconnect, w._conn_cfg,
+             w._serial_reconnect_cfg, w._available_serial_devices) = old
+
+    def test_serial_reconnect_waits_for_exact_original_port(self):
+        """原口未出现时只继续等待；即使 UI/扫描里有其他口，也不能误连。"""
+        w = _win()
+        cfg = ("Serial", "COM1", 115200, "8", "None", "1", "None")
+        calls = {"schedule": 0, "opened": []}
+        old = (w.conn, w._user_closing, w._serial_reconnect_cfg,
+               w._available_serial_devices, w._reconnect_attempts,
+               w._schedule_reconnect, w.open_conn, w.toast)
+        try:
+            w.conn = None
+            w._user_closing = False
+            w._serial_reconnect_cfg = cfg
+            w._reconnect_attempts = 0
+            w._available_serial_devices = {"COM2"}
+            w._schedule_reconnect = lambda: calls.__setitem__("schedule", calls["schedule"] + 1)
+            w.open_conn = lambda reconnect_cfg=None: calls["opened"].append(reconnect_cfg)
+            w.toast = lambda *a, **k: None
+
+            w._try_reconnect()
+            self.assertEqual(calls["schedule"], 1)
+            self.assertEqual(calls["opened"], [])
+            self.assertEqual(w._reconnect_attempts, 1)
+
+            w._available_serial_devices = {"COM1", "COM2"}
+            w.open_conn = lambda reconnect_cfg=None: (
+                calls["opened"].append(reconnect_cfg), setattr(w, "conn", object()))
+            w._try_reconnect()
+            self.assertEqual(calls["opened"], [cfg])
+            self.assertEqual(w._reconnect_attempts, 2)
+        finally:
+            (w.conn, w._user_closing, w._serial_reconnect_cfg,
+             w._available_serial_devices, w._reconnect_attempts,
+             w._schedule_reconnect, w.open_conn, w.toast) = old
+
+    def test_serial_reconnect_keeps_combo_on_actual_port(self):
+        """等待和成功重连时下拉始终显示 COM87，不能回落/残留为列表第一个 COM1。"""
+        class WakeTimer:
+            def __init__(self):
+                self.starts = []
+            def isActive(self):
+                return True
+            def start(self, ms):
+                self.starts.append(ms)
+
+        w = _win()
+        cfg = ("Serial", "COM87", 9600, "8", "None", "1", "None")
+        combo_items = [(w.cb_port.itemData(i), w.cb_port.itemText(i))
+                       for i in range(w.cb_port.count())]
+        combo_current = w.cb_port.currentData()
+        old = (w.conn, w._serial_reconnect_cfg, w._pending_restore_port,
+               w._last_port_list, w._sel_missing_count, w._reconnect_timer,
+               w._reconnect_attempts)
+        try:
+            w.conn = None
+            w._serial_reconnect_cfg = cfg
+            w._pending_restore_port = None
+            w._last_port_list = None
+            w._sel_missing_count = 0
+            w._reconnect_attempts = 3
+            wake_timer = WakeTimer()
+            w._reconnect_timer = wake_timer
+            w._populate_port_combo([("COM87", "COM87")], "COM87")
+
+            for _ in range(w._serial_missing_limit + 2):
+                w._on_port_scan_complete([("COM1", "COM1 通信端口")])
+            self.assertEqual(w.cb_port.currentData(), "COM87")
+
+            w._on_port_scan_complete([("COM1", "COM1 通信端口"),
+                                      ("COM87", "COM87 USB Serial")])
+            self.assertEqual(w.cb_port.currentData(), "COM87")
+            self.assertIn("COM87", w.cb_port.currentText())
+            self.assertEqual(wake_timer.starts, [0])
+            self.assertEqual(w._reconnect_attempts, 3)  # 立即唤醒不重置全局重连步数
+
+            w.cb_port.setCurrentIndex(w.cb_port.findData("COM1"))
+            w._select_serial_device("COM87")
+            self.assertEqual(w.cb_port.currentData(), "COM87")
+        finally:
+            (w.conn, w._serial_reconnect_cfg, w._pending_restore_port,
+             w._last_port_list, w._sel_missing_count, w._reconnect_timer,
+             w._reconnect_attempts) = old
+            w._populate_port_combo([(data, label) for data, label in combo_items], combo_current)
+
+    def test_selecting_other_port_cancels_reconnect_and_removes_placeholder(self):
+        """用户从 COM87 缺失占位改选 COM29 后，旧占位和旧重连必须立即清掉。"""
+        class Timer:
+            def __init__(self):
+                self.stops = 0
+            def isActive(self):
+                return True
+            def stop(self):
+                self.stops += 1
+
+        w = _win()
+        cfg = ("Serial", "COM87", 9600, "8", "None", "1", "None")
+        combo_items = [(w.cb_port.itemData(i), w.cb_port.itemText(i))
+                       for i in range(w.cb_port.count())]
+        combo_current = w.cb_port.currentData()
+        old = (w._serial_reconnect_cfg, w._available_serial_devices,
+               w._reconnect_attempts, w._sel_missing_count,
+               w._pending_restore_port, w._last_port_list, w._reconnect_timer)
+        try:
+            timer = Timer()
+            w._reconnect_timer = timer
+            w._serial_reconnect_cfg = cfg
+            w._available_serial_devices = {"COM1", "COM29"}
+            w._reconnect_attempts = 4
+            w._sel_missing_count = 8
+            w._pending_restore_port = "COM87"
+            w._populate_port_combo([("COM1", "COM1 通信端口"),
+                                    ("COM29", "COM29 USB Serial Port")],
+                                   "COM87", allow_placeholder=True)
+
+            idx = w.cb_port.findData("COM29")
+            w.cb_port.setCurrentIndex(idx)
+            w._on_serial_port_selected(idx)
+
+            self.assertIsNone(w._serial_reconnect_cfg)
+            self.assertEqual(w._reconnect_attempts, 0)
+            self.assertEqual(timer.stops, 1)
+            self.assertEqual(w.cb_port.currentData(), "COM29")
+            self.assertNotIn("COM87", [w.cb_port.itemData(i)
+                                       for i in range(w.cb_port.count())])
+            self.assertIsNone(w._pending_restore_port)
+        finally:
+            (w._serial_reconnect_cfg, w._available_serial_devices,
+             w._reconnect_attempts, w._sel_missing_count,
+             w._pending_restore_port, w._last_port_list, w._reconnect_timer) = old
+            w._populate_port_combo([(data, label) for data, label in combo_items], combo_current)
+
+    def test_serial_reconnect_is_silent_and_stops_at_five_seconds(self):
+        """串口从 0.5s 线性退避到 5s；第 10 次失败后保持断开。"""
+        class Timer:
+            def __init__(self):
+                self.starts = []
+            def isActive(self):
+                return False
+            def start(self, ms):
+                self.starts.append(ms)
+
+        fake = type("Fake", (), {})()
+        fake._user_closing = False
+        fake._serial_reconnect_cfg = ("Serial", "COM1", 9600, "8", "None", "1", "None")
+        fake._serial_reconnect_limit = 10
+        fake._reconnect_attempts = 0
+        fake._reconnect_timer = Timer()
+        fake.settings = type("Settings", (), {"value": lambda self, *a, **k: True})()
+        fake.toast = lambda *a, **k: self.fail("串口静默重连不应弹提示")
+        fake._t = lambda *a, **k: ""
+
+        for attempt in range(10):
+            fake._reconnect_attempts = attempt
+            CommTool._schedule_reconnect(fake)
+        fake._reconnect_attempts = 10
+        CommTool._schedule_reconnect(fake)
+
+        self.assertEqual(fake._reconnect_timer.starts,
+                         [500, 1000, 1500, 2000, 2500,
+                          3000, 3500, 4000, 4500, 5000])
+        self.assertIsNone(fake._serial_reconnect_cfg)
+        self.assertEqual(fake._reconnect_attempts, 0)
+
+    def test_serial_reconnect_uses_one_global_ten_slot_window(self):
+        """缺口等待和实际打开共用 10 个时隙；末次失败后不能退化成 UI/网络重连。"""
+        class Timer:
+            def __init__(self):
+                self.starts = []
+            def isActive(self):
+                return False
+            def start(self, ms):
+                self.starts.append(ms)
+
+        fake = type("Fake", (), {})()
+        cfg = ("Serial", "COM87", 9600, "8", "None", "1", "None")
+        fake.conn = None
+        fake._user_closing = False
+        fake._serial_reconnect_cfg = cfg
+        fake._serial_reconnect_limit = 10
+        fake._reconnect_attempts = 0
+        fake._available_serial_devices = set()
+        fake._reconnect_timer = Timer()
+        fake.settings = type("Settings", (), {"value": lambda self, *a, **k: True})()
+        fake.toast = lambda *a, **k: self.fail("串口重连应静默")
+        def fail_final_open(reconnect_cfg=None):
+            # 模拟同步 error_occurred 已在内部达到上限并清除目标；_try_reconnect 尾部不得再排队。
+            fake._serial_reconnect_cfg = None
+            fake._reconnect_attempts = 0
+        fake.open_conn = fail_final_open
+        fake._schedule_reconnect = lambda: CommTool._schedule_reconnect(fake)
+
+        CommTool._schedule_reconnect(fake)       # 第 1 个时隙：0.5s
+        for _ in range(9):                       # 前 9 次端口仍缺失
+            CommTool._try_reconnect(fake)
+        fake._available_serial_devices = {"COM87"}
+        CommTool._try_reconnect(fake)             # 第 10 次真实 open 失败
+
+        self.assertEqual(fake._reconnect_timer.starts,
+                         [500, 1000, 1500, 2000, 2500,
+                          3000, 3500, 4000, 4500, 5000])
+        self.assertIsNone(fake._serial_reconnect_cfg)
+        self.assertEqual(fake._reconnect_attempts, 0)
+
+    def test_serial_disconnect_prompts_once_then_retries_silently(self):
+        """首次掉线无论计数状态都提示；进入重连会话后的打开失败不重复提示。"""
+        w = _win()
+        cfg = ("Serial", "COM1", 9600, "8", "None", "1", "None")
+        calls = {"toast": 0, "schedule": 0}
+        old = (w.conn, w._conn_proto, w._conn_cfg, w._conn_engaged,
+               w._reconnect_attempts, w._serial_reconnect_cfg, w.close_conn,
+               w.toast, w._schedule_reconnect, w._refresh_stat_labels)
+        try:
+            w.conn = None
+            w._conn_proto = "Serial"
+            w._conn_cfg = cfg
+            w._conn_engaged = True
+            w._reconnect_attempts = 3  # 即使计数异常残留，首次掉线仍必须提示
+            w._serial_reconnect_cfg = None
+            w.close_conn = lambda: None
+            w.toast = lambda *a, **k: calls.__setitem__("toast", calls["toast"] + 1)
+            w._schedule_reconnect = lambda: calls.__setitem__("schedule", calls["schedule"] + 1)
+            w._refresh_stat_labels = lambda *a, **k: None
+
+            w._on_conn_error("device disconnected")
+            self.assertEqual(calls, {"toast": 1, "schedule": 1})
+            self.assertEqual(w._serial_reconnect_cfg, cfg)
+
+            w._conn_engaged = False
+            w._reconnect_attempts = 1
+            w._on_conn_error("open failed")
+            self.assertEqual(calls, {"toast": 1, "schedule": 2})
+        finally:
+            (w.conn, w._conn_proto, w._conn_cfg, w._conn_engaged,
+             w._reconnect_attempts, w._serial_reconnect_cfg, w.close_conn,
+             w.toast, w._schedule_reconnect, w._refresh_stat_labels) = old
 
     def test_exact_int_accepts_leading_zero_decimal(self):
         from modbus_master import _exact_int
@@ -3175,6 +3421,171 @@ class ImportGateTests(unittest.TestCase):
         self.w._ar_confirm = lambda *a: called.__setitem__("n", 1) or True
         self.w._ar_gate_imported_scripts({"autoreply_rules": json.dumps([{"match": "AA"}])})
         self.assertEqual(called["n"], 0)
+
+
+class NumericStreamParserTests(unittest.TestCase):
+    """数值流解析器（仪表盘/波形图共用语义）：三模式 + 跨包缓冲 + 通道命名。仅依赖 binproto，无需 Qt。"""
+
+    def _p(self, mode=0):
+        from stream_parse import NumericStreamParser
+        p = NumericStreamParser()
+        p.mode = mode
+        return p
+
+    def test_delim_columns(self):
+        p = self._p(0)
+        self.assertEqual(p.feed(b"36.5,72,3.30\n"),
+                         [("CH1", 36.5), ("CH2", 72.0), ("CH3", 3.30)])
+
+    def test_delim_nonnumeric_keeps_column_index(self):
+        # 非数值列跳过，但通道号仍按 token 位置（"abc"=CH1 跳过，"5"=CH2）
+        p = self._p(0)
+        self.assertEqual(p.feed(b"abc,5\n"), [("CH2", 5.0)])
+
+    def test_delim_auto_sep(self):
+        p = self._p(0)
+        p.sep_index = 4                       # [,\s;]+
+        self.assertEqual(p.feed(b"1 2\t3;4\n"),
+                         [("CH1", 1.0), ("CH2", 2.0), ("CH3", 3.0), ("CH4", 4.0)])
+
+    def test_regex_groups(self):
+        p = self._p(1)
+        self.assertTrue(p.set_regex(r"t=(\d+).*h=(\d+)"))
+        self.assertEqual(p.feed(b"t=25 h=60\n"), [("CH1", 25.0), ("CH2", 60.0)])
+
+    def test_regex_bad_pattern(self):
+        p = self._p(1)
+        self.assertFalse(p.set_regex(r"("))   # 非法正则
+        self.assertEqual(p.feed(b"anything\n"), [])
+
+    def test_hex_fields(self):
+        p = self._p(2)
+        self.assertTrue(p.set_header("AA"))
+        self.assertTrue(p.set_fields("temp=1:i16be, volt=3:u16be"))
+        # AA + 0x00FA(=250) + 0x0CE4(=3300)
+        self.assertEqual(p.feed(bytes([0xAA, 0x00, 0xFA, 0x0C, 0xE4])),
+                         [("temp", 250.0), ("volt", 3300.0)])
+
+    def test_hex_header_mismatch(self):
+        p = self._p(2)
+        p.set_header("AA")
+        p.set_fields("x=1:u8")
+        self.assertEqual(p.feed(bytes([0xBB, 0x01])), [])   # 帧头不符 → 空
+
+    def test_cross_packet_buffering(self):
+        p = self._p(0)
+        self.assertEqual(p.feed(b"1.2,3."), [])             # 未成行 → 缓冲
+        self.assertEqual(p.feed(b"4\n"), [("CH1", 1.2), ("CH2", 3.4)])
+
+    def test_multibyte_regex_across_packets(self):
+        """UTF-8 多字节标签跨收包时仍应完整解码并匹配。"""
+        p = self._p(1)
+        self.assertTrue(p.set_regex(r"温度=(\d+)"))
+        raw = "温度=25\n".encode("utf-8")
+        self.assertEqual(p.feed(raw[:2], "utf-8"), [])      # 截在“温”的 UTF-8 中间
+        self.assertEqual(p.feed(raw[2:], "utf-8"), [("CH1", 25.0)])
+
+    def test_codec_change_drops_old_partial_line(self):
+        p = self._p(0)
+        self.assertEqual(p.feed(b"1,", "utf-8"), [])
+        self.assertEqual(p.feed(b"2\n", "gbk"), [("CH1", 2.0)])
+
+    def test_reset_clears_buffer(self):
+        p = self._p(0)
+        p.feed(b"9.9,")                                     # 残段进缓冲
+        p.reset()
+        self.assertEqual(p.feed(b"1,2\n"), [("CH1", 1.0), ("CH2", 2.0)])
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class DashboardTests(unittest.TestCase):
+    """数值仪表盘：feed → 建卡片 + 最新值 + 阈值告警着色。"""
+
+    def _dlg(self, thresh=""):
+        from dashboard_dialog import DashboardDialog
+        w = _win()
+        for k in ("dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header"):
+            w.settings.setValue(k, "")
+        w.settings.setValue("dash_mode", 0)
+        w.settings.setValue("dash_thresholds", thresh)
+        dlg = DashboardDialog(w)
+        return w, dlg
+
+    def test_feed_creates_tiles_and_values(self):
+        w, dlg = self._dlg()
+        try:
+            dlg.feed(b"36.5,72\n")
+            self.assertEqual(dlg._order, ["CH1", "CH2"])
+            self.assertEqual(dlg._values["CH1"], 36.5)
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["CH1"]["lbl_val"].text(), "36.5")
+            self.assertEqual(dlg._tiles["CH2"]["lbl_val"].text(), "72")   # 整数去小数点
+        finally:
+            dlg.deleteLater()
+
+    def test_threshold_alert(self):
+        w, dlg = self._dlg(thresh="CH1:0~30:℃")
+        try:
+            dlg.feed(b"36.5,20\n")            # CH1=36.5 > 30 → 告警；CH2 无阈值
+            dlg._refresh_tiles()
+            self.assertTrue(dlg._tiles["CH1"]["alert"])
+            self.assertFalse(dlg._tiles["CH2"]["alert"])
+            self.assertEqual(dlg._tiles["CH1"]["lbl_unit"].text(), "℃")
+            # 回到范围内 → 解除告警
+            dlg.feed(b"25,20\n")
+            dlg._refresh_tiles()
+            self.assertFalse(dlg._tiles["CH1"]["alert"])
+        finally:
+            dlg.deleteLater()
+
+    def test_threshold_one_sided(self):
+        w, dlg = self._dlg(thresh="CH1:10~:V")   # 只管下限
+        try:
+            dlg.feed(b"5\n")                       # < 10 → 告警
+            dlg._refresh_tiles()
+            self.assertTrue(dlg._tiles["CH1"]["alert"])
+            dlg.feed(b"9999\n")                    # 上限留空 → 不告警
+            dlg._refresh_tiles()
+            self.assertFalse(dlg._tiles["CH1"]["alert"])
+        finally:
+            dlg.deleteLater()
+
+    def test_pause_stops_updates(self):
+        w, dlg = self._dlg()
+        try:
+            dlg.feed(b"1,")                                # 留一个未完成残段
+            dlg._toggle_pause()
+            dlg.feed(b"999\n")                            # 暂停中不解析
+            dlg._toggle_pause()
+            dlg.feed(b"2\n")                              # 不得与暂停前的 "1," 拼接
+            self.assertEqual(dlg._order, ["CH1"])
+            self.assertEqual(dlg._values["CH1"], 2.0)
+        finally:
+            dlg.deleteLater()
+
+    def test_reset_stream_drops_partial_line_but_keeps_tiles(self):
+        w, dlg = self._dlg()
+        try:
+            dlg.feed(b"7\n")
+            dlg.feed(b"1,")
+            dlg.reset_stream()                              # 模拟隐藏/重连
+            dlg.feed(b"2\n")
+            self.assertEqual(dlg._values["CH1"], 2.0)
+            self.assertNotIn("CH2", dlg._values)
+            self.assertIn("CH1", dlg._tiles)               # 最近值卡片无需销毁重建
+        finally:
+            dlg.deleteLater()
+
+    def test_tile_cap(self):
+        from dashboard_dialog import _MAX_TILES
+        w, dlg = self._dlg()
+        try:
+            line = ",".join(str(i) for i in range(_MAX_TILES + 30)) + "\n"
+            dlg.feed(line.encode())                         # 畸形长行 → 只建到上限、不卡死
+            self.assertEqual(len(dlg._tiles), _MAX_TILES)
+            self.assertLessEqual(len(dlg._values), _MAX_TILES)
+        finally:
+            dlg.deleteLater()
 
 
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))

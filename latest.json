@@ -1,9 +1,9 @@
 {
-  "version": "1.3.0",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.0/CommTool_Setup_v1.3.0.exe",
+  "version": "1.3.1",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.1/CommTool_Setup_v1.3.1.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.0/CommTool_v1.3.0.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.0/CommTool_v1.3.0.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.1/CommTool_v1.3.1.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.1/CommTool_v1.3.1.dmg"
   ],
-  "notes": "新增「桥接转发」（功能 → 桥接）：把 A / B 两端（串口 / TCP 客户端 / TCP 服务端 / UDP）任意组合连起来双向原样透传——串口↔串口、串口↔网络、网络↔网络都行，用于协议中转、设备联网、旁路抓流。转发引擎加固：任一侧断开自动停桥、实时显示双向字节数/速率、TCP 服务端多客户端广播 + 背压、UDP 按 65507 拆合法数据报、发送失败边沿上报；可开「转发日志」（文本/HEX、增量 UTF-8 解码防乱码）。另打磨各对话框 UI（下拉箭头、禁用框变灰、拨动开关）。无新依赖。"
+  "notes": "本版一次带来多项实用增强：1) 数值仪表盘（功能 → 数值仪表盘）：把 RX 流按 分隔符 / 正则 / HEX 字段 解析成命名数值通道，每通道一张大字号卡片实时显示当前值；阈值行填「名称:下限~上限:单位」超限卡片变红闪烁，适合传感器 / 电源实时读数监看，解析配置与波形图相互独立。2) 协议高亮：帧解析对话框勾选后，HEX 显示模式下按帧解析规则给收到帧各字段上色（从机 / 功能码 / CRC 各一色）+ 鼠标悬浮「规则·字段=值」解析，数据区从原始字节流升级为结构化信息流。3) 串口自动重连：运行时掉线自动重连（退避 0.5s 线性递增到 5s），只回到掉线前的原设备 / 原参数、等原口重新枚举到才尝试，等待与重试共用最多 10 次（约 27.5s）未恢复静默放弃；掉线提示一次、之后重试静默不刷屏。4) USB 芯片识别：串口下拉在系统描述后补出 USB-UART 芯片型号（CH340 / CP2102 / FT232 等）。无新依赖。"
 }

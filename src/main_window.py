@@ -318,6 +318,7 @@ class CommTool(QMainWindow):
         self._xfer_worker = None         # 传输后台线程；非 None 且运行中时 on_data_received 接管收流
         self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
         self._bridge_dlg = None          # 桥接转发对话框（两端任意 串口/TCP/UDP 组合，单实例）
+        self._dash_dlg = None            # 数值仪表盘对话框（大字号实时值 + 阈值告警，单实例）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -384,7 +385,10 @@ class CommTool(QMainWindow):
         self._serial_missing_count = 0   # 已连接:当前口在扫描中连续未枚举到的次数(去抖计数)
         self._sel_missing_count = 0      # 未连接:选中口连续缺失次数(占位宽限去抖，超限删占位)
         self._serial_missing_limit = 3
-        # 自动重连：连接非主动断开时按退避序列(1/2/4/8/16/30s)重连；用户点关闭/退出时跳过
+        self._available_serial_devices = set()  # 最近一次后台扫描枚举到的真实设备名
+        self._serial_reconnect_cfg = None        # 掉线前的串口签名；重连只允许回到这个设备/参数
+        self._serial_reconnect_limit = 10        # 串口退避 0.5s 递增到 5s，第 10 次后停止
+        # 自动重连：串口 0.5s 线性递增到 5s；网络指数退避（上限 30s）。主动关闭/退出时跳过。
         self._user_closing = False
         self._reconnect_attempts = 0
         self._reconnect_timer = QTimer(self)
@@ -740,6 +744,7 @@ class CommTool(QMainWindow):
         pbl.setSpacing(6)
         self.cb_port = QComboBox()
         self.cb_port.setMinimumWidth(100)
+        self.cb_port.activated.connect(self._on_serial_port_selected)
         pbl.addWidget(self.cb_port, 1)
         self.btn_refresh = QPushButton("⟳")
         self.btn_refresh.setObjectName("IconBtn")
@@ -2477,11 +2482,13 @@ class CommTool(QMainWindow):
         if self.conn is not None:
             self._user_closing = True       # 主动断开：跳过自动重连
             self._cancel_reconnect()        # 也取消已排队的重连
+            self._serial_reconnect_cfg = None
             self.close_conn()
             self._user_closing = False
         else:
             self._cancel_reconnect()        # 手动重新打开 → 撤销可能在排队的重连
             self._reconnect_attempts = 0
+            self._serial_reconnect_cfg = None
             self.open_conn()
 
     @staticmethod
@@ -2568,16 +2575,18 @@ class CommTool(QMainWindow):
             return (proto, self.ed_remote_ip.text().strip(), self._parse_port(self.ed_remote_port.text()))
         return (proto,)
 
-    def open_conn(self):
-        proto = self.cb_proto.currentText()
+    def open_conn(self, reconnect_cfg=None):
+        """打开当前 UI 连接；自动重连串口时传入掉线前签名，禁止漂移到别的端口/参数。"""
+        proto = reconnect_cfg[0] if reconnect_cfg else self.cb_proto.currentText()
         if proto == PROTO_SERIAL:
-            port = self.cb_port.currentData()   # cb_port 不可编辑，currentData 即设备名；无串口/未扫描时为空
+            port = reconnect_cfg[1] if reconnect_cfg else self.cb_port.currentData()
+            # cb_port 不可编辑，currentData 即设备名；无串口/未扫描时为空
             if not port:
                 self.toast(self._t("err_no_port"), error=True)
                 return
             try:
-                baud = int(self.cb_baud.currentText())
-            except ValueError:
+                baud = int(reconnect_cfg[2] if reconnect_cfg else self.cb_baud.currentText())
+            except (ValueError, TypeError):
                 self.toast(self._t("err_bad_baud"), error=True)
                 return
             parity_map = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
@@ -2588,10 +2597,12 @@ class CommTool(QMainWindow):
             databits_map = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
                             "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
             flow_map = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
-            conn = SerialConn(port, baud, databits_map[self.cb_databits.currentText()],
-                              parity_map[self.cb_parity.currentText()],
-                              stopbits_map[self.cb_stopbits.currentText()],
-                              flow=flow_map.get(self.cb_flow.currentText(), "none"))
+            databits = reconnect_cfg[3] if reconnect_cfg else self.cb_databits.currentText()
+            parity = reconnect_cfg[4] if reconnect_cfg else self.cb_parity.currentText()
+            stopbits = reconnect_cfg[5] if reconnect_cfg else self.cb_stopbits.currentText()
+            flow = reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6 else self.cb_flow.currentText()
+            conn = SerialConn(port, baud, databits_map[databits], parity_map[parity],
+                              stopbits_map[stopbits], flow=flow_map.get(flow, "none"))
         elif proto == PROTO_TCP_SERVER:
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
@@ -2654,7 +2665,7 @@ class CommTool(QMainWindow):
         # 先赋值再 open()：TCP Server / UDP / 组播的 open() 会**同步**发出 state_changed(True)，
         # 此时 self.conn 必须已指向 conn，否则 _on_conn_state_changed 看到 None、状态栏先跑一次「未连接」
         self._conn_proto = proto
-        self._conn_cfg = self._conn_config_signature(proto)
+        self._conn_cfg = tuple(reconnect_cfg) if reconnect_cfg else self._conn_config_signature(proto)
         self._mbm_guard_until = 0.0   # 新物理会话不继承旧连接的迟到响应隔离期
         self.conn = conn
         if not conn.open():   # 同步失败(端口占用/绑定失败)：error_occurred 已触发 _on_conn_error → close_conn 复位
@@ -2675,6 +2686,8 @@ class CommTool(QMainWindow):
         self._serial_device = port if proto == PROTO_SERIAL else None
         self._serial_missing_count = 0
         if proto == PROTO_SERIAL:
+            self._select_serial_device(port)  # 重连可能绕过当前下拉选择，界面必须显示实际打开的端口
+            self._serial_reconnect_cfg = None
             self._apply_ctrl_lines_on_open()   # 应用持久化 DTR/RTS + 启动状态线轮询
 
     def _apply_ctrl_lines_on_open(self):
@@ -2739,8 +2752,9 @@ class CommTool(QMainWindow):
         col = "#2ecc71" if state is True else c["separator"]   # 绿=有效 / 灰=无效或未知
         dot.setStyleSheet("color: %s; font-size: 13px;" % col)
 
-    def _reset_recv_state(self):
-        """统一重置接收解析状态：连接打开/关闭、清空数据区时调用，保证三处一致。"""
+    def _reset_recv_state(self, reset_dashboard=False):
+        """重置主数据区接收状态；断线/清屏这类真正的数据流断点可同时切断仪表盘半行。
+        HEX/转储显示设置也会调用本函数，但不应影响与显示区解耦的仪表盘解析。"""
         self._last_recv_time = 0.0
         self._last_direction = None
         self._pending_line_break = False
@@ -2750,6 +2764,10 @@ class CommTool(QMainWindow):
         self._txt_ends_with_nl = True
         if hasattr(self, "_proto_fields"):
             self._proto_fields.clear()    # 清屏/重连：旧帧的字段高亮 cursor 一并清掉
+        if reset_dashboard:
+            dash = getattr(self, "_dash_dlg", None)
+            if dash is not None:
+                dash.reset_stream()       # 不把断线/清屏前的半行与新数据误拼
 
     def _on_conn_error(self, msg):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
@@ -2769,22 +2787,27 @@ class CommTool(QMainWindow):
             msg = self._t("err_conn_timeout")
         self.rx_errors += 1           # 连接/链路错误计入 RX 侧错误统计
         self._refresh_stat_labels(with_tooltip=False)
-        self.toast(self._t(key, e=msg), error=True)
+        # 串口首次掉线必须提示一次；仅当已经持有重连目标（即后续自动重试）时静默。
+        # 不用 attempts 判断，避免残留/边界计数让首次掉线被误判成重试而吞掉提示。
+        serial_retrying = proto == PROTO_SERIAL and self._serial_reconnect_cfg is not None
+        if not serial_retrying:
+            self.toast(self._t(key, e=msg), error=True)
         # 关键：close_conn 会把 _conn_engaged 清零，所以要先捕获状态
         was_engaged = self._conn_engaged
         in_retry = self._reconnect_attempts > 0
+        serial_cfg = self._conn_cfg if proto == PROTO_SERIAL else None
         if self.conn is not None:
             self.close_conn()
         # 只在「曾连上又断了」(运行时掉线) 或「正在重连周期内」时自动重连。
         # 手动打开失败（端口占用/服务器离线/绑定失败）不该陷入无限重试。
-        # 串口运行时掉线几乎都是拔出/断电的物理事件：**不自动重连**——口可能已从系统移除，
-        # 重连会反复失败、还可能连到下拉回落选中的别的口（用户：「删除之后不要再自动打开」）。
-        # 网络(TCP/UDP)掉线才自动重连。
-        if (was_engaged or in_retry) and proto != PROTO_SERIAL:
+        # 串口重连保存掉线前的完整签名，不读取可能已回落到其他设备的下拉框。
+        if proto == PROTO_SERIAL and serial_cfg and (was_engaged or in_retry):
+            self._serial_reconnect_cfg = tuple(serial_cfg)
+        if was_engaged or in_retry:
             self._schedule_reconnect()
 
     def _schedule_reconnect(self):
-        """非主动断开 → 按 1/2/4/8/16/30s 退避排队重连。用户主动断开/退出时跳过。"""
+        """非主动断开后排队重连；串口 0.5s 线性退避，网络指数退避。主动断开/退出时跳过。"""
         if self._user_closing:
             return
         if not self.settings.value("auto_reconnect", True, type=bool):
@@ -2792,10 +2815,20 @@ class CommTool(QMainWindow):
         if self._reconnect_timer.isActive():
             return     # 已排队 → 同事件被 state_changed 和 error_occurred 同时触发也只算一次，
                        # 否则会跳过本级退避（attempts 多加 1、delay 直接翻倍）
+        serial_retry = self._serial_reconnect_cfg is not None
+        if serial_retry and self._reconnect_attempts >= self._serial_reconnect_limit:
+            self._serial_reconnect_cfg = None
+            self._reconnect_attempts = 0
+            return     # 第十次仍未恢复：静默放弃，界面已经是断开状态
         n = self._reconnect_attempts
-        delay = min(30000, 1000 * (2 ** n))    # 1s→2s→4s→...→cap 30s
-        self._reconnect_attempts = n + 1
-        self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
+        if serial_retry:
+            delay = min(5000, 500 * (n + 1))   # 0.5s→1.0s→...→5.0s，共 10 次
+        else:
+            delay = min(30000, 1000 * (2 ** n))  # 网络：1s→2s→4s→...→cap 30s
+        if not serial_retry:
+            self._reconnect_attempts = n + 1
+        if not serial_retry:
+            self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
         self._reconnect_timer.start(delay)
 
     def _cancel_reconnect(self):
@@ -2807,19 +2840,32 @@ class CommTool(QMainWindow):
             return     # 期间已连上 / 用户主动关，撤销
         if not self.settings.value("auto_reconnect", True, type=bool):
             return
-        self.toast(self._t("auto_reconnect_try", n=self._reconnect_attempts))
-        self.open_conn()
+        reconnect_cfg = self._serial_reconnect_cfg
+        if reconnect_cfg:
+            # 每次定时器触发只消耗一个全局重连时隙；端口缺失和真实打开失败共用 10 次上限，
+            # 避免两套计数叠加后超过 0.5+1+...+5 = 27.5 秒的承诺窗口。
+            self._reconnect_attempts += 1
+            device = reconnect_cfg[1]
+            if device not in self._available_serial_devices:
+                self._schedule_reconnect()  # 原端口还没重新枚举，继续退避等待，绝不尝试其他口
+                return
+        if not reconnect_cfg:
+            self.toast(self._t("auto_reconnect_try", n=self._reconnect_attempts))
+        self.open_conn(reconnect_cfg=reconnect_cfg)
         # open_conn 同步失败(端口不存在/baud非法/绑定失败)：conn 仍为 None 且无 state_changed
         # 触发，需手动再排队；若是异步失败(如 TcpClient 连不上)会另走 _on_conn_state_changed 路径
         if self.conn is None and not self._user_closing:
-            self._schedule_reconnect()
+            # 串口第 10 次失败会在 _on_conn_error → _schedule_reconnect 中清掉目标；这里不能
+            # 再把 target=None 当成网络重连排队，否则会读取 UI 端口并突破次数上限。
+            if reconnect_cfg is None or self._serial_reconnect_cfg is not None:
+                self._schedule_reconnect()
 
     def _on_conn_state_changed(self, up):
         """已连接/监听(up=True) 或 对端断开(up=False)。
         主动 close_conn() 会先 blockSignals，断开的 False 不会回到这里。"""
         if up:
             self._conn_engaged = True   # 已成功建立 → 此后的 error 属"运行时"而非"打开失败"
-            self._reconnect_attempts = 0  # 连上 → 重置退避，下次掉线从 1s 起
+            self._reconnect_attempts = 0  # 连上 → 重置退避；串口下次从 500ms、网络从 1s 起
             self._cancel_reconnect()
             self._update_conn_status()
             self._update_net_fields()   # TCP Server 连上后显示「目标」行
@@ -2948,7 +2994,7 @@ class CommTool(QMainWindow):
 
         if getattr(self, "_seq_on", False):   # 连接断开 → 中止运行中的序列（保留结果 + 提示，不静默）
             self._seq_abort("seq_aborted_disc")
-        self._reset_recv_state()   # 顺带补齐原先漏掉的 _inc_decoder / _txt_ends_with_nl
+        self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
         self._mbm_restart()        # 断开 → 停止 Modbus 主机轮询（_mbm_active 此时为假）
@@ -3013,7 +3059,43 @@ class CommTool(QMainWindow):
             self.cb_port.setCurrentIndex(idx)
         self.cb_port.blockSignals(False)
 
+    def _select_serial_device(self, device):
+        """把串口下拉同步到实际连接设备；扫描列表尚未来得及刷新时补一个临时项。"""
+        if not device:
+            return
+        self.cb_port.blockSignals(True)
+        idx = self.cb_port.findData(device)
+        if idx < 0:
+            self.cb_port.addItem(device, device)
+            idx = self.cb_port.count() - 1
+        self.cb_port.setCurrentIndex(idx)
+        self.cb_port.blockSignals(False)
+
+    def _on_serial_port_selected(self, index):
+        """用户显式改选其他真实端口：取消旧口重连并立即移除旧的“未检测到”占位。"""
+        device = self.cb_port.itemData(index) if index >= 0 else None
+        reconnect_device = (self._serial_reconnect_cfg[1]
+                            if self._serial_reconnect_cfg else None)
+        if (not reconnect_device or not device or device == reconnect_device
+                or device not in self._available_serial_devices):
+            return
+
+        # activated 只由用户操作触发；后台刷新和重连成功的程序选中不会误取消重连。
+        self._cancel_reconnect()
+        self._serial_reconnect_cfg = None
+        self._reconnect_attempts = 0
+        self._sel_missing_count = 0
+        self._pending_restore_port = None  # 用户选择优先于启动时的旧端口恢复
+
+        # 从当前下拉提取最近扫描到的真实端口，过滤掉旧重连目标的占位项后重建。
+        port_list = [(self.cb_port.itemData(i), self.cb_port.itemText(i))
+                     for i in range(self.cb_port.count())
+                     if self.cb_port.itemData(i) in self._available_serial_devices]
+        self._last_port_list = port_list
+        self._populate_port_combo(port_list, device, allow_placeholder=False)
+
     def _on_port_scan_complete(self, port_list):
+        self._available_serial_devices = {dev for dev, _ in port_list if dev}
         if not port_list:
             port_list = [("", self._t("no_ports"))]
         # 串口已连接时不动 cb_port（端口占用中、也别打断当前选择）；但要顺带检查正在用的口
@@ -3027,42 +3109,58 @@ class CommTool(QMainWindow):
                     self._serial_missing_count += 1
                     if self._serial_missing_count >= self._serial_missing_limit:
                         dev = self._serial_device
+                        reconnect_cfg = self._conn_cfg
                         self._serial_missing_count = 0
-                        self.close_conn()    # 干净断开；不自动重连(口已移除即放弃)
+                        self.close_conn()
+                        if reconnect_cfg:
+                            self._serial_reconnect_cfg = tuple(reconnect_cfg)
                         self.toast(self._t("serial_removed", port=dev), error=True)
+                        self._schedule_reconnect()
             return
         if self.cb_port.view().isVisible():   # 下拉正展开时不刷，避免选项跳动
             return
-        pending = getattr(self, "_pending_restore_port", None)
+        restore_pending = getattr(self, "_pending_restore_port", None)
+        reconnect_pending = (self._serial_reconnect_cfg[1]
+                             if self._serial_reconnect_cfg else None)
+        # 自动重连期间原端口优先级最高：既不让下拉回落到第一个口，也不允许界面显示
+        # 与实际重连目标不同的设备。
+        pending = reconnect_pending or restore_pending
         # 选中口连续缺失去抖计数 —— **必须在「列表与上次相同就 return」去重之前更新**：
         # 口拔掉后端口列表很快稳定不变(就是少了那个口)，若把计数放在 return 之后，列表稳定
         # 后每次都提前 return、计数停更、占位永远删不掉。这里每次扫描都推进计数。
-        sel = self.cb_port.currentData() or pending
+        sel = reconnect_pending or self.cb_port.currentData() or pending
         if sel and not any(dev == sel for dev, _ in port_list):
             self._sel_missing_count += 1
         else:
             self._sel_missing_count = 0
         # 宽限刚走完(计数恰超限)的那一次：即便端口列表没变，也要重建一次把占位删掉、回落真实口。
-        need_drop = bool(sel) and self._sel_missing_count == self._serial_missing_limit + 1
+        need_drop = (not reconnect_pending and bool(sel)
+                     and self._sel_missing_count > self._serial_missing_limit)
         # pending(启动恢复的上次端口)已出现在列表里但还没选回时，别因「列表与上次相同」提前返回——
         # 否则启动扫描早于配置恢复(pending 设值)时，pending 设上后端口列表恰好没变，会永远跳过
         # 恢复、选不回上次用的串口。这种情况必须放行一次，让下面的 pending 分支把它选回。
         pending_present = bool(pending) and any(dev == pending for dev, _ in port_list)
-        if port_list == self._last_port_list and not need_drop and not pending_present:
+        reconnect_mismatch = bool(reconnect_pending) and self.cb_port.currentData() != reconnect_pending
+        if (port_list == self._last_port_list and not need_drop
+                and not pending_present and not reconnect_mismatch):
             return
         self._last_port_list = port_list
         # ① pending(启动恢复的上次端口)一旦真实出现就选回它，优先于一切——即便此前因长期不在
         #    已回落到别的口，设备插上的那次扫描仍能选回，不丢「恢复上次选择」能力。
         if pending and any(dev == pending for dev, _ in port_list):
             keep, hold = pending, True
-            self._pending_restore_port = None   # 上次端口已真实出现并将被选回 → 恢复完成
+            if pending == restore_pending:
+                self._pending_restore_port = None   # 上次端口已真实出现并将被选回 → 恢复完成
             self._sel_missing_count = 0
         else:
             # ② 否则保持用户当前选择；选中口短暂消失(去抖宽限内)→ 占位保留防漂移；
             #    长期不在(超宽限)→ 删占位、回落第一个真实口，下拉不留「未检测到」残留。
-            keep = sel
-            hold = self._sel_missing_count <= self._serial_missing_limit
+            keep = reconnect_pending or sel
+            hold = bool(reconnect_pending) or self._sel_missing_count <= self._serial_missing_limit
         self._populate_port_combo(port_list, keep, allow_placeholder=hold)
+        # 原端口一重新枚举就立即唤醒退避定时器；避免 UI 已显示端口但连接仍在等待。
+        if reconnect_pending and pending_present and self._reconnect_timer.isActive():
+            self._reconnect_timer.start(0)
 
     def _wait_oneshot_scan(self):
         """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running。"""
@@ -3141,6 +3239,8 @@ class CommTool(QMainWindow):
             self._keyword_dlg.refresh_theme()
         if getattr(self, "_plot_dlg", None) is not None:
             self._plot_dlg.refresh_theme()
+        if getattr(self, "_dash_dlg", None) is not None:
+            self._dash_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -3252,6 +3352,13 @@ class CommTool(QMainWindow):
         if fdlg is not None and fdlg.isVisible():
             try:
                 fdlg.feed(data)
+            except Exception:
+                pass
+        # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
+        ddlg = getattr(self, "_dash_dlg", None)
+        if ddlg is not None and ddlg.isVisible():
+            try:
+                ddlg.feed(data)
             except Exception:
                 pass
         # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）。
@@ -3688,6 +3795,18 @@ class CommTool(QMainWindow):
                 return
             self._plot_dlg = PlotDialog(self)
         dlg = self._plot_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_dashboard(self):
+        """打开数值仪表盘（单实例，复用并刷新主题/语言）。"""
+        if getattr(self, "_dash_dlg", None) is None:
+            from dashboard_dialog import DashboardDialog
+            self._dash_dlg = DashboardDialog(self)
+        dlg = self._dash_dlg
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.show()
@@ -5294,6 +5413,8 @@ class CommTool(QMainWindow):
         "frame_rules",
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
+        # 数值仪表盘
+        "dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header", "dash_thresholds",
         # 自动应答
         "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
         "autoreply_modbus", "autoreply_split",
@@ -5510,6 +5631,8 @@ class CommTool(QMainWindow):
         # 避免新配置和老缓冲数据/旧规则混在一起。
         if getattr(self, "_plot_dlg", None) is not None:
             self._plot_dlg.reload_cfg()
+        if getattr(self, "_dash_dlg", None) is not None:
+            self._dash_dlg.reload_cfg()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.reload_cfg()
         self._reload_terminal_from_settings()   # 终端模式三项随配置档加载即时生效，无需重启
@@ -6658,7 +6781,7 @@ class CommTool(QMainWindow):
         self.txt_recv.setExtraSelections([])
         self.btn_to_bottom.hide()
         self._reset_stats()
-        self._reset_recv_state()
+        self._reset_recv_state(reset_dashboard=True)
 
     # ----- 工具 -----
     @staticmethod
@@ -6870,6 +6993,8 @@ class CommTool(QMainWindow):
             self._keyword_dlg.retranslate()
         if getattr(self, "_plot_dlg", None) is not None:
             self._plot_dlg.retranslate()
+        if getattr(self, "_dash_dlg", None) is not None:
+            self._dash_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -7207,8 +7332,8 @@ class CommTool(QMainWindow):
         self.close()
 
     def _show_titlebar_func_menu(self):
-        """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.自动化序列 5.工具箱
-        6.文件传输 7.桥接 8.Modbus 主机（帧构造↔帧解析相邻；Modbus 保持末位；波形图/帧解析/Modbus 原为数据区工具栏按钮）。"""
+        """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.数值仪表盘 5.自动化序列
+        6.工具箱 7.文件传输 8.桥接 9.Modbus 主机（帧构造↔帧解析相邻、波形图↔仪表盘相邻；Modbus 保持末位）。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -7220,12 +7345,13 @@ class CommTool(QMainWindow):
         menu.addAction("1. " + self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
         menu.addAction("2. " + self._t("frame_open")).triggered.connect(lambda *_: self.open_frame_parse())
         menu.addAction("3. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
-        menu.addAction("4. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
-        menu.addAction("5. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
-        menu.addAction("6. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("7. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
+        menu.addAction("4. " + self._t("dash_open")).triggered.connect(lambda *_: self.open_dashboard())
+        menu.addAction("5. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
+        menu.addAction("6. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
+        menu.addAction("7. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("8. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
         # Modbus 主机放最后；轮询开启时项末加「 ●」，替代原工具栏按钮的高亮态
-        mbm_label = "8. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        mbm_label = "9. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         from PyQt5.QtCore import QPoint
         menu.exec_(self.btn_titlebar_func.mapToGlobal(
@@ -7753,7 +7879,7 @@ class CommTool(QMainWindow):
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
-                     "_bridge_dlg"):
+                     "_bridge_dlg", "_dash_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

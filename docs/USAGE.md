@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.1
+
+Several practical additions this release:
+
+- **Numeric dashboard** — Function → Numeric Dashboard: parses the RX stream into named numeric channels (delimiter / regex / HEX-field modes) and shows each as a large-value tile; fill the thresholds line with `name:lo~hi:unit` (comma-separated, e.g. `Temp:10~40:℃, Volt:3.0~3.6:V`; leave lo or hi empty for one-sided) and out-of-range tiles blink red. Great for live sensor / power readings; its parse config is independent from the plot.
+- **Protocol highlighting** — tick "Protocol Highlight" in the Frame Parse dialog and, in HEX view, each field of incoming frames is colored per your frame-parse rules (slave address / function code / CRC each in its own color), with a hover tooltip showing "rule · field=value". Turns the data area from a raw byte stream into structured information, reusing your existing frame-parse rules.
+- **Serial auto-reconnect** — when a serial link drops at runtime (unplug / power loss / cable glitch), it reconnects with a backoff that grows linearly from 0.5s to 5s, but only back to the exact device and parameters it had (full signature saved — never drifts to another port in the dropdown), and only once the original port re-enumerates; waiting and actual retries share a single budget of up to 10 tries (~27.5s), after which it gives up silently and stays disconnected. A single prompt on disconnect, then the retries stay silent — no toast spam.
+- **USB chip identification** — the serial port dropdown now appends the USB-UART bridge chip model (CH340 / CP2102 / FT232, etc., matched by VID/PID) after the system description, so you can tell several USB-serial adapters apart at a glance. No new dependencies.
+
+---
+
 ## What's New in v1.3.0
 
 **Bridge forwarding** (**Function → Bridge**) connects any two endpoints — serial / TCP client / TCP server / UDP — and passes bytes through in both directions, for protocol relaying, putting a serial device on the network, or tapping a stream:
@@ -638,7 +649,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.0`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.1`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
