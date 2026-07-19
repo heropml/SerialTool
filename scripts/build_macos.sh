@@ -99,6 +99,12 @@ plutil -replace NSRequiresAquaSystemAppearance -bool true "$APP/Contents/Info.pl
     || plutil -insert NSRequiresAquaSystemAppearance -bool true "$APP/Contents/Info.plist"
 echo " 禁用系统暗色外观跟随: NSRequiresAquaSystemAppearance=true"
 
+# PyInstaller 已对 bundle 做 ad-hoc 签名；上面修改 Info.plist 后原签名会失效，
+# 必须重新签名，否则 Gatekeeper 可能把应用判为已损坏。
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
+echo " 已重新签名并验证 app bundle"
+
 echo
 echo "============================================"
 echo " Build OK"
