@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.2
+
+This release moves automation from GUI forms to real code:
+
+- **Script console** — Function → Script Console: drive real traffic on the current connection with a Python script — self-tests, burn-in, bulk provisioning, protocol bring-up: anything a GUI form can't express. The API is `send / recv / expect / sleep / log / check / hexs`: `expect("OK", timeout=1000)` blocks until the reply arrives (or returns `None` on timeout) and `check(cond, "label")` records pass/fail per step and prints a summary at the end. Keep several named scripts and switch with the dropdown; they persist with the session config and can be exported as JSON to share (imports ask for confirmation first — scripts run with this app's privileges).
+- **Macro recording** — click "● Record" in the script console, go work in the main window as usual, then click "■ Stop Recording": your actions are translated into a script and saved to the library, ready to replay with "Run". Each send becomes `send(...)`, the replies that follow are merged into `expect(...)` + `check(...)` (timeout gets 3× headroom over the measured latency), and gaps ≥50ms become `sleep(ms)` so the original pacing is preserved. You don't have to write code to turn a debugging session into a repeatable test case.
+- **RX/TX task mutual exclusion** — script / test sequence / file transfer / macro recording / timed send / multi-send loop / Modbus master now exclude each other: starting one while another owns the link gives a clear message instead of silently interleaving frames. While a script runs, auto-reply and the Modbus master are paused and any response still in flight from before the takeover is isolated, then everything is restored.
+- **Grouped Function menu** — the Function menu is now split into four themed groups (frame tools / visualization / automation / communication) with separators, so it stays scannable as it grows. Also fixes dialog combo boxes briefly showing the system accent color when opening. No new dependencies.
+
+---
+
 ## What's New in v1.3.1
 
 Several practical additions this release:
@@ -649,7 +660,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.1`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.2`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

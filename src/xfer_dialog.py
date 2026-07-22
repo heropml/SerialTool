@@ -284,8 +284,8 @@ class XferDialog(QDialog):
         if not self.app._is_open():
             self.app.toast(t("xfer_need_conn"), error=True)
             return
-        if getattr(self.app, "_seq_on", False):
-            self.app.toast(t("xfer_need_seq_off"), error=True)
+        if self.app._xfer_start_blocked():
+            self.app.toast(t("io_exclusive_busy"), error=True)
             return
         if not self._path:
             self.app.toast(t("xfer_need_file" if self._is_send() else "xfer_need_save"), error=True)

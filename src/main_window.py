@@ -319,6 +319,13 @@ class CommTool(QMainWindow):
         self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
         self._bridge_dlg = None          # 桥接转发对话框（两端任意 串口/TCP/UDP 组合，单实例）
         self._dash_dlg = None            # 数值仪表盘对话框（大字号实时值 + 阈值告警，单实例）
+        self._script_dlg = None          # 脚本控制台对话框（Python 驱动收发，单实例）
+        self._script_worker = None       # 脚本运行中的 worker；非 None 时 on_data_received 把 RX 复制给它
+        self._script_orphans = []        # 停不下来的脚本 worker（纯计算死循环）：留引用防 QThread running 时被析构
+        self._script_quiet_until = 0.0   # 接管前已有 Modbus 请求的迟到响应隔离截止时间
+        from macro_recorder import MacroRecorder
+        self._macro = MacroRecorder()    # 宏录制：把手动收发录成脚本（脚本控制台里启停）
+        self._ar_in_flight = False       # 正在发自动应答的回复 → 宏录制跳过（不是用户手动发）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_loop_i = 0          # 当前第几轮（0 基）
@@ -2994,6 +3001,10 @@ class CommTool(QMainWindow):
 
         if getattr(self, "_seq_on", False):   # 连接断开 → 中止运行中的序列（保留结果 + 提示，不静默）
             self._seq_abort("seq_aborted_disc")
+        # 脚本控制台同理：链路没了就别让脚本对着断掉的连接空跑（send 进虚空、每个 expect
+        # 都要等满超时）。协作式停止，脚本会在下一个 send/expect/recv/sleep 处退出并出汇总。
+        if self._script_running():
+            self._script_worker.stop()
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
@@ -3241,6 +3252,8 @@ class CommTool(QMainWindow):
             self._plot_dlg.refresh_theme()
         if getattr(self, "_dash_dlg", None) is not None:
             self._dash_dlg.refresh_theme()
+        if getattr(self, "_script_dlg", None) is not None:
+            self._script_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -3354,6 +3367,13 @@ class CommTool(QMainWindow):
                 fdlg.feed(data)
             except Exception:
                 pass
+        # 宏录制：录回包，供生成 expect(...)（脚本运行期间不录，同 TX 侧）
+        if (self._macro.recording and not self._script_running()
+                and not self._seq_running()):
+            try:
+                self._macro.on_rx(data)
+            except Exception:
+                pass
         # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
         ddlg = getattr(self, "_dash_dlg", None)
         if ddlg is not None and ddlg.isVisible():
@@ -3366,7 +3386,17 @@ class CommTool(QMainWindow):
         # Modbus 从机)把它当请求回发，否则总线互相干扰。主机激活时整体跳过自动应答。
         # 自动化序列运行中：响应喂给序列匹配引擎，并临时抑制自动应答/Modbus 主机（三者共用收流，
         # 序列是主动驱动方；序列结束后自动恢复，不改它们的开关）。
-        if self._seq_running():
+        # 脚本控制台运行中：脚本是主动驱动方，独占收流（expect 从这里拿数据），
+        # 同样临时抑制自动应答 / Modbus 主机，结束后由 _script_end 恢复。
+        if self._script_running():
+            # 脚本接管前若 Modbus 主机已有请求在途，完整超时窗内的字节可能是旧响应；
+            # 直接丢弃，避免它被脚本第一个 expect 误认。脚本首个 send 同样会等隔离窗结束。
+            if time.monotonic() >= getattr(self, "_script_quiet_until", 0.0):
+                try:
+                    self._script_worker.feed(data)
+                except Exception:
+                    pass
+        elif self._seq_running():
             try:
                 # 序列刚启动而 Modbus 尚有在途请求时，先让原请求完整收尾；超时后的迟到响应
                 # 隔离期也继续喂 _mbm_feed（RTU 会按最后一个迟到字节重新满足 t3.5）。
@@ -3714,6 +3744,9 @@ class CommTool(QMainWindow):
         if self._ms_cycle_timer.isActive():
             self._ms_stop_cycle()
             return
+        if self._io_task_busy(exclude=("multi",)):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return
         seq = self._build_ms_cycle_seq()
         if not seq:
             self.toast(self._t("ms_none_checked"), error=True)
@@ -3738,7 +3771,8 @@ class CommTool(QMainWindow):
         # 循环路径走 _send_with_subst：替换 + 失败回滚 {count}
         # 发送失败(坏数据/写异常等)立即停止，避免每轮都刷错误 toast
         # (空命令在 _ms_toggle_cycle 构建序列时已过滤，这里的 False 都是真失败)
-        if not self._send_with_subst(data, hex_mode=hx, newline=nl, checksum=cs):
+        if not self._send_with_subst(data, hex_mode=hx, newline=nl, checksum=cs,
+                                     record_macro=False):
             self._ms_stop_cycle()
             return
         self._ms_cycle_idx += 1
@@ -3800,6 +3834,122 @@ class CommTool(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def open_script_console(self):
+        """打开脚本控制台（单实例，复用并刷新主题/语言）。"""
+        if getattr(self, "_script_dlg", None) is None:
+            from script_console_dialog import ScriptConsoleDialog
+            self._script_dlg = ScriptConsoleDialog(self)
+        dlg = self._script_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    # ----- 脚本控制台：worker 线程 ↔ 主线程桥接 -----
+    def _script_send(self, worker, payload: bytes, done, result):
+        """worker 线程经信号请求发送（队列连接，本函数在主线程执行）。
+        走 _send_text 的 HEX 直发路径：按脚本给的字节原样发，同时进 TX 显示/记录；
+        不追加换行、不加校验（脚本自己拼完整帧）。请求携带 worker 身份和完成事件：
+        已停止/关闭/换轮的旧 worker 不能把排队数据发到新会话。"""
+        if worker is not self._script_worker or worker.stopping():
+            done.set()
+            return
+        remain = getattr(self, "_script_quiet_until", 0.0) - time.monotonic()
+        if remain > 0:
+            # 不阻塞 GUI；worker 会在 send() 内等完成，同时可被“停止”打断。
+            QTimer.singleShot(max(1, int(remain * 1000) + 1),
+                              lambda: self._script_send(worker, payload, done, result))
+            return
+        try:
+            result["ok"] = bool(self._send_text(
+                bytes(payload).hex(" ").upper(), hex_mode=True, newline=0, checksum=0,
+                record_macro=False, allow_during_exclusive=True))
+        except Exception as e:
+            self.toast(self._t("err_send_failed", e=e), error=True)
+        finally:
+            done.set()
+
+    def _script_begin(self, worker):
+        """脚本开跑：接管收流 + 暂停自动应答/Modbus 主机（同自动化序列的独占策略）。"""
+        self._script_worker = worker
+        self._ar_reset_buf()
+        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+        self._ar_sm_pending = None
+        self._ar_sm_queue.clear()
+        self._ar_sm_draining = False
+        self._mbm_sched.stop()
+        # 已发出的 Modbus 请求无法撤回。取消其运行态并隔离一个完整响应超时窗；期间脚本
+        # send 会等待、RX 会丢弃，避免旧响应污染脚本。结束后 _mbm_tick 按原开关恢复。
+        info = self._mbm_inflight
+        self._mbm_to.stop()
+        self._mbm_inflight = None
+        self._mbm_buf = b""
+        guard_ms = int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)) if info else 0
+        self._script_quiet_until = time.monotonic() + max(0, guard_ms) / 1000.0
+        if info is not None and info.get("variant") == "rtu":
+            self._mbm_guard_until = max(self._mbm_guard_until, self._script_quiet_until)
+
+    def _script_end(self):
+        """脚本结束：释放收流 + 按原开关恢复 Modbus 主机。"""
+        self._script_worker = None
+        self._script_quiet_until = 0.0
+        self._mbm_tick()
+
+    def _script_running(self) -> bool:
+        w = getattr(self, "_script_worker", None)
+        return w is not None and w.isRunning()
+
+    def _script_active(self) -> bool:
+        """worker 已注册即视为占用收发流（含 start 前/结束信号尚未处理的短窗口）。"""
+        return getattr(self, "_script_worker", None) is not None
+
+    def _xfer_active(self) -> bool:
+        """文件传输 worker 正在运行时独占收发流。"""
+        w = getattr(self, "_xfer_worker", None)
+        return w is not None and w.isRunning()
+
+    def _io_task_busy(self, exclude=()) -> bool:
+        """统一的主动收发任务占用表；所有任务启动入口必须共用，避免互斥条件各写一套后漏项。"""
+        excluded = set(exclude)
+        states = {
+            "script": self._script_active(),
+            "sequence": self._seq_running(),
+            "transfer": self._xfer_active(),
+            "macro": bool(getattr(getattr(self, "_macro", None), "recording", False)),
+            "periodic": self.send_timer.isActive(),
+            "multi": self._ms_cycle_timer.isActive(),
+            "modbus": bool(self._mbm_inflight is not None or self._mbm_active()),
+        }
+        return any(active for name, active in states.items() if name not in excluded)
+
+    def _manual_send_blocked(self) -> bool:
+        """脚本/序列/文件传输会独占回包，期间禁止其它手动发送插入线路。"""
+        return bool(self._script_active() or self._seq_running() or self._xfer_active()
+                    or self._mbm_inflight is not None or self._mbm_active())
+
+    def _script_start_blocked(self) -> bool:
+        """脚本不能与其它会主动收发/独占收流的任务并发。Modbus 主机由 _script_begin 暂停。"""
+        return self._io_task_busy(exclude=("script", "modbus"))
+
+    def _macro_start_blocked(self) -> bool:
+        """宏只录用户交互；已有后台/独占任务时拒绝开始，避免把自动流量误归因。"""
+        return self._io_task_busy(exclude=("macro",))
+
+    def _xfer_start_blocked(self) -> bool:
+        """文件传输不能与其它主动任务或 Modbus 在途流量并发。"""
+        return self._io_task_busy(exclude=("transfer",))
+
+    def _macro_record_tx(self, data):
+        """宏录制的 TX 采集判定（唯一入口）：只录「用户手动发」。三类排除——
+        脚本自己 send 的（否则录到脚本自身、循环自指）；自动应答/Modbus 从机的回复
+        （也走 _send_text，靠 _ar_in_flight 识别，不是用户动作）；未在录制。
+        终端模式在 _terminal_send 成功后也调用本入口。抽成方法是为让测试与生产共用同一判定，
+        条件改了测试自动跟着变。"""
+        if (self._macro.recording and not self._script_running()
+                and not self._seq_running() and not self._ar_in_flight):
+            self._macro.on_tx(data)
 
     def open_dashboard(self):
         """打开数值仪表盘（单实例，复用并刷新主题/语言）。"""
@@ -3882,6 +4032,14 @@ class CommTool(QMainWindow):
     def _set_mbm_enabled(self, enabled):
         """设置主机轮询总开关；开启时关闭自动应答，避免两个引擎争用同一接收流。"""
         enabled = bool(enabled)
+        if enabled and (self.send_timer.isActive() or self._ms_cycle_timer.isActive()):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            if getattr(self, "_mbm_dlg", None) is not None:
+                cb = self._mbm_dlg.cb_enable
+                cb.blockSignals(True)
+                cb.setChecked(bool(self._mbm_on))
+                cb.blockSignals(False)
+            return
         if enabled and self._ar_on:
             self._set_autoreply_enabled(False)
         self._mbm_on = enabled
@@ -4078,6 +4236,9 @@ class CommTool(QMainWindow):
         自动应答/Modbus 主机（三者共用收流，序列是主动驱动方，结束自动恢复、不改它们开关）。"""
         if self._seq_on:
             return
+        if self._io_task_busy(exclude=("sequence", "modbus")):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return
         if not self._is_open():
             self.toast(self._t("seq_need_conn"), error=True)
             return
@@ -4135,7 +4296,8 @@ class CommTool(QMainWindow):
         if send.strip():
             try:
                 ok = self._send_text(send, hex_mode=bool(step.get("send_hex", False)),
-                                     checksum=self._ar_to_int(step.get("cs", 0)))
+                                     checksum=self._ar_to_int(step.get("cs", 0)),
+                                     record_macro=False, allow_during_exclusive=True)
             except Exception:                            # _send_text 抛异常也当失败，别让序列卡死在"等回包"
                 ok = False
             if not ok:                                   # 发送失败（HEX 非法/未连接/异常）→ 按重试策略处理
@@ -4562,6 +4724,9 @@ class CommTool(QMainWindow):
         """发 Modbus 响应。响应同样经 C6 全局故障注入（可压测主机的重传/容错）。"""
         if not self._ar_on or not self._is_open():
             return
+        # Modbus 从机响应也走 _send_text，同样不是「用户手动发」——置标记让宏录制跳过
+        # （与 _ar_schedule_send 一致；这是另一条独立发送路径，各自都要保护）。
+        self._ar_in_flight = True
         try:
             out, fault = self._ar_apply_fault(frame)
             if out is None:
@@ -4573,6 +4738,8 @@ class CommTool(QMainWindow):
                     self._ar_fault_note(fault)
         except Exception:
             pass
+        finally:
+            self._ar_in_flight = False
 
     def _ar_reset_buf(self):
         """停整包静默 timer + 清半包缓冲。规则改 / 组帧改 / 总开关切 / 关闭连接 都得调，否则半截
@@ -4983,10 +5150,13 @@ class CommTool(QMainWindow):
                 finish_batch()
                 return
             if (not self._ar_on or not self._is_open() or self._seq_running()
-                    or idx >= len(parts)):
+                    or self._script_running() or idx >= len(parts)):
                 finish_batch()
                 return
             sent_ok = False
+            # 自动应答的回复也走 _send_text，但它不是「用户手动发」——置标记让宏录制跳过，
+            # 否则录制期间开着自动应答，设备每次回包触发的自动回复都会被录成一条 send()。
+            self._ar_in_flight = True
             try:
                 # 组装最终字节（校验段 + 尾部 cs），与测试器共用 _ar_compose_frame，保证预览=实发。
                 frame = self._ar_compose_frame(parts[idx], hexmode, segs, cs)
@@ -5005,6 +5175,8 @@ class CommTool(QMainWindow):
                             self._ar_fault_note(fault)
             except Exception:
                 pass
+            finally:
+                self._ar_in_flight = False
             if idx == 0:
                 try:
                     if on_sent is not None and sent_ok:
@@ -5207,7 +5379,8 @@ class CommTool(QMainWindow):
         if not self._ar_on or not self._is_open():
             return
         try:
-            self._send_text(reply, hex_mode=hexmode, newline=0, checksum=cs)
+            self._send_text(reply, hex_mode=hexmode, newline=0, checksum=cs,
+                            record_macro=False)
         except Exception:
             pass
 
@@ -5377,10 +5550,11 @@ class CommTool(QMainWindow):
         InfoDialog(title, body, ok_text=ok, is_error=is_error,
                    theme_id=self._theme_id(), parent=None).exec_()
 
-    def _confirm_dlg(self, title, body, ok_text=None, danger=True):
+    def _confirm_dlg(self, title, body, ok_text=None, danger=True, cancel_text=None):
         """主题化二选一确认框（替代 QMessageBox.question）；返回 True=确认 / False=取消。
         danger=True 时确认按钮用红色（删除等破坏性操作）。parent=None 理由同 _info_dlg。"""
-        cancel = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(self._lang, "Cancel")
+        cancel = cancel_text or {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(
+            self._lang, "Cancel")
         ok = ok_text or {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK")
         dlg = InfoDialog(title, body, ok_text=ok, is_error=danger,
                          theme_id=self._theme_id(), parent=None,
@@ -5415,6 +5589,8 @@ class CommTool(QMainWindow):
         "plot_hex_header", "plot_maxpts", "plot_xaxis",
         # 数值仪表盘
         "dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header", "dash_thresholds",
+        # 脚本控制台
+        "script_lib", "script_active",
         # 自动应答
         "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
         "autoreply_modbus", "autoreply_split",
@@ -5458,40 +5634,34 @@ class CommTool(QMainWindow):
             self._info_dlg(self._t("cfg_export"), self._t("cfg_export_fail", err=str(e)), is_error=True)
 
     def _ar_confirm(self, title, body):
-        """与主题一致的「是 / 否」确认框，返回 True=用户选「是」。供 B5 脚本导入门禁用。"""
-        dlg = QDialog(None)
-        dlg.setModal(True)
-        dlg.setWindowTitle(title)
-        v = QVBoxLayout(dlg)
-        v.setContentsMargins(18, 16, 18, 16)
-        v.setSpacing(12)
-        lbl = QLabel(body)
-        lbl.setWordWrap(True)
-        lbl.setMaximumWidth(440)
-        v.addWidget(lbl)
-        row = QHBoxLayout()
-        row.addStretch(1)
+        """主题化「是 / 否」确认框，返回 True=用户选「是」。供脚本导入门禁用。"""
         lm = lambda zh, en, tw: {"zh": zh, "en": en, "zh_tw": tw}.get(self._lang, en)
-        btn_no = QPushButton(lm("否", "No", "否"))
-        btn_no.setObjectName("ArCfNo")
-        btn_yes = QPushButton(lm("是", "Yes", "是"))
-        btn_yes.setObjectName("ArCfYes")
-        btn_no.clicked.connect(dlg.reject)
-        btn_yes.clicked.connect(dlg.accept)
-        row.addWidget(btn_no)
-        row.addWidget(btn_yes)
-        v.addLayout(row)
-        c = chrome_for(self._theme_id())
-        dlg.setStyleSheet(localize_qss(f"""
-            QDialog {{ background-color: {c['window_bg']}; }}
-            QLabel {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 13px; }}
-            QPushButton {{ border-radius: 6px; padding: 6px 16px; font-family: 'Segoe UI'; font-size: 12px; }}
-            QPushButton#ArCfNo {{ background-color: {c['input_bg']}; color: {c['text']};
-                border: 1px solid {c['separator']}; }}
-            QPushButton#ArCfNo:hover {{ background-color: {c['ghost_hover']}; }}
-            QPushButton#ArCfYes {{ background-color: {c['accent']}; color: #FFFFFF; border: none; }}
-        """))
-        return dlg.exec_() == QDialog.Accepted
+        return self._confirm_dlg(title, body, ok_text=lm("是", "Yes", "是"), danger=False,
+                                 cancel_text=lm("否", "No", "否"))
+
+    def _gate_imported_script_lib(self, data):
+        """脚本控制台库的导入门禁：导入配置若含非空脚本，征求同意；拒绝则整个丢掉 script_lib
+        （脚本会在本机以本程序权限执行，与「脚本应答」同等对待）。返回处理后的 data。"""
+        raw = data.get("script_lib")
+        if not raw:
+            return data
+        try:
+            items = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(items, list):
+                return data
+        except Exception:
+            return data
+        n = sum(1 for it in items
+                if isinstance(it, dict) and str(it.get("code") or "").strip())
+        if n == 0:
+            return data
+        if self._ar_confirm(self._t("sc_import_title"),
+                            self._t("sc_import_warn", n=n)):
+            return data                     # 信任 → 保留
+        new = dict(data)                    # 拒绝 → 丢掉脚本库，其余配置照常导入
+        new.pop("script_lib", None)
+        new.pop("script_active", None)
+        return new
 
     def _ar_gate_imported_scripts(self, data):
         """B5 安全门禁：导入配置若含非空脚本，征求同意；拒绝则清空所有脚本字段后再导入其余。
@@ -5535,6 +5705,7 @@ class CommTool(QMainWindow):
             self._info_dlg(self._t("cfg_import"), self._t("cfg_import_fail", err=str(e)), is_error=True)
             return
         data = self._ar_gate_imported_scripts(data)   # B5：含脚本则征求同意，拒绝则清空脚本
+        data = self._gate_imported_script_lib(data)   # 脚本控制台库同理：导入的脚本会在本机执行
         s = self.settings
         n = 0
         for k, v in data.items():
@@ -5633,6 +5804,8 @@ class CommTool(QMainWindow):
             self._plot_dlg.reload_cfg()
         if getattr(self, "_dash_dlg", None) is not None:
             self._dash_dlg.reload_cfg()
+        if getattr(self, "_script_dlg", None) is not None:
+            self._script_dlg.reload_cfg()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.reload_cfg()
         self._reload_terminal_from_settings()   # 终端模式三项随配置档加载即时生效，无需重启
@@ -5683,12 +5856,14 @@ class CommTool(QMainWindow):
         raw = re.sub(r"\{rand(\d*)\}", _rand_repl, raw)
         return raw
 
-    def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None) -> bool:
+    def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None,
+                         record_macro=True) -> bool:
         """替换动态字段 → 发送 → 失败回滚 {count}（避免未连接/格式错等失败消耗计数）。
         ({ts}/{rand} 是纯函数无副作用，不用回滚；只有 {count} 有持久状态)"""
         prev_count = self._send_count
         subbed = self._send_subst(raw, hex_mode=hex_mode)
-        ok = self._send_text(subbed, hex_mode=hex_mode, newline=newline, checksum=checksum)
+        ok = self._send_text(subbed, hex_mode=hex_mode, newline=newline, checksum=checksum,
+                             record_macro=record_macro)
         if not ok:
             self._send_count = prev_count
         return ok
@@ -5698,7 +5873,10 @@ class CommTool(QMainWindow):
         if not raw_orig:
             return
         # 动态字段在发送前替换；不在 _send_text 入口替，避免与自动应答(已自行 subst)双重处理
-        ok = self._send_with_subst(raw_orig, hex_mode=self.sw_tx_hex.isChecked())
+        # QTimer 触发的是后台周期任务，不属于宏录制的“手动发送”；按钮点击/直接调用仍记录。
+        record_macro = self.sender() is not self.send_timer
+        ok = self._send_with_subst(raw_orig, hex_mode=self.sw_tx_hex.isChecked(),
+                                   record_macro=record_macro)
         if ok:
             self._push_send_hist(raw_orig)   # 存入历史的是「占位符未替换」的原文，重发可保留 {ts} 等语义
         # 定时发送时任何发送失败(数据格式错误/未连接/无目标/写失败)都关掉定时器，
@@ -5827,6 +6005,8 @@ class CommTool(QMainWindow):
         return bool(self._mbm_connection_ready()
                     and self._mbm_on and self._is_open()
                     and not getattr(self, "_seq_on", False)
+                    and getattr(self, "_script_worker", None) is None
+                    and not bool(getattr(getattr(self, "_macro", None), "recording", False))
                     and not (_xw is not None and _xw.isRunning())
                     and any(r.get("enabled") for r in self._mbm_rules))
 
@@ -6200,12 +6380,16 @@ class CommTool(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
-    def _send_text(self, raw, hex_mode=None, newline=None, checksum=None, target=None) -> bool:
+    def _send_text(self, raw, hex_mode=None, newline=None, checksum=None, target=None,
+                   record_macro=True, allow_during_exclusive=False) -> bool:
         """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
         hex_mode/newline/checksum 为 None 时用主界面全局设置；多条发送可逐条传入独立值。
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
           checksum: None=全局; 否则校验项索引(0=无…)
         成功返回 True"""
+        if not allow_during_exclusive and self._manual_send_blocked():
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return False
         if not self._is_open():
             self.toast(self._t("net_not_open"), error=True)
             return False
@@ -6294,6 +6478,9 @@ class CommTool(QMainWindow):
         self.tx_bytes += len(data)
         self.tx_packets += 1
         # 同收包路径：成功发送只累加计数器，标签刷新交 1Hz 定时器（多帧连发时不每帧重排状态栏）。
+
+        if record_macro:
+            self._macro_record_tx(data)
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
@@ -6414,6 +6601,9 @@ class CommTool(QMainWindow):
 
     def _terminal_send(self, data, echo=None):
         """终端模式即时发送一小段字节（按键）。统计计数；本地回显开则把回显文本写进数据区。"""
+        if self._manual_send_blocked():
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return
         if not self._is_open():
             return
         try:
@@ -6434,6 +6624,7 @@ class CommTool(QMainWindow):
             return
         self.tx_bytes += len(data)
         self.tx_packets += 1
+        self._macro_record_tx(data)
         if self._terminal_echo and echo:
             self._terminal_append(echo)
 
@@ -6598,6 +6789,10 @@ class CommTool(QMainWindow):
 
     def on_period_toggled(self, on):
         if on:
+            if self._io_task_busy(exclude=("periodic",)):
+                self.toast(self._t("io_exclusive_busy"), error=True)
+                self.sw_period.setChecked(False)
+                return
             try:
                 ms = int(self.ed_period_ms.text())
                 if ms < 10:
@@ -6995,6 +7190,8 @@ class CommTool(QMainWindow):
             self._plot_dlg.retranslate()
         if getattr(self, "_dash_dlg", None) is not None:
             self._dash_dlg.retranslate()
+        if getattr(self, "_script_dlg", None) is not None:
+            self._script_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -7331,9 +7528,8 @@ class CommTool(QMainWindow):
         self._closing_real = True
         self.close()
 
-    def _show_titlebar_func_menu(self):
-        """标题栏「功能」按钮下拉（带序号）：1.帧构造器 2.帧解析 3.波形图 4.数值仪表盘 5.自动化序列
-        6.工具箱 7.文件传输 8.桥接 9.Modbus 主机（帧构造↔帧解析相邻、波形图↔仪表盘相邻；Modbus 保持末位）。"""
+    def _build_titlebar_func_menu(self):
+        """按功能分组构建标题栏菜单：帧处理 / 可视化 / 自动化 / 通信传输。"""
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -7341,21 +7537,42 @@ class CommTool(QMainWindow):
                      border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
+            QMenu::separator {{ height: 1px; background-color: {c['separator']};
+                                margin: 4px 8px; }}
         """)
         menu.addAction("1. " + self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
         menu.addAction("2. " + self._t("frame_open")).triggered.connect(lambda *_: self.open_frame_parse())
-        menu.addAction("3. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
-        menu.addAction("4. " + self._t("dash_open")).triggered.connect(lambda *_: self.open_dashboard())
-        menu.addAction("5. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
-        menu.addAction("6. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
-        menu.addAction("7. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("8. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
-        # Modbus 主机放最后；轮询开启时项末加「 ●」，替代原工具栏按钮的高亮态
-        mbm_label = "9. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        menu.addAction("3. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
+        menu.addSeparator()
+        menu.addAction("4. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
+        menu.addAction("5. " + self._t("dash_open")).triggered.connect(lambda *_: self.open_dashboard())
+        menu.addSeparator()
+        menu.addAction("6. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
+        menu.addAction("7. " + self._t("sc_title")).triggered.connect(lambda *_: self.open_script_console())
+        menu.addSeparator()
+        menu.addAction("8. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("9. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
+        mbm_label = "10. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
+        return menu
+
+    def _show_titlebar_func_menu(self):
+        """在标题栏「功能」按钮下方显示分组菜单。"""
+        menu = self._build_titlebar_func_menu()
         from PyQt5.QtCore import QPoint
-        menu.exec_(self.btn_titlebar_func.mapToGlobal(
+        self._exec_transient_menu(menu, self.btn_titlebar_func.mapToGlobal(
             QPoint(0, self.btn_titlebar_func.height())))
+
+    @staticmethod
+    def _exec_transient_menu(menu, pos):
+        """执行一次性菜单并确保释放；带 parent 的 QMenu 不主动删会在主窗口下持续累积。"""
+        try:
+            return menu.exec_(pos)
+        finally:
+            try:
+                menu.deleteLater()
+            except RuntimeError:
+                pass       # 菜单动作若已销毁 parent，Qt 可能已先删除菜单
 
     def _show_titlebar_help_menu(self):
         """标题栏「帮助」按钮下拉：当前含「关于」一项（含检查更新），后续可继续加文档链接等。
@@ -7413,7 +7630,7 @@ class CommTool(QMainWindow):
         act.triggered.connect(self.open_about)
         # 弹在按钮正下方
         from PyQt5.QtCore import QPoint
-        menu.exec_(self.btn_titlebar_help.mapToGlobal(
+        self._exec_transient_menu(menu, self.btn_titlebar_help.mapToGlobal(
             QPoint(0, self.btn_titlebar_help.height())))
 
     @staticmethod
@@ -7879,7 +8096,7 @@ class CommTool(QMainWindow):
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
-                     "_bridge_dlg", "_dash_dlg"):
+                     "_bridge_dlg", "_dash_dlg", "_script_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

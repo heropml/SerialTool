@@ -13,7 +13,7 @@ from stream_parse import MODE_DELIM, MODE_REGEX, MODE_HEX
 import binproto
 from theme import chrome_for, _mix
 from fonts import localize_qss
-from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 
 _TILE_W, _TILE_H = 160, 90
 _MAX_TILES = 64        # 通道卡片上限：防分隔符模式下畸形长行（上千列）建出海量卡片卡死 UI
@@ -483,6 +483,7 @@ class DashboardDialog(QDialog):
         QLabel#DashUnit {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 12px; padding-bottom: 4px; }}
         QFrame#DashTile[state="alert"] QLabel#DashVal, QFrame#DashTile[state="alert2"] QLabel#DashVal {{ color: {c['danger']}; }}
         """))
+        _style_combo_popups(self, c)
 
     def retranslate(self):
         t = self.app._t

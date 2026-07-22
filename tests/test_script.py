@@ -1044,6 +1044,47 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         ss = w.status_bar.styleSheet()
         self.assertNotIn("transparent", ss)   # 不透明底才能擦净隐藏标签的残留
 
+    def test_titlebar_function_menu_is_grouped(self):
+        """相似功能相邻，并用三条主题分隔线分成四组。"""
+        w = _win()
+        menu = w._build_titlebar_func_menu()
+        try:
+            actions = menu.actions()
+            self.assertEqual([i for i, action in enumerate(actions) if action.isSeparator()],
+                             [3, 6, 9])
+            labels = [action.text() for action in actions if not action.isSeparator()]
+            self.assertEqual(labels[:3], ["1. " + w._t("fb_title"),
+                                          "2. " + w._t("frame_open"),
+                                          "3. " + w._t("tb_title")])
+            self.assertEqual(labels[3:5], ["4. " + w._t("plot_open"),
+                                           "5. " + w._t("dash_open")])
+            self.assertEqual(labels[5:7], ["6. " + w._t("seq_title"),
+                                           "7. " + w._t("sc_title")])
+            self.assertIn("QMenu::separator", menu.styleSheet())
+        finally:
+            menu.deleteLater()
+
+    def test_transient_menu_is_always_released(self):
+        """一次性标题栏菜单 exec 返回或抛错后都必须 deleteLater，不能挂在主窗下累积。"""
+        class FakeMenu:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.deleted = False
+            def exec_(self, _pos):
+                if self.fail:
+                    raise ValueError("boom")
+                return 7
+            def deleteLater(self):
+                self.deleted = True
+
+        ok = FakeMenu()
+        self.assertEqual(CommTool._exec_transient_menu(ok, None), 7)
+        self.assertTrue(ok.deleted)
+        bad = FakeMenu(fail=True)
+        with self.assertRaises(ValueError):
+            CommTool._exec_transient_menu(bad, None)
+        self.assertTrue(bad.deleted)
+
     @staticmethod
     def _seq_pump(ms):
         from PyQt5.QtCore import QEventLoop, QTimer
@@ -2230,6 +2271,29 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             dlg.close()
 
+    def test_xfer_refuses_periodic_or_modbus_traffic(self):
+        """文件传输接管原始收流前，必须排除定时发送及 Modbus 主机/在途响应。"""
+        from xfer_dialog import XferDialog
+        w = _win()
+        dlg = XferDialog(w)
+        old = (w._is_open, w.toast, w._mbm_active, w._mbm_inflight)
+        notices = []
+        try:
+            w._is_open = lambda: True
+            w.toast = lambda msg, **kwargs: notices.append(msg)
+            w.send_timer.start(60000)
+            dlg._start()
+            self.assertIsNone(dlg._worker)
+            w.send_timer.stop()
+            w._mbm_active = lambda: True
+            dlg._start()
+            self.assertIsNone(dlg._worker)
+            self.assertGreaterEqual(len(notices), 2)
+        finally:
+            w.send_timer.stop()
+            w._is_open, w.toast, w._mbm_active, w._mbm_inflight = old
+            dlg.close()
+
     def test_xfer_bridge_takeover(self):
         """主窗桥接：传输中 on_data_received 把收流喂 worker、不进正常显示；worker 发字节经 sig_send→conn.send；detach 后复原。"""
         from PyQt5.QtCore import QObject, pyqtSignal
@@ -2673,14 +2737,19 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         o_on = w._mbm_on
         try:
             w._mbm_on = False
-            texts = menu_texts()
+            all_texts = menu_texts()
+            # 菜单按主题分组，组间插了分隔符（分隔符 action 文本为空）；断言只看真实菜单项
+            texts = [t for t in all_texts if t]
+            self.assertGreater(len(all_texts), len(texts), "分组分隔符不见了")
             for k in ("plot_open", "frame_open", "mbm_open"):
                 self.assertTrue(any(w._t(k) in t for t in texts))   # 三项都进了菜单
             self.assertTrue(all(t[:1].isdigit() for t in texts))    # 每项前带序号
+            nums = [int(t.split(".", 1)[0]) for t in texts]
+            self.assertEqual(nums, list(range(1, len(texts) + 1)))  # 序号连续不跳号
             self.assertIn(w._t("mbm_open"), texts[-1])              # Modbus 主机排最后
             self.assertFalse(texts[-1].endswith("●"))               # 未轮询 → 末项无 ●
             w._mbm_on = True
-            self.assertTrue(menu_texts()[-1].endswith("●"))         # 轮询中 → 末项带 ●
+            self.assertTrue([t for t in menu_texts() if t][-1].endswith("●"))  # 轮询中 → 末项带 ●
         finally:
             w._mbm_on = o_on
 
@@ -3739,6 +3808,807 @@ class ProtoHighlightTests(unittest.TestCase):
         w._on_data_received_impl(self.FRAME[:3])   # 只有 3 字节，addr/crc 越界
         got = {f["label"].split("·")[1].split("=")[0].strip() for f in w._proto_fields}
         self.assertEqual(got, {"slave", "func"})   # 仅前两个在范围内
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class ScriptConsoleTests(unittest.TestCase):
+    """脚本控制台执行核心：API 语义 / 跨块匹配 / 超时 / 停止 / 断言计数 / 端到端跑一段脚本。
+    多数用例直接调 _api_*（不起线程），避免线程竞态、跑得快。"""
+
+    def _w(self, code=""):
+        _win()                                  # 确保 QApplication 存在
+        from script_console import ScriptWorker
+        return ScriptWorker(code)
+
+    def test_parse_hex(self):
+        from script_console import parse_hex
+        self.assertEqual(parse_hex("AA BB"), b"\xaa\xbb")
+        self.assertEqual(parse_hex("0xAA,0xBB"), b"\xaa\xbb")
+        self.assertEqual(parse_hex(""), b"")
+        with self.assertRaises(ValueError):
+            parse_hex("ABC")                    # 奇数长度
+
+    def test_send_encodes(self):
+        w = self._w()
+        got = []
+        def sent(_worker, payload, done, result):
+            got.append(payload)
+            result["ok"] = True
+            done.set()
+        w.send_requested.connect(sent)
+        w._api_send("AB")                       # 文本 → UTF-8
+        w._api_send("01 02", hex=True)          # HEX 串
+        w._api_send(b"\xff")                    # bytes 原样
+        self.assertEqual(got, [b"AB", b"\x01\x02", b"\xff"])
+
+    def test_expect_matches_across_chunks(self):
+        """跨多个收包拼接后匹配；返回含匹配的那段，尾部留给下次。"""
+        w = self._w()
+        w.feed(b"AT")
+        w.feed(b"+OK\r\n")
+        self.assertEqual(w._api_expect("OK", timeout=300), b"AT+OK")
+        self.assertEqual(w._api_recv(0), b"\r\n")      # 未消费尾部还在
+
+    def test_expect_hex_pattern(self):
+        w = self._w()
+        w.feed(bytes([0x01, 0x03, 0x02, 0x00]))
+        self.assertEqual(w._api_expect("01 03", timeout=300, hex=True),
+                         bytes([0x01, 0x03]))
+
+    def test_expect_timeout_returns_none(self):
+        w = self._w()
+        w.feed(b"junk")
+        self.assertIsNone(w._api_expect("OK", timeout=60))
+
+    def test_expect_empty_pattern_rejected(self):
+        w = self._w()
+        with self.assertRaises(ValueError):
+            w._api_expect("", timeout=10)
+
+    def test_recv_timeout_returns_empty(self):
+        w = self._w()
+        self.assertEqual(w._api_recv(30), b"")
+
+    def test_check_counts_and_returns(self):
+        w = self._w()
+        self.assertTrue(w._api_check(1 == 1, "ok"))
+        self.assertFalse(w._api_check(False, "bad"))
+        self.assertEqual((w.checks_passed, w.checks_failed), (1, 1))
+
+    def test_stop_interrupts_sleep_and_expect(self):
+        from script_console import ScriptStopped
+        w = self._w()
+        w.stop()
+        with self.assertRaises(ScriptStopped):
+            w._api_sleep(5000)
+        with self.assertRaises(ScriptStopped):
+            w._api_expect("X", timeout=5000)
+
+    @staticmethod
+    def _run_and_wait(w, done, timeout=8000):
+        """起线程并跑主线程事件循环直到脚本结束。
+        ScriptWorker 对象归属主线程，run() 里 emit 的信号是**队列连接**，必须有事件循环
+        才能投递（真实程序里就是主事件循环）——所以不能只 w.wait()。"""
+        from PyQt5.QtCore import QEventLoop, QTimer
+        loop = QEventLoop()
+        w.run_finished.connect(lambda ok, s: (done.append((ok, s)), loop.quit()))
+        QTimer.singleShot(timeout, loop.quit)      # 兜底：卡住也不挂死测试
+        w.start()
+        loop.exec_()
+        w.wait(2000)
+
+    def test_run_end_to_end(self):
+        """真起线程跑一段脚本：send 触发对端回包 → expect 命中 → check 通过 → 汇总 ok。"""
+        code = ("log('go')\n"
+                "send('PING')\n"
+                "r = expect('PONG', timeout=3000)\n"
+                "check(r is not None, 'got pong')\n")
+        w = self._w(code)
+        sent, done, logs = [], [], []
+        def send_and_reply(_worker, payload, ack, result):
+            sent.append(payload)
+            result["ok"] = True
+            w.feed(b"PONG")
+            ack.set()
+        w.send_requested.connect(send_and_reply)
+        w.log_line.connect(logs.append)
+        self._run_and_wait(w, done)
+        self.assertEqual(sent, [b"PING"])
+        self.assertEqual(done, [(True, "")])
+        self.assertEqual((w.checks_passed, w.checks_failed), (1, 0))
+        self.assertIn("go", logs)
+
+    def test_run_reports_syntax_error(self):
+        w = self._w("def (:\n")
+        done = []
+        self._run_and_wait(w, done)
+        self.assertEqual(done, [(False, "syntax")])
+
+    def test_run_failed_check_marks_not_ok(self):
+        w = self._w("check(False, 'boom')\n")
+        done = []
+        self._run_and_wait(w, done)
+        self.assertEqual(done, [(False, "checks")])
+
+    def test_negative_timeout_rejected(self):
+        """负数超时是调用方笔误：原先被 max(0,..) 静默钳成 0（=不等待），现在直接报错。"""
+        w = self._w()
+        with self.assertRaises(ValueError):
+            w._api_expect("X", timeout=-1)
+        with self.assertRaises(ValueError):
+            w._api_recv(-5)
+        with self.assertRaises(ValueError):
+            w._api_sleep(-1)
+        self.assertEqual(w._api_recv(0), b"")          # 0 仍合法 = 非阻塞查一次
+
+    def test_buffer_truncation_warns_once(self):
+        """缓冲超限截断会告警（否则模式跨越截断点后永远匹配不到、现象难懂），且只告警一次。"""
+        w = self._w()
+        logs = []
+        w.log_line.connect(logs.append)
+        big = b"x" * (w._MAX_BUF + 4096)
+        w.feed(big)
+        w.feed(big)
+        self.assertIsNone(w._api_expect("NOPE", timeout=50))
+        warns = [ln for ln in logs if "截断" in ln]
+        self.assertEqual(len(warns), 1, warns)
+
+    def test_pending_rx_is_bounded_before_worker_consumes(self):
+        """脚本 sleep/计算期间 feed 也必须限流，不能把数据留在无界队列里。"""
+        w = self._w()
+        w.feed(b"a" * (w._MAX_BUF // 2 + 1))
+        w.feed(b"b" * (w._MAX_BUF // 2 + 1))
+        self.assertLessEqual(w._rx_bytes, w._MAX_BUF)
+        self.assertEqual(w._api_recv(0)[:1], b"b")       # 最旧块被丢，保留最新数据
+
+    def test_stale_worker_send_is_rejected(self):
+        """关窗/换轮后才送达 GUI 的旧 worker 发送不能落到当前连接。"""
+        import threading
+        from script_console import ScriptWorker
+        app = _win()
+        old, new = ScriptWorker(""), ScriptWorker("")
+        old_reg, old_send = app._script_worker, app._send_text
+        calls, done, result = [], threading.Event(), {"ok": False}
+        try:
+            app._script_worker = new
+            app._send_text = lambda *a, **k: calls.append((a, k)) or True
+            app._script_send(old, b"STALE", done, result)
+            self.assertTrue(done.is_set())
+            self.assertFalse(result["ok"])
+            self.assertEqual(calls, [])
+        finally:
+            app._script_worker, app._send_text = old_reg, old_send
+
+    def test_main_send_bridge_acknowledges_current_worker(self):
+        """真实队列信号经主窗口发送并回 ACK，worker 才能继续且不会死锁。"""
+        app = _win()
+        worker = self._w("check(send('PING') == 4, 'sent')\n")
+        old = (app._script_worker, app._script_quiet_until, app._send_text)
+        sent, done = [], []
+        try:
+            app._script_worker = worker
+            app._script_quiet_until = 0.0
+            app._send_text = lambda raw, **kwargs: sent.append((raw, kwargs)) or True
+            worker.send_requested.connect(app._script_send)
+            self._run_and_wait(worker, done)
+            self.assertEqual(done, [(True, "")])
+            self.assertEqual(sent[0][0], "50 49 4E 47")
+            self.assertFalse(sent[0][1]["record_macro"])
+        finally:
+            app._script_worker, app._script_quiet_until, app._send_text = old
+
+    def test_default_template_modbus_frame_has_crc(self):
+        """默认模板里的 Modbus 帧必须是带 CRC 的完整帧（与帮助文档示例一致）。"""
+        import modbus_master as mm
+        from script_console_dialog import _DEFAULT_CODE
+        want = mm.build_rtu_request(1, 3, 0, 1).hex(" ").upper()   # 01 03 00 00 00 01 84 0A
+        self.assertIn(want, _DEFAULT_CODE)
+        self.assertNotIn("hex=False", _DEFAULT_CODE)   # hexs() 已返回 bytes，该参数多余且误导
+
+    def test_stale_finish_does_not_orphan_new_worker(self):
+        """竞态回归：上一轮 worker 的迟到 run_finished 不能把新一轮 worker 架空。
+        （run_finished 是队列信号，旧信号可能在新一轮已 start 之后才送达）"""
+        from script_console_dialog import ScriptConsoleDialog
+        from script_console import ScriptWorker
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        old_reg = getattr(w, "_script_worker", None)
+        try:
+            old, new = ScriptWorker(""), ScriptWorker("")
+            d._worker = new
+            w._script_worker = new                 # 新一轮已接管收流
+            d._on_finished(old, True, "")          # 旧 worker 的迟到完成信号
+            self.assertIs(d._worker, new, "新 worker 被旧信号清掉了")
+            self.assertIs(w._script_worker, new, "收流被旧信号误释放")
+            # 当前 worker 自己的完成信号才真正收尾
+            d._on_finished(new, True, "")
+            self.assertIsNone(d._worker)
+            self.assertIsNone(w._script_worker)
+        finally:
+            d._worker = None
+            w._script_worker = old_reg
+            d.deleteLater()
+
+    def test_finish_counts_come_from_signaling_worker(self):
+        """通过/失败计数取自发信的 worker，关窗把 self._worker 置空也不会显示成 0/0。"""
+        from script_console_dialog import ScriptConsoleDialog
+        from script_console import ScriptWorker
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        old_reg = getattr(w, "_script_worker", None)
+        try:
+            cur = ScriptWorker("")
+            cur.checks_passed, cur.checks_failed = 3, 1
+            d._worker = cur
+            d.txt_out.clear()
+            d._on_finished(cur, False, "checks")
+            out = d.txt_out.toPlainText()
+            self.assertIn("3", out)
+            self.assertIn("1", out)
+        finally:
+            d._worker = None
+            w._script_worker = old_reg
+            d.deleteLater()
+
+    def test_disconnect_stops_running_script(self):
+        """断连要停掉脚本（同自动化序列）：否则脚本对着断掉的连接空跑，每个 expect 等满超时。
+        钩子放在 close_conn —— 出错断线 / 用户手动断 / 设备移除 三条路径都经过它。"""
+        w = _win()
+        from script_console import ScriptWorker
+        sw = ScriptWorker("")
+        old = (w.conn, w._script_worker, w.toast)
+        try:
+            w.toast = lambda *a, **k: None
+            w.conn = None                        # 已无连接：close_conn 走干净收尾路径
+            w._script_worker = sw
+            sw.isRunning = lambda: True          # 假装脚本线程在跑
+            self.assertFalse(sw.stopping())
+            w.close_conn()
+            self.assertTrue(sw.stopping(), "断连没有停掉运行中的脚本")
+        finally:
+            (w.conn, w._script_worker, w.toast) = old
+
+    def test_worker_has_no_qt_parent(self):
+        """worker 不能以对话框为 parent：对话框销毁会连带析构仍在运行的 QThread，
+        Qt 会 std::terminate() 让进程 abort。靠 Python 引用保命，不靠 Qt 父子链。"""
+        from script_console import ScriptWorker
+        _win()
+        self.assertIsNone(ScriptWorker("").parent())
+
+    def test_unstoppable_worker_is_kept_alive_on_close(self):
+        """关窗时停不下来的 worker 要转移到主窗常驻列表续命，避免被析构导致进程 abort。"""
+        from script_console_dialog import ScriptConsoleDialog
+        from script_console import ScriptWorker
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        n0 = len(w._script_orphans)
+        old_reg = getattr(w, "_script_worker", None)
+        try:
+            stuck = ScriptWorker("")
+            stuck.isRunning = lambda: True       # 永远停不下来
+            stuck.wait = lambda ms=0: False
+            d._worker = stuck
+            d.close()
+            self.assertEqual(len(w._script_orphans), n0 + 1, "停不下来的 worker 没被续命")
+            self.assertIs(w._script_orphans[-1], stuck)
+        finally:
+            del w._script_orphans[n0:]
+            d._worker = None
+            w._script_worker = old_reg
+            d.deleteLater()
+
+    def test_lib_parse_filters_bad_entries(self):
+        from script_console_dialog import ScriptConsoleDialog as D
+        good = D.parse_lib('[{"name":"a","code":"x"},{"name":"","code":"y"},'
+                           '"junk",{"code":"no name"}]')
+        self.assertEqual(good, [{"name": "a", "code": "x"}])
+        self.assertEqual(D.parse_lib("not json"), [])
+        self.assertEqual(D.parse_lib('{"name":"a"}'), [])      # 非数组
+
+    def test_modbus_master_is_inactive_while_script_registered(self):
+        """含 start 前短窗口在内，只要脚本已接管就不能恢复 Modbus 轮询。"""
+        w = _win()
+        from script_console import ScriptWorker
+        old = w._script_worker
+        try:
+            w._script_worker = ScriptWorker("")
+            self.assertFalse(w._mbm_active())
+        finally:
+            w._script_worker = old
+
+    def test_sequence_refuses_to_start_while_script_registered(self):
+        w = _win()
+        from script_console import ScriptWorker
+        old = (w._script_worker, w._seq_on, w.toast)
+        notices = []
+        try:
+            w._script_worker = ScriptWorker("")
+            w._seq_on = False
+            w.toast = lambda msg, **kwargs: notices.append(msg)
+            w._seq_start([{"on": True, "send": "AT", "expect": ""}])
+            self.assertFalse(w._seq_on)
+            self.assertTrue(notices)
+        finally:
+            w._script_worker, w._seq_on, w.toast = old
+
+    def test_sequence_refuses_periodic_and_multi_send(self):
+        """序列独占收发流；定时发送或多条循环已运行时不得启动。"""
+        w = _win()
+        old = (w._seq_on, w.toast)
+        notices = []
+        try:
+            w._seq_on = False
+            w.toast = lambda msg, **kwargs: notices.append(msg)
+            w.send_timer.start(60000)
+            w._seq_start([{"on": True, "send": "", "expect": "OK"}])
+            self.assertFalse(w._seq_on)
+            w.send_timer.stop()
+            w._ms_cycle_timer.start(60000)
+            w._seq_start([{"on": True, "send": "", "expect": "OK"}])
+            self.assertFalse(w._seq_on)
+            self.assertGreaterEqual(len(notices), 2)
+        finally:
+            w.send_timer.stop()
+            w._ms_cycle_timer.stop()
+            w._seq_on, w.toast = old
+
+    def test_periodic_and_multi_send_refuse_sequence(self):
+        """反向入口同样受统一互斥表约束，不能在序列运行中开启后台发送。"""
+        w = _win()
+        old = (w._seq_on, w.toast)
+        try:
+            w._seq_on = True
+            w.toast = lambda *args, **kwargs: None
+            w.send_timer.stop()
+            w._ms_cycle_timer.stop()
+            w.on_period_toggled(True)
+            self.assertFalse(w.send_timer.isActive())
+            w._ms_toggle_cycle()
+            self.assertFalse(w._ms_cycle_timer.isActive())
+        finally:
+            w.send_timer.stop()
+            w._ms_cycle_timer.stop()
+            w._seq_on, w.toast = old
+
+    def test_periodic_send_and_modbus_master_are_mutually_exclusive(self):
+        """定时/循环发送与 Modbus 主机都主动占线，两个方向的开启入口都必须拒绝并发。"""
+        w = _win()
+        old = (w._mbm_on, w._mbm_inflight, w._mbm_active, w.toast)
+        try:
+            w.toast = lambda *args, **kwargs: None
+            w._mbm_active = lambda: True
+            w.send_timer.stop()
+            w.on_period_toggled(True)
+            self.assertFalse(w.send_timer.isActive())
+
+            w._mbm_active = old[2]
+            w._mbm_on = False
+            w._mbm_inflight = None
+            w.send_timer.start(60000)
+            w._set_mbm_enabled(True)
+            self.assertFalse(w._mbm_on)
+        finally:
+            w.send_timer.stop()
+            w._mbm_on, w._mbm_inflight, w._mbm_active, w.toast = old
+
+    def test_manual_and_terminal_send_refuse_exclusive_task(self):
+        """序列/脚本/传输接管回包期间，主发送框和终端按键均不得插入线路。"""
+        w = _win()
+        old = (w._seq_on, w.toast, w._is_open, w.conn)
+        sent = []
+        fake = type("Conn", (), {"send": lambda _self, data, target=None:
+                                  sent.append(bytes(data)) or len(data)})()
+        try:
+            w._seq_on = True
+            w.toast = lambda *args, **kwargs: None
+            w._is_open = lambda: True
+            w.conn = fake
+            self.assertFalse(w._send_text("AA", hex_mode=True))
+            w._terminal_send(b"A", echo="A")
+            self.assertEqual(sent, [])
+        finally:
+            w._seq_on, w.toast, w._is_open, w.conn = old
+
+    def test_script_combo_overrides_native_on_background(self):
+        """Windows 下拉框打开/收起后的 :on 状态不能透出系统青绿色底色。"""
+        from script_console_dialog import ScriptConsoleDialog
+        d = ScriptConsoleDialog(_win())
+        try:
+            qss = d.styleSheet()
+            self.assertIn("QComboBox#ScScript:on", qss)
+            self.assertIn("selection-background-color", qss)
+        finally:
+            d.deleteLater()
+
+    def test_script_run_button_matches_main_primary_style(self):
+        """脚本运行/停止按钮沿用主界面主操作按钮的尺寸和交互状态。"""
+        from script_console_dialog import ScriptConsoleDialog
+        d = ScriptConsoleDialog(_win())
+        try:
+            self.assertGreaterEqual(d.btn_run.minimumHeight(), 34)
+            self.assertEqual(d.btn_run.minimumSize(), d.btn_stop.minimumSize())
+            qss = d.styleSheet()
+            self.assertIn("QPushButton#PlotPrimaryBtn:pressed", qss)
+            self.assertIn("border-radius: 9px", qss)
+            self.assertIn("font-weight: 600", qss)
+        finally:
+            d.deleteLater()
+
+    def test_script_delete_uses_themed_danger_confirmation(self):
+        """删除脚本使用统一主题确认框，并将删除动作标成危险按钮。"""
+        from script_console_dialog import ScriptConsoleDialog
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        old_confirm = w._confirm_dlg
+        seen = {}
+        try:
+            d._scripts = [{"name": "A", "code": "a"}, {"name": "B", "code": "b"}]
+            d._active = 1
+            w._confirm_dlg = lambda *args, **kwargs: seen.update(kwargs) or False
+            d._on_delete()
+            self.assertTrue(seen.get("danger"))
+            self.assertEqual(seen.get("ok_text"), w._t("sc_delete"))
+            self.assertEqual(len(d._scripts), 2)
+        finally:
+            w._confirm_dlg = old_confirm
+            d.deleteLater()
+
+    def test_script_run_rejection_shows_themed_popup_and_local_error(self):
+        """未连接时弹主题错误框，同时在控制台输出区和底栏留下原因。"""
+        from script_console_dialog import ScriptConsoleDialog
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        old = (w._script_start_blocked, w._is_open, w.toast, w._info_dlg)
+        notices, popups = [], []
+        try:
+            w._script_start_blocked = lambda: False
+            w._is_open = lambda: False
+            w.toast = lambda msg, **kwargs: notices.append((msg, kwargs))
+            w._info_dlg = lambda *args, **kwargs: popups.append((args, kwargs))
+            d.txt_out.clear()
+            d._on_run()
+            msg = w._t("net_not_open")
+            self.assertIn(msg, d.txt_out.toPlainText())
+            self.assertEqual(d.lbl_status.text(), msg)
+            self.assertIn("color", d.lbl_status.styleSheet())
+            self.assertTrue(notices)
+            self.assertEqual(len(popups), 1)
+            self.assertTrue(popups[0][1].get("is_error"))
+            self.assertIsNone(d._worker)
+        finally:
+            w._script_start_blocked, w._is_open, w.toast, w._info_dlg = old
+            d.deleteLater()
+
+    def test_shared_dialog_combo_popup_uses_neutral_palette(self):
+        """波形图/仪表盘/桥接/Modbus 共用样式应同时覆盖 :on 和独立弹出容器。"""
+        from PyQt5.QtWidgets import QDialog, QComboBox, QVBoxLayout
+        from dialogs import _dialog_list_qss, _style_combo_popups
+        from theme import chrome_for
+        root = QDialog()
+        combo = QComboBox(root)
+        combo.addItems(["A", "B"])
+        QVBoxLayout(root).addWidget(combo)
+        c = chrome_for(_win()._theme_id())
+        try:
+            qss = _dialog_list_qss(c)
+            self.assertIn("QComboBox:on", qss)
+            self.assertIn("selection-background-color", qss)
+            _style_combo_popups(root, c)
+            self.assertIn(c["combo_dropdown_bg"], combo.view().window().styleSheet())
+        finally:
+            root.deleteLater()
+
+
+class MacroRecorderTests(unittest.TestCase):
+    """宏录制：事件采集 + 翻译成脚本代码。纯逻辑，无需 Qt。"""
+
+    def _r(self):
+        from macro_recorder import MacroRecorder
+        r = MacroRecorder()
+        r.start()
+        return r
+
+    def test_not_recording_drops_events(self):
+        from macro_recorder import MacroRecorder
+        r = MacroRecorder()
+        r.on_tx(b"AT")                      # 未 start → 不采集
+        self.assertEqual(len(r), 0)
+
+    def test_tx_rx_pair_becomes_send_expect_check(self):
+        r = self._r()
+        r.on_tx(b"AT\r\n", t=10.0)
+        r.on_rx(b"OK\r\n", t=10.05)
+        r.stop()
+        code = r.to_script()
+        self.assertIn('send("AT\\r\\n")', code)
+        self.assertIn("r = expect(", code)
+        self.assertIn('"OK\\r\\n"', code)
+        self.assertIn("check(r is not None", code)
+
+    def test_binary_uses_hexs(self):
+        r = self._r()
+        r.on_tx(bytes([0x01, 0x03, 0x00, 0xFF]), t=1.0)
+        r.stop()
+        self.assertIn('send(hexs("01 03 00 FF"))', r.to_script())
+
+    def test_gap_becomes_sleep(self):
+        r = self._r()
+        r.on_tx(b"A", t=1.0)
+        r.on_tx(b"B", t=1.5)                # 间隔 500ms → 补 sleep
+        r.stop()
+        code = r.to_script()
+        self.assertIn("sleep(500)", code)
+
+    def test_small_gap_no_sleep(self):
+        r = self._r()
+        r.on_tx(b"A", t=1.0)
+        r.on_tx(b"B", t=1.01)               # 10ms < gap_ms(50) → 不补
+        r.stop()
+        self.assertNotIn("sleep(", r.to_script())
+
+    def test_timeout_scales_with_latency(self):
+        r = self._r()
+        r.on_tx(b"A", t=1.0)
+        r.on_rx(b"R", t=1.5)                # 500ms 延迟 → 超时留余量且 >500
+        r.stop()
+        import re as _re
+        m = _re.search(r"timeout=(\d+)", r.to_script())
+        self.assertIsNotNone(m)
+        self.assertGreater(int(m.group(1)), 500)
+
+    def test_multiple_rx_merged_into_one_expect(self):
+        r = self._r()
+        r.on_tx(b"A", t=1.0)
+        r.on_rx(b"12", t=1.01)
+        r.on_rx(b"34", t=1.02)              # 同一次发送后的多包合并
+        r.stop()
+        code = r.to_script()
+        self.assertEqual(code.count("expect("), 1)
+        self.assertIn('"1234"', code)
+
+    def test_unsolicited_rx_becomes_comment(self):
+        r = self._r()
+        r.on_rx(b"BOOT", t=1.0)             # 没有对应发送 → 只记注释
+        r.stop()
+        code = r.to_script()
+        self.assertIn("# 收到(无对应发送)", code)
+        self.assertNotIn("expect(", code)
+
+    def test_empty_recording(self):
+        r = self._r()
+        r.stop()
+        self.assertIn("未录到任何收发", r.to_script())
+
+    def test_event_cap_marks_truncated(self):
+        from macro_recorder import MacroRecorder
+        r = MacroRecorder(max_events=3)
+        r.start()
+        for i in range(10):
+            r.on_tx(b"X", t=float(i))
+        r.stop()
+        self.assertEqual(len(r), 3)
+        self.assertTrue(r.truncated)
+        self.assertIn("超过上限", r.to_script())
+
+    def test_generated_script_is_valid_python(self):
+        """生成的代码必须能编译（否则录完直接跑就报语法错）。"""
+        r = self._r()
+        r.on_tx(b'say "hi"\\\r\n', t=1.0)   # 含引号/反斜杠/CR LF，考验转义
+        r.on_rx(bytes([0x00, 0xFF]), t=1.2)
+        r.on_tx(b"AT", t=2.0)
+        r.stop()
+        compile(r.to_script(), "<gen>", "exec")
+
+    def test_generated_script_respects_library_limit(self):
+        r = self._r()
+        for i in range(20):
+            r.on_tx(bytes([i]) * 4096, t=float(i))
+        r.stop()
+        code = r.to_script(max_chars=2000)
+        self.assertLessEqual(len(code), 2000)
+        self.assertIn("超过脚本库上限", code)
+        compile(code, "<limited-gen>", "exec")
+
+    def test_counts(self):
+        r = self._r()
+        r.on_tx(b"A", t=1.0)
+        r.on_rx(b"B", t=1.1)
+        r.on_rx(b"C", t=1.2)
+        self.assertEqual((r.tx_count, r.rx_count), (1, 2))
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class MacroRecorderIntegrationTests(unittest.TestCase):
+    """录制与主窗的接线：手动发送/收包被录，脚本自身的发送不被录。"""
+
+    def test_rx_recorded_only_while_recording(self):
+        w = _win()
+        rec = w._macro
+        old = (rec.recording, w._script_worker)
+        try:
+            rec.clear()
+            rec.recording = False
+            w.on_data_received(b"junk")
+            self.assertEqual(len(rec), 0)
+            rec.start()
+            w.on_data_received(b"HELLO")
+            self.assertEqual(rec.rx_count, 1)
+        finally:
+            rec.stop(); rec.clear()
+            (rec.recording, w._script_worker) = old
+
+    def _dlg(self):
+        """建对话框，并记下 settings 里的脚本库以便测试后还原
+        （对话框的 _save_cfg 会写 settings，不还原会污染后续用例）。"""
+        from script_console_dialog import ScriptConsoleDialog
+        w = _win()
+        self._saved_lib = (w.settings.value("script_lib", ""),
+                           w.settings.value("script_active", ""))
+        return ScriptConsoleDialog(w)
+
+    def _restore_lib(self):
+        w = _win()
+        lib, active = getattr(self, "_saved_lib", ("", ""))
+        w.settings.setValue("script_lib", lib)
+        w.settings.setValue("script_active", active)
+
+    def test_full_library_keeps_recording_for_retry(self):
+        """库满时不能先 clear 再报错 —— 录到的东西要留着，腾出空位后能重试保存。"""
+        from script_console_dialog import _MAX_SCRIPTS
+        w = _win()
+        rec = w._macro
+        d = self._dlg()
+        try:
+            d._scripts = [{"name": "s%d" % i, "code": "log(1)"} for i in range(_MAX_SCRIPTS)]
+            rec.clear(); rec.start()
+            rec.on_tx(b"AT\r\n", t=1.0); rec.on_rx(b"OK", t=1.05)
+            d._on_record()                       # 停止 → 库满，应保留数据
+            self.assertFalse(rec.recording)
+            self.assertGreater(len(rec), 0, "库满时录制数据被清掉了")
+            n_before = len(d._scripts)
+            # 腾出空位后再点一次 → 当作「重试保存」，而不是开新一轮把数据清掉
+            d._scripts.pop()
+            d._on_record()
+            self.assertEqual(len(d._scripts), n_before)   # 删1加1
+            self.assertEqual(len(rec), 0, "重试保存后应已消费掉录制数据")
+            self.assertIn("send(", d.ed_code.toPlainText())
+        finally:
+            rec.stop(); rec.clear()
+            self._restore_lib()
+            d.deleteLater()
+
+    def test_full_library_refuses_to_start(self):
+        """库满时直接拒绝开始录制，别让用户白录一场。"""
+        from script_console_dialog import _MAX_SCRIPTS
+        w = _win()
+        rec = w._macro
+        d = self._dlg()
+        try:
+            rec.clear()
+            d._scripts = [{"name": "s%d" % i, "code": "log(1)"} for i in range(_MAX_SCRIPTS)]
+            d._on_record()
+            self.assertFalse(rec.recording, "库满仍然开始了录制")
+        finally:
+            rec.stop(); rec.clear()
+            self._restore_lib()
+            d.deleteLater()
+
+    def test_retranslate_keeps_recording_ui(self):
+        """录制中切语言/配置：按钮样式(红)、运行禁用、状态栏文案都要保持录制态。"""
+        w = _win()
+        rec = w._macro
+        d = self._dlg()
+        try:
+            rec.clear()
+            d._on_record()                       # 开始录制
+            self.assertTrue(rec.recording)
+            d.retranslate()                      # 模拟切语言
+            self.assertEqual(d.btn_rec.objectName(), "PlotDangerBtn")
+            self.assertFalse(d.btn_run.isEnabled())
+            self.assertEqual(d.lbl_status.text(), w._t("sc_rec_running"))
+        finally:
+            rec.stop(); rec.clear()
+            self._restore_lib()
+            d.deleteLater()
+
+    def test_status_priority(self):
+        """状态文案优先级：录制中 > 运行中 > 普通。"""
+        w = _win()
+        rec = w._macro
+        d = self._dlg()
+        try:
+            rec.clear()
+            self.assertEqual(d._status_key(), "sc_hint")
+            self.assertEqual(d._status_key(running=True), "sc_running")
+            rec.start()
+            self.assertEqual(d._status_key(running=True), "sc_rec_running")
+        finally:
+            rec.stop(); rec.clear()
+            self._restore_lib()
+            d.deleteLater()
+
+    def test_autoreply_sends_not_recorded(self):
+        """自动应答/Modbus 从机的回复也走 _send_text，但不是用户手动发 —— 必须被 _ar_in_flight
+        排除，否则录制期间开着自动应答，设备每次回包触发的自动回复都会被录成多余的 send()。
+        直接调生产入口 _macro_record_tx（不复制钩子条件，条件变了测试自动跟着变）。"""
+        w = _win()
+        rec = w._macro
+        old = (rec.recording, w._ar_in_flight)
+        try:
+            rec.clear(); rec.start()
+            w._ar_in_flight = False
+            w._macro_record_tx(b"MANUAL")                # 手动发 → 应录
+            self.assertEqual(rec.tx_count, 1)
+            w._ar_in_flight = True
+            w._macro_record_tx(b"AUTO-REPLY")            # 自动应答/Modbus 发 → 不应录
+            self.assertEqual(rec.tx_count, 1, "自动应答的回复被错误录进宏脚本")
+        finally:
+            rec.stop(); rec.clear()
+            (rec.recording, w._ar_in_flight) = old
+
+    def test_sequence_sends_not_recorded(self):
+        """自动化序列调用通用发送入口时不能被当成用户手动 TX。"""
+        w = _win()
+        rec = w._macro
+        old = w._seq_on
+        try:
+            rec.clear(); rec.start()
+            w._seq_on = True
+            w._macro_record_tx(b"AUTO-SEQUENCE")
+            self.assertEqual(rec.tx_count, 0)
+        finally:
+            w._seq_on = old
+            rec.stop(); rec.clear()
+
+    def test_modbus_send_sets_in_flight(self):
+        """Modbus 从机响应经 _modbus_send → _send_text，是另一条独立发送路径，
+        必须同样置 _ar_in_flight，否则从机响应被录进宏脚本。"""
+        w = _win()
+        old = (w._ar_on, w._is_open, w._send_text, w._ar_in_flight)
+        seen = {}
+        try:
+            w._ar_on = True
+            w._is_open = lambda: True
+            # 在 _send_text 内部快照 _ar_in_flight —— 发送那一刻标记必须是 True
+            w._send_text = lambda *a, **k: seen.__setitem__("flag", w._ar_in_flight) or True
+            w._modbus_send(bytes([0x01, 0x03, 0x02, 0x00, 0x64]))
+            self.assertTrue(seen.get("flag"), "Modbus 响应发送时 _ar_in_flight 不是 True")
+            self.assertFalse(w._ar_in_flight, "_modbus_send 后 _ar_in_flight 没复位")
+        finally:
+            (w._ar_on, w._is_open, w._send_text, w._ar_in_flight) = old
+
+    def test_ar_in_flight_reset_after_send(self):
+        """标记必须在 finally 里复位，否则一次自动应答后所有手动发送都不再被录。"""
+        w = _win()
+        old = (w._ar_in_flight, w.conn, w.toast)
+        try:
+            w.toast = lambda *a, **k: None
+            w._ar_in_flight = False
+            w.conn = None                       # 无连接 → _ar_schedule_send 内部走异常/早退
+            try:
+                w._ar_schedule_send(["AA"], False, None, 0, None)
+            except Exception:
+                pass
+            self.assertFalse(w._ar_in_flight, "_ar_in_flight 没有复位")
+        finally:
+            (w._ar_in_flight, w.conn, w.toast) = old
+
+    def test_script_sends_not_recorded(self):
+        """脚本运行期间的收发不录 —— 否则录到的是脚本自己发的，自指。"""
+        w = _win()
+        rec = w._macro
+        old = w._script_worker
+        try:
+            rec.clear(); rec.start()
+            class FakeW:
+                def isRunning(self): return True
+                def feed(self, d): pass
+            w._script_worker = FakeW()
+            w.on_data_received(b"FROM-SCRIPT")
+            self.assertEqual(len(rec), 0)
+        finally:
+            w._script_worker = old
+            rec.stop(); rec.clear()
 
 
 if __name__ == "__main__":

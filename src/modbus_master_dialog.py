@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 
 from theme import chrome_for
 from fonts import localize_qss
-from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 
 # 功能码下拉项：(code, i18n_key)。读 01-04 / 写单 05-06 / 写多 0F-10。
 FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
@@ -477,6 +477,7 @@ class ModbusMasterDialog(QDialog):
         QSplitter#MbmSplit::handle {{ background: {c['separator']}; margin: 4px 1px; border-radius: 2px; }}
         QSplitter#MbmSplit::handle:hover {{ background: {c['accent']}; }}
         """))
+        _style_combo_popups(self, c)
 
     def retranslate(self):
         t = self.app._t

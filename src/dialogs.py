@@ -633,24 +633,36 @@ def _dialog_list_qss(c):
     QCheckBox::indicator:hover {{ border: 1px solid {c['accent']}; }}
     QCheckBox::indicator:checked {{ background-color: {c['accent']}; border: 1px solid {c['accent']}; }}
     QCheckBox::indicator:disabled {{ border: 1px solid {c['separator']}; background-color: {c['window_bg']}; }}
+    /* 与主界面（main_window 全局样式表）的 QComboBox 规则保持一致：padding / min-height /
+       下拉按钮宽度 / 箭头边距 逐项对齐。此前对话框这几项与主界面不同，下拉框在按钮行里会被
+       拉伸、原生样式再在内部按自然尺寸补画一层，观感与主界面不一致。 */
     QComboBox {{
         background-color: {c['input_bg']}; border: 1px solid {c['separator']};
-        border-radius: 6px; padding: 3px 6px; color: {c['text']};
+        border-radius: 6px; padding: 2px 7px; min-height: 16px; color: {c['text']};
         font-family: 'Segoe UI'; font-size: 11px;
         selection-background-color: {c['accent']};
     }}
-    QComboBox:focus {{ border: 1px solid {c['accent']}; }}
-    QComboBox::drop-down {{ border: none; width: 16px; }}
+    QComboBox:focus {{
+        border: 1px solid {c['accent']}; background-color: {c['input_bg']};
+        selection-background-color: {c['input_bg']}; selection-color: {c['text']};
+    }}
+    /* Windows 会在下拉列表展开时给 QComboBox:on 套系统强调色；显式恢复中性底色/边框。
+       弹出列表中真正的当前项仍由下方 QAbstractItemView 规则保持蓝色。 */
+    QComboBox:on {{
+        border: 1px solid {c['separator']}; background-color: {c['input_bg']};
+        selection-background-color: {c['input_bg']}; selection-color: {c['text']};
+    }}
+    QComboBox::drop-down {{ border: none; width: 22px; }}
     QComboBox::down-arrow {{
         image: none;
         border-left: 4px solid transparent;
         border-right: 4px solid transparent;
         border-top: 5px solid {c['text_sec']};
-        margin-right: 5px;
+        margin-right: 8px;
     }}
     QComboBox QAbstractItemView {{
         background-color: {c['combo_dropdown_bg']}; color: {c['text']};
-        border: 1px solid {c['separator']}; border-radius: 0px; padding: 2px;
+        border: 1px solid {c['separator']}; border-radius: 0px; padding: 4px;
         outline: 0px; selection-background-color: {c['accent']}; selection-color: #FFFFFF;
     }}
     QPushButton#MsGhostBtn {{
@@ -664,6 +676,20 @@ def _dialog_list_qss(c):
     }}
     QPushButton#MsDelBtn:hover {{ color: {c['danger']}; }}
     """
+
+
+def _style_combo_popups(root, c):
+    """按主窗口相同方式给 QComboBoxPrivateContainer 显式刷底色。
+
+    下拉弹出容器是独立顶层窗口，只给 QAbstractItemView 写 QSS 时 Windows 原生 palette
+    仍可能在外框透出青绿色系统强调色。
+    """
+    for combo in root.findChildren(QComboBox):
+        try:
+            combo.view().window().setStyleSheet(
+                f"background-color: {c['combo_dropdown_bg']};")
+        except (AttributeError, RuntimeError):
+            pass
 
 
 # ============== 多条发送弹窗 ==============

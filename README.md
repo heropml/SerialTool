@@ -143,7 +143,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.3.1`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.3.2`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -251,7 +251,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.3.1")
+│   └── version.py          版本号单点真源 (__version__ = "1.3.2")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -340,7 +340,7 @@ scripts\build_onefile.bat
 
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
-    --name CommTool_onefile_v1.3.1 --icon assets\icon.ico ^
+    --name CommTool_onefile_v1.3.2 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     src\main.py
 ```
@@ -373,7 +373,7 @@ bash scripts/build.sh
 
 只改 `src\version.py` 一处：
 ```python
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 ```
 然后重新跑上面任意构建脚本。状态栏右下版本号 + 安装包文件名 `CommTool_Setup_vX.X.X.exe` 同时同步。`CommTool.iss` 通过 `#ifndef MyAppVersion #define ...` 接受 ISCC 命令行 `/DMyAppVersion=...` 覆盖。
 
@@ -565,6 +565,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v40 (v1.2.9)**: **工具箱 + 功能菜单重组 + 串口控制线 + 文件传输 + HEX 转储**（一次多项实用增强）。①**工具箱**（功能 → 工具箱）：进制/编码转换（字节序列 HEX ⇄ 文本 ⇄ 十进制 ⇄ 二进制实时互转、按 ascii/u16/i16/u32/i32/f32 解释、单值多进制 + 位掩码）+ 校验计算（一次列出全部内置算法结果反推设备用哪种 + 自定义 Rocksoft CRC）。②**功能菜单重组**：波形图 / 帧解析 / Modbus 主机 从数据区工具栏移入标题栏「功能」菜单带序号统一排列，工具栏精简（只留高亮 / 字号）。③**串口控制线**：打开串口后「打开串口」下方出现小节——DTR / RTS 输出开关、复位（DTR 拉低 ~120ms 触发 Arduino/ESP 自动复位）、中断(Break)（拉低 TX ~250ms）、CTS/DSR/DCD/RI 只读状态灯（~5Hz 轮询）；串口设置加「流控」下拉（无 / RTS-CTS 硬件 / XON-XOFF 软件）。④**文件传输**（功能 → 文件传输）：XMODEM（128B 校验和/CRC）/ XMODEM-1K / YMODEM 收发双向（常用于向 bootloader 上传固件）+ 原始字节流（按可配分块大小 + 块间延时直接发送）；进度 + 日志 + 取消，传输期暂停数据区显示 / 自动应答 / 序列 / Modbus。⑤**HEX 转储视图**：数据区显示新增「HEX 转储」开关，收发按 hex 编辑器风格渲染 偏移(8 位) + HEX（每行 8/16/32/64 字节可选、半程加宽）+ |ASCII| 三列，与「只显高亮行」过滤联动、时间戳装饰行始终可见。`tests/test_script.py` 增至 227 项；三语使用文档补 v1.2.9 章节；无新依赖。
 - **v41 (v1.3.0)**: **桥接转发（两端任意 串口/TCP/UDP 双向透传）**。功能菜单新增「桥接」：A/B 两端各自独立选 串口 / TCP客户端 / TCP服务端 / UDP，连通后双向原样透传字节，支持串口↔串口 / 串口↔网络 / 网络↔网络任意组合。①**引擎**（`src/bridge.py` `BridgeEngine`，纯信号驱动无独立线程）：连双方 `data_received` 双向 `send` 转发、监听 `state_changed`/`error_occurred` 任一侧断开或出错自动停桥、1s 滑窗实时速率 + A/B 收发计数、按具体 slot 断信号不误伤面板槽、`stats_updated` 用 object 型防长桥接计数溢出。②**发送加固**（`net_io` 的 `send_bridge`/`bridge_ready`）：TCP 服务端多客户端广播 + 4MB 待发缓冲背压（部分写判帧损坏踢客户端）、UDP 按 65507 拆合法数据报、发送失败边沿触发上报（进日志不刷屏、不静默丢数据）、开桥前 `bridge_ready` 预检（TCP 需已连接 / UDP 需有对端）。③**对话框**（`src/bridge_dialog.py`）：4 类型逐侧配置、TCP 连接中「取消」态、转发日志（文本/HEX、增量 UTF-8 解码防跨包乱码、单条 4KB 上限、由 `forwarded` 仅成功转发驱动）。④**对话框 UI 修复**（`dialogs.py`）：所有对话框下拉补下拉箭头、禁用输入框变灰；桥接「指定远程」改用 IOSSwitch。`tests/test_bridge.py` 引擎单测 20 项（全量增至 247）；三语使用文档补 v1.3.0 章节；无新依赖。
 - **v42 (v1.3.1)**: **数值仪表盘 + 协议高亮 + 串口自动重连 + USB 芯片识别**（一次多项实用增强）。①**数值仪表盘**（功能 → 数值仪表盘，`src/dashboard_dialog.py` + `src/stream_parse.py`）：把 RX 流按 分隔符/正则/HEX 字段 解析成命名数值通道（解析器抽成 Qt-free 的 `NumericStreamParser`，增量解码器防跨包多字节截断、切编码清残段），每通道一张大字号卡片（`FlowLayout` 自动换行）实时显示当前值，阈值行 `名称:下限~上限:单位` 超限卡片变红 2Hz 闪烁；卡片数上限 64、暂停/隐藏切断解析残段、配置（`dash_*`）与波形图独立。②**协议高亮**（`src/main_window.py` + `frame_dialog.py`）：帧解析对话框勾选后，HEX 显示模式下按 `frame_rules` 把收到帧各字段映射成数据区字符区间上色（复用 ExtraSelection 管线、字节→字符 `pos+3*off`）+ 悬浮「规则·字段=值」；仅普通 HEX 生效（切文本/转储即撤、立即重画）。③**串口自动重连**（`src/main_window.py`）：串口运行时掉线保存完整签名 `_serial_reconnect_cfg`，退避 0.5s 线性递增到 5s、只 `open_conn(reconnect_cfg=)` 回原设备/原参数（不读可能漂移的下拉框）、等原口重新枚举进 `_available_serial_devices` 才试、原口一出现即 `timer.start(0)` 秒连；等待缺口与真实打开共用单一 10 时隙预算（约 27.5s）静默放弃、防第 10 次失败退化成 UI/网络重连；`_reset_recv_state(reset_dashboard=)` 区分显示切换与真断点。④**USB 芯片识别**：串口下拉在系统描述后按 VID/PID 补 USB-UART 芯片型号（CH340/CP2102/FT232 等）。`tests/test_script.py` 增至 281 项；三语使用文档补 v1.3.1 章节；无新依赖。
+- **v43 (v1.3.2)**: **脚本控制台 + 宏录制 + 收发任务统一互斥**（把自动化从 GUI 配置推进到代码级可编程）。①**脚本控制台**（功能 → 脚本控制台，`src/script_console.py` + `src/script_console_dialog.py`）：用 Python 脚本驱动当前连接的真实收发，API `send/recv/expect/sleep/log/check/hexs`；执行核心 `ScriptWorker(QThread)` —— 脚本要 `send();r=expect()` 顺序阻塞驱动连接，子进程碰不到连接对象故用线程，worker 只碰 deque/Condition/信号、发送经信号回主线程；收包**有界缓冲**（feed 入口就限流 1MB，脚本 sleep 时设备狂刷不撑爆内存）、发送**握手式背压**（一次一个在途 + worker 身份校验，停止/换轮的旧 worker 不会把积压数据发到新会话）、停止为协作式（send/expect/recv/sleep 检查点）；多脚本库（≤50）随配置持久化、JSON 导入导出走信任门禁。②**宏录制**（`src/macro_recorder.py`，Qt-free 可单测）：录下主界面手动收发并翻译成脚本 —— 每次发送出 `send(...)`、其后回包合并成 `expect(...)`+`check(...)`（超时按实测延迟留 3 倍余量）、间隔 ≥50ms 补 `sleep(ms)` 保留节奏，可打印字节用字符串字面量否则 `hexs(..)`，生成代码保证可编译；只录「用户手动发」——脚本自身 send、自动应答/Modbus 从机回复（`_ar_in_flight`）、序列/定时/多条循环（`record_macro=False`）全排除，采集判定收敛到 `_macro_record_tx` 单一入口。③**收发任务统一互斥**（`_io_task_busy`）：单一占用表（脚本/序列/传输/宏/定时/多条/Modbus）+ exclude 白名单，6 个启动入口共用，根除「各写一套互斥条件、漏项」；`_manual_send_blocked` 在独占回包期间禁止手动发送插入线路；脚本接管时取消 Modbus 在途请求并隔离一个完整超时窗（`_script_quiet_until`）避免旧响应污染首个 expect。④**功能菜单分组**：帧处理(1-3)/可视化(4-5)/自动化(6-7)/通信传输(8-10) 加分隔符、Modbus 仍末位；一次性菜单经 `_exec_transient_menu` 回收不再累积为主窗常驻子对象。⑤**对话框下拉框修复**：弹出层 `QComboBoxPrivateContainer` 显式刷底色（不设背景时 Windows 原生 palette 会在开合瞬间透出系统强调色）。`tests/test_script.py` 增至 343 项；三语使用文档补 v1.3.2 章节；无新依赖。
 
 ---
 

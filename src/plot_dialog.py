@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
 import binproto
 from theme import chrome_for
 from fonts import localize_qss
-from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 
 pg.setConfigOptions(antialias=True)
 
@@ -491,6 +491,7 @@ class PlotDialog(QDialog):
         QScrollArea#PlotChScroll {{ background: transparent; border: 0px; }}
         QScrollArea#PlotChScroll > QWidget > QWidget {{ background: transparent; }}
         """))
+        _style_combo_popups(self, c)
         # pyqtgraph 配色跟随主题
         self.plot.setBackground(c["card_bg"])
         axis_pen = pg.mkPen(c["separator"])

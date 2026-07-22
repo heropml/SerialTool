@@ -26,7 +26,7 @@ from net_io import (
 from theme import chrome_for
 from widgets import IOSSwitch
 from fonts import localize_qss
-from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 
 # ── 常量 ─────────────────────────────────────────────────────
 _BAUD_LIST = [
@@ -956,6 +956,7 @@ class BridgeDialog(QDialog):
             }}
         """.format(**c))
         self.setStyleSheet(qss)
+        _style_combo_popups(self, c)
         self.panel_a.refresh_theme()
         self.panel_b.refresh_theme()
 
