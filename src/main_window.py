@@ -35,6 +35,8 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
+from virtual_io import VirtualConn, PROTO_VIRTUAL
+import send_dsl
 import binproto
 import modbus_slave
 import modbus_master
@@ -43,8 +45,10 @@ from updater import UpdateChecker
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
+# 虚拟连接排最后：它不接硬件，作为一种类型接入后，自动应答 / Modbus / 序列 / 脚本 /
+# 波形图 等全部机制都能在离线下直接跑，无需各自改造。
 PROTO_SERIAL = "Serial"
-CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS
+CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS + [PROTO_VIRTUAL]
 
 # 自动化序列循环次数上限：防止用户填百万/无穷导致 _seq_rounds 无界增长 + 导出表异常庞大。
 _SEQ_MAX_LOOPS = 100000
@@ -325,6 +329,14 @@ class CommTool(QMainWindow):
         self._script_quiet_until = 0.0   # 接管前已有 Modbus 请求的迟到响应隔离截止时间
         from macro_recorder import MacroRecorder
         self._macro = MacroRecorder()    # 宏录制：把手动收发录成脚本（脚本控制台里启停）
+        from rec_replay import StreamRecorder
+        self._recorder = StreamRecorder()  # 数据录制：原始收发流按时序存 .ctrec，可当「设备」回放
+        self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
+        self._rr_dlg = None                # 录制/回放对话框（单实例）
+        self._dsl_ops = None               # 命令 DSL 执行中的指令序列（None=空闲）
+        self._dsl_idx = 0
+        self._dsl_gen = 0                  # 代际：中止后让已排队的 QTimer 回调失效
+        self._dsl_record = True
         self._ar_in_flight = False       # 正在发自动应答的回复 → 宏录制跳过（不是用户手动发）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
@@ -833,6 +845,26 @@ class CommTool(QMainWindow):
         self.cb_target = QComboBox()
         self.row_target = make_row("target_client", self.cb_target)
 
+        # 回环 开关（仅虚拟连接）：开=发出去的数据原样当成收到的回来，可离线自测规则/脚本
+        self.sw_vconn_loop = IOSSwitch(False)
+        self.sw_vconn_loop.toggled.connect(self._on_vconn_loop_toggled)
+        vrow = QWidget()
+        vl = QHBoxLayout(vrow)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(6)
+        v_lbl = self._tr_label("vconn_loopback", color=COLOR_TEXT_SECONDARY)
+        v_lbl.setFixedWidth(self._label_col_width())
+        v_lbl.setProperty("tr_fixedw", True)
+        v_lbl.setProperty("tr_tooltip", "vconn_tip")
+        v_lbl.setToolTip(self._t("vconn_tip"))
+        vl.addWidget(v_lbl)
+        vl.addWidget(self.sw_vconn_loop)
+        self.sw_vconn_loop.setProperty("tr_tooltip", "vconn_tip")
+        self.sw_vconn_loop.setToolTip(self._t("vconn_tip"))
+        vl.addStretch(1)
+        layout.addWidget(vrow)
+        self.row_vconn_loop = vrow
+
         # 动作按钮（文案随协议/状态变化）
         self.btn_open = QPushButton(self._t("btn_listen"))
         self.btn_open.setObjectName("PrimaryBtn")
@@ -916,10 +948,21 @@ class CommTool(QMainWindow):
         is_cli = proto == PROTO_TCP_CLIENT
         is_udp = proto == PROTO_UDP
         is_grp = proto == PROTO_UDP_MULTICAST
+        is_virt = proto == PROTO_VIRTUAL
+        if hasattr(self, "row_vconn_loop"):     # 「回环」开关：仅虚拟连接显示
+            self.row_vconn_loop.setVisible(is_virt)
         # 串口字段：仅串口类型显示
         for row in (self.row_port, self.row_baud, self.row_databits,
                     self.row_parity, self.row_stopbits, self.row_flow):
             row.setVisible(is_serial)
+        if is_virt:
+            # 虚拟连接无任何地址/端口字段，网络行全隐藏
+            for row in (self.row_local_ip, self.row_group, self.row_local_port,
+                        self.row_udp_remote, self.row_remote_ip, self.row_remote_port,
+                        self.row_target):
+                row.setVisible(False)
+            self.btn_open.setText(self._t("btn_vconn_close" if engaged else "btn_vconn_open"))
+            return
         if is_serial:
             # 串口类型下网络行全部隐藏，按钮文案走串口键，提前返回
             for row in (self.row_local_ip, self.row_group, self.row_local_port,
@@ -2610,6 +2653,9 @@ class CommTool(QMainWindow):
             flow = reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6 else self.cb_flow.currentText()
             conn = SerialConn(port, baud, databits_map[databits], parity_map[parity],
                               stopbits_map[stopbits], flow=flow_map.get(flow, "none"))
+        elif proto == PROTO_VIRTUAL:
+            # 离线模式：无参数可校验，直接建环回连接（回环开关随用随切）
+            conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
         elif proto == PROTO_TCP_SERVER:
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
@@ -2696,6 +2742,13 @@ class CommTool(QMainWindow):
             self._select_serial_device(port)  # 重连可能绕过当前下拉选择，界面必须显示实际打开的端口
             self._serial_reconnect_cfg = None
             self._apply_ctrl_lines_on_open()   # 应用持久化 DTR/RTS + 启动状态线轮询
+
+    def _on_vconn_loop_toggled(self, on):
+        """回环开关：连接期间也能随时切（虚拟连接无需重开），并刷新状态栏文案。"""
+        self.settings.setValue("vconn_loopback", bool(on))
+        if isinstance(self.conn, VirtualConn):
+            self.conn.loopback = bool(on)
+            self._update_conn_status()
 
     def _apply_ctrl_lines_on_open(self):
         """串口连上：按持久化的 DTR/RTS 状态应用到硬件 + 同步开关 + 启动输入状态线轮询。"""
@@ -2916,6 +2969,11 @@ class CommTool(QMainWindow):
             self._set_state_color(opened=False)
             return
         proto = self.cb_proto.currentText()
+        if proto == PROTO_VIRTUAL:
+            key = "vconn_state_loop" if getattr(self.conn, "loopback", False) else "vconn_state"
+            self.lbl_state.setText(self._t(key))
+            self._set_state_color(opened=True)
+            return
         if proto == PROTO_SERIAL:
             port = self.cb_port.currentData() or ""
             self.lbl_state.setText(f"● {port} @ {self.cb_baud.currentText()}")
@@ -2973,6 +3031,14 @@ class CommTool(QMainWindow):
         # 传输中断连 → 取消传输（连接没了协议无法继续；worker 收到取消会尽快收尾并复位收流）
         if self._xfer_worker is not None and self._xfer_worker.isRunning():
             self._xfer_worker.cancel()
+        # 回放的 inject 回调绑定当前虚拟连接；断连后必须同步停掉定时器和占用态，
+        # 否则会继续向已关闭的旧连接静默注入，循环模式还会永久占线。
+        rr_dlg = getattr(self, "_rr_dlg", None)
+        if rr_dlg is not None:
+            rr_dlg.stop_replay()
+            rr_dlg.stop_recording()
+        elif getattr(self, "_replay_on", False):
+            self._replay_end()
         if self.sw_period.isChecked():
             self.sw_period.setChecked(False)
         # 停多条发送循环定时器：否则非 closeEvent 路径(点断开/对端断开/连接错误)断连后，
@@ -3005,6 +3071,7 @@ class CommTool(QMainWindow):
         # 都要等满超时）。协作式停止，脚本会在下一个 send/expect/recv/sleep 处退出并出汇总。
         if self._script_running():
             self._script_worker.stop()
+        self._dsl_abort()          # 断连 → 中止 DSL 剩余步骤，别对着断掉的连接空发
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
@@ -3254,6 +3321,8 @@ class CommTool(QMainWindow):
             self._dash_dlg.refresh_theme()
         if getattr(self, "_script_dlg", None) is not None:
             self._script_dlg.refresh_theme()
+        if getattr(self, "_rr_dlg", None) is not None:
+            self._rr_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -3372,6 +3441,11 @@ class CommTool(QMainWindow):
                 and not self._seq_running()):
             try:
                 self._macro.on_rx(data)
+            except Exception:
+                pass
+        if self._recorder.recording:      # 数据录制：录原始 RX 现场
+            try:
+                self._recorder.on_rx(data)
             except Exception:
                 pass
         # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
@@ -3921,13 +3995,18 @@ class CommTool(QMainWindow):
             "periodic": self.send_timer.isActive(),
             "multi": self._ms_cycle_timer.isActive(),
             "modbus": bool(self._mbm_inflight is not None or self._mbm_active()),
+            "replay": bool(getattr(self, "_replay_on", False)),
+            "dsl": bool(getattr(self, "_dsl_ops", None)),
+            "recording": bool(getattr(getattr(self, "_recorder", None), "recording", False)),
         }
         return any(active for name, active in states.items() if name not in excluded)
 
-    def _manual_send_blocked(self) -> bool:
+    def _manual_send_blocked(self, allow_running_dsl=False) -> bool:
         """脚本/序列/文件传输会独占回包，期间禁止其它手动发送插入线路。"""
         return bool(self._script_active() or self._seq_running() or self._xfer_active()
-                    or self._mbm_inflight is not None or self._mbm_active())
+                    or self._mbm_inflight is not None or self._mbm_active()
+                    or self._replay_on
+                    or (self._dsl_running() and not allow_running_dsl))
 
     def _script_start_blocked(self) -> bool:
         """脚本不能与其它会主动收发/独占收流的任务并发。Modbus 主机由 _script_begin 暂停。"""
@@ -3950,6 +4029,38 @@ class CommTool(QMainWindow):
         if (self._macro.recording and not self._script_running()
                 and not self._seq_running() and not self._ar_in_flight):
             self._macro.on_tx(data)
+
+    def _record_stream_tx(self, data):
+        """数据录制的 TX 采集：录线路上真实发出的字节（含自动应答/Modbus 回复，
+        因为录的是「线路现场」而非「用户意图」——这点与宏录制相反）。"""
+        if self._recorder.recording:
+            self._recorder.on_tx(data)
+
+    def _replay_inject_target(self):
+        """回放的注入落点：只有虚拟连接能接受「收到的数据」注入。
+        往真实串口/网络注入 RX 在物理上不成立，返回 None 让调用方明确拒绝。"""
+        conn = self.conn
+        if isinstance(conn, VirtualConn) and conn.is_open:
+            return conn.inject
+        return None
+
+    def _replay_begin(self):
+        self._replay_on = True
+
+    def _replay_end(self):
+        self._replay_on = False
+
+    def open_rec_replay(self):
+        """打开数据录制 / 回放（单实例，复用并刷新主题/语言）。"""
+        if getattr(self, "_rr_dlg", None) is None:
+            from rec_replay_dialog import RecReplayDialog
+            self._rr_dlg = RecReplayDialog(self)
+        dlg = self._rr_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def open_dashboard(self):
         """打开数值仪表盘（单实例，复用并刷新主题/语言）。"""
@@ -5569,6 +5680,8 @@ class CommTool(QMainWindow):
         # 网络连接
         "net_proto", "net_local_ip", "net_local_port",
         "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
+        # 虚拟连接（离线模式）
+        "vconn_loopback",
         # 串口连接
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
         "ser_flow", "serial_dtr", "serial_rts",
@@ -5856,14 +5969,86 @@ class CommTool(QMainWindow):
         raw = re.sub(r"\{rand(\d*)\}", _rand_repl, raw)
         return raw
 
+    # ----- 命令 DSL：发送框里带时序/重复的一行式自动化 -----
+    def _dsl_running(self) -> bool:
+        return bool(getattr(self, "_dsl_ops", None))
+
+    def _dsl_start(self, raw, record_macro=True) -> bool:
+        """编译并启动 DSL 执行。返回 True 表示已接管（无论后续是否中途失败）。"""
+        if self._dsl_running():
+            # 定时发送间隔短于整条 DSL 时会再次触发；静默跳过本 tick，避免周期性刷提示。
+            if record_macro:
+                self.toast(self._t("dsl_busy"), error=True)
+            return False
+        try:
+            ops = send_dsl.compile_dsl(raw, default_hex=self.sw_tx_hex.isChecked())
+        except send_dsl.DslError as e:
+            self.toast(self._t("dsl_bad", e=e), error=True)
+            return False
+        if not self._is_open():
+            self.toast(self._t("net_not_open"), error=True)
+            return False
+        if self._io_task_busy(exclude=("periodic",)):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return False
+        sends, delay = send_dsl.describe(ops)
+        self._dsl_ops = ops
+        self._dsl_idx = 0
+        self._dsl_record = bool(record_macro)
+        self._dsl_gen = getattr(self, "_dsl_gen", 0) + 1
+        if sends > 1 or delay:
+            self.toast(self._t("dsl_started", n=sends, ms=delay))
+        self._dsl_step(self._dsl_gen)
+        return True
+
+    def _dsl_step(self, gen):
+        """执行下一条指令。gen 代际用于让 _dsl_abort 之后的排队回调自动失效。"""
+        if gen != getattr(self, "_dsl_gen", 0) or not self._dsl_running():
+            return
+        if self._dsl_idx >= len(self._dsl_ops):
+            self._dsl_finish()
+            return
+        op, arg = self._dsl_ops[self._dsl_idx]
+        self._dsl_idx += 1
+        if op == send_dsl.OP_DELAY:
+            QTimer.singleShot(max(0, int(arg)), lambda: self._dsl_step(gen))
+            return
+        seg, hex_mode = arg
+        if hex_mode is None:
+            hex_mode = self.sw_tx_hex.isChecked()
+        ok = self._send_with_subst(seg, hex_mode=hex_mode, record_macro=self._dsl_record,
+                                   allow_running_dsl=True)
+        if not ok:
+            # 发送失败（未连接/格式错/写失败）立即中止：否则后面每段都再失败一次，刷屏
+            if self.sw_period.isChecked():
+                self.sw_period.setChecked(False)
+            self._dsl_abort()
+            return
+        QTimer.singleShot(0, lambda: self._dsl_step(gen))   # 让出事件循环，界面不卡
+
+    def _dsl_finish(self):
+        self._dsl_ops = None
+        self._dsl_idx = 0
+
+    def _dsl_abort(self):
+        """中止 DSL（发送失败 / 断连 / 关窗）。代际 +1 让已排队的回调作废。"""
+        if not self._dsl_running():
+            return
+        self._dsl_gen = getattr(self, "_dsl_gen", 0) + 1
+        self._dsl_ops = None
+        self._dsl_idx = 0
+
     def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None,
-                         record_macro=True) -> bool:
+                         record_macro=True, allow_during_exclusive=False,
+                         allow_running_dsl=False) -> bool:
         """替换动态字段 → 发送 → 失败回滚 {count}（避免未连接/格式错等失败消耗计数）。
         ({ts}/{rand} 是纯函数无副作用，不用回滚；只有 {count} 有持久状态)"""
         prev_count = self._send_count
         subbed = self._send_subst(raw, hex_mode=hex_mode)
         ok = self._send_text(subbed, hex_mode=hex_mode, newline=newline, checksum=checksum,
-                             record_macro=record_macro)
+                             record_macro=record_macro,
+                             allow_during_exclusive=allow_during_exclusive,
+                             allow_running_dsl=allow_running_dsl)
         if not ok:
             self._send_count = prev_count
         return ok
@@ -5875,6 +6060,16 @@ class CommTool(QMainWindow):
         # 动态字段在发送前替换；不在 _send_text 入口替，避免与自动应答(已自行 subst)双重处理
         # QTimer 触发的是后台周期任务，不属于宏录制的“手动发送”；按钮点击/直接调用仍记录。
         record_macro = self.sender() is not self.send_timer
+        # 命令 DSL：文本里含 \!(Delay500) / \!(Repeat3) 等指令时走带时序的分步执行。
+        # 不含指令则完全走原路径，行为一字不变。
+        if send_dsl.has_dsl(raw_orig):
+            was_running = self._dsl_running()
+            if self._dsl_start(raw_orig, record_macro=record_macro):
+                self._push_send_hist(raw_orig)
+            elif not was_running and self.sw_period.isChecked():
+                # 编译失败/未连接/任务冲突属于确定性失败，定时器继续只会每周期重复报错。
+                self.sw_period.setChecked(False)
+            return
         ok = self._send_with_subst(raw_orig, hex_mode=self.sw_tx_hex.isChecked(),
                                    record_macro=record_macro)
         if ok:
@@ -6381,13 +6576,15 @@ class CommTool(QMainWindow):
         dlg.activateWindow()
 
     def _send_text(self, raw, hex_mode=None, newline=None, checksum=None, target=None,
-                   record_macro=True, allow_during_exclusive=False) -> bool:
+                   record_macro=True, allow_during_exclusive=False,
+                   allow_running_dsl=False) -> bool:
         """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
         hex_mode/newline/checksum 为 None 时用主界面全局设置；多条发送可逐条传入独立值。
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
           checksum: None=全局; 否则校验项索引(0=无…)
         成功返回 True"""
-        if not allow_during_exclusive and self._manual_send_blocked():
+        if (not allow_during_exclusive
+                and self._manual_send_blocked(allow_running_dsl=allow_running_dsl)):
             self.toast(self._t("io_exclusive_busy"), error=True)
             return False
         if not self._is_open():
@@ -6481,6 +6678,7 @@ class CommTool(QMainWindow):
 
         if record_macro:
             self._macro_record_tx(data)
+        self._record_stream_tx(data)   # 数据录制录线路现场，与 record_macro 无关
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
@@ -7005,6 +7203,9 @@ class CommTool(QMainWindow):
         if self._tx_rate > self._tx_peak:
             self._tx_peak = self._tx_rate
         self._refresh_stat_labels()
+        rr_dlg = getattr(self, "_rr_dlg", None)
+        if rr_dlg is not None and rr_dlg.isVisible():
+            rr_dlg.tick_stat()
 
     def _refresh_stat_labels(self, with_tooltip=True):
         """刷新状态栏 RX/TX 统计：字节 · 包数 · 速率（错误 >0 时追加 ⚠）。
@@ -7192,6 +7393,8 @@ class CommTool(QMainWindow):
             self._dash_dlg.retranslate()
         if getattr(self, "_script_dlg", None) is not None:
             self._script_dlg.retranslate()
+        if getattr(self, "_rr_dlg", None) is not None:
+            self._rr_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -7317,6 +7520,7 @@ class CommTool(QMainWindow):
             s.setValue("checksum_idx", self.cb_checksum.currentIndex())
             s.setValue("send_text", self.txt_send.toPlainText())
             s.setValue("net_proto", self.cb_proto.currentText())
+            s.setValue("vconn_loopback", self.sw_vconn_loop.isChecked())
             s.setValue("net_local_ip", self.cb_local_ip.currentText())
             s.setValue("net_local_port", self.ed_local_port.text())
             s.setValue("net_remote_ip", self.ed_remote_ip.text())
@@ -7477,6 +7681,7 @@ class CommTool(QMainWindow):
         if v is not None:
             self.ed_remote_port.setText(str(v))
         self.sw_udp_remote.setChecked(to_bool(s.value("net_use_remote", False)), animate=False)
+        self.sw_vconn_loop.setChecked(to_bool(s.value("vconn_loopback", False)), animate=False)
         v = s.value("net_group_addr", None)
         if v is not None:
             self.ed_group.setText(str(v))
@@ -7549,10 +7754,11 @@ class CommTool(QMainWindow):
         menu.addSeparator()
         menu.addAction("6. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         menu.addAction("7. " + self._t("sc_title")).triggered.connect(lambda *_: self.open_script_console())
+        menu.addAction("8. " + self._t("rr_title")).triggered.connect(lambda *_: self.open_rec_replay())
         menu.addSeparator()
-        menu.addAction("8. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("9. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
-        mbm_label = "10. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        menu.addAction("9. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("10. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
+        mbm_label = "11. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         return menu
 
@@ -8096,7 +8302,7 @@ class CommTool(QMainWindow):
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
-                     "_bridge_dlg", "_dash_dlg", "_script_dlg"):
+                     "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

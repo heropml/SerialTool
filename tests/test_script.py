@@ -1045,21 +1045,45 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         self.assertNotIn("transparent", ss)   # 不透明底才能擦净隐藏标签的残留
 
     def test_titlebar_function_menu_is_grouped(self):
-        """相似功能相邻，并用三条主题分隔线分成四组。"""
+        """相似功能相邻，并用三条主题分隔线分成四组：帧处理 / 可视化 / 自动化 / 通信传输。
+        按「分组成员」断言而非硬编码分隔符下标 —— 往某组加新项不该让本用例失败，
+        但把某项挪进错误的组（真正的回归）仍会被抓到。"""
         w = _win()
         menu = w._build_titlebar_func_menu()
         try:
-            actions = menu.actions()
-            self.assertEqual([i for i, action in enumerate(actions) if action.isSeparator()],
-                             [3, 6, 9])
-            labels = [action.text() for action in actions if not action.isSeparator()]
-            self.assertEqual(labels[:3], ["1. " + w._t("fb_title"),
-                                          "2. " + w._t("frame_open"),
-                                          "3. " + w._t("tb_title")])
-            self.assertEqual(labels[3:5], ["4. " + w._t("plot_open"),
-                                           "5. " + w._t("dash_open")])
-            self.assertEqual(labels[5:7], ["6. " + w._t("seq_title"),
-                                           "7. " + w._t("sc_title")])
+            groups, cur = [], []
+            for action in menu.actions():
+                if action.isSeparator():
+                    groups.append(cur)
+                    cur = []
+                else:
+                    cur.append(action.text())
+            groups.append(cur)
+            self.assertEqual(len(groups), 4, "应为三条分隔线分出的四组")
+            self.assertTrue(all(groups), "不能有空组")
+
+            def group_of(key):
+                label = w._t(key)
+                for i, g in enumerate(groups):
+                    if any(label in t for t in g):
+                        return i
+                return -1
+
+            # 同组的功能必须在一起
+            for key in ("fb_title", "frame_open", "tb_title"):
+                self.assertEqual(group_of(key), 0, key)
+            for key in ("plot_open", "dash_open"):
+                self.assertEqual(group_of(key), 1, key)
+            for key in ("seq_title", "sc_title", "rr_title"):
+                self.assertEqual(group_of(key), 2, key)
+            for key in ("xfer_title", "bg_title", "mbm_open"):
+                self.assertEqual(group_of(key), 3, key)
+
+            labels = [t for g in groups for t in g]
+            self.assertTrue(all(t[:1].isdigit() for t in labels))          # 每项带序号
+            nums = [int(t.split(".", 1)[0]) for t in labels]
+            self.assertEqual(nums, list(range(1, len(labels) + 1)))        # 序号连续不跳号
+            self.assertIn(w._t("mbm_open"), labels[-1])                    # Modbus 保持末位
             self.assertIn("QMenu::separator", menu.styleSheet())
         finally:
             menu.deleteLater()
@@ -4609,6 +4633,741 @@ class MacroRecorderIntegrationTests(unittest.TestCase):
         finally:
             w._script_worker = old
             rec.stop(); rec.clear()
+
+
+class SendDslTests(unittest.TestCase):
+    """命令 DSL 编译：指令解析 / 重复展开 / 边界与错误。纯逻辑，无需 Qt。"""
+
+    def _c(self, text, **kw):
+        import send_dsl
+        return send_dsl.compile_dsl(text, **kw)
+
+    def test_has_dsl(self):
+        import send_dsl
+        self.assertTrue(send_dsl.has_dsl(r"AT\!(Delay100)"))
+        self.assertFalse(send_dsl.has_dsl("AT+VER"))
+        self.assertFalse(send_dsl.has_dsl(""))
+
+    def test_delay_between_segments(self):
+        import send_dsl
+        ops = self._c(r"AT\!(Delay500)BT")
+        self.assertEqual([o for o, _a in ops],
+                         [send_dsl.OP_SEND, send_dsl.OP_DELAY, send_dsl.OP_SEND])
+        self.assertEqual(ops[1][1], 500)
+
+    def test_wait_is_delay_alias(self):
+        import send_dsl
+        ops = self._c(r"A\!(Wait50)B")
+        self.assertEqual(ops[1], (send_dsl.OP_DELAY, 50))
+
+    def test_case_and_space_tolerant(self):
+        import send_dsl
+        ops = self._c(r"A\!( delay 250 )B")
+        self.assertEqual(ops[1], (send_dsl.OP_DELAY, 250))
+
+    def test_repeat_expands_following_ops(self):
+        import send_dsl
+        ops = self._c(r"\!(Repeat3)PING\!(Delay200)")
+        self.assertEqual(len(ops), 6)
+        self.assertEqual(sum(1 for o, _a in ops if o == send_dsl.OP_SEND), 3)
+
+    def test_repeat_only_repeats_what_follows(self):
+        """Repeat 之前的内容只发一次。"""
+        import send_dsl
+        ops = self._c(r"HEAD\!(Repeat2)X")
+        sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
+        self.assertEqual(sends, ["HEAD", "X", "X"])
+
+    def test_hex_text_switch(self):
+        ops = self._c(r"\!(Hex)01 02\!(Text)hi")
+        payloads = [a for o, a in ops if o == "send"]
+        self.assertEqual(payloads[0][1], True)     # hex 段
+        self.assertEqual(payloads[1][1], False)    # text 段
+
+    def test_hex_text_reject_numeric_suffix(self):
+        import send_dsl
+        for bad in (r"\!(Hex1)01", r"\!(Text99)hello"):
+            with self.assertRaises(send_dsl.DslError, msg=bad):
+                self._c(bad)
+
+    def test_default_hex_mode_is_none(self):
+        """不写 Hex/Text 时留 None，由主界面开关决定，不在编译期定死。"""
+        ops = self._c(r"A\!(Delay10)B")
+        self.assertIsNone(ops[0][1][1])
+
+    def test_errors(self):
+        import send_dsl
+        for bad in (r"\!(Delay)X", r"\!(Repeat)X", r"\!(Repeat0)X",
+                    r"\!(Nope)X", r"\!(Delay100)", r"\!(Repeat2)",
+                    r"HEAD\!(Repeat1)", r"A\!(Delay-1)B", r"A\!(Delay500"):
+            with self.assertRaises(send_dsl.DslError, msg=bad):
+                self._c(bad)
+
+    def test_malformed_marker_is_detected_before_send(self):
+        import send_dsl
+        self.assertTrue(send_dsl.has_dsl(r"A\!(Delay-1)B"))
+        with self.assertRaises(send_dsl.DslError):
+            self._c(r"A\!(Delay-1)B\!(Delay1)C")
+
+    def test_repeat_twice_rejected(self):
+        import send_dsl
+        with self.assertRaises(send_dsl.DslError):
+            self._c(r"\!(Repeat2)A\!(Repeat3)B")
+
+    def test_limits(self):
+        import send_dsl
+        with self.assertRaises(send_dsl.DslError):
+            self._c(r"\!(Repeat999999)X")          # 次数上限
+        with self.assertRaises(send_dsl.DslError):
+            self._c(r"A\!(Delay999999999)B")       # 延时上限
+        from unittest.mock import patch
+        with patch.object(send_dsl, "_MAX_OPS", 3):
+            with self.assertRaises(send_dsl.DslError):
+                self._c(r"A\!(Delay0)B\!(Delay0)C")
+
+    def test_describe(self):
+        import send_dsl
+        ops = self._c(r"A\!(Delay100)B\!(Delay50)C")
+        self.assertEqual(send_dsl.describe(ops), (3, 150))
+
+    def test_send_box_tip_documents_dsl(self):
+        """发送框悬浮提示必须介绍 DSL —— 用户在那里查动态字段，不该不知道还能写时序指令。"""
+        import i18n
+        for lang in ("zh", "en", "zh_tw"):
+            tip = i18n.TR[lang]["send_box_tip"]
+            self.assertIn("DSL", tip, lang)
+            for tok in (r"\!(Delay", r"\!(Repeat", r"\!(Hex)", r"\!(Text)"):
+                self.assertIn(tok, tip, "%s 缺 %s" % (lang, tok))
+
+    def test_tip_examples_actually_compile(self):
+        """提示里给的示例必须真能跑 —— 否则改了语法忘改文档，用户照抄就报错。"""
+        import re, i18n, send_dsl
+        for lang in ("zh", "en", "zh_tw"):
+            tip = i18n.TR[lang]["send_box_tip"]
+            # 取 DSL 小节里出现指令的示例行（行首缩进或「示例/範例/Example:」引出）
+            examples = [ln.strip().split("：", 1)[-1].split(": ", 1)[-1].strip()
+                        for ln in tip.splitlines()
+                        if r"\!(" in ln and not ln.strip().startswith(r"\!(Delay500)  ")]
+            examples = [e for e in examples if re.match(r"^[^ ]", e) and "  " not in e]
+            self.assertTrue(examples, "%s 未找到可校验的示例" % lang)
+            for ex in examples:
+                self.assertNotIn(r"\r", ex, "%s 示例不应暗示文本模式会解析 C 转义" % lang)
+                self.assertNotIn(r"\n", ex, "%s 示例不应暗示文本模式会解析 C 转义" % lang)
+                try:
+                    send_dsl.compile_dsl(ex)
+                except send_dsl.DslError as err:
+                    self.fail("%s 提示里的示例编译失败: %r (%s)" % (lang, ex, err))
+
+    def test_escaped_backslash_not_an_instruction(self):
+        r"""\\!(...) 是转义，当成字面量 \!(...) 发送，不当作指令。"""
+        import send_dsl
+        ops = self._c(r"AT\\!(Delay100)BT")
+        sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
+        self.assertEqual(sends, [r"AT\!(Delay100)BT"])
+        self.assertEqual(len([o for o, _a in ops if o == send_dsl.OP_DELAY]), 0)
+
+    def test_escaped_backslash_before_real_instruction(self):
+        r"""\\ 后跟 \!(...) 指令：\\→字面量 \，指令照常生效。"""
+        import send_dsl
+        ops = self._c(r"\\\!(Delay200)X")
+        sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
+        delays = [a for o, a in ops if o == send_dsl.OP_DELAY]
+        self.assertEqual(sends, ["\\", "X"])
+        self.assertEqual(delays, [200])
+
+    def test_escaped_has_dsl_still_true(self):
+        """含 \\!(...) 的文本 has_dsl 仍返回 True，走 DSL 路径由 compile_dsl 妥善处理。"""
+        import send_dsl
+        self.assertTrue(send_dsl.has_dsl(r"\\!(Delay100)"))
+
+
+class RecReplayTests(unittest.TestCase):
+    """数据录制/回放引擎：采集 / 存盘载入往返 / 回放时序。纯逻辑，无需 Qt。"""
+
+    def _rec(self):
+        import rec_replay
+        r = rec_replay.StreamRecorder()
+        r.start()
+        return r
+
+    def test_records_relative_time(self):
+        r = self._rec()
+        r.on_rx(b"A", t=100.0)
+        r.on_tx(b"B", t=100.5)
+        r.stop()
+        self.assertEqual([(round(t, 2), d, b) for t, d, b in r.events],
+                         [(0.0, "rx", b"A"), (0.5, "tx", b"B")])
+        self.assertEqual((r.rx_count, r.tx_count), (1, 1))
+
+    def test_not_recording_drops(self):
+        import rec_replay
+        r = rec_replay.StreamRecorder()
+        r.on_rx(b"A")
+        self.assertEqual(len(r), 0)
+
+    def test_event_cap(self):
+        import rec_replay
+        r = rec_replay.StreamRecorder(max_events=3)
+        r.start()
+        for i in range(10):
+            r.on_rx(b"X", t=float(i))
+        self.assertEqual(len(r), 3)
+        self.assertTrue(r.truncated)
+
+    def test_large_chunk_is_split_without_losing_bytes(self):
+        import rec_replay
+        from unittest.mock import patch
+        r = rec_replay.StreamRecorder()
+        r.start()
+        with patch.object(rec_replay, "_MAX_CHUNK", 2):
+            r.on_rx(b"ABCDE", t=1.0)
+        self.assertEqual([b for _t, _d, b in r.events], [b"AB", b"CD", b"E"])
+        self.assertEqual(b"".join(b for _t, _d, b in r.events), b"ABCDE")
+        self.assertEqual({t for t, _d, _b in r.events}, {0.0})
+        self.assertFalse(r.truncated)
+
+    def test_save_load_roundtrip(self):
+        import rec_replay, tempfile, os
+        r = self._rec()
+        r.on_rx(b"\x01\x02", t=1.0)
+        r.on_tx(b"OK", t=1.25)
+        r.stop()
+        p = os.path.join(tempfile.mkdtemp(), "t.ctrec")
+        r.save(p, note="unit")
+        events, header = rec_replay.load(p)
+        self.assertEqual(header.get("note"), "unit")
+        self.assertEqual(events, [(0.0, "rx", b"\x01\x02"), (0.25, "tx", b"OK")])
+        os.remove(p)
+
+    def test_load_rejects_non_ctrec(self):
+        import rec_replay, tempfile, os
+        p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"hello": 1}\n')
+        with self.assertRaises(rec_replay.RecordError):
+            rec_replay.load(p)
+        os.remove(p)
+
+    def test_load_skips_bad_lines(self):
+        """录制文件常被手改，坏行跳过而不是整体失败。"""
+        import rec_replay, tempfile, os
+        p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"_": "ctrec", "v": 1}\n')
+            f.write('{"t": 0, "d": "rx", "b": "41"}\n')
+            f.write('not json\n')
+            f.write('{"t": 1, "d": "rx", "b": "ZZ"}\n')     # 非法 hex
+            f.write('{"t": "NaN", "d": "rx", "b": "43"}\n')
+            f.write('{"t": 1, "d": "bad", "b": "43"}\n')
+            f.write('{"t": 1, "d": "rx", "b": ""}\n')
+            f.write('{"t": 2, "d": "rx", "b": "42"}\n')
+        events, header = rec_replay.load(p)
+        self.assertEqual([b for _t, _d, b in events], [b"A", b"B"])
+        self.assertEqual(header["bad_lines"], 5)
+        os.remove(p)
+
+    def test_load_rejects_unknown_version_and_event_overflow(self):
+        import rec_replay, tempfile, os
+        from unittest.mock import patch
+        p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"_": "ctrec", "v": 2}\n')
+        with self.assertRaises(rec_replay.RecordError):
+            rec_replay.load(p)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"_": "ctrec", "v": 1}\n')
+            f.write('{"t": 0, "d": "rx", "b": "41"}\n')
+            f.write('{"t": 1, "d": "rx", "b": "42"}\n')
+        with patch.object(rec_replay, "_MAX_EVENTS", 1):
+            with self.assertRaises(rec_replay.RecordError):
+                rec_replay.load(p)
+        os.remove(p)
+
+    def test_load_skips_oversized_event(self):
+        import rec_replay, tempfile, os
+        from unittest.mock import patch
+        p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"_": "ctrec", "v": 1}\n')
+            f.write('{"t": 0, "d": "rx", "b": "41 42 43"}\n')
+            f.write('{"t": 1, "d": "rx", "b": "44"}\n')
+        with patch.object(rec_replay, "_MAX_CHUNK", 2):
+            events, header = rec_replay.load(p)
+        self.assertEqual(events, [(1.0, "rx", b"D")])
+        self.assertEqual(header["bad_lines"], 1)
+        os.remove(p)
+
+    def test_load_handles_leading_blank_lines(self):
+        """.ctrec 文件头前有空行不该导致整份文件被拒。"""
+        import rec_replay, tempfile, os
+        p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('\n')                            # 手改时常在文件头前留空行
+            f.write('\n')
+            f.write('{"_": "ctrec", "v": 1}\n')
+            f.write('{"t": 0, "d": "rx", "b": "41"}\n')
+        events, header = rec_replay.load(p)
+        self.assertEqual(header.get("v"), 1)
+        self.assertEqual([b for _t, _d, b in events], [b"A"])
+        os.remove(p)
+
+    def test_player_respects_timing(self):
+        import rec_replay
+        got = []
+        p = rec_replay.Player([(0.0, "rx", b"A"), (1.0, "rx", b"B")], got.append)
+        p.start(now=0.0)
+        p.tick(0.0)
+        self.assertEqual(got, [b"A"])          # 只派发已到期的
+        p.tick(0.5)
+        self.assertEqual(got, [b"A"])          # 还没到 1.0s
+        p.tick(1.0)
+        self.assertEqual(got, [b"A", b"B"])
+        self.assertTrue(p.finished)
+
+    def test_player_speed(self):
+        import rec_replay
+        got = []
+        p = rec_replay.Player([(0.0, "rx", b"A"), (1.0, "rx", b"B")], got.append, speed=2.0)
+        p.start(now=0.0)
+        p.tick(0.5)                            # 2 倍速 → 0.5s 已相当于 1.0s
+        self.assertEqual(got, [b"A", b"B"])
+
+    def test_player_caps_each_tick_to_avoid_ui_event_storm(self):
+        import rec_replay
+        from unittest.mock import patch
+        got = []
+        events = [(0.0, "rx", bytes([i])) for i in range(4)]
+        p = rec_replay.Player(events, got.append)
+        p.start(now=0.0)
+        with patch.object(rec_replay, "_MAX_TICK_EVENTS", 2):
+            self.assertEqual(p.tick(0.0), 2)
+            self.assertFalse(p.finished)
+            self.assertEqual(p.tick(0.0), 2)
+        self.assertTrue(p.finished)
+        self.assertEqual(got, [b"\x00", b"\x01", b"\x02", b"\x03"])
+
+    def test_player_skips_tx_by_default(self):
+        """默认只回放 RX：回放我方发的会造成自问自答。"""
+        import rec_replay
+        events = [(0.0, "rx", b"A"), (0.1, "tx", b"B")]
+        self.assertEqual(len(rec_replay.Player(events, lambda b: None)), 1)
+        self.assertEqual(len(rec_replay.Player(events, lambda b: None, include_tx=True)), 2)
+
+    def test_player_loop(self):
+        import rec_replay
+        got = []
+        p = rec_replay.Player([(0.0, "rx", b"A")], got.append, loop=True)
+        p.start(now=0.0)
+        p.tick(0.0)
+        p.tick(0.1)
+        self.assertFalse(p.finished)
+        self.assertGreaterEqual(len(got), 2)
+
+    def test_player_inject_failure_does_not_break(self):
+        """注入失败（连接已关）不该打断回放收尾。"""
+        import rec_replay
+
+        def boom(_b):
+            raise RuntimeError("closed")
+
+        p = rec_replay.Player([(0.0, "rx", b"A")], boom)
+        p.start(now=0.0)
+        p.tick(0.0)
+        self.assertTrue(p.finished)
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class VirtualConnTests(unittest.TestCase):
+    """虚拟连接（离线模式）：接口契约 / 回环 / 注入。"""
+
+    def _conn(self, loopback=False):
+        from virtual_io import VirtualConn
+        _win()
+        return VirtualConn(loopback=loopback)
+
+    def test_open_close_state(self):
+        c = self._conn()
+        states = []
+        c.state_changed.connect(states.append)
+        self.assertTrue(c.open())
+        self.assertTrue(c.is_open)
+        c.close()
+        self.assertFalse(c.is_open)
+        self.assertEqual(states, [True, False])
+
+    def test_send_when_closed_is_noop(self):
+        c = self._conn()
+        self.assertEqual(c.send(b"X"), 0)
+
+    def test_send_counts_and_logs(self):
+        c = self._conn()
+        c.open()
+        self.assertEqual(c.send(b"ABC"), 3)
+        self.assertEqual(c.tx_log, [b"ABC"])
+
+    def test_loopback_is_async(self):
+        """回环必须延到下一轮事件循环：同步 emit 会在 _send_text 中途重入收包路径。"""
+        from PyQt5.QtCore import QTimer, QEventLoop
+        c = self._conn(loopback=True)
+        c.open()
+        got = []
+        c.data_received.connect(got.append)
+        c.send(b"HI")
+        self.assertEqual(got, [], "回环同步回灌了")
+        loop = QEventLoop(); QTimer.singleShot(60, loop.quit); loop.exec_()
+        self.assertEqual(got, [b"HI"])
+
+    def test_no_loopback_no_echo(self):
+        from PyQt5.QtCore import QTimer, QEventLoop
+        c = self._conn(loopback=False)
+        c.open()
+        got = []
+        c.data_received.connect(got.append)
+        c.send(b"HI")
+        loop = QEventLoop(); QTimer.singleShot(60, loop.quit); loop.exec_()
+        self.assertEqual(got, [])
+
+    def test_inject_delivers_as_rx(self):
+        from PyQt5.QtCore import QTimer, QEventLoop
+        c = self._conn()
+        c.open()
+        got = []
+        c.data_received.connect(got.append)
+        c.inject(b"FROM-DEVICE")
+        loop = QEventLoop(); QTimer.singleShot(60, loop.quit); loop.exec_()
+        self.assertEqual(got, [b"FROM-DEVICE"])
+
+    def test_inject_after_close_dropped(self):
+        from PyQt5.QtCore import QTimer, QEventLoop
+        c = self._conn()
+        c.open()
+        got = []
+        c.data_received.connect(got.append)
+        c.inject(b"X")
+        c.close()                       # 派发前就关掉 → 应丢弃
+        loop = QEventLoop(); QTimer.singleShot(60, loop.quit); loop.exec_()
+        self.assertEqual(got, [])
+
+    def test_registered_as_conn_type(self):
+        from virtual_io import PROTO_VIRTUAL
+        from main_window import CONN_TYPES
+        self.assertIn(PROTO_VIRTUAL, CONN_TYPES)
+
+
+@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
+class OfflineIntegrationTests(unittest.TestCase):
+    """虚拟连接 + 录制/回放 + DSL 在主窗里的接线。"""
+
+    def _virtual(self, loopback=False):
+        from virtual_io import PROTO_VIRTUAL
+        w = _win()
+        w.cb_proto.setCurrentText(PROTO_VIRTUAL)
+        w._update_net_fields()
+        w.sw_vconn_loop.setChecked(loopback, animate=False)
+        w.open_conn()
+        return w
+
+    @staticmethod
+    def _pump(ms=60):
+        from PyQt5.QtCore import QTimer, QEventLoop
+        loop = QEventLoop(); QTimer.singleShot(ms, loop.quit); loop.exec_()
+
+    def test_virtual_open_close(self):
+        w = self._virtual()
+        try:
+            from virtual_io import VirtualConn
+            self.assertIsInstance(w.conn, VirtualConn)
+            self.assertTrue(w.conn.is_open)
+        finally:
+            w.close_conn()
+        self.assertIsNone(w.conn)
+
+    def test_replay_target_only_virtual(self):
+        """回放只能注入虚拟连接；真实连接/未连接一律返回 None 让调用方拒绝。"""
+        w = _win()
+        old = w.conn
+        try:
+            w.conn = None
+            self.assertIsNone(w._replay_inject_target())
+            w2 = self._virtual()
+            self.assertIsNotNone(w2._replay_inject_target())
+            w2.close_conn()
+        finally:
+            w.conn = old
+
+    def test_record_captures_rx_and_tx(self):
+        w = self._virtual()
+        r = w._recorder
+        try:
+            r.clear(); r.start()
+            w.conn.inject(b"DEV"); self._pump()
+            w._send_text("41", hex_mode=True, newline=0, checksum=0)
+            self._pump()
+            r.stop()
+            self.assertEqual(r.rx_count, 1)
+            self.assertEqual(r.tx_count, 1)
+        finally:
+            r.stop(); r.clear(); w.close_conn()
+
+    def test_recording_counts_as_io_task(self):
+        w = self._virtual()
+        r = w._recorder
+        try:
+            r.clear(); r.start()
+            self.assertTrue(w._io_task_busy())
+            r.stop()
+            self.assertFalse(w._io_task_busy(exclude=("modbus",)))
+        finally:
+            r.stop(); r.clear(); w.close_conn()
+
+    def test_closing_record_dialog_keeps_capture_for_save(self):
+        """关闭录制窗口等同于停止按钮：本次数据仍要留在对话框里，重开后可保存。"""
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        r = w._recorder
+        dlg = RecReplayDialog(w)
+        try:
+            r.clear(); r.start()
+            r.on_rx(b"CAPTURE", t=1.0)
+            dlg.close()
+            self.assertFalse(r.recording)
+            self.assertEqual(dlg._events, r.events)
+            self.assertEqual(dlg._src_name, w._t("rr_src_live"))
+        finally:
+            r.stop(); r.clear(); dlg.deleteLater(); w.close_conn()
+
+    def test_disconnect_stops_replay_and_releases_busy_state(self):
+        """回放绑定旧虚拟连接；断连必须停定时器并释放 replay 占用态。"""
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        old_dlg = w._rr_dlg
+        dlg = RecReplayDialog(w)
+        w._rr_dlg = dlg
+        try:
+            dlg._events = [(0.0, "rx", b"A"), (60.0, "rx", b"B")]
+            dlg.chk_loop.setChecked(True)
+            dlg._on_play()
+            self.assertTrue(dlg.is_playing())
+            self.assertTrue(w._replay_on)
+            self.assertTrue(dlg._timer.isActive())
+            w.close_conn()
+            self.assertFalse(dlg.is_playing())
+            self.assertFalse(w._replay_on)
+            self.assertFalse(dlg._timer.isActive())
+        finally:
+            w._rr_dlg = old_dlg
+            dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_disconnect_stops_recording_and_keeps_capture(self):
+        """录制跨断连继续会混入下一会话；断连时应停止并保留当前现场。"""
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        old_dlg = w._rr_dlg
+        dlg = RecReplayDialog(w)
+        w._rr_dlg = dlg
+        r = w._recorder
+        try:
+            r.clear(); r.start(); r.on_rx(b"A", t=1.0)
+            w.close_conn()
+            self.assertFalse(r.recording)
+            self.assertEqual(dlg._events, [(0.0, "rx", b"A")])
+        finally:
+            r.stop(); r.clear(); w._rr_dlg = old_dlg
+            dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_recording_count_refreshes_on_main_rate_tick(self):
+        """录制中的事件数应随主窗 1Hz 定时器刷新，不能一直显示启动时的 0。"""
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        old_dlg = w._rr_dlg
+        dlg = RecReplayDialog(w)
+        w._rr_dlg = dlg
+        r = w._recorder
+        try:
+            dlg.show(); self._pump(10)
+            r.clear(); r.start(); dlg._refresh_stat()
+            r.on_rx(b"A", t=1.0)
+            w._tick_rate()
+            self.assertEqual(dlg.lbl_rec_stat.text(), w._t("rr_recording", n=1))
+        finally:
+            r.stop(); r.clear(); w._rr_dlg = old_dlg
+            dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_record_and_replay_refuse_active_modbus_master(self):
+        """录制/回放不会暂停 Modbus 主机，因此从这一侧启动时也必须遵守互斥。"""
+        from rec_replay_dialog import RecReplayDialog
+        from unittest.mock import patch
+        w = self._virtual()
+        dlg = RecReplayDialog(w)
+        dlg._events = [(0.0, "rx", b"A")]
+        try:
+            with patch.object(w, "_mbm_active", return_value=True):
+                dlg._on_rec()
+                self.assertFalse(w._recorder.recording)
+                dlg._on_play()
+                self.assertIsNone(dlg._player)
+                self.assertFalse(w._replay_on)
+        finally:
+            w._recorder.stop(); dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_recording_locks_file_and_replay_controls(self):
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        dlg = RecReplayDialog(w)
+        try:
+            dlg._on_rec()
+            self.assertTrue(w._recorder.recording)
+            self.assertTrue(dlg.btn_rec.isEnabled())
+            for control in (dlg.btn_load, dlg.btn_save, dlg.btn_play,
+                            dlg.cb_speed, dlg.chk_loop, dlg.chk_tx):
+                self.assertFalse(control.isEnabled(), control.objectName())
+            dlg._on_rec()
+            self.assertFalse(w._recorder.recording)
+            self.assertTrue(dlg.btn_load.isEnabled())
+        finally:
+            w._recorder.stop(); dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_plain_send_cannot_mix_into_replay(self):
+        """回放期间手动发送会污染复现场景；自动应答等内部发送仍有专用绕过通道。"""
+        from rec_replay_dialog import RecReplayDialog
+        w = self._virtual()
+        old_dlg = w._rr_dlg
+        dlg = RecReplayDialog(w)
+        w._rr_dlg = dlg
+        try:
+            dlg._events = [(0.0, "rx", b"A"), (60.0, "rx", b"B")]
+            dlg._on_play()
+            w.conn.tx_log.clear()
+            w.sw_tx_hex.setChecked(False)
+            w.txt_send.setPlainText("MANUAL")
+            w.do_send()
+            self.assertEqual(w.conn.tx_log, [])
+        finally:
+            dlg.stop_replay(); w._rr_dlg = old_dlg
+            dlg.close(); dlg.deleteLater(); w.close_conn()
+
+    def test_dsl_sends_segments_in_order(self):
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.conn.tx_log.clear()
+            w.txt_send.setPlainText(r"A\!(Delay50)B")
+            w.do_send()
+            for _ in range(40):
+                self._pump(30)
+                if not w._dsl_running():
+                    break
+            self.assertEqual(w.conn.tx_log, [b"A", b"B"])
+            self.assertFalse(w._dsl_running())
+        finally:
+            w._dsl_abort(); w.close_conn()
+
+    def test_dsl_counts_as_io_task_while_running(self):
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.txt_send.setPlainText(r"A\!(Delay300)B")
+            w.do_send()
+            self.assertTrue(w._dsl_running())
+            self.assertTrue(w._io_task_busy())
+        finally:
+            w._dsl_abort(); w.close_conn()
+
+    def test_dsl_aborted_on_disconnect(self):
+        """断连要中止 DSL，否则剩余步骤对着断掉的连接空发、每段刷一次错误。"""
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.txt_send.setPlainText(r"A\!(Delay500)B")
+            w.do_send()
+            self.assertTrue(w._dsl_running())
+            w.close_conn()
+            self.assertFalse(w._dsl_running())
+        finally:
+            w._dsl_abort()
+
+    def test_plain_send_cannot_interleave_running_dsl(self):
+        """DSL 延时窗口内的普通发送不能插队破坏命令顺序。"""
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.conn.tx_log.clear()
+            w.txt_send.setPlainText(r"A\!(Delay500)B")
+            w.do_send()
+            self.assertTrue(w._dsl_running())
+            self.assertEqual(w.conn.tx_log, [b"A"])
+            w.txt_send.setPlainText("MANUAL")
+            w.do_send()
+            self.assertEqual(w.conn.tx_log, [b"A"])
+            self.assertTrue(w._dsl_running())
+        finally:
+            w._dsl_abort(); w.close_conn()
+
+    def test_dsl_refuses_active_modbus_master(self):
+        """DSL 的内部发送只能绕过自身占用，不能绕过 Modbus 主机的线路占用。"""
+        from unittest.mock import patch
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.conn.tx_log.clear()
+            with patch.object(w, "_mbm_active", return_value=True):
+                w.txt_send.setPlainText(r"A\!(Delay10)B")
+                w.do_send()
+            self.assertFalse(w._dsl_running())
+            self.assertEqual(w.conn.tx_log, [])
+        finally:
+            w._dsl_abort(); w.close_conn()
+
+    def test_bad_periodic_dsl_stops_period_timer(self):
+        """确定性 DSL 错误若不停定时器，会按周期无限重复同一错误提示。"""
+        w = self._virtual()
+        try:
+            w.txt_send.setPlainText(r"A\!(Delay-1)B")
+            w.ed_period_ms.setText("10000")
+            w.sw_period.setChecked(True)
+            self.assertTrue(w.send_timer.isActive())
+            w.do_send()
+            self.assertFalse(w.sw_period.isChecked())
+            self.assertFalse(w.send_timer.isActive())
+        finally:
+            w.sw_period.setChecked(False); w._dsl_abort(); w.close_conn()
+
+    def test_period_tick_does_not_spam_busy_while_dsl_runs(self):
+        from unittest.mock import patch
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            self.assertTrue(w._dsl_start(r"A\!(Delay500)B", record_macro=False))
+            with patch.object(w, "toast") as toast:
+                self.assertFalse(w._dsl_start(r"A\!(Delay500)B", record_macro=False))
+                toast.assert_not_called()
+        finally:
+            w._dsl_abort(); w.close_conn()
+
+    def test_virtual_tooltip_retranslates(self):
+        w = _win()
+        old_lang = w._lang
+        try:
+            w._set_language("en")
+            self.assertEqual(w.sw_vconn_loop.toolTip(), w._t("vconn_tip"))
+            w._set_language("zh_tw")
+            self.assertEqual(w.sw_vconn_loop.toolTip(), w._t("vconn_tip"))
+        finally:
+            w._set_language(old_lang)
+
+    def test_plain_send_unaffected(self):
+        """不含 DSL 指令时完全走原路径。"""
+        w = self._virtual()
+        try:
+            w.sw_tx_hex.setChecked(False)
+            w.conn.tx_log.clear()
+            w.txt_send.setPlainText("PLAIN")
+            w.do_send()
+            self._pump(30)
+            self.assertEqual(w.conn.tx_log, [b"PLAIN"])
+            self.assertFalse(w._dsl_running())
+        finally:
+            w.close_conn()
 
 
 if __name__ == "__main__":

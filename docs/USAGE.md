@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.3
+
+This release is about getting work done without hardware on the desk:
+
+- **Virtual connection** — a new `Virtual` entry in the Type dropdown: bring up a connection with no hardware attached, and auto-reply / test sequences / the script console / plot / dashboard / protocol highlighting all keep working as usual. Turn on **Loopback** and whatever you send comes back as if received, so you can write and verify rules and scripts on the road.
+- **Record / replay** — Function → Record / Replay: capture the raw traffic on the link together with its timing into a `.ctrec` file (plain text, readable and diffable), then re-inject it at the original pace with a 0.5x–max speed control and optional looping. Capture once on site and reproduce it later, or send the scene to a colleague. Division of labour with macro recording: the macro records *what you sent* and produces a script, this records *the raw bytes on the wire* and produces data. Replay targets the virtual connection (injecting "received data" into a real serial port isn't physically meaningful).
+- **Command DSL** — write timing directly in the send box: `AT\r\n\!(Delay500)AT+VER\r\n` sends AT, waits 500 ms, then sends the next one; `\!(Repeat3)PING\!(Delay200)` repeats the whole thing three times; also `\!(Wait)` / `\!(Hex)` / `\!(Text)`. Without any directive the text is sent exactly as before, so it's handy for a quick bit of automation without opening the script console.
+- **Task exclusion extended** — recording / replay / DSL now join the shared task table alongside the script console, sequences, file transfer, timed send and the Modbus master, so two of them can never fight over the link. No new dependencies.
+
+---
+
 ## What's New in v1.3.2
 
 This release moves automation from GUI forms to real code:
@@ -660,7 +671,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.2`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.3`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

@@ -129,6 +129,12 @@ TR = {
         "remote_port": "远程端口",
         "target_client": "目标",
         "client_all": "全部",
+        "vconn_loopback": "回环",
+        "btn_vconn_open": "启动虚拟连接",
+        "btn_vconn_close": "停止虚拟连接",
+        "vconn_state": "● 虚拟连接（离线）",
+        "vconn_state_loop": "● 虚拟连接（离线 · 回环）",
+        "vconn_tip": "不接任何硬件的离线连接：可先把自动应答规则 / 自动化序列 / 脚本写好并验证，也是数据回放的落点。开「回环」后发出去的数据会原样当成收到的回来（自发自收）。",
         "btn_listen": "开始监听",
         "btn_listen_stop": "停止监听",
         "btn_connect": "连接",
@@ -498,6 +504,18 @@ TR = {
             "第 1 次发实际发出：54 01 00 03 FF\n"
             "第 2 次：54 02 00 03 FF……\n"
             "\n"
+            "命令 DSL（带时序的一次性自动化；不写指令则完全按原样发送）：\n"
+            "  \\!(Delay500)  等 500 毫秒再发后面的内容\n"
+            "  \\!(Wait50)    同 Delay\n"
+            "  \\!(Repeat3)   把它之后的全部内容整体重复 3 次\n"
+            "  \\!(Hex) \\!(Text)  之后的段按 HEX / 文本发送\n"
+            "\n"
+            "示例：AT\\!(Delay500)AT+VER\n"
+            "  （需要换行时开启‘追加换行’）\n"
+            "  → 先发 AT，等 500ms 再发 AT+VER\n"
+            "示例：\\!(Repeat3)PING\\!(Delay200)\n"
+            "  → 发 PING 等 200ms，整体重复 3 次\n"
+            "\n"
             "发送命令历史（↑↓）：\n"
             "  光标在首行按 ↑ 取上一条发过的命令\n"
             "  光标在末行按 ↓ 往后翻 / 回到当前草稿"
@@ -715,6 +733,42 @@ TR = {
         "plot_open": "波形图",
         "plot_need_lib": "波形图需要 pyqtgraph 库：{e}",
         "plot_title": "数据波形图",
+        "dsl_busy": "上一条带时序的发送还在执行中",
+        "dsl_bad": "命令语法错误：{e}",
+        "dsl_started": "按时序发送：{n} 段，含延时 {ms}ms",
+        "rr_title": "数据录制 / 回放",
+        "rr_record": "录制",
+        "rr_rec": "● 录制",
+        "rr_rec_stop": "■ 停止",
+        "rr_save": "保存",
+        "rr_replay": "回放",
+        "rr_load": "载入",
+        "rr_speed": "倍速",
+        "rr_speed_max": "最快",
+        "rr_loop": "循环",
+        "rr_include_tx": "含发送",
+        "rr_play": "播放",
+        "rr_stop": "停止",
+        "rr_empty": "（无数据 —— 先录制或载入 .ctrec）",
+        "rr_src_live": "本次录制",
+        "rr_recording": "录制中… 已录 {n} 条",
+        "rr_loaded_stat": "{name}：{n} 条事件（收 {rx} 条 / {bytes} 字节 / {sec}s）",
+        "rr_rec_started": "▶ 开始录制 —— 正常收发即可，完成后点「■ 停止」",
+        "rr_rec_stopped": "■ 录制结束：{n} 条事件，历时 {sec}s。点「保存」存成 .ctrec",
+        "rr_saved": "已保存 {n} 条事件",
+        "rr_nothing": "没有可用数据 —— 先录制或载入 .ctrec",
+        "rr_loaded": "已载入 {name}：{n} 条事件",
+        "rr_load_skipped": "（跳过 {n} 行无法解析的内容）",
+        "rr_load_bad": "载入失败：{e}",
+        "rr_need_virtual": "回放需要先连上「虚拟连接」（连接类型选 Virtual）—— 往真实串口/网络注入收到的数据在物理上不成立",
+        "rr_no_rx": "这份录制里没有接收数据可回放（可勾「含发送」）",
+        "rr_play_started": "▶ 开始回放：{n} 条，预计 {sec}s",
+        "rr_play_done": "■ 回放完成：{n} 条",
+        "rr_play_stopped": "■ 已停止，已回放 {n} 条",
+        "rr_hint": "录制 = 把线路上的原始收发流按时序存成 .ctrec；回放 = 按原时间间隔重新注入，无硬件复现问题。回放需先连「虚拟连接」。",
+        "rr_help_btn": "使用说明",
+        "rr_help_title": "数据录制 / 回放 · 使用说明",
+        "rr_help": '<b>数据录制 / 回放</b> 把线路上的<b>原始收发流</b>按时序录下来存成 <code>.ctrec</code> 文件，之后可以当成「设备」重新播一遍 —— 用来无硬件复现问题、离线调试，或者把现场直接发给同事。<br><br><b>与「宏录制」的分工</b><br>• 宏录制录的是<b>你发了什么</b>，产出可编辑的脚本（语义化，用来重复操作）<br>• 本功能录的是<b>线路上的原始字节</b>（含设备回的数据），产出数据文件（用来重现现场）<br><br><b>录制</b><br>连上任意连接后点「● 录制」，正常收发，完成后点「■ 停止」，再「保存」成 <code>.ctrec</code>。文件是 JSON Lines 文本格式，可读、可 diff、可手改：每行一个事件，<code>t</code> 是相对开始的秒数、<code>d</code> 是方向、<code>b</code> 是 HEX 字节。<br><br><b>回放</b><br>「载入」一个 <code>.ctrec</code> → 点「播放」，录到的 RX 会按<b>原始时间间隔</b>重新注入。可调倍速（0.5x ~ 最快）、循环播放。<br><br><b>回放需要先连「虚拟连接」</b>：连接类型选 <code>Virtual</code> 并启动。因为往真实串口/网络「注入收到的数据」在物理上不成立 —— 数据只能从设备来。接上虚拟连接后，自动应答、Modbus 从机、波形图、仪表盘、协议高亮等照常工作，就像设备真的在发数据一样。<br><br>默认只回放 <b>RX</b>（设备发来的）。勾「含发送」会把当时我方发的也一起注入 —— 那会造成自问自答，一般只在纯看数据流时才用。',
         "sc_title": "脚本控制台",
         "sc_script": "脚本",
         "sc_new": "新建",
@@ -1123,6 +1177,12 @@ TR = {
         "remote_port": "Remote Port",
         "target_client": "Target",
         "client_all": "All",
+        "vconn_loopback": "Loopback",
+        "btn_vconn_open": "Start Virtual",
+        "btn_vconn_close": "Stop Virtual",
+        "vconn_state": "● Virtual (offline)",
+        "vconn_state_loop": "● Virtual (offline · loopback)",
+        "vconn_tip": "An offline connection with no hardware attached: build and verify auto-reply rules, test sequences and scripts without a device, and use it as the target for data replay. With Loopback on, whatever you send comes straight back as received data.",
         "btn_listen": "Listen",
         "btn_listen_stop": "Stop",
         "btn_connect": "Connect",
@@ -1494,6 +1554,18 @@ TR = {
             "1st send produces: 54 01 00 03 FF\n"
             "2nd: 54 02 00 03 FF, etc.\n"
             "\n"
+            "Command DSL (one-shot timed automation; without it text is sent as-is):\n"
+            "  \\!(Delay500)  wait 500 ms before sending what follows\n"
+            "  \\!(Wait50)    same as Delay\n"
+            "  \\!(Repeat3)   repeat everything after it 3 times\n"
+            "  \\!(Hex) \\!(Text)  send following segments as HEX / text\n"
+            "\n"
+            "Example: AT\\!(Delay500)AT+VER\n"
+            "  (enable Append newline if needed)\n"
+            "  -> sends AT, waits 500 ms, then AT+VER\n"
+            "Example: \\!(Repeat3)PING\\!(Delay200)\n"
+            "  -> sends PING and waits 200 ms, three times over\n"
+            "\n"
             "Send history (Up/Down):\n"
             "  Up at first line  -> previous sent command\n"
             "  Down at last line -> next command / back to draft"
@@ -1713,6 +1785,42 @@ TR = {
         "plot_open": "Plot",
         "plot_need_lib": "Plot requires the pyqtgraph package: {e}",
         "plot_title": "Data Plot",
+        "dsl_busy": "A timed send is still running",
+        "dsl_bad": "Command syntax error: {e}",
+        "dsl_started": "Timed send: {n} segment(s), {ms}ms of delays",
+        "rr_title": "Record / Replay",
+        "rr_record": "Record",
+        "rr_rec": "● Record",
+        "rr_rec_stop": "■ Stop",
+        "rr_save": "Save",
+        "rr_replay": "Replay",
+        "rr_load": "Load",
+        "rr_speed": "Speed",
+        "rr_speed_max": "Max",
+        "rr_loop": "Loop",
+        "rr_include_tx": "include TX",
+        "rr_play": "Play",
+        "rr_stop": "Stop",
+        "rr_empty": "(no data — record something or load a .ctrec)",
+        "rr_src_live": "this recording",
+        "rr_recording": "Recording… {n} events so far",
+        "rr_loaded_stat": "{name}: {n} events ({rx} RX / {bytes} bytes / {sec}s)",
+        "rr_rec_started": "▶ Recording — just use the link as usual, then click \u201c■ Stop\u201d",
+        "rr_rec_stopped": "■ Recording stopped: {n} events over {sec}s. Click Save to write a .ctrec",
+        "rr_saved": "Saved {n} events",
+        "rr_nothing": "No data — record something or load a .ctrec first",
+        "rr_loaded": "Loaded {name}: {n} events",
+        "rr_load_skipped": "(skipped {n} unparsable line(s))",
+        "rr_load_bad": "Load failed: {e}",
+        "rr_need_virtual": "Replay needs the Virtual connection (set the connection type to Virtual) — injecting received data into a real port is physically meaningless",
+        "rr_no_rx": "This capture has no received data to replay (you can tick \u201cinclude TX\u201d)",
+        "rr_play_started": "▶ Replaying {n} events, about {sec}s",
+        "rr_play_done": "■ Replay finished: {n} events",
+        "rr_play_stopped": "■ Stopped after {n} events",
+        "rr_hint": "Record captures the raw traffic with its timing into a .ctrec; replay injects it back at the original intervals so you can reproduce a problem without hardware. Replay needs the Virtual connection.",
+        "rr_help_btn": "Help",
+        "rr_help_title": "Record / Replay · Help",
+        "rr_help": '<b>Data record / replay</b> captures the <b>raw traffic</b> on the link with its original timing into a <code>.ctrec</code> file, so you can play it back later as if the device were there — reproduce a problem without hardware, debug offline, or just send the capture to a colleague.<br><br><b>How this differs from macro recording</b><br>• Macro recording captures <b>what you sent</b> and produces an editable script (semantic, for repeating actions)<br>• This captures <b>the raw bytes on the wire</b> including the device\'s replies, and produces a data file (for reproducing a scene)<br><br><b>Recording</b><br>With any connection open, click "● Record", work as usual, click "■ Stop", then "Save" to a <code>.ctrec</code>. The format is JSON Lines: readable, diffable, hand-editable — one event per line with <code>t</code> (seconds from start), <code>d</code> (direction) and <code>b</code> (HEX bytes).<br><br><b>Replay</b><br>"Load" a <code>.ctrec</code> and hit "Play": the recorded RX is injected again at the <b>original intervals</b>. Speed is adjustable (0.5x … max) and it can loop.<br><br><b>Replay requires the Virtual connection</b>: pick <code>Virtual</code> as the connection type and start it. Injecting "received data" into a real serial port or socket is physically meaningless — data can only come from the device. With the virtual connection up, auto-reply, the Modbus slave, plots, the dashboard and protocol highlighting all work exactly as if a real device were sending.<br><br>Only <b>RX</b> is replayed by default. Ticking "include TX" also injects what you sent at the time, which makes the app answer itself — normally only useful when you just want to watch the data flow.',
         "sc_title": "Script Console",
         "sc_script": "Script",
         "sc_new": "New",
@@ -2120,6 +2228,12 @@ TR = {
         "remote_port": "遠端埠",
         "target_client": "目標",
         "client_all": "全部",
+        "vconn_loopback": "回環",
+        "btn_vconn_open": "啟動虛擬連線",
+        "btn_vconn_close": "停止虛擬連線",
+        "vconn_state": "● 虛擬連線（離線）",
+        "vconn_state_loop": "● 虛擬連線（離線 · 回環）",
+        "vconn_tip": "不接任何硬體的離線連線：可先把自動應答規則 / 自動化序列 / 腳本寫好並驗證，也是資料回放的落點。開「回環」後發出去的資料會原樣當成收到的回來（自發自收）。",
         "btn_listen": "開始監聽",
         "btn_listen_stop": "停止監聽",
         "btn_connect": "連線",
@@ -2489,6 +2603,18 @@ TR = {
             "第 1 次發實際發出：54 01 00 03 FF\n"
             "第 2 次：54 02 00 03 FF……\n"
             "\n"
+            "命令 DSL（帶時序的一次性自動化；不寫指令則完全按原樣發送）：\n"
+            "  \\!(Delay500)  等 500 毫秒再發後面的內容\n"
+            "  \\!(Wait50)    同 Delay\n"
+            "  \\!(Repeat3)   把它之後的全部內容整體重複 3 次\n"
+            "  \\!(Hex) \\!(Text)  之後的段按 HEX / 文字發送\n"
+            "\n"
+            "範例：AT\\!(Delay500)AT+VER\n"
+            "  （需要換行時開啟「追加換行」）\n"
+            "  → 先發 AT，等 500ms 再發 AT+VER\n"
+            "範例：\\!(Repeat3)PING\\!(Delay200)\n"
+            "  → 發 PING 等 200ms，整體重複 3 次\n"
+            "\n"
             "發送命令歷史（↑↓）：\n"
             "  游標在首行按 ↑ 取上一條發過的命令\n"
             "  游標在末行按 ↓ 往後翻 / 回到當前草稿"
@@ -2706,6 +2832,42 @@ TR = {
         "plot_open": "波形圖",
         "plot_need_lib": "波形圖需要 pyqtgraph 套件：{e}",
         "plot_title": "數據波形圖",
+        "dsl_busy": "上一條帶時序的傳送還在執行中",
+        "dsl_bad": "命令語法錯誤：{e}",
+        "dsl_started": "按時序傳送：{n} 段，含延時 {ms}ms",
+        "rr_title": "資料錄製 / 回放",
+        "rr_record": "錄製",
+        "rr_rec": "● 錄製",
+        "rr_rec_stop": "■ 停止",
+        "rr_save": "儲存",
+        "rr_replay": "回放",
+        "rr_load": "載入",
+        "rr_speed": "倍速",
+        "rr_speed_max": "最快",
+        "rr_loop": "循環",
+        "rr_include_tx": "含傳送",
+        "rr_play": "播放",
+        "rr_stop": "停止",
+        "rr_empty": "（無資料 —— 先錄製或載入 .ctrec）",
+        "rr_src_live": "本次錄製",
+        "rr_recording": "錄製中… 已錄 {n} 筆",
+        "rr_loaded_stat": "{name}：{n} 筆事件（收 {rx} 筆 / {bytes} 位元組 / {sec}s）",
+        "rr_rec_started": "▶ 開始錄製 —— 正常收發即可，完成後點「■ 停止」",
+        "rr_rec_stopped": "■ 錄製結束：{n} 筆事件，歷時 {sec}s。點「儲存」存成 .ctrec",
+        "rr_saved": "已儲存 {n} 筆事件",
+        "rr_nothing": "沒有可用資料 —— 先錄製或載入 .ctrec",
+        "rr_loaded": "已載入 {name}：{n} 筆事件",
+        "rr_load_skipped": "（跳過 {n} 行無法解析的內容）",
+        "rr_load_bad": "載入失敗：{e}",
+        "rr_need_virtual": "回放需要先連上「虛擬連線」（連線類型選 Virtual）—— 往真實串口/網路注入收到的資料在物理上不成立",
+        "rr_no_rx": "這份錄製裡沒有接收資料可回放（可勾「含傳送」）",
+        "rr_play_started": "▶ 開始回放：{n} 筆，預計 {sec}s",
+        "rr_play_done": "■ 回放完成：{n} 筆",
+        "rr_play_stopped": "■ 已停止，已回放 {n} 筆",
+        "rr_hint": "錄製 = 把線路上的原始收發流按時序存成 .ctrec；回放 = 按原時間間隔重新注入，無硬體重現問題。回放需先連「虛擬連線」。",
+        "rr_help_btn": "使用說明",
+        "rr_help_title": "資料錄製 / 回放 · 使用說明",
+        "rr_help": '<b>資料錄製 / 回放</b> 把線路上的<b>原始收發流</b>按時序錄下來存成 <code>.ctrec</code> 檔，之後可以當成「裝置」重新播一遍 —— 用來無硬體重現問題、離線除錯，或者把現場直接發給同事。<br><br><b>與「巨集錄製」的分工</b><br>• 巨集錄製錄的是<b>你發了什麼</b>，產出可編輯的腳本（語意化，用來重複操作）<br>• 本功能錄的是<b>線路上的原始位元組</b>（含裝置回的資料），產出資料檔（用來重現現場）<br><br><b>錄製</b><br>連上任意連線後點「● 錄製」，正常收發，完成後點「■ 停止」，再「儲存」成 <code>.ctrec</code>。檔案是 JSON Lines 文字格式，可讀、可 diff、可手改。<br><br><b>回放</b><br>「載入」一個 <code>.ctrec</code> → 點「播放」，錄到的 RX 會按<b>原始時間間隔</b>重新注入。可調倍速（0.5x ~ 最快）、循環播放。<br><br><b>回放需要先連「虛擬連線」</b>：連線類型選 <code>Virtual</code> 並啟動。因為往真實串口/網路「注入收到的資料」在物理上不成立。接上虛擬連線後，自動應答、Modbus 從機、波形圖、儀表板、協定高亮等照常運作，就像裝置真的在發資料一樣。<br><br>預設只回放 <b>RX</b>。勾「含傳送」會把當時我方發的也一起注入 —— 那會造成自問自答。',
         "sc_title": "腳本主控台",
         "sc_script": "腳本",
         "sc_new": "新增",

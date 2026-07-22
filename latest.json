@@ -1,9 +1,9 @@
 {
-  "version": "1.3.2",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.2/CommTool_Setup_v1.3.2.exe",
+  "version": "1.3.3",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.3/CommTool_Setup_v1.3.3.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.2/CommTool_v1.3.2.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.2/CommTool_v1.3.2.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.3/CommTool_v1.3.3.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.3/CommTool_v1.3.3.dmg"
   ],
-  "notes": "本版把自动化从「GUI 配置」推进到「代码级可编程」：1) 脚本控制台（功能 → 脚本控制台）：用 Python 脚本驱动当前连接的真实收发，API 为 send / recv / expect / sleep / log / check / hexs，expect 等到回包才继续、check 逐条记通过失败并出汇总；可保存多个命名脚本、随配置持久化，支持 JSON 导入导出（导入先征求同意）。2) 宏录制：点「● 录制」后回主界面正常手动收发，停止时自动把操作翻译成脚本存进脚本库、可直接运行重放；发送出 send(...)、回包合并成 expect(...) + check(...)，间隔补 sleep(ms) 保留原节奏，不会写代码也能把调试流程变成可重复用例。3) 收发任务统一互斥：脚本 / 序列 / 文件传输 / 宏录制 / 定时发送 / 多条循环 / Modbus 主机之间互斥，已有任务占用时明确提示而不是悄悄抢线路串帧；脚本接管时隔离 Modbus 在途请求的迟到响应。4) 功能菜单按主题分四组加分隔符（帧处理 / 可视化 / 自动化 / 通信传输），Modbus 主机仍末位；修复对话框下拉框展开瞬间透出系统强调色。无新依赖。"
+  "notes": "本版围绕「没有硬件也能干活」：1) 虚拟连接：「类型」下拉新增 Virtual，不接任何硬件也能启动一条连接，自动应答 / 自动化序列 / 脚本控制台 / 波形图 / 数值仪表盘 / 协议高亮全部照常可用；开「回环」把自己发出的数据当成收到的回来，出差路上也能把规则和脚本先写好验证过。2) 数据录制 / 回放（功能 → 数据录制 / 回放）：把线路上的原始收发流连同时序录成 .ctrec 文本文件（可读可 diff），之后按原始节奏重新注入，可调 0.5x~最快倍速、可循环；现场抓一次回家慢慢复现，也能把问题现场发给同事。3) 命令 DSL：发送框里直接写时序，如 AT\\r\\n\\!(Delay500)AT+VER\\r\\n 先发 AT 等 500ms 再发下一条、\\!(Repeat3)PING\\!(Delay200) 整体重复 3 次，另有 \\!(Wait) / \\!(Hex) / \\!(Text)；不写指令时完全按原样发送、行为一字不变。4) 任务互斥扩展：录制 / 回放 / DSL 纳入统一占用表，与脚本、序列、文件传输、定时发送、Modbus 主机互斥，避免多路同时抢线路串帧。无新依赖。"
 }
