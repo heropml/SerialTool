@@ -770,6 +770,14 @@ class MultiSendDialog(QDialog):
         self.cb_all.clicked.connect(self._toggle_all)
         header.addWidget(self.cb_all)
         header.addStretch(1)
+        # 模板库入口：多条发送与模板库都在管理「发什么」——多条发送把一组命令按序循环发，
+        # 模板库存单条常用命令随手取用。从这里一键打开，两个发送辅助工具就近串起来。
+        self.btn_snippets = QPushButton(app._t("ms_snip_btn"))
+        self.btn_snippets.setObjectName("MsGhostBtn")
+        self.btn_snippets.setMinimumHeight(28)
+        self.btn_snippets.setToolTip(app._t("ms_snip_btn_tip"))
+        self.btn_snippets.clicked.connect(lambda *_: self.app.open_snippets())
+        header.addWidget(self.btn_snippets)
         right.addLayout(header)
         scroll, self._list_host, self._list_v = _make_list_scroll()
         # 行拖拽排序：手柄发起 QDrag、容器(host)接收 drop 按落点重排
@@ -1118,6 +1126,8 @@ class MultiSendDialog(QDialog):
         self.setWindowTitle(self.app._t("multi_send_title"))
         self.btn_add.setText(self.app._t("ms_add"))
         self.cb_all.setText(self.app._t("ms_select_all"))
+        self.btn_snippets.setText(self.app._t("ms_snip_btn"))
+        self.btn_snippets.setToolTip(self.app._t("ms_snip_btn_tip"))
         self.lbl_hint.setText(self.app._t("ms_hint"))
         self.btn_new_group.setText(self.app._t("kw_new_group"))
         self.btn_del_group.setText(self.app._t("kw_del_group"))

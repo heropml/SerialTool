@@ -6740,5 +6740,259 @@ class RecDiffDialogTests(unittest.TestCase):
                     self.assertIn(k, TR[lang])
 
 
+
+class SnippetsCoreTests(unittest.TestCase):
+    """模板库纯数据逻辑（Qt-free）。"""
+
+    def setUp(self):
+        import snippets
+        self.S = snippets
+
+    def test_normalize_fills_and_truncates(self):
+        self.assertEqual(self.S.normalize({"name": "x"}),
+                         {"name": "x", "text": "", "hex": False})
+        self.assertEqual(self.S.normalize("junk"),
+                         {"name": "", "text": "", "hex": False})
+        self.assertEqual(len(self.S.normalize({"name": "a" * 999})["name"]), self.S.MAX_NAME)
+        self.assertEqual(len(self.S.normalize({"text": "b" * 99999})["text"]), self.S.MAX_TEXT)
+        self.assertIs(self.S.normalize({"hex": 1})["hex"], True)
+
+    def test_normalize_parses_string_booleans(self):
+        """手写/第三方 JSON 常把布尔值写成字符串；'false' 不能变成 True。"""
+        for value in ("false", "0", "no", "off", ""):
+            self.assertFalse(self.S.normalize({"hex": value})["hex"], value)
+        for value in ("true", "1", "yes", "on"):
+            self.assertTrue(self.S.normalize({"hex": value})["hex"], value)
+
+    def test_sanitize_drops_junk_and_caps(self):
+        got = self.S.sanitize_list([{"name": "a"}, "junk", 42, {"text": "b", "hex": True}])
+        self.assertEqual(len(got), 2)
+        self.assertEqual(got[1], {"name": "", "text": "b", "hex": True})
+        self.assertEqual(len(self.S.sanitize_list([{"name": str(i)} for i in range(999)])),
+                         self.S.MAX_SNIPPETS)
+        self.assertEqual(self.S.sanitize_list("nope"), [])
+
+    def test_match_and_filter(self):
+        lst = [{"name": "AT查版本", "text": "AT+VER", "hex": False},
+               {"name": "复位", "text": "AA 55", "hex": True}]
+        self.assertTrue(self.S.match(lst[0], "at"))         # 不分大小写
+        self.assertTrue(self.S.match(lst[1], "55"))         # 命中内容
+        self.assertTrue(self.S.match(lst[0], ""))           # 空 query 全过
+        self.assertFalse(self.S.match(lst[0], "zzz"))
+        # filter 保留原始下标
+        self.assertEqual(self.S.filter_snippets(lst, "55"), [(1, lst[1])])
+        self.assertEqual(len(self.S.filter_snippets(lst, "")), 2)
+
+    def test_json_roundtrip(self):
+        lst = [{"name": "a", "text": "01 02", "hex": True},
+               {"name": "b", "text": "AT", "hex": False}]
+        j = self.S.to_json(lst)
+        self.assertIn("commtool-snippets", j)
+        self.assertEqual(self.S.from_json(j), lst)
+
+    def test_from_json_accepts_three_shapes(self):
+        # 本程序格式 / 裸列表 / items 同构
+        self.assertEqual(self.S.from_json('{"snippets":[{"name":"a"}]}'),
+                         [{"name": "a", "text": "", "hex": False}])
+        self.assertEqual(self.S.from_json('[{"name":"b","text":"t"}]'),
+                         [{"name": "b", "text": "t", "hex": False}])
+        self.assertEqual(self.S.from_json('{"items":[{"name":"c"}]}'),
+                         [{"name": "c", "text": "", "hex": False}])
+
+    def test_from_json_rejects_garbage(self):
+        with self.assertRaises(ValueError):
+            self.S.from_json("not json at all")
+        with self.assertRaises(ValueError):
+            self.S.from_json('{"foo": 1}')       # 无列表键
+
+    def test_defaults_are_editable_samples(self):
+        d = self.S.default_snippets()
+        self.assertEqual(len(d), 3)
+        for s in d:                               # 都是合法 normalize 结构
+            self.assertEqual(self.S.normalize(s), s)
+
+
+class SnippetsDialogTests(unittest.TestCase):
+    """模板库对话框 + 主窗接线。"""
+
+    def setUp(self):
+        import tempfile
+        self.w = _win()
+        # 用干净的临时库，避免测试间互相污染
+        import snippets
+        self.w._snippets = snippets.default_snippets()
+        self.w.open_snippets()
+        self.dlg = self.w._snip_dlg
+        self.dlg.ed_search.clear()
+        self.dlg._reload_list()
+
+    def tearDown(self):
+        dlg = getattr(self.w, "_snip_dlg", None)
+        if dlg is not None:
+            dlg.close()
+
+    def test_loads_defaults_first_time(self):
+        import tempfile
+        from PyQt5.QtCore import QSettings
+        w = _win()
+        w.settings = QSettings(tempfile.mktemp(suffix=".ini"), QSettings.IniFormat)
+        items, ok = w._load_snippets()
+        self.assertFalse(ok)                      # 走了默认 → 调用方应落盘
+        self.assertEqual(len(items), 3)
+
+    def test_empty_library_stays_empty_after_reload(self):
+        """用户删除全部模板后保存的 [] 是合法配置，重启不能重新塞回示例。"""
+        import tempfile
+        from PyQt5.QtCore import QSettings
+        w = _win()
+        old_settings = w.settings
+        try:
+            w.settings = QSettings(tempfile.mktemp(suffix=".ini"), QSettings.IniFormat)
+            w.settings.setValue("snippets", "[]")
+            items, ok = w._load_snippets()
+            self.assertTrue(ok)
+            self.assertEqual(items, [])
+        finally:
+            w.settings = old_settings
+
+    def test_add_edit_delete(self):
+        n0 = len(self.w._snippets)
+        self.dlg._add()
+        self.assertEqual(len(self.w._snippets), n0 + 1)
+        self.dlg.ed_name.setText("我的帧")
+        self.dlg.ed_body.setPlainText("DE AD BE EF")
+        self.dlg.chk_hex.setChecked(True)
+        self.dlg._commit_edit()
+        self.assertEqual(self.w._snippets[-1],
+                         {"name": "我的帧", "text": "DE AD BE EF", "hex": True})
+        self.dlg._cur = len(self.w._snippets) - 1
+        self.dlg._delete()
+        self.assertEqual(len(self.w._snippets), n0)
+
+    def test_commit_does_not_recurse(self):
+        """编辑落盘会重建列表、重建又会改选中行 —— 必须不触发无限递归（曾 hang）。"""
+        self.dlg._add()
+        self.dlg.ed_name.setText("x")
+        self.dlg._commit_edit()                   # 不 hang 即通过
+        self.assertEqual(self.w._snippets[-1]["name"], "x")
+
+    def test_pending_edit_survives_search_and_add(self):
+        """搜索/新增会重建列表，必须先提交仍在去抖窗口里的输入。"""
+        self.w._snippets = [{"name": "old", "text": "A", "hex": False}]
+        self.dlg._cur = -1
+        self.dlg._reload_list()
+        self.dlg.ed_name.setText("draft")
+        self.assertTrue(self.dlg._save_timer.isActive())
+        self.dlg.ed_search.setText("zzz")
+        self.assertEqual(self.w._snippets[0]["name"], "draft")
+
+        self.dlg.ed_search.clear()
+        self.dlg.ed_name.setText("draft2")
+        self.dlg._add()
+        self.assertEqual(self.w._snippets[0]["name"], "draft2")
+        self.assertEqual(len(self.w._snippets), 2)
+
+    def test_pending_edit_then_change_row_keeps_selection_in_sync(self):
+        """切行时提交旧条目后，高亮行和编辑区必须仍指向用户点击的新条目。"""
+        self.w._snippets = [
+            {"name": "first", "text": "A", "hex": False},
+            {"name": "second", "text": "B", "hex": False},
+        ]
+        self.dlg._cur = -1
+        self.dlg._reload_list()
+        self.dlg.ed_name.setText("first edited")
+        self.dlg.list.setCurrentRow(1)
+        self.assertEqual(self.w._snippets[0]["name"], "first edited")
+        self.assertEqual(self.dlg._cur, 1)
+        self.assertEqual(self.dlg.list.currentRow(), 1)
+        self.assertEqual(self.dlg.ed_name.text(), "second")
+
+    def test_search_filters_list(self):
+        self.w._snippets = [{"name": "读温度", "text": "01 03", "hex": True},
+                            {"name": "查版本", "text": "AT+VER", "hex": False}]
+        self.dlg._cur = -1
+        self.dlg.ed_search.setText("温度")
+        self.assertEqual(self.dlg.list.count(), 1)
+        self.dlg.ed_search.setText("AT")          # 命中内容
+        self.assertEqual(self.dlg.list.count(), 1)
+        self.dlg.ed_search.clear()
+        self.assertEqual(self.dlg.list.count(), 2)
+
+    def test_fill_sets_send_box_and_hex(self):
+        # 走正常路径：设数据 → reload 同步编辑区 → 选中 → 填入（同用户操作，_fill 的落盘取到正确内容）
+        self.w._snippets = [{"name": "帧", "text": "DE AD", "hex": True}]
+        self.dlg._cur = -1
+        self.dlg._reload_list()               # 选中第 0 行，编辑区同步成 "帧"
+        self.w.sw_tx_hex.setChecked(False)
+        self.dlg._fill(send=False)
+        self.assertEqual(self.w.txt_send.toPlainText(), "DE AD")
+        self.assertTrue(self.w.sw_tx_hex.isChecked())
+        # 文本模板反向：填入后 HEX 关
+        self.w._snippets = [{"name": "at", "text": "AT+RST", "hex": False}]
+        self.dlg._cur = -1
+        self.dlg._reload_list()
+        self.dlg._fill(send=False)
+        self.assertEqual(self.w.txt_send.toPlainText(), "AT+RST")
+        self.assertFalse(self.w.sw_tx_hex.isChecked())
+
+    def test_persistence_roundtrip(self):
+        import json, snippets
+        self.w._snippets = [{"name": "a", "text": "01", "hex": True}]
+        self.w._save_snippets()
+        raw = self.w.settings.value("snippets", "")
+        self.assertEqual(snippets.sanitize_list(json.loads(raw)), self.w._snippets)
+
+    def test_not_in_function_menu(self):
+        """模板库入口只在「多条发送」对话框里，不占功能菜单一格（见 test_multi_send_dialog_opens_snippets）。"""
+        menu = self.w._build_titlebar_func_menu()
+        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        self.assertFalse(any(self.w._t("snip_title") in x for x in texts), texts)
+
+    def test_multi_send_dialog_opens_snippets(self):
+        """多条发送对话框顶部的「模板库」按钮点击后打开模板库——两个发送辅助工具就近串联。"""
+        from i18n import TR
+        for lang in TR:                       # 按钮文案键三语言齐全
+            self.assertIn("ms_snip_btn", TR[lang])
+            self.assertIn("ms_snip_btn_tip", TR[lang])
+        self.w.open_multi_send()
+        ms = self.w._multi_send_dlg
+        self.assertTrue(hasattr(ms, "btn_snippets"))
+        self.assertEqual(ms.btn_snippets.text(), self.w._t("ms_snip_btn"))
+        ms.btn_snippets.click()
+        self.assertIsNotNone(self.w._snip_dlg)
+        old = self.w._lang                    # 按钮文案随语言刷新
+        try:
+            self.w._set_language("en")
+            self.assertEqual(ms.btn_snippets.text(), self.w._t("ms_snip_btn"))
+        finally:
+            self.w._set_language(old)
+        ms.close()
+
+    def test_single_instance(self):
+        first = self.w._snip_dlg
+        self.w.open_snippets()
+        self.assertIs(self.w._snip_dlg, first)
+
+    def test_language_switch(self):
+        old = self.w._lang
+        try:
+            self.w._set_language("en")
+            self.assertEqual(self.dlg.windowTitle(), self.w._t("snip_title"))
+            self.assertEqual(self.dlg.btn_add.text(), self.w._t("snip_add"))
+            self.w._set_language("zh")
+            self.assertEqual(self.dlg.windowTitle(), self.w._t("snip_title"))
+        finally:
+            self.w._set_language(old)
+
+    def test_i18n_keys_present(self):
+        from i18n import TR
+        keys = [k for k in TR["zh"] if k.startswith("snip_")]
+        self.assertGreater(len(keys), 15)
+        for lang in TR:
+            for k in keys:
+                with self.subTest(lang=lang, key=k):
+                    self.assertIn(k, TR[lang])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

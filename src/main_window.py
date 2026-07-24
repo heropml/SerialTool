@@ -39,6 +39,7 @@ from virtual_io import VirtualConn, PROTO_VIRTUAL
 import send_dsl
 import binproto
 import convert
+import snippets
 import log_naming
 import modbus_slave
 import modbus_master
@@ -504,6 +505,7 @@ class CommTool(QMainWindow):
         self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
         self._rr_dlg = None                # 录制/回放对话框（单实例）
         self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
+        self._snip_dlg = None              # 发送模板库对话框（单实例）
         self._dsl_ops = None               # 命令 DSL 执行中的指令序列（None=空闲）
         self._dsl_idx = 0
         self._dsl_gen = 0                  # 代际：中止后让已排队的 QTimer 回调失效
@@ -2433,6 +2435,10 @@ class CommTool(QMainWindow):
             self._ms_group_idx = 0
         if not _ms_ok:    # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
             self._save_ms_groups()
+        # 发送模板库：常用命令随手取用，数据存这里、SnippetsDialog 只是编辑器
+        self._snippets, _snip_ok = self._load_snippets()
+        if not _snip_ok:
+            self._save_snippets()
         self._ms_cycle_seq = []
         self._ms_cycle_idx = 0
         self._ms_cycle_timer = QTimer(self)
@@ -3822,6 +3828,8 @@ class CommTool(QMainWindow):
             self._rr_dlg.refresh_theme()
         if getattr(self, "_rd_dlg", None) is not None:
             self._rd_dlg.refresh_theme()
+        if getattr(self, "_snip_dlg", None) is not None:
+            self._snip_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -4265,6 +4273,25 @@ class CommTool(QMainWindow):
                                json.dumps(self._ms_groups, ensure_ascii=False))
         self.settings.setValue("multi_send_group_idx", self._ms_group_idx)
         self.settings.remove("multi_send_items")    # 清理已迁移的旧扁平键
+
+    def _load_snippets(self):
+        """加载发送模板库；返回 (list, loaded_ok)。空/损坏时给示例模板（loaded_ok=False → 落盘）。"""
+        raw = self.settings.value("snippets", "")
+        if raw:
+            try:
+                data = json.loads(raw)
+                # [] 是合法且有意义的配置：用户明确删除了全部模板，不能在下次启动时
+                # 又把示例模板塞回来。只有键缺失、JSON 损坏或根节点不是列表才走默认值。
+                if isinstance(data, list):
+                    return snippets.sanitize_list(data), True
+            except Exception:
+                pass
+        return snippets.default_snippets(), False
+
+    def _save_snippets(self):
+        self.settings.setValue("snippets",
+                               json.dumps(self._snippets, ensure_ascii=False))
+        self.settings.sync()
         self.settings.sync()
 
     def _ms_active_items(self):
@@ -4597,6 +4624,22 @@ class CommTool(QMainWindow):
             from rec_diff_dialog import RecDiffDialog
             self._rd_dlg = RecDiffDialog(self)
         dlg = self._rd_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_snippets(self):
+        """打开发送模板库（单实例，复用并刷新主题/语言）。
+
+        取用时把模板填入发送框、由用户或「发送」按钮走正常发送路径，本身不占收发流，
+        故不进 _io_task_busy 占用表。
+        """
+        if getattr(self, "_snip_dlg", None) is None:
+            from snippets_dialog import SnippetsDialog
+            self._snip_dlg = SnippetsDialog(self)
+        dlg = self._snip_dlg
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.show()
@@ -7988,6 +8031,8 @@ class CommTool(QMainWindow):
             self._rr_dlg.retranslate()
         if getattr(self, "_rd_dlg", None) is not None:
             self._rd_dlg.retranslate()
+        if getattr(self, "_snip_dlg", None) is not None:
+            self._snip_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -8370,6 +8415,8 @@ class CommTool(QMainWindow):
         menu.addAction("4. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
         menu.addAction("5. " + self._t("dash_open")).triggered.connect(lambda *_: self.open_dashboard())
         menu.addSeparator()
+        # 模板库不进功能菜单：入口放在「多条发送」对话框顶部（两个发送辅助工具就近串联，
+        # 见 MultiSendDialog.btn_snippets），避免菜单里再占一格。
         menu.addAction("6. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         menu.addAction("7. " + self._t("sc_title")).triggered.connect(lambda *_: self.open_script_console())
         menu.addAction("8. " + self._t("rr_title")).triggered.connect(lambda *_: self.open_rec_replay())
@@ -8926,7 +8973,8 @@ class CommTool(QMainWindow):
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
-                     "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg"):
+                     "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
+                     "_snip_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:
