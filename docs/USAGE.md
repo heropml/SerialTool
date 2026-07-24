@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.4
+
+This release is about seeing more clearly, changing faster, and telling recordings apart:
+
+- **Numeric view** — a new toggle in display settings: read the incoming byte stream as numbers in u8 / i8 / u16 / i16 / u32 / i32 / f32 x big / little endian (12 combinations), so ADC samples and raw sensor values need no manual conversion. Trailing bytes that don't fill a whole value carry over to the next packet, so values split across packets stay aligned; column widths are fixed per type so successive packets line up in columns. Mutually exclusive with the HEX dump (both take over the data area).
+- **Selection checksums** — select a run of bytes in the data area and the status bar shows their checksums right there, no more copying into the toolbox. The status bar shows Modbus / XOR / SUM inline, and hovering pops a themed card with all 9 (sum / neg-sum / XOR / CRC8 / Modbus-CRC16 / CCITT-CRC16 / CRC32 / ADD16 / MOBUS). Byte recovery skips timestamps, direction arrows, the dump's offset column and ASCII column; text / numeric / terminal views cannot losslessly recover the original bytes, so it declines rather than show a plausible-looking wrong value.
+- **Live serial params** — change baud / data bits / parity / stop bits / flow control while the port is open, without disconnecting or losing the receive buffer, so trying unknown baud rates one by one is far faster than reconnecting each time. Parameters apply atomically and roll back on mid-way failure. Changing port / protocol still requires reconnecting.
+- **Logging upgrades** — the live-log filename supports variables: `%date` (20260724) / `%time` / `%datetime` / `%port` (COM3 etc.) / `%n` (segment index), e.g. `log_%date_%port.txt`. When the name contains a date variable, it rolls over to a new file across a calendar day (per-day archival, segment index reset), handy for unattended and long-running captures. Works alongside the existing size-based segmentation.
+- **Session compare** — Function → Session compare: pick two `.ctrec` recordings and align them event by event into same / changed / only-in-A / only-in-B, with timing offsets for paired events. Record the old and new firmware once each to answer "what changed in this build". Alignment uses the longest common subsequence (memory-lean linear-space implementation): a single missing frame is reported once and the rest stays aligned instead of cascading; timing is not part of the equality test, and the full result can be exported as CSV. No new dependencies.
+
+---
+
 ## What's New in v1.3.3
 
 This release is about getting work done without hardware on the desk:

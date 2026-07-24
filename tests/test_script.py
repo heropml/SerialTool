@@ -18,6 +18,7 @@ try:
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool
+    from i18n import CHECKSUM_KEYS
     _IMPORT_ERR = None
 except ModuleNotFoundError as e:
     if (e.name or "").split(".")[0] in {"serial", "PyQt5"}:
@@ -5368,6 +5369,1375 @@ class OfflineIntegrationTests(unittest.TestCase):
             self.assertFalse(w._dsl_running())
         finally:
             w.close_conn()
+
+
+
+class HexLineSelectionTests(unittest.TestCase):
+    """整行 HEX 选区 → 字节（Qt-free）：结合布局剔除装饰，残缺 token 宁可丢也不能猜。"""
+
+    def setUp(self):
+        import convert
+        self.convert = convert
+
+    def test_plain_hex(self):
+        line = "01 03 FF"
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(line, 0, len(line)),
+            b"\x01\x03\xff")
+
+    def test_context_parser_rejects_partial_hexdump_ascii_column(self):
+        """选区从 ASCII 列内部开始时没有左侧 |，必须靠整行上下文识别，不能把 AB 当 0xAB。"""
+        line = "00000000  41 42 43 44  45 46 47 48 |ABCDEFGH|"
+        start = line.index("AB")
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(
+                line, start, start + 2, hexdump=True),
+            b"")
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(
+                line, 0, len(line), hexdump=True),
+            b"ABCDEFGH")
+
+    def test_context_parser_rejects_partial_timestamp(self):
+        """时间戳被局部截成恰好两位 HEX 字符时，也不能伪装成数据。"""
+        line = "[2026/07/23 10:00:00 123] \u2190 01 03"
+        start = line.index("26")
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(line, start, start + 2),
+            b"")
+        data_start = line.index("01")
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(line, data_start, len(line)),
+            b"\x01\x03")
+
+    def test_context_parser_requires_whole_hex_token_selected(self):
+        line = "\u2190 AA BB"
+        start = line.index("AA")
+        self.assertEqual(
+            self.convert.hex_line_selection_to_bytes(line, start + 1, len(line)),
+            b"\xbb")
+
+class FormatNumericTests(unittest.TestCase):
+    """字节流 → 数值序列（Qt-free）：余数必须原样返回，否则跨包流会永久错位。"""
+
+    def setUp(self):
+        import convert
+        self.convert = convert
+
+    def test_u16_le_be(self):
+        t, rest = self.convert.format_numeric(b"\x34\x12", "u16", "le")
+        self.assertEqual(t.strip(), "4660")
+        self.assertEqual(rest, b"")
+        t, _ = self.convert.format_numeric(b"\x34\x12", "u16", "be")
+        self.assertEqual(t.strip(), "13330")
+
+    def test_signed(self):
+        t, _ = self.convert.format_numeric(b"\xff\xff", "i16", "le")
+        self.assertEqual(t.strip(), "-1")
+        t, _ = self.convert.format_numeric(b"\xff", "i8")
+        self.assertEqual(t.strip(), "-1")
+
+    def test_f32(self):
+        t, _ = self.convert.format_numeric(b"\x00\x00\x80\x3f", "f32", "le")
+        self.assertEqual(t.strip(), "1")
+
+    def test_remainder_returned_not_dropped(self):
+        t, rest = self.convert.format_numeric(b"\x34\x12\x99", "u16", "le")
+        self.assertEqual(t.strip(), "4660")
+        self.assertEqual(rest, b"\x99")
+
+    def test_too_short_returns_all_as_remainder(self):
+        t, rest = self.convert.format_numeric(b"\x99", "u16")
+        self.assertEqual(t, "")
+        self.assertEqual(rest, b"\x99")
+
+    def test_unknown_type_falls_back_u16(self):
+        t, _ = self.convert.format_numeric(b"\x34\x12", "nope", "le")
+        self.assertEqual(t.strip(), "4660")
+
+    def test_line_wrap_and_alignment(self):
+        """每行 per_line 个，各值右对齐到本块最宽值宽度（纵向成列）。"""
+        t, _ = self.convert.format_numeric(bytes([1, 200, 3]), "u8", per_line=2)
+        self.assertEqual(t, "  1 200\n  3")
+
+    def test_fixed_width_aligns_across_blocks(self):
+        """列宽按类型写死，不按本块最大值现算 —— 每个收包各自成块，现算的话量级一变
+        纵向就参差（1 2 3 / 4660 65535 / 7 8 对不齐），整条流没法竖着扫。"""
+        a, _ = self.convert.format_numeric(bytes([1, 0, 2, 0]), "u16", "le")
+        b, _ = self.convert.format_numeric(bytes([0x34, 0x12, 0xFF, 0xFF]), "u16", "le")
+        cols = lambda t: [len(x) for x in t.split(" ") if x != ""]
+        self.assertEqual(len(a), len(b), "同类型同个数的两块，行宽必须一致:%r vs %r" % (a, b))
+        for line in (a, b):
+            for field in line.split(" "):
+                if field:
+                    self.assertLessEqual(len(field), 5)      # u16 列宽
+        self.assertTrue(a.startswith("    1"), repr(a))      # 右对齐到 5 列
+
+    def test_fixed_width_holds_for_type_extremes(self):
+        """各类型极值必须撑得下写死的列宽，否则那一行会凸出来破坏对齐。"""
+        import struct
+        for typ, (size, code, _per, w) in self.convert.NUM_TYPES.items():
+            if code == "f":
+                raw = b"".join(struct.pack("<f", v)
+                               for v in (-1.23456789e38, 1.5, float("nan"), float("-inf")))
+            else:
+                top = 2 ** (8 * size - 1)
+                raw = b"".join(struct.pack("<" + code, v) for v in (
+                    -1 if code.islower() else 2 ** (8 * size) - 1,   # 最小/最大
+                    0,
+                    -top if code.islower() else top,
+                    (top - 1) if code.islower() else (2 ** (8 * size) - 2),
+                ))
+            text, _ = self.convert.format_numeric(raw, typ, "le", per_line=99)
+            widest = max(len(x) for x in text.split())
+            with self.subTest(typ=typ):
+                self.assertLessEqual(widest, w, "%s 极值 %d 列 > 列宽 %d" % (typ, widest, w))
+
+    def test_default_per_line_by_width(self):
+        """窄类型每行 16 个、宽类型 8 个。"""
+        t, _ = self.convert.format_numeric(bytes(34), "u8")
+        self.assertEqual(len(t.splitlines()), 3)          # 16 + 16 + 2
+        t, _ = self.convert.format_numeric(bytes(36), "u32")
+        self.assertEqual(len(t.splitlines()), 2)          # 8 + 1
+
+
+class NumericViewTests(unittest.TestCase):
+    """数值视图在主窗里的接线：接管显示、与转储互斥、跨包不错位。"""
+
+    def _setup(self, idx=2):
+        w = _win()
+        w.sw_hexdump.setChecked(False, animate=False)
+        w.sw_show_timestamp.setChecked(False, animate=False)
+        w.cb_numview_type.setCurrentIndex(idx)
+        w.sw_numview.setChecked(True, animate=False)
+        w.txt_recv.clear()
+        w._reset_recv_state()
+        return w
+
+    def test_renders_numbers(self):
+        w = self._setup()                       # u16 LE
+        w._on_data_received_impl(bytes([0x34, 0x12, 0xFF, 0xFF]))
+        txt = w.txt_recv.toPlainText()
+        self.assertIn("4660", txt)
+        self.assertIn("65535", txt)
+
+    def test_carry_across_packets(self):
+        """一个 u16 被拆到两个收包里 —— 按包截断会让整条流从此错位，故必须带余数。"""
+        w = self._setup()
+        w._on_data_received_impl(bytes([0x34]))
+        self.assertEqual(w.txt_recv.toPlainText().strip(), "")   # 半个数不输出
+        self.assertEqual(w._numview_carries, {None: b"\x34"})
+        w._on_data_received_impl(bytes([0x12]))
+        self.assertIn("4660", w.txt_recv.toPlainText())
+        self.assertEqual(w._numview_carries, {})
+
+    def test_independent_block_shows_incomplete_tail_bytes(self):
+        w = self._setup()                       # u16 LE
+        only_tail = w._numview_block(b"\x34", carry=False)
+        self.assertIn("34", only_tail)
+        self.assertIn(w._t("numview_tail", data="34"), only_tail)
+        value_and_tail = w._numview_block(b"\x34\x12\x99", carry=False)
+        self.assertIn("4660", value_and_tail)
+        self.assertIn(w._t("numview_tail", data="99"), value_and_tail)
+
+    def test_udp_datagrams_do_not_share_numeric_remainder(self):
+        from main_window import PROTO_UDP
+        w = self._setup()
+        old_proto = w._conn_proto
+        try:
+            w._conn_proto = PROTO_UDP
+            w._on_data_received_impl(b"\x34")
+            self.assertIn(w._t("numview_tail", data="34"), w.txt_recv.toPlainText())
+            self.assertEqual(w._numview_carries, {})
+            w._on_data_received_impl(b"\x12")
+            text = w.txt_recv.toPlainText()
+            self.assertIn(w._t("numview_tail", data="12"), text)
+            self.assertNotIn("4660", text)
+            self.assertEqual(w._numview_carries, {})
+        finally:
+            w._conn_proto = old_proto
+
+    def test_carry_isolated_per_tcp_client(self):
+        """TCP Server 多客户端的半包不能交叉拼成一个数。"""
+        w = self._setup()
+        w._on_data_received_impl(b"\x34", source="client-A")
+        w._on_data_received_impl(b"\x12", source="client-B")
+        self.assertEqual(w.txt_recv.toPlainText().strip(), "")
+        self.assertEqual(w._numview_carries,
+                         {"client-A": b"\x34", "client-B": b"\x12"})
+        w._on_data_received_impl(b"\x12", source="client-A")
+        self.assertIn("4660", w.txt_recv.toPlainText())
+        self.assertEqual(w._numview_carries, {"client-B": b"\x12"})
+
+    def test_disconnected_tcp_client_carry_is_pruned(self):
+        w = self._setup()
+        w.txt_recv.clear()
+        w._numview_carries = {"client-A": b"\x34", "client-B": b"\x12"}
+        w._on_clients_changed([("client-B", "client-B")])
+        self.assertEqual(w._numview_carries, {"client-B": b"\x12"})
+        self.assertIn(w._t("numview_tail", data="34"), w.txt_recv.toPlainText())
+
+    def test_carry_cleared_on_reset(self):
+        """清屏/断连是数据流断点，旧的半个数已无意义。"""
+        w = self._setup()
+        w._on_data_received_impl(bytes([0x34]))
+        self.assertEqual(w._numview_carries, {None: b"\x34"})
+        w._reset_recv_state()
+        self.assertEqual(w._numview_carries, {})
+
+    def test_type_change_resets_carry(self):
+        w = self._setup()
+        w._on_data_received_impl(bytes([0x34]))
+        self.assertEqual(w._numview_carries, {None: b"\x34"})
+        w.cb_numview_type.setCurrentIndex(6)      # u32 LE
+        self.assertEqual(w._numview_carries, {})
+        self.assertIn(w._t("numview_tail", data="34"), w.txt_recv.toPlainText())
+
+    def test_turning_numeric_view_off_flushes_pending_tail(self):
+        w = self._setup()
+        w._on_data_received_impl(b"\x34")
+        w.sw_numview.setChecked(False, animate=False)
+        self.assertEqual(w._numview_carries, {})
+        self.assertIn(w._t("numview_tail", data="34"), w.txt_recv.toPlainText())
+
+    def test_mutually_exclusive_with_hexdump(self):
+        """两者都接管整个数据区，语义冲突 → 互相灰掉对方。"""
+        w = self._setup()
+        self.assertFalse(w.sw_hexdump.isEnabled())
+        self.assertFalse(w.sw_rx_hex.isEnabled())
+        self.assertTrue(w.cb_numview_type.isEnabled())
+        w.sw_numview.setChecked(False, animate=False)
+        self.assertTrue(w.sw_hexdump.isEnabled())
+        self.assertTrue(w.sw_rx_hex.isEnabled())
+        self.assertFalse(w.cb_numview_type.isEnabled())
+        w.sw_hexdump.setChecked(True, animate=False)
+        self.assertFalse(w.sw_numview.isEnabled())
+        w.sw_hexdump.setChecked(False, animate=False)
+
+    def test_hexdump_wins_when_both_set_programmatically(self):
+        """冲突态下转储获胜，而且获胜开关必须可操作，不能把两个开关一起锁死。"""
+        w = self._setup()
+        w.sw_hexdump.blockSignals(True)
+        w.sw_hexdump.setChecked(True, animate=False)
+        w.sw_hexdump.blockSignals(False)
+        w._hexdump_on = True
+        w._refresh_hex_toggle_state()
+        self.assertTrue(w.sw_hexdump.isEnabled())
+        self.assertFalse(w.sw_numview.isEnabled())
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(bytes([0x34, 0x12]))
+        self.assertIn("00000000", w.txt_recv.toPlainText())   # 走了转储而非数值
+        w.sw_hexdump.setChecked(False, animate=False)
+
+    def test_conflicting_saved_modes_are_normalized_on_load(self):
+        w = self._setup()
+        try:
+            w.settings.setValue("hexdump_view", True)
+            w.settings.setValue("numview", True)
+            w._load_settings()
+            self.assertTrue(w.sw_hexdump.isChecked())
+            self.assertFalse(w.sw_numview.isChecked())
+            self.assertFalse(w.settings.value("numview", True, type=bool))
+            self.assertTrue(w.sw_hexdump.isEnabled())  # 获胜模式仍可关闭
+        finally:
+            w.settings.setValue("hexdump_view", False)
+            w.settings.setValue("numview", False)
+            w._load_settings()
+
+    def test_proto_highlight_suppressed(self):
+        """协议高亮只在普通 HEX 模式有意义；数值视图下不该再上色。"""
+        w = self._setup()
+        w.settings.setValue("frame_rules", ProtoHighlightTests.RULE)
+        w._proto_rules_raw = None
+        w.set_proto_highlight(True)
+        w._proto_fields.clear()
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(ProtoHighlightTests.FRAME)
+        self.assertEqual(len(w._proto_fields), 0)
+        w.set_proto_highlight(False)
+
+    def test_type_index_persisted_and_restored(self):
+        w = self._setup(idx=11)                   # f32 BE
+        self.assertEqual(w._numview_spec(), ("f32", "be"))
+        self.assertEqual(int(w.settings.value("numview_type")), 11)
+
+    def test_all_12_types_render(self):
+        """12 个下拉项都要能出数值，别有哪个组合是坏的。"""
+        w = self._setup()
+        for i in range(w.cb_numview_type.count()):
+            w.cb_numview_type.setCurrentIndex(i)
+            w.txt_recv.clear(); w._reset_recv_state()
+            w._on_data_received_impl(bytes(range(16)))
+            with self.subTest(item=w.cb_numview_type.itemText(i)):
+                self.assertTrue(w.txt_recv.toPlainText().strip(),
+                                "%s 没渲染出内容" % w.cb_numview_type.itemText(i))
+
+    def test_terminal_mode_dims_numeric_view_label(self):
+        w = self._setup()
+        try:
+            w._apply_terminal_ui(True)
+            labels = w._setting_labels.get("numview", ())
+            self.assertTrue(labels)
+            self.assertTrue(all(label.graphicsEffect() is not None for label in labels))
+        finally:
+            w._apply_terminal_ui(False)
+
+
+class SelectionChecksumTests(unittest.TestCase):
+    """选中即算校验和：状态栏就地出结果，超限只报字节数不给错值。"""
+
+    FRAME = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x02])   # Modbus CRC = C4 0B
+
+    def _setup(self, hexmode=True):
+        w = _win()
+        w.sw_hexdump.setChecked(False, animate=False)
+        w.sw_numview.setChecked(False, animate=False)
+        w.sw_show_timestamp.setChecked(False, animate=False)
+        w.sw_rx_hex.setChecked(hexmode, animate=False)
+        w.txt_recv.clear()
+        w._reset_recv_state()
+        return w
+
+    @staticmethod
+    def _select_all(w):
+        from PyQt5.QtGui import QTextCursor
+        cur = w.txt_recv.textCursor()
+        cur.select(QTextCursor.Document)
+        w.txt_recv.setTextCursor(cur)
+        w._update_sel_checksum()          # 直接调，跳过 120ms 节流
+
+    def test_brief_and_tooltip(self):
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        self.assertFalse(w.lbl_sel_chk.isHidden())
+        self.assertIn("C4 0B", w.lbl_sel_chk.text())      # Modbus CRC16
+        title, meta, rows = w._sel_chk_popup_payload
+        self.assertEqual(w.lbl_sel_chk.toolTip(), title)  # 仅作 Qt 悬停触发器，不再塞 HTML
+        self.assertIn(w.fmt_bytes(len(self.FRAME)), meta)
+        values = dict(rows)
+        for idx in range(1, len(CHECKSUM_KEYS)):          # 9 种全在 tooltip 里
+            self.assertEqual(
+                values[w._t(CHECKSUM_KEYS[idx])],
+                w.compute_checksum(self.FRAME, idx).hex(" ").upper())
+
+    def test_matches_compute_checksum(self):
+        """状态栏那三种必须和主程序算法逐字节一致，不能是另一套实现。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        txt = w.lbl_sel_chk.text()
+        for idx, name in w._SEL_CHK_BRIEF:
+            self.assertIn("%s %s" % (name, w.compute_checksum(self.FRAME, idx).hex(" ").upper()),
+                          txt)
+
+    def test_hidden_without_selection(self):
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        self.assertFalse(w.lbl_sel_chk.isHidden())
+        cur = w.txt_recv.textCursor()
+        cur.clearSelection()
+        w.txt_recv.setTextCursor(cur)
+        w._update_sel_checksum()
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+        self.assertTrue(w._sel_chk_sep.isHidden())
+
+    def test_hidden_when_selection_has_no_bytes(self):
+        """选中的全是装饰(时间戳/箭头)、一个字节也解析不出 → 不显示空结果。"""
+        w = self._setup()
+        w.txt_recv.setPlainText("\u2190 hello world")
+        self._select_all(w)
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+
+    def test_hexdump_ascii_column_partial_selection_is_rejected(self):
+        """从 |ASCII| 内部只选 AB 时，不能把它静默算成 0xAB。"""
+        from PyQt5.QtGui import QTextCursor
+        w = self._setup()
+        w.sw_hexdump.setChecked(True, animate=False)
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(b"ABCDEFGH")
+        text = w.txt_recv.toPlainText()
+        start = text.index("|AB") + 1
+        cur = w.txt_recv.textCursor()
+        cur.setPosition(start)
+        cur.setPosition(start + 2, QTextCursor.KeepAnchor)
+        w.txt_recv.setTextCursor(cur)
+        w._update_sel_checksum()
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+        w.sw_hexdump.setChecked(False, animate=False)
+
+    def test_oversize_refuses_without_claiming_a_size(self):
+        """超限只说明未算：既不截断去算（会给出"看着像真的"的错值），也不报字节数
+        （提取够数就提前收工了，len 只是超限的证据、不是选区实际大小，报出来是假精确）。"""
+        w = self._setup()
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(bytes(w._SEL_CHK_MAX + 1024))
+        self._select_all(w)
+        self.assertEqual(w.lbl_sel_chk.toolTip(), "")
+        self.assertEqual(w.lbl_sel_chk.text(),
+                         w._t("sel_chk_too_big", n=w._SEL_CHK_MAX // 1024))
+        self.assertNotIn(w._t("sel_chk"), w.lbl_sel_chk.text())   # 不带"选中 N KB"前缀
+
+    def test_extraction_is_bounded_not_document_sized(self):
+        """提取跑在 GUI 线程上（120ms 节流后），而「最大行数」可配到 100 万。
+        取够上限就必须收工，否则 Ctrl+A 全选会按文档大小线性卡死界面。"""
+        w = self._setup()
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(bytes(4 * w._SEL_CHK_MAX))       # 远超上限
+        from PyQt5.QtGui import QTextCursor
+        cur = w.txt_recv.textCursor()
+        cur.select(QTextCursor.Document)
+        capped = w._selected_hex_bytes(cur, limit=w._SEL_CHK_MAX)
+        full = w._selected_hex_bytes(cur)
+        self.assertGreater(len(capped), w._SEL_CHK_MAX)           # 足以判定超限
+        self.assertLess(len(capped), len(full))                   # 但确实提前停了
+        self.assertGreater(len(full), 3 * w._SEL_CHK_MAX)         # 不设限时会全扫
+
+    def test_history_hex_keeps_checksum_after_switching_to_text_view(self):
+        """历史块按写入时的元数据解析，不应被当前开关重新解释。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        before = w.lbl_sel_chk.text()
+        w.sw_rx_hex.setChecked(False, animate=False)
+        w._update_sel_checksum()
+        self.assertEqual(w.lbl_sel_chk.text(), before)
+
+    def test_terminal_mode_does_not_offer_checksum(self):
+        """终端正文有独立元数据，即使 sw_rx_hex 留着勾选也不能被当作 HEX。"""
+        w = self._setup()
+        try:
+            w._terminal_on = True
+            w._apply_terminal_ui(True)
+            w.txt_recv.clear(); w._reset_recv_state()
+            w._on_data_received_impl(b"OK AB CD READY\r\n")
+            self._select_all(w)
+            self.assertTrue(w.lbl_sel_chk.isHidden(),
+                            "终端模式仍显示校验和: %r" % w.lbl_sel_chk.text())
+        finally:
+            w._terminal_on = False
+            w._apply_terminal_ui(False)
+
+    def test_old_hexdump_ascii_is_rejected_after_switching_view(self):
+        """切回普通 HEX 后，历史转储仍须知道自己的 ASCII 列边界。"""
+        from PyQt5.QtGui import QTextCursor
+        w = self._setup()
+        w.sw_hexdump.setChecked(True, animate=False)
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(b"ABCDEFGH")
+        text = w.txt_recv.toPlainText()
+        start = text.index("|AB") + 1
+        w.sw_hexdump.setChecked(False, animate=False)
+        cur = w.txt_recv.textCursor()
+        cur.setPosition(start)
+        cur.setPosition(start + 2, QTextCursor.KeepAnchor)
+        w.txt_recv.setTextCursor(cur)
+        w._update_sel_checksum()
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+
+    def test_text_mode_does_not_offer_lossy_checksum(self):
+        """解码后的文本无法无损反推原始字节；宁可隐藏，也不能对重编码文本给出伪校验值。"""
+        w = self._setup(hexmode=False)
+        w.txt_recv.setPlainText("AT")
+        self._select_all(w)
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+
+    def test_numeric_mode_does_not_checksum_decimal_text(self):
+        """原始 34 12 显示为 4660 后，绝不能转而校验 ASCII '4660'。"""
+        w = self._setup()
+        w.sw_numview.setChecked(True, animate=False)
+        w.txt_recv.clear(); w._reset_recv_state()
+        w._on_data_received_impl(b"\x34\x12")
+        self._select_all(w)
+        self.assertTrue(w.lbl_sel_chk.isHidden())
+        w.sw_numview.setChecked(False, animate=False)
+
+    def test_tooltip_is_app_card_with_real_grid_layout(self):
+        """结果使用真实控件网格排版，避免原生富文本 tooltip 的字体、间距和主题差异。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        w._show_sel_checksum_popup()
+        popup = w._sel_chk_popup
+        self.assertIsNotNone(popup)
+        self.assertEqual(popup.grid.rowCount(), len(CHECKSUM_KEYS) - 1)
+        self.assertEqual(len(popup._rows), len(CHECKSUM_KEYS) - 1)
+        plain = " ".join(lbl.text() for pair in popup._rows for lbl in pair)
+        for idx in range(1, len(CHECKSUM_KEYS)):
+            with self.subTest(algo=w._t(CHECKSUM_KEYS[idx])):
+                self.assertIn(w._t(CHECKSUM_KEYS[idx]), plain)
+                self.assertIn(w.compute_checksum(self.FRAME, idx).hex(" ").upper(), plain)
+        popup.hide()
+
+    def test_popup_rows_are_reused_not_rebuilt(self):
+        """行控件复用：重建的话 deleteLater 要等事件循环空闲才真删，连续悬停时旧 QLabel
+        会成百上千地短暂堆积（实测连刷 10 次不给事件循环，子控件 20 → 200）。"""
+        from PyQt5.QtWidgets import QLabel
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        w._show_sel_checksum_popup()
+        popup = w._sel_chk_popup
+        first = popup.findChildren(QLabel)
+        for _ in range(10):                    # 期间不给事件循环，堆积会立刻现形
+            w._show_sel_checksum_popup()
+        self.assertEqual(len(popup.findChildren(QLabel)), len(first))
+        self.assertEqual(len(popup._rows), len(CHECKSUM_KEYS) - 1)
+        popup.hide()
+
+    def test_tooltip_uses_ui_names_and_monospace_values(self):
+        """名称与应用 UI 一致，校验值统一用等宽字体，字节列能精确对齐。"""
+        from fonts import ui_font, mono_font
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        w._show_sel_checksum_popup()
+        for name_label, value_label in w._sel_chk_popup._rows:
+            self.assertEqual(name_label.font().family(), ui_font(9).family())
+            self.assertEqual(value_label.font().family(), mono_font(9).family())
+            self.assertEqual(value_label.objectName(), "ChecksumValue")
+        w._sel_chk_popup.hide()
+
+    def test_relabels_on_language_switch(self):
+        """状态栏文案是算出来的，tr_text 机制刷不到 —— 切语言必须重算，否则残留旧语言。"""
+        w = self._setup()
+        w._on_data_received_impl(self.FRAME)
+        self._select_all(w)
+        old_lang = w._lang
+        try:
+            w._set_language("en")
+            self.assertTrue(w.lbl_sel_chk.text().startswith(w._t("sel_chk")))
+            w._set_language("zh")
+            self.assertTrue(w.lbl_sel_chk.text().startswith(w._t("sel_chk")))
+        finally:
+            w._set_language(old_lang)
+
+    def test_data_area_tooltip_advertises_feature(self):
+        """状态栏标签没选区时是隐藏的，提示必须挂在数据区上，否则功能没人发现得了。"""
+        w = self._setup()
+        self.assertEqual(w.txt_recv.toolTip(), w._t("sel_chk_hint"))
+        self.assertEqual(w.txt_recv.property("tr_tooltip"), "sel_chk_hint")
+
+    def test_i18n_keys_present(self):
+        from i18n import TR
+        for lang in TR:
+            for k in ("numview", "numview_tip", "numview_type_tip", "numview_tail",
+                      "sel_chk", "sel_chk_too_big", "sel_chk_tip", "sel_chk_hint"):
+                with self.subTest(lang=lang, key=k):
+                    self.assertIn(k, TR[lang])
+
+
+
+class _FakeSerial:
+    """够用的 pyserial 替身：记录属性赋值，模拟已打开端口的 reconfigure 语义。"""
+
+    _LIVE = ("baudrate", "bytesize", "parity", "stopbits", "rtscts", "xonxoff")
+
+    def __init__(self, **kw):
+        self.is_open = True
+        self.fail_on = None
+        self.applied = []
+        # LIVE 属性给初值：真 pyserial 打开后这些属性都有值，apply_params 会先读快照
+        # （失败回滚用），替身不给初值的话读快照就 AttributeError，掩盖真实行为。
+        import serial as _s
+        self.__dict__.update(dict(baudrate=9600, bytesize=_s.EIGHTBITS,
+                                  parity=_s.PARITY_NONE, stopbits=_s.STOPBITS_ONE,
+                                  rtscts=False, xonxoff=False))
+        self.__dict__.update(kw)
+
+    def __setattr__(self, k, v):
+        if k in self._LIVE:
+            if getattr(self, "fail_on", None) == k:
+                import serial as _s
+                raise _s.SerialException("simulated failure on %s" % k)
+            self.__dict__.setdefault("applied", []).append((k, v))
+        object.__setattr__(self, k, v)
+
+    def write(self, d):
+        return len(d)
+
+    def close(self):
+        self.is_open = False
+
+    @property
+    def in_waiting(self):
+        return 0
+
+    def read(self, n):
+        return b""
+
+
+class SerialLiveParamsTests(unittest.TestCase):
+    """不断开连接改串口参数：pyserial 对已打开端口的属性赋值即时生效。"""
+
+    def _conn(self):
+        import serial
+        from serial_io import SerialConn
+        c = SerialConn("COM_FAKE", 9600, serial.EIGHTBITS,
+                       serial.PARITY_NONE, serial.STOPBITS_ONE)
+        c._ser = _FakeSerial()
+        return c
+
+    def test_applies_and_syncs_internal_state(self):
+        """内部记录必须同步 —— 掉线自动重连读的是它，不同步会用旧参数重连。"""
+        import serial
+        c = self._conn()
+        self.assertTrue(c.apply_params(baud=115200, parity=serial.PARITY_EVEN))
+        self.assertEqual(c._ser.baudrate, 115200)
+        self.assertEqual(c._ser.parity, serial.PARITY_EVEN)
+        self.assertEqual(c._baud, 115200)
+        self.assertEqual(c._parity, serial.PARITY_EVEN)
+
+    def test_none_leaves_field_untouched(self):
+        import serial
+        c = self._conn()
+        c.apply_params(baud=115200)
+        c.apply_params(baud=None, stopbits=serial.STOPBITS_TWO)
+        self.assertEqual(c._ser.baudrate, 115200)
+        self.assertEqual(c._ser.stopbits, serial.STOPBITS_TWO)
+
+    def test_flow_modes_are_exclusive(self):
+        c = self._conn()
+        c.apply_params(flow="rtscts")
+        self.assertTrue(c._ser.rtscts)
+        self.assertFalse(c._ser.xonxoff)
+        c.apply_params(flow="xonxoff")
+        self.assertFalse(c._ser.rtscts)
+        self.assertTrue(c._ser.xonxoff)
+        c.apply_params(flow="none")
+        self.assertFalse(c._ser.rtscts)
+        self.assertFalse(c._ser.xonxoff)
+
+    def test_failure_reports_and_returns_false(self):
+        """赋值失败多半是端口已异常（拔线）——要发信号让上层掉线路径接管，不能静默。"""
+        c = self._conn()
+        errs = []
+        c.error_occurred.connect(errs.append)
+        c._ser.fail_on = "baudrate"
+        self.assertFalse(c.apply_params(baud=57600))
+        self.assertTrue(errs)
+
+    def test_partial_failure_rolls_back_atomically(self):
+        """中途失败必须整体回滚：baud 改成功、parity 改失败时，硬件与内部记录都要退回
+        调用前的旧值，不能留「硬件跑混合参数、函数却返回 False」的半应用状态。"""
+        import serial
+        c = self._conn()
+        c._ser.fail_on = "parity"
+        ok = c.apply_params(baud=115200, parity=serial.PARITY_EVEN)
+        self.assertFalse(ok)
+        self.assertEqual(c._ser.baudrate, 9600, "baud 硬件未回滚")
+        self.assertEqual(c._ser.parity, serial.PARITY_NONE)
+        self.assertEqual(c._baud, 9600, "内部记录 _baud 未回滚，重连会用错参数")
+        self.assertEqual(c._parity, serial.PARITY_NONE)
+
+    def test_flow_partial_failure_rolls_back(self):
+        """flow 是两个属性（rtscts+xonxoff）：后者失败时前者也要回滚。"""
+        c = self._conn()
+        c._ser.fail_on = "xonxoff"
+        self.assertFalse(c.apply_params(flow="rtscts"))
+        self.assertFalse(c._ser.rtscts, "rtscts 未回滚")
+        self.assertEqual(c._flow, "none", "内部 _flow 记录不该变")
+
+    def test_success_is_all_or_nothing(self):
+        """全成功时硬件与记录一次性到位；这是回滚路径的正常对照。"""
+        import serial
+        c = self._conn()
+        self.assertTrue(c.apply_params(baud=57600, parity=serial.PARITY_ODD,
+                                       stopbits=serial.STOPBITS_TWO))
+        self.assertEqual((c._ser.baudrate, c._ser.parity, c._ser.stopbits),
+                         (57600, serial.PARITY_ODD, serial.STOPBITS_TWO))
+        self.assertEqual((c._baud, c._parity, c._stopbits),
+                         (57600, serial.PARITY_ODD, serial.STOPBITS_TWO))
+
+    def test_rejects_when_not_open(self):
+        c = self._conn()
+        c._ser = None
+        self.assertFalse(c.apply_params(baud=9600))
+
+
+class SerialLiveParamsUiTests(unittest.TestCase):
+    """主窗接线：连接期间参数可改、改动即应用、连接签名同步。"""
+
+    def _setup(self):
+        import serial
+        from serial_io import SerialConn
+        from main_window import PROTO_SERIAL
+        w = _win()
+        c = SerialConn("COM_FAKE", 9600, serial.EIGHTBITS,
+                       serial.PARITY_NONE, serial.STOPBITS_ONE)
+        c._ser = _FakeSerial()
+        w.conn = c
+        w._conn_proto = PROTO_SERIAL
+        w.cb_proto.setCurrentText(PROTO_SERIAL)
+        w.cb_port.clear()
+        w.cb_port.addItem("COM_FAKE", "COM_FAKE")
+        w.cb_baud.setCurrentText("9600")
+        w.cb_databits.setCurrentText("8")
+        w.cb_parity.setCurrentText("None")
+        w.cb_stopbits.setCurrentText("1")
+        w.cb_flow.setCurrentText("None")
+        w._conn_cfg = w._conn_config_signature(PROTO_SERIAL)
+        return w, c
+
+    def tearDown(self):
+        w = _win()
+        w.conn = None
+        w._conn_proto = None
+        w._conn_cfg = None
+
+    def test_params_stay_editable_while_connected(self):
+        """端口/协议换了必须重开连接，仍锁；波特率等可即时改，不锁。"""
+        w, _c = self._setup()
+        w.set_settings_enabled(False)
+        for name in ("cb_baud", "cb_databits", "cb_parity", "cb_stopbits", "cb_flow"):
+            with self.subTest(widget=name):
+                self.assertTrue(getattr(w, name).isEnabled())
+        self.assertFalse(w.cb_port.isEnabled())
+        self.assertFalse(w.cb_proto.isEnabled())
+        w.set_settings_enabled(True)
+
+    def test_applies_to_live_port_and_syncs_signature(self):
+        """_conn_cfg 是连接签名真源：Modbus 就绪门禁 / RTU t3.5 / 掉线重连都读它。"""
+        w, c = self._setup()
+        w.cb_baud.setCurrentText("115200")
+        w._apply_serial_params_live()
+        self.assertEqual(c._ser.baudrate, 115200)
+        self.assertEqual(w._conn_cfg[2], 115200)
+        self.assertIn("115200", w.lbl_state.text())
+
+    def test_modbus_master_stays_ready_after_change(self):
+        """签名不同步的话主机会因「UI 与实际连接不一致」立刻暂停轮询。"""
+        w, c = self._setup()
+        w.cb_baud.setCurrentText("115200")
+        w._apply_serial_params_live()
+        self.assertTrue(w._mbm_connection_ready())
+        self.assertEqual(w._mbm_serial_baud(), 115200)
+
+    def test_no_reapply_when_unchanged(self):
+        """editingFinished 失焦也会来一次；值没变不该重复应用、不该重复提示。"""
+        w, c = self._setup()
+        w.cb_baud.setCurrentText("115200")
+        w._apply_serial_params_live()
+        n = len(c._ser.applied)
+        w._apply_serial_params_live()
+        self.assertEqual(len(c._ser.applied), n)
+
+    def test_invalid_baud_rejected(self):
+        w, c = self._setup()
+        w.cb_baud.setCurrentText("115200")
+        w._apply_serial_params_live()
+        w.cb_baud.setCurrentText("abc")
+        w._apply_serial_params_live()
+        self.assertEqual(c._ser.baudrate, 115200)
+        w.cb_baud.setCurrentText("115200")
+
+    def test_ignored_for_non_serial_connection(self):
+        from main_window import PROTO_TCP_CLIENT
+        w, c = self._setup()
+        w.cb_baud.setCurrentText("115200")
+        w._apply_serial_params_live()
+        w._conn_proto = PROTO_TCP_CLIENT
+        w.cb_baud.setCurrentText("9600")
+        w._apply_serial_params_live()
+        self.assertEqual(c._ser.baudrate, 115200)
+
+    def test_safe_when_disconnected(self):
+        w = _win()
+        w.conn = None
+        w._conn_proto = None
+        w._apply_serial_params_live()      # 不该抛
+
+    def test_maps_shared_with_open_conn(self):
+        """建连接与动态改参数必须共用同一份映射，两处解释不允许分叉。"""
+        import main_window as MW
+        import serial
+        self.assertEqual(MW._PARITY_MAP["Even"], serial.PARITY_EVEN)
+        self.assertEqual(MW._DATABITS_MAP["8"], serial.EIGHTBITS)
+        self.assertEqual(MW._STOPBITS_MAP["1.5"], serial.STOPBITS_ONE_POINT_FIVE)
+        self.assertEqual(MW._FLOW_MAP["RTS/CTS"], "rtscts")
+
+    def test_live_flow_change_toggles_rts_switch(self):
+        """改流控后手动 RTS 开关的启用态要跟着变——RTS/CTS 下硬件接管、禁用手动开关。
+        直接调 _apply_serial_params_live（不经 UI 信号）也必须联动，不靠巧合同帧触发。"""
+        w, c = self._setup()
+        w.sw_rts.setEnabled(True)
+        w.cb_flow.setCurrentText("RTS/CTS")
+        w._apply_serial_params_live()
+        self.assertTrue(c._ser.rtscts)
+        self.assertFalse(w.sw_rts.isEnabled(), "RTS/CTS 下应禁用手动 RTS 开关")
+        w.cb_flow.setCurrentText("None")
+        w._apply_serial_params_live()
+        self.assertFalse(c._ser.rtscts)
+        self.assertTrue(w.sw_rts.isEnabled(), "无流控时应恢复手动 RTS 开关")
+
+    def test_i18n_key_present(self):
+        from i18n import TR
+        for lang in TR:
+            with self.subTest(lang=lang):
+                self.assertIn("live_params_applied", TR[lang])
+
+
+
+class LogNamingTests(unittest.TestCase):
+    """文件名变量展开与跨日判定（Qt-free）。"""
+
+    WHEN = None      # setUp 里填，避免模块导入期算时间
+
+    def setUp(self):
+        import log_naming
+        from datetime import datetime
+        self.L = log_naming
+        self.WHEN = datetime(2026, 7, 23, 14, 30, 5)
+
+    def test_date_time_port(self):
+        self.assertEqual(self.L.expand("%date", self.WHEN), "20260723")
+        self.assertEqual(self.L.expand("%time", self.WHEN), "143005")
+        self.assertEqual(self.L.expand("%port", self.WHEN, port="COM3"), "COM3")
+
+    def test_datetime_wins_over_date_prefix(self):
+        """%datetime 必须整体匹配 —— 按 %date 先吃会剩个字面 time。"""
+        self.assertEqual(self.L.expand("%datetime", self.WHEN), "20260723_143005")
+
+    def test_case_insensitive(self):
+        self.assertEqual(self.L.expand("%DATE", self.WHEN), "20260723")
+        self.assertEqual(self.L.expand("%Port", self.WHEN, port="COM7"), "COM7")
+
+    def test_unknown_percent_kept(self):
+        """用户文件名里真有百分号时不能被吃掉。"""
+        self.assertEqual(self.L.expand("100%done", self.WHEN), "100%done")
+
+    def test_port_sanitized(self):
+        """IP:端口 的冒号在 Windows 上非法，必须清掉才能进文件名。"""
+        out = self.L.expand("%port", self.WHEN, port="192.168.1.10:8080")
+        self.assertEqual(out, "192.168.1.10_8080")
+        for ch in ':/\\<>"|?*':
+            with self.subTest(ch=ch):
+                self.assertNotIn(ch, self.L.sanitize_token("a%sb" % ch))
+
+    def test_port_empty_falls_back(self):
+        self.assertEqual(self.L.sanitize_token("", "conn"), "conn")
+        self.assertEqual(self.L.sanitize_token(None, "conn"), "conn")
+
+    def test_segment_appends_index_without_n_var(self):
+        """不含 %n 时序号追加在扩展名前，与旧版 xxx_001.log 观感一致。"""
+        self.assertEqual(self.L.segment_path("a.log", self.WHEN, seg=0), "a.log")
+        self.assertEqual(self.L.segment_path("a.log", self.WHEN, seg=2), "a_002.log")
+
+    def test_segment_respects_explicit_n(self):
+        out = self.L.segment_path("a_%n.log", self.WHEN, seg=2)
+        self.assertEqual(out, "a_002.log")
+        self.assertNotIn("__", out)      # 没有被二次追加
+
+    def test_should_roll_date(self):
+        from datetime import datetime
+        nxt = datetime(2026, 7, 24, 0, 0, 1)
+        same = datetime(2026, 7, 23, 23, 59, 59)
+        self.assertTrue(self.L.should_roll_date(self.WHEN, nxt, "%date.log"))
+        self.assertFalse(self.L.should_roll_date(self.WHEN, same, "%date.log"))
+
+    def test_no_roll_without_date_var(self):
+        """没有日期变量时换日期也是同一个文件名，白白切断文件。"""
+        from datetime import datetime
+        nxt = datetime(2026, 7, 24, 0, 0, 1)
+        self.assertFalse(self.L.should_roll_date(self.WHEN, nxt, "plain.log"))
+
+    def test_should_roll_handles_none(self):
+        self.assertFalse(self.L.should_roll_date(None, self.WHEN, "%date.log"))
+
+
+class LogRotationTests(unittest.TestCase):
+    """主窗接线：真开文件、真轮转。"""
+
+    def setUp(self):
+        import tempfile
+        from datetime import datetime
+        self.tmp = tempfile.mkdtemp(prefix="ctlog_")
+        self.d1 = datetime(2026, 7, 23, 23, 59, 50)
+        self.d2 = datetime(2026, 7, 24, 0, 0, 5)
+        self.w = _win()
+        self.w._close_log_file()
+        self.w._log_seg = 0
+        self.w._log_limit = 0
+
+    def tearDown(self):
+        import shutil
+        self.w._close_log_file()
+        self.w._log_base_path = ""
+        self.w._log_seg = 0
+        self.w._log_limit = 0
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _start(self, name, when=None):
+        import os
+        self.w._log_base_path = os.path.join(self.tmp, name)
+        self.w._log_seg = 0
+        when = when or self.d1
+        path = self.w._log_segment_path(when)
+        self.assertTrue(self.w._open_log_segment(path, when=when))
+        return path
+
+    def test_conn_token_from_connection(self):
+        from main_window import PROTO_SERIAL
+        old_proto, old_cfg = self.w._conn_proto, self.w._conn_cfg
+        try:
+            self.w._conn_proto = PROTO_SERIAL
+            self.w._conn_cfg = (PROTO_SERIAL, "COM7", 115200, "8", "None", "1", "None")
+            self.assertEqual(self.w._log_conn_token(), "COM7")
+        finally:
+            self.w._conn_proto, self.w._conn_cfg = old_proto, old_cfg
+
+    def test_rolls_over_midnight_and_resets_index(self):
+        """序号必须归零 —— 文件名已带新日期，再从 _003 数会像是这天从第 4 段开始。"""
+        import os
+        first = self._start("log_%date.txt")
+        self.w._log_file.write("day1\n")
+        self.w._log_file.flush()
+        self.w._maybe_rotate_log(now=self.d2)
+        second = self.w._log_file_path
+        self.assertNotEqual(second, first)
+        self.assertIn("20260724", os.path.basename(second))
+        self.assertEqual(self.w._log_seg, 0)
+
+    def test_no_roll_same_day(self):
+        from datetime import datetime
+        self._start("log_%date.txt")
+        path = self.w._log_file_path
+        self.w._maybe_rotate_log(now=datetime(2026, 7, 23, 23, 59, 59))
+        self.assertEqual(self.w._log_file_path, path)
+
+    def test_no_roll_without_date_var(self):
+        self._start("plain.log")
+        path = self.w._log_file_path
+        self.w._maybe_rotate_log(now=self.d2)
+        self.assertEqual(self.w._log_file_path, path)
+
+    def test_old_segment_gets_footer_new_gets_header(self):
+        first = self._start("log_%date.txt")
+        self.w._log_file.write("day1\n")
+        self.w._maybe_rotate_log(now=self.d2)
+        with open(first, encoding="utf-8") as f:
+            self.assertIn(self.w._t("log_footer", time="").strip()[:6], f.read())
+        with open(self.w._log_file_path, encoding="utf-8") as f:
+            self.assertIn(self.w._t("log_header", time="").strip()[:6], f.read())
+
+    def test_size_split_still_works(self):
+        self._start("size_%date.log")
+        first = self.w._log_file_path
+        self.w._log_limit = 200
+        self.w._log_file.write("x" * 300)
+        self.w._log_file.flush()
+        self.w._maybe_rotate_log(now=self.d1)
+        self.assertNotEqual(self.w._log_file_path, first)
+        self.assertEqual(self.w._log_seg, 1)
+
+    def test_date_roll_wins_over_size_index(self):
+        self._start("size_%date.log")
+        self.w._log_limit = 200
+        self.w._log_file.write("x" * 300)
+        self.w._log_file.flush()
+        self.w._maybe_rotate_log(now=self.d1)
+        self.assertEqual(self.w._log_seg, 1)
+        self.w._maybe_rotate_log(now=self.d2)
+        self.assertEqual(self.w._log_seg, 0)
+        self.assertIn("20260724", self.w._log_file_path)
+
+    def test_creates_subdirectory_from_variable(self):
+        """%date 可以出现在目录段上，目录得自动建出来。"""
+        import os
+        path = self._start(os.path.join("%date", "run.log"))
+        self.assertTrue(os.path.exists(path))
+        self.assertIn("20260723", path)
+
+    def test_i18n_keys_present(self):
+        from i18n import TR
+        for lang in TR:
+            with self.subTest(lang=lang):
+                self.assertIn("log_vars_tip", TR[lang])
+                for tok in ("%date", "%port", "%n"):
+                    self.assertIn(tok, TR[lang]["log_vars_tip"])
+
+
+
+class RecDiffTests(unittest.TestCase):
+    """会话比较对齐算法（Qt-free）。"""
+
+    def setUp(self):
+        import rec_diff
+        self.D = rec_diff
+
+    @staticmethod
+    def _ev(t, d, hexs):
+        return (t, d, bytes.fromhex(hexs))
+
+    def test_identical(self):
+        a = [self._ev(0, "tx", "01 03"), self._ev(0.1, "rx", "01 03 AA")]
+        r = self.D.compare(a, list(a))
+        self.assertTrue(r["stats"]["identical"])
+        self.assertEqual(r["stats"]["same"], 2)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["same", "same"])
+
+    def test_changed_payload_reported_as_one_row(self):
+        """同一条帧内容变了，报「改了」比报「删一条又加一条」更贴近用户心里的模型。"""
+        a = [self._ev(0.1, "rx", "01 03 AA")]
+        b = [self._ev(0.1, "rx", "01 03 BB")]
+        r = self.D.compare(a, b)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["diff"])
+        self.assertEqual(r["rows"][0]["first_diff"], 2)
+
+    def test_missing_frame_does_not_cascade(self):
+        """核心价值：B 少答一帧时只报这一处，后续继续对齐。
+        按下标并排比会让之后每一条都错位报差异，噪声淹没真正的那一处。"""
+        a = [self._ev(0, "tx", "AA"), self._ev(0.1, "rx", "01"),
+             self._ev(0.2, "rx", "02"), self._ev(0.3, "rx", "03")]
+        b = [self._ev(0, "tx", "AA"), self._ev(0.1, "rx", "01"),
+             self._ev(0.25, "rx", "03")]
+        r = self.D.compare(a, b)
+        self.assertEqual([x["kind"] for x in r["rows"]],
+                         ["same", "same", "only_a", "same"])
+        self.assertEqual(r["stats"]["only_a"], 1)
+        self.assertEqual(r["stats"]["same"], 3)
+
+    def test_extra_frame(self):
+        a = [self._ev(0, "rx", "01"), self._ev(0.2, "rx", "03")]
+        b = [self._ev(0, "rx", "01"), self._ev(0.1, "rx", "02"),
+             self._ev(0.2, "rx", "03")]
+        r = self.D.compare(a, b)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["same", "only_b", "same"])
+
+    def test_direction_change_is_not_a_payload_change(self):
+        """RX 变 TX 是两件事，不是同一条帧的内容变化，不该合并成 diff。"""
+        a = [self._ev(0, "rx", "AA")]
+        b = [self._ev(0, "tx", "AA")]
+        r = self.D.compare(a, b)
+        self.assertEqual(sorted(x["kind"] for x in r["rows"]), ["only_a", "only_b"])
+
+    def test_timing_not_part_of_equality(self):
+        """同一条帧早 30ms 到达仍是同一条帧；把时序算进相等性会让所有条目都不相等。"""
+        a = [self._ev(0.0, "rx", "AA"), self._ev(1.0, "rx", "BB")]
+        b = [self._ev(0.0, "rx", "AA"), self._ev(1.5, "rx", "BB")]
+        r = self.D.compare(a, b)
+        self.assertTrue(r["stats"]["identical"])
+        self.assertEqual([x["dt"] for x in r["rows"]], [0.0, 0.5])
+        self.assertEqual(r["stats"]["max_dt"], 0.5)
+
+    def test_max_dt_keeps_sign(self):
+        """变快也要看得见，所以记的是带符号的最大偏移而不是绝对值。"""
+        a = [self._ev(0.0, "rx", "AA"), self._ev(2.0, "rx", "BB")]
+        b = [self._ev(0.0, "rx", "AA"), self._ev(1.0, "rx", "BB")]
+        r = self.D.compare(a, b)
+        self.assertEqual(r["stats"]["max_dt"], -1.0)
+
+    def test_empty_inputs(self):
+        r = self.D.compare([], [])
+        self.assertEqual(r["rows"], [])
+        self.assertTrue(r["stats"]["identical"])
+        a = [self._ev(0, "rx", "AA")]
+        r = self.D.compare(a, [])
+        self.assertEqual([x["kind"] for x in r["rows"]], ["only_a"])
+        r = self.D.compare([], a)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["only_b"])
+
+    def test_lcs_matches_naive_on_random_cases(self):
+        """线性空间 Hirschberg 的 LCS 长度必须与朴素 DP 完全一致（交叉验证正确性）。"""
+        import random
+
+        def naive(ka, kb):
+            n, m = len(ka), len(kb)
+            dp = [[0] * (m + 1) for _ in range(n + 1)]
+            for i in range(n):
+                for j in range(m):
+                    dp[i + 1][j + 1] = (dp[i][j] + 1 if ka[i] == kb[j]
+                                        else max(dp[i][j + 1], dp[i + 1][j]))
+            return dp[n][m]
+
+        rnd = random.Random(20260724)
+        for _ in range(200):
+            A = [self._ev(0, "rx", "%02X" % rnd.randint(0, 4))
+                 for _ in range(rnd.randint(0, 25))]
+            B = [self._ev(0, "rx", "%02X" % rnd.randint(0, 4))
+                 for _ in range(rnd.randint(0, 25))]
+            ops = self.D._lcs_ops(A, B)
+            lcs_len = sum(1 for o in ops if o[0] == "=")
+            ka = [self.D._key(x) for x in A]
+            kb = [self.D._key(x) for x in B]
+            self.assertEqual(lcs_len, naive(ka, kb))
+
+    def test_lcs_ops_cover_every_index_monotonically(self):
+        """对齐结果必须覆盖两侧每个下标恰一次、下标严格递增，且每个 '=' 两侧键相等。"""
+        import random
+        rnd = random.Random(7)
+        for _ in range(100):
+            A = [self._ev(0, "rx", "%02X" % rnd.randint(0, 3))
+                 for _ in range(rnd.randint(0, 30))]
+            B = [self._ev(0, "rx", "%02X" % rnd.randint(0, 3))
+                 for _ in range(rnd.randint(0, 30))]
+            ops = self.D._lcs_ops(A, B)
+            li = lj = -1
+            for tag, i, j in ops:
+                if i is not None:
+                    self.assertGreater(i, li); li = i
+                if j is not None:
+                    self.assertGreater(j, lj); lj = j
+                if tag == "=":
+                    self.assertEqual(self.D._key(A[i]), self.D._key(B[j]))
+            self.assertEqual(sorted(i for _, i, _ in ops if i is not None),
+                             list(range(len(A))))
+            self.assertEqual(sorted(j for _, _, j in ops if j is not None),
+                             list(range(len(B))))
+
+    def test_consecutive_changes_all_merge_to_diff(self):
+        """连续多帧内容都变了（同方向），要逐条合并成 diff，而不是只并第一对、其余
+        散成 only_a+only_b。归一化 + 块内逐条配对共同保证这点。"""
+        a = [self._ev(i * 0.1, "rx", "AA %02X" % i) for i in range(6)]
+        b = [self._ev(i * 0.1, "rx", "BB %02X" % i) for i in range(6)]
+        r = self.D.compare(a, b)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["diff"] * 6)
+
+    def test_change_plus_delete_mixed_block(self):
+        """一处改+一处删混在一起：改的合并成 diff、删的保留 only_a，不互相污染。"""
+        a = [self._ev(0, "rx", "01"), self._ev(1, "rx", "02"), self._ev(2, "rx", "03")]
+        b = [self._ev(0, "rx", "F1"), self._ev(2, "rx", "03")]   # 01→F1, 删 02
+        r = self.D.compare(a, b)
+        self.assertEqual([x["kind"] for x in r["rows"]], ["diff", "only_a", "same"])
+
+    def test_alignment_invariants_hold_on_random_cases(self):
+        """随机用例上的对齐不变量：每侧下标恰覆盖一次；same 两侧全等；diff 同向异字节；
+        stats 计数与 rows 一致。这是 _pair_ops 块状配对的总校验。"""
+        import random
+        from collections import Counter
+        rnd = random.Random(99)
+        for _ in range(400):
+            n1, n2 = rnd.randint(0, 15), rnd.randint(0, 15)
+            a = [self._ev(i * 0.1, rnd.choice(("rx", "tx")),
+                          "%02X" % rnd.randint(0, 3)) for i in range(n1)]
+            b = [self._ev(i * 0.1, rnd.choice(("rx", "tx")),
+                          "%02X" % rnd.randint(0, 3)) for i in range(n2)]
+            rows = self.D.compare(a, b)["rows"]
+            self.assertEqual(sorted(x["ia"] for x in rows if x["ia"] is not None),
+                             list(range(n1)))
+            self.assertEqual(sorted(x["ib"] for x in rows if x["ib"] is not None),
+                             list(range(n2)))
+            for x in rows:
+                if x["kind"] == "same":
+                    self.assertEqual(self.D._key(a[x["ia"]]), self.D._key(b[x["ib"]]))
+                elif x["kind"] == "diff":
+                    self.assertEqual(x["dir_a"], x["dir_b"])
+                    self.assertNotEqual(a[x["ia"]][2], b[x["ib"]][2])
+            c = Counter(x["kind"] for x in rows)
+            st = self.D.compare(a, b)["stats"]
+            for k in ("same", "diff", "only_a", "only_b"):
+                self.assertEqual(c.get(k, 0), st[k])
+
+    def test_degrades_gracefully_when_oversized(self):
+        """LCS 是 O(n*m)：超规模退化成线性比较并标记，绝不悄悄截断数据。"""
+        a = [self._ev(i * 0.01, "rx", "%02X" % (i % 256)) for i in range(20)]
+        r = self.D.compare(a, list(a), max_align=10)
+        self.assertTrue(r["degraded"])
+        self.assertEqual(r["stats"]["same"], 20)
+        self.assertEqual(len(r["rows"]), 20)
+
+    def test_not_degraded_within_limit(self):
+        a = [self._ev(i * 0.01, "rx", "%02X" % (i % 256)) for i in range(5)]
+        r = self.D.compare(a, list(a), max_align=10)
+        self.assertFalse(r["degraded"])
+
+    def test_degrade_by_cell_count(self):
+        """退化按格子数 n*m 而非条数：LCS 时间是 O(n*m)，用格子数才贴合真实开销。
+        一边条数很多但另一边很少时格子数小、瞬时算完，不该因单边条数多就退化。"""
+        a = [self._ev(i * 0.01, "rx", "%02X" % (i % 256)) for i in range(10)]
+        # max_align=10 → 阈值 100 格。各 9 条 = 81 格：不退化
+        self.assertFalse(self.D.compare(a[:9], a[:9], max_align=10)["degraded"])
+        # 各 10 条 = 100 格：达阈值，退化
+        self.assertTrue(self.D.compare(a, a, max_align=10)["degraded"])
+        # 10 × 5 = 50 格：远小于窄边条数暗示的规模，不退化（格子数判定的价值所在）
+        self.assertFalse(self.D.compare(a, a[:5], max_align=10)["degraded"])
+        # 直接用 max_cells：50 格 ≥ 40 阈值 → 退化
+        self.assertTrue(self.D.compare(a, a[:5], max_cells=40)["degraded"])
+
+    def test_narrow_side_stays_full_lcs(self):
+        """一边 3 条 × 另一边 5000 条 = 15000 格，远小于默认 50 万，走完整 LCS 不退化。"""
+        a = [self._ev(i * 0.01, "rx", "AA") for i in range(3)]
+        b = [self._ev(i * 0.01, "rx", "AA") for i in range(5000)]
+        self.assertFalse(self.D.compare(a, b)["degraded"])
+
+    def test_csv_export_escapes_formula_injection(self):
+        """首列以 = + - @ 开头会被 Excel 当公式执行，同报告导出的既有做法加前导单引号。"""
+        a = [self._ev(0, "rx", "01 03 AA")]
+        b = [self._ev(0, "rx", "01 03 BB")]
+        csv = self.D.rows_to_csv(self.D.compare(a, b)["rows"])
+        lines = csv.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("kind,"))
+        self.assertIn("01 03 AA", lines[1])
+        self.assertIn("01 03 BB", lines[1])
+
+    def test_csv_has_no_none(self):
+        """缺席侧的字段应是空串而不是字面 None。"""
+        a = [self._ev(0, "rx", "AA")]
+        csv = self.D.rows_to_csv(self.D.compare(a, [])["rows"])
+        self.assertNotIn("None", csv)
+
+
+class RecDiffDialogTests(unittest.TestCase):
+    """会话比较对话框接线。"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="ctdiff_")
+        self.w = _win()
+
+    def tearDown(self):
+        import shutil
+        dlg = getattr(self.w, "_rd_dlg", None)
+        if dlg is not None:
+            dlg.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, rows):
+        import os
+        import rec_replay
+        r = rec_replay.StreamRecorder()
+        r.events = [(t, d, bytes.fromhex(h)) for t, d, h in rows]
+        path = os.path.join(self.tmp, name)
+        r.save(path)
+        return path
+
+    def _dlg_with(self, rows_a, rows_b):
+        import rec_replay
+        pa = self._write("a.ctrec", rows_a)
+        pb = self._write("b.ctrec", rows_b)
+        self.w.open_rec_diff()
+        dlg = self.w._rd_dlg
+        for side, path in (("a", pa), ("b", pb)):
+            events, _h = rec_replay.load(path)
+            setattr(dlg, "_path_%s" % side, path)
+            setattr(dlg, "_events_%s" % side, events)
+        dlg._sync_controls()
+        return dlg
+
+    def test_compare_button_requires_both_sides(self):
+        self.w.open_rec_diff()
+        dlg = self.w._rd_dlg
+        dlg._path_a = ""
+        dlg._path_b = ""
+        dlg._events_a = []
+        dlg._events_b = []
+        dlg._result = None
+        dlg._sync_controls()
+        self.assertFalse(dlg.btn_cmp.isEnabled())
+        self.assertFalse(dlg.btn_export.isEnabled())
+
+    def test_empty_recording_is_comparable(self):
+        """空录制（有效文件但 0 事件）是合法输入：「设备这次一条都没回」正是要比出的差异，
+        就绪判定必须按是否选了文件、不能按事件数，否则空录制会把比较按钮锁死。"""
+        dlg = self._dlg_with([], [(0.0, "rx", "AA")])
+        self.assertTrue(dlg.btn_cmp.isEnabled(), "一侧空录制不该禁用比较")
+        dlg._on_compare()
+        self.assertEqual([x["kind"] for x in dlg._result["rows"]], ["only_b"])
+        # 两侧都空：完全一致
+        dlg2 = self._dlg_with([], [])
+        self.assertTrue(dlg2.btn_cmp.isEnabled())
+        dlg2._on_compare()
+        self.assertTrue(dlg2._result["stats"]["identical"])
+
+    def test_table_filters_to_differences(self):
+        dlg = self._dlg_with(
+            [(0.0, "tx", "AA"), (0.1, "rx", "01"), (0.2, "rx", "02")],
+            [(0.0, "tx", "AA"), (0.1, "rx", "01")])
+        dlg._on_compare()
+        dlg.chk_only_diff.setChecked(True)
+        self.assertEqual(dlg.table.rowCount(), 1)
+        dlg.chk_only_diff.setChecked(False)
+        self.assertEqual(dlg.table.rowCount(), 3)
+
+    def test_export_enabled_after_compare(self):
+        dlg = self._dlg_with([(0.0, "rx", "AA")], [(0.0, "rx", "BB")])
+        self.assertFalse(dlg.btn_export.isEnabled())
+        dlg._on_compare()
+        self.assertTrue(dlg.btn_export.isEnabled())
+
+    def test_help_uses_self_drawn_dialog_not_qmessagebox(self):
+        """帮助必须走自绘主题窗（对齐录制/回放），不用系统 QMessageBox —— 后者跨平台
+        样式和主题都对不上。模块级不再导入 QMessageBox 即证明整个对话框都不依赖它。"""
+        import rec_diff_dialog
+        self.assertFalse(hasattr(rec_diff_dialog, "QMessageBox"),
+                         "rec_diff_dialog 仍导入 QMessageBox，帮助/错误提示应走自绘窗+toast")
+        # 三语言帮助正文与标题齐全，且正文是富文本（有 <b> 标签，对齐 rr 观感）
+        from i18n import TR
+        for lang in TR:
+            with self.subTest(lang=lang):
+                self.assertIn("rd_help_title", TR[lang])
+                self.assertIn("<b>", TR[lang]["rd_help"])
+                self.assertNotIn("\n", TR[lang]["rd_help"])   # 富文本用 <br> 不用裸换行
+
+    def test_identical_reported_in_status(self):
+        rows = [(0.0, "tx", "AA"), (0.1, "rx", "01")]
+        dlg = self._dlg_with(rows, rows)
+        dlg._on_compare()
+        self.assertIn(self.w._t("rd_identical"), dlg.lbl_stat.text())
+
+    def test_hex_cell_shows_direction_and_truncates(self):
+        from rec_diff_dialog import RecDiffDialog, _HEX_PREVIEW
+        self.assertEqual(RecDiffDialog._hex_cell(b"", "rx"), "")
+        self.assertTrue(RecDiffDialog._hex_cell(b"\x01", "rx").startswith("\u2190"))
+        self.assertTrue(RecDiffDialog._hex_cell(b"\x01", "tx").startswith("\u2192"))
+        long = RecDiffDialog._hex_cell(bytes(_HEX_PREVIEW + 10), "rx")
+        self.assertIn("B)", long)          # 超长带 …(NB) 标注，完整值在 tooltip / CSV
+
+    def test_dialog_is_single_instance(self):
+        self.w.open_rec_diff()
+        first = self.w._rd_dlg
+        self.w.open_rec_diff()
+        self.assertIs(self.w._rd_dlg, first)
+
+    def test_menu_has_entry(self):
+        menu = self.w._build_titlebar_func_menu()
+        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        self.assertTrue(any(self.w._t("rd_title") in x for x in texts), texts)
+
+    def test_language_switch(self):
+        dlg = self._dlg_with([(0.0, "rx", "AA")], [(0.0, "rx", "BB")])
+        dlg._on_compare()
+        old = self.w._lang
+        try:
+            self.w._set_language("en")
+            self.assertEqual(dlg.windowTitle(), self.w._t("rd_title"))
+            self.assertEqual(dlg.table.horizontalHeaderItem(0).text(),
+                             self.w._t("rd_col_kind"))
+            # 已加载文件的描述是套翻译模板拼的，切语言必须重渲染，否则残留旧语言格式。
+            # 英文模板是 "{f} ({n} events)"，中文是 "{f}（{n} 条）"——用 events 判英文态。
+            self.assertIn("events", dlg.name_a.text(), dlg.name_a.text())
+            self.assertIn("a.ctrec", dlg.name_a.text())
+            self.w._set_language("zh")
+            self.assertIn("条", dlg.name_a.text(), dlg.name_a.text())
+        finally:
+            self.w._set_language(old)
+
+    def test_unloaded_side_shows_none_after_language_switch(self):
+        """只选了一边时，另一边切语言也要跟着刷成新语言的「未选择」。"""
+        self.w.open_rec_diff()
+        dlg = self.w._rd_dlg
+        dlg._path_a = ""
+        dlg._events_a = []
+        dlg._result = None
+        old = self.w._lang
+        try:
+            dlg.retranslate()
+            self.assertEqual(dlg.name_a.text(), self.w._t("rd_none"))
+            self.w._set_language("en")
+            self.assertEqual(dlg.name_a.text(), self.w._t("rd_none"))
+        finally:
+            self.w._set_language(old)
+
+    def test_i18n_keys_present(self):
+        from i18n import TR
+        keys = [k for k in TR["zh"] if k.startswith("rd_")]
+        self.assertGreater(len(keys), 20)
+        for lang in TR:
+            for k in keys:
+                with self.subTest(lang=lang, key=k):
+                    self.assertIn(k, TR[lang])
 
 
 if __name__ == "__main__":

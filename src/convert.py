@@ -6,7 +6,12 @@
 - 单值多进制：一个整数在 十进制 / HEX / 二进制 / 八进制 间转（可配位宽 + 有无符号）。
 
 界面(toolbox_dialog)只管收集输入 / 显示，转换规则全在这里，便于单元测试。
+
+另含两个供主数据区使用的纯函数（同样 Qt-free）：
+- hex_line_selection_to_bytes：结合整行布局提取选中的 HEX 字节（供选中即算校验和）；
+- format_numeric：字节流按数值类型渲染成序列文本（供数值视图）。
 """
+import re
 import struct
 
 # ---------------- 字节序列 ⇄ 各表示 ----------------
@@ -170,3 +175,99 @@ def custom_crc(data, width=16, poly=0x1021, init=0, refin=False,
         reg = _refl(reg, width)
     reg = (reg ^ xorout) & mask
     return reg.to_bytes((width + 7) // 8, byteorder)
+
+
+# ---------------- 数据区 HEX 选区 → 字节（选中即算校验和） ----------------
+def hex_line_selection_to_bytes(line, selection_start, selection_end, hexdump=False,
+                                limit=None):
+    """从一整条显示行中提取「被完整选中」的 HEX 字节。
+
+    本函数同时拿到未裁剪的整行和选区列范围，因此能辨认并跳过：
+    - 普通 HEX 视图行首的时间戳和方向箭头；
+    - HEX 转储的偏移列与 ASCII 列；
+    - 从装饰文本或 ASCII 列内部开始的局部选区。
+
+    只有两个十六进制字符都落在选区内才计入，半个字节 token 继续采用「宁可少算、不猜值」
+    的原则。selection_end 为 Python 切片式的开区间。
+
+    limit：取够这么多字节就停。上限必须能在「行内」生效——HEX 显示模式下不换行时整段数据
+    可能全挤在一条逻辑行里（实测 1 MB 数据只分 8 块），只在调用方按行收工的话上限形同虚设。
+    """
+    line = str(line)
+    try:
+        lo = max(0, int(selection_start))
+        hi = min(len(line), int(selection_end))
+    except (TypeError, ValueError):
+        return b""
+    if lo >= hi:
+        return b""
+
+    data_start = 0
+    data_end = len(line)
+    if hexdump:
+        # 必须看到完整的「8 位偏移 + 至少两个空格」行头才把它当转储行；否则不对任意文本猜列。
+        head = re.match(r"^[0-9A-Fa-f]{8}\s{2,}", line)
+        if not head:
+            return b""
+        data_start = head.end()
+        bar = line.find("|", data_start)
+        if bar >= 0:
+            data_end = bar
+    else:
+        # 普通 HEX 行的装饰都在数据前：时间戳 [...], 方向箭头 ←/→。基于完整行定位，
+        # 即使选区只截到时间戳中的 "26"，也不会把它误认成 0x26。
+        if line.startswith("["):
+            close = line.find("]")
+            if close >= 0:
+                data_start = close + 1
+        for arrow in ("\u2190", "\u2192"):
+            pos = line.rfind(arrow, data_start)
+            if pos >= 0:
+                data_start = max(data_start, pos + len(arrow))
+
+    out = bytearray()
+    token_re = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{2}(?![0-9A-Fa-f])")
+    for match in token_re.finditer(line, data_start, data_end):
+        if lo <= match.start() and match.end() <= hi:
+            out.append(int(match.group(0), 16))
+            if limit is not None and len(out) > limit:
+                break
+    return bytes(out)
+
+
+# ---------------- 字节流 → 数值序列（数值视图） ----------------
+# 值：(字节宽度, struct 码, 每行默认个数, 显示列宽)。
+# 窄类型每行多放几个、宽类型少放，行宽大致相当。
+# 列宽按该类型的极值写死（u16→65535 占 5、i16→-32768 占 6、f32→-1.23457e+38 占 12），
+# 不按本块最大值现算：现算的话每个收包各自成块、各算各的宽，量级一变纵向就参差
+# （1 2 3 / 4660 65535 / 7 8 三行对不齐）。写死才能让整条流始终对齐到同一网格。
+# 万一某个值超出该宽度，rjust 只是不补空格、不会截断，最多那一行凸出来。
+NUM_TYPES = {
+    "u8":  (1, "B", 16, 3), "i8":  (1, "b", 16, 4),
+    "u16": (2, "H", 16, 5), "i16": (2, "h", 16, 6),
+    "u32": (4, "I", 8, 10), "i32": (4, "i", 8, 11),
+    "f32": (4, "f", 8, 12),
+}
+
+
+def format_numeric(data, typ="u16", endian="le", per_line=0):
+    """字节流 → 数值序列文本，返回 (文本, 余数字节)。
+
+    余数（不够凑满一个元素的尾部字节）不丢弃也不显示，而是原样返回，由调用方带到下一包
+    继续拼——串口上一个 u16 被拆到两个收包里是常态，按包截断会让整条流从此错位。
+    每行 per_line 个（0=按类型取默认值），各值右对齐到该类型的固定列宽（见 NUM_TYPES），
+    使前后各块纵向对齐成列便于扫读。
+    typ 不认识时回退 u16；data 不足一个元素时返回 ("", 原始字节)。
+    """
+    data = bytes(data)
+    size, code, dflt, w = NUM_TYPES.get(typ, NUM_TYPES["u16"])
+    n = len(data) // size
+    if n <= 0:
+        return "", data
+    vals = struct.unpack(("<" if endian == "le" else ">") + str(n) + code, data[:n * size])
+    # %.6g：定点/科学计数自动切换，既不会把 1.5 印成 1.500000，也不会丢掉 1e-8 的量级
+    strs = ["%.6g" % v for v in vals] if code == "f" else [str(v) for v in vals]
+    per = per_line if per_line > 0 else dflt
+    lines = [" ".join(s.rjust(w) for s in strs[i:i + per])
+             for i in range(0, len(strs), per)]
+    return "\n".join(lines), data[n * size:]

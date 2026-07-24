@@ -183,6 +183,55 @@ class SerialConn(QObject):
     def is_open(self):
         return self._ser is not None and self._ser.is_open
 
+    def apply_params(self, baud=None, bytesize=None, parity=None, stopbits=None, flow=None):
+        """不断开连接，把新参数一次性应用到已打开的串口（None=该项不动）。
+
+        pyserial 对已打开端口每次属性赋值都会立即 reconfigure。为避免「baud 改成功、
+        parity 改失败」留下硬件跑混合参数、而函数却返回 False 的半应用状态，这里先快照
+        调用前的全部属性；任一项赋值抛错就把已改的属性逐一回滚回快照，让硬件与内部记录
+        都退回一致的旧状态，再发 error_occurred 让上层掉线路径接管。要么整体生效、要么
+        整体不变，绝不留中间态。
+
+        接收线程持有的是同一个 Serial 对象、无需重启；试波特率不用断开重连，接收缓冲也不丢。
+        全部成功返回 True 并同步内部记录（掉线重连按新参数）。
+        """
+        if not (self._ser and self._ser.is_open):
+            return False
+        # (Serial 属性名, 目标值, 内部记录属性名)；None 的项跳过
+        steps = []
+        if baud is not None:
+            steps.append(("baudrate", int(baud), "_baud"))
+        if bytesize is not None:
+            steps.append(("bytesize", bytesize, "_bytesize"))
+        if parity is not None:
+            steps.append(("parity", parity, "_parity"))
+        if stopbits is not None:
+            steps.append(("stopbits", stopbits, "_stopbits"))
+        if flow is not None:
+            steps.append(("rtscts", flow == "rtscts", None))
+            steps.append(("xonxoff", flow == "xonxoff", None))
+        snapshot = {attr: getattr(self._ser, attr) for attr, _v, _rec in steps}
+        done = []
+        try:
+            for attr, val, _rec in steps:
+                setattr(self._ser, attr, val)     # 每次赋值即 reconfigure，可能抛
+                done.append(attr)
+        except Exception as e:
+            for attr in reversed(done):           # 回滚已改的，退回快照
+                try:
+                    setattr(self._ser, attr, snapshot[attr])
+                except Exception:
+                    pass                          # 回滚都失败 → 端口确已坏，交给掉线路径
+            self.error_occurred.emit(str(e))
+            return False
+        # 全部硬件赋值成功，再同步内部记录（重连真源）；flow 单独记
+        for _attr, val, rec in steps:
+            if rec is not None:
+                setattr(self, rec, val)
+        if flow is not None:
+            self._flow = flow
+        return True
+
     # ----- 控制线（仅串口有；NetConn 无这些方法，上层按类型调用）-----
     def set_dtr(self, on):
         """设 DTR 输出线（高=True/低=False）。未连接则忽略。"""

@@ -38,6 +38,8 @@ from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 from virtual_io import VirtualConn, PROTO_VIRTUAL
 import send_dsl
 import binproto
+import convert
+import log_naming
 import modbus_slave
 import modbus_master
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
@@ -56,6 +58,25 @@ _SEQ_MAX_RETRIES = 999       # 引擎端也必须限制，防止 JSON/旧配置�
 _SEQ_QTIMER_MAX_MS = 0x7FFFFFFF
 _SEQ_RETRY_GUARD_MS = 50     # 重试前要求连续安静，迟到字节会重新起算该窗口
 _SEQ_RETRY_MAX_QUIET_MS = 2000  # 静默窗上限：对端持续 <50ms 刷数据也不致无限延后重发，超此照常重发
+
+# 数据区正文的实际渲染格式。切换视图不会重排历史，所以格式必须跟着字符保存，不能只看当前开关。
+VIEW_PROP = QTextFormat.UserProperty + 2
+VIEW_TEXT = 1
+VIEW_HEX = 2
+VIEW_HEXDUMP = 3
+VIEW_NUMERIC = 4
+VIEW_TERMINAL = 5
+
+# 串口参数：UI 文案 → pyserial 常量。open_conn 建连接与 _apply_serial_params_live
+# 动态改参数共用同一份，两处解释绝不允许分叉。
+_PARITY_MAP = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
+               "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
+               "Space": serial.PARITY_SPACE}
+_STOPBITS_MAP = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
+                 "2": serial.STOPBITS_TWO}
+_DATABITS_MAP = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
+                 "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
+_FLOW_MAP = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
 
 
 def _ar_crc_impl(data, width=16, poly=0x1021, init=0x0000,
@@ -209,6 +230,152 @@ class ThemedToolTip(QLabel):
         self.move(x, y)
 
 
+class ChecksumPopup(QWidget):
+    """状态栏选区校验的应用内卡片，规避原生 tooltip 的跨平台样式差异。"""
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        self.card = QFrame()
+        self.card.setObjectName("ChecksumCard")
+        self.card.setFixedWidth(300)
+        outer.addWidget(self.card)
+
+        content = QVBoxLayout(self.card)
+        content.setContentsMargins(16, 14, 16, 14)
+        content.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+        self.title = QLabel()
+        self.title.setObjectName("ChecksumTitle")
+        self.title.setFont(ui_font(11, bold=True))
+        header.addWidget(self.title, 1)
+        self.meta = QLabel()
+        self.meta.setObjectName("ChecksumMeta")
+        self.meta.setAlignment(Qt.AlignCenter)
+        self.meta.setFont(ui_font(9))
+        header.addWidget(self.meta)
+        content.addLayout(header)
+
+        divider = QFrame()
+        divider.setObjectName("ChecksumDivider")
+        divider.setFixedHeight(1)
+        content.addWidget(divider)
+
+        self.rows = QWidget()
+        self.rows.setObjectName("ChecksumRows")
+        self.grid = QGridLayout(self.rows)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(14)
+        self.grid.setVerticalSpacing(5)
+        self.grid.setColumnStretch(1, 1)
+        content.addWidget(self.rows)
+
+        self._rows = []          # [(名称 label, 值 label)]，按需增长后复用
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+
+    def _row_at(self, i):
+        """取第 i 行的两个 label，不够就新建。
+
+        行控件复用而不是每次重建：算法集是固定的 9 行，重建除了白费还会让每次悬停都
+        丢下 18 个待销毁的 QLabel —— deleteLater 要等事件循环空闲才真删，连续悬停时
+        它们会短暂堆积（实测连刷 10 次不给事件循环，子控件从 20 涨到 200）。
+        """
+        while len(self._rows) <= i:
+            name_label = QLabel()
+            name_label.setObjectName("ChecksumName")
+            name_label.setFont(ui_font(9))
+            value_label = QLabel()
+            value_label.setObjectName("ChecksumValue")
+            value_label.setFont(mono_font(9))
+            value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            value_label.setTextInteractionFlags(Qt.NoTextInteraction)
+            row = len(self._rows)
+            self.grid.addWidget(name_label, row, 0)
+            self.grid.addWidget(value_label, row, 1)
+            self._rows.append((name_label, value_label))
+        return self._rows[i]
+
+    def set_content(self, title, meta, rows, colors):
+        self.title.setText(title)
+        self.meta.setText(meta)
+        for i, (name, value) in enumerate(rows):
+            name_label, value_label = self._row_at(i)
+            name_label.setText(name)
+            value_label.setText(value)
+            name_label.show()
+            value_label.show()
+        for name_label, value_label in self._rows[len(rows):]:   # 多余的行藏起来备用
+            name_label.hide()
+            value_label.hide()
+
+        self.card.setStyleSheet(localize_qss(f"""
+            QFrame#ChecksumCard {{
+                background-color: {colors['card_bg']};
+                border: 1px solid {colors['separator']};
+                border-radius: 12px;
+            }}
+            QLabel#ChecksumTitle {{
+                color: {colors['text']};
+                background: transparent;
+            }}
+            QLabel#ChecksumMeta {{
+                color: {colors['accent']};
+                background-color: {colors['ghost_bg']};
+                border-radius: 8px;
+                padding: 3px 8px;
+            }}
+            QFrame#ChecksumDivider {{
+                background-color: {colors['separator']};
+                border: 0;
+            }}
+            QWidget#ChecksumRows, QLabel#ChecksumName {{
+                color: {colors['text_sec']};
+                background: transparent;
+                border: 0;
+            }}
+            QLabel#ChecksumValue {{
+                color: {colors['text']};
+                background-color: {colors['input_bg']};
+                border: 0;
+                border-radius: 6px;
+                padding: 3px 8px;
+            }}
+        """))
+        self.adjustSize()
+
+    def show_for(self, anchor):
+        """贴着状态栏标签上方显示，并限制在当前屏幕可用区域内。"""
+        self.adjustSize()
+        top_left = anchor.mapToGlobal(QPoint(0, 0))
+        screen = QApplication.screenAt(top_left) or QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 99999, 99999)
+        x = top_left.x() + (anchor.width() - self.width()) // 2
+        y = top_left.y() - self.height() - 6
+        x = max(geo.left() + 4, min(x, geo.right() - self.width() - 3))
+        if y < geo.top() + 4:
+            y = min(geo.bottom() - self.height() - 3,
+                    top_left.y() + anchor.height() + 6)
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        self._hide_timer.start(20000)
+
+    def hideEvent(self, event):
+        self._hide_timer.stop()
+        super().hideEvent(event)
+
+
 # ============== 主窗口 ==============
 class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
@@ -238,6 +405,8 @@ class CommTool(QMainWindow):
         # 事件过滤器拦截 ToolTip 事件（Windows/Linux 原生 tooltip 正常，不拦截）。
         self._mac_tooltip = sys.platform == "darwin"
         self._tooltip_popup = None
+        self._sel_chk_popup = None
+        self._sel_chk_popup_payload = None
         if self._manual_resize or self._mac_tooltip:
             QApplication.instance().installEventFilter(self)
 
@@ -277,8 +446,9 @@ class CommTool(QMainWindow):
         self._log_file = None
         self._log_file_path = ""
         self._log_limit = 0       # 分包字节上限，0=不分包
-        self._log_base_path = ""  # 用户选的原始路径，分包时据此派生 _001/_002...
+        self._log_base_path = ""  # 用户选的原始路径(可含 %date/%port 等变量)，分包/跨日据此派生
         self._log_seg = 0         # 当前分包序号
+        self._log_opened_at = None  # 当前分包的开启时刻，用于跨午夜判定（见 log_naming.should_roll_date）
         self._recv_font_size = 10
 
         self.settings = QSettings(self._settings_file(self._profile), QSettings.IniFormat)
@@ -333,6 +503,7 @@ class CommTool(QMainWindow):
         self._recorder = StreamRecorder()  # 数据录制：原始收发流按时序存 .ctrec，可当「设备」回放
         self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
         self._rr_dlg = None                # 录制/回放对话框（单实例）
+        self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
         self._dsl_ops = None               # 命令 DSL 执行中的指令序列（None=空闲）
         self._dsl_idx = 0
         self._dsl_gen = 0                  # 代际：中止后让已排队的 QTimer 回调失效
@@ -359,6 +530,9 @@ class CommTool(QMainWindow):
         self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
         self._hexdump_on = self.settings.value("hexdump_view", False, type=bool)        # HEX dump 视图（偏移+HEX+ASCII 三列）
+        self._numview_on = self.settings.value("numview", False, type=bool)             # 数值视图（字节流按数值类型解读）
+        # 数值视图余数按来源隔离：TCP Server 多客户端的半个数不能互相拼接；普通串口/单连接用 None 键。
+        self._numview_carries = {}
         self._proto_hl_on = self.settings.value("proto_highlight", False, type=bool)     # 协议高亮（HEX 模式按帧解析规则给字段上色）
         self._proto_fields = deque(maxlen=3000)   # [{cursor, color, label}]：已上色字段(带 keepPositionOnInsert 的 QTextCursor)，供高亮+悬浮
         self._proto_rules_raw = None              # frame_rules 上次解析时的原始串（变了才重解析）
@@ -618,6 +792,18 @@ class CommTool(QMainWindow):
         self.status_bar.addWidget(_sep())
         self.status_bar.addWidget(self.lbl_tx_stat)
 
+        # 选中即算校验和 — 数据区选一段就地出结果，省去「复制 → 开工具箱 → 粘贴」三步。
+        # 常用的三种(Modbus/XOR/SUM)直接摆出来，9 种全量放 tooltip：状态栏宽度有限，
+        # 塞满会和 toast 打架（曾有过统计文字与 toast 重叠的问题）。无选区时连分隔一起隐藏。
+        self._sel_chk_sep = _sep()
+        self._sel_chk_sep.hide()
+        self.lbl_sel_chk = QLabel("")
+        self.lbl_sel_chk.setFont(ui_font(10))
+        self.lbl_sel_chk.installEventFilter(self)
+        self.lbl_sel_chk.hide()
+        self.status_bar.addWidget(self._sel_chk_sep)
+        self.status_bar.addWidget(self.lbl_sel_chk)
+
         # 状态栏右键 → 重置统计
         self.status_bar.setContextMenuPolicy(Qt.CustomContextMenu)
         self.status_bar.customContextMenuRequested.connect(self._stat_context_menu)
@@ -801,6 +987,15 @@ class CommTool(QMainWindow):
         self.cb_flow.setCurrentText("None")
         self.cb_flow.currentIndexChanged.connect(self._on_flow_changed)
         self.row_flow = make_row("flow_control", self.cb_flow)
+
+        # 串口参数连接期间可改、改动即应用（见 _apply_serial_params_live）。
+        # 刻意只挂 activated（用户在下拉里点选）与 editingFinished（波特率手输后回车/失焦）：
+        # currentTextChanged 会在手输过程中逐字符触发（1→11→115…），把中间值打进串口；
+        # 程序化 setCurrentText（切配置/导入）也会触发 currentIndexChanged —— 都不能用。
+        for _cb in (self.cb_baud, self.cb_databits, self.cb_parity,
+                    self.cb_stopbits, self.cb_flow):
+            _cb.activated.connect(self._apply_serial_params_live)
+        self.cb_baud.lineEdit().editingFinished.connect(self._apply_serial_params_live)
 
         # 本地 IP（TCP Server / UDP）— 下拉本机网卡 IP，可编辑
         self.cb_local_ip = QComboBox()
@@ -1060,6 +1255,26 @@ class CommTool(QMainWindow):
         # 同「换行分包 / 实时记录」风格：开关在中列、下拉在最右列（与其它下拉右对齐）
         sw_extra_row(row, "hexdump_view", self.sw_hexdump, self.cb_hexdump_width); row += 1
 
+        # 数值视图：字节流按 u8/i8/u16/i16/u32/i32/f32 × 大小端 解读成数值序列（看 ADC / 传感器原始值）。
+        # 与 HEX 转储同为「接管数据区」的显示模式，二者互斥（见 _refresh_hex_toggle_state）。
+        # 类型与字节序合并进一个下拉：8 位无字节序之分，故不单列字节序开关，省一行且没有无效组合。
+        self.sw_numview = IOSSwitch(self._numview_on)
+        self.sw_numview.setProperty("tr_tooltip", "numview_tip")
+        self.sw_numview.setToolTip(self._t("numview_tip"))
+        self.sw_numview.toggled.connect(self._on_numview_toggled)
+        self.cb_numview_type = QComboBox()
+        for _t_, _e_ in (("u8", ""), ("i8", ""),
+                         ("u16", "le"), ("u16", "be"), ("i16", "le"), ("i16", "be"),
+                         ("u32", "le"), ("u32", "be"), ("i32", "le"), ("i32", "be"),
+                         ("f32", "le"), ("f32", "be")):
+            self.cb_numview_type.addItem(
+                _t_ if not _e_ else "%s %s" % (_t_, _e_.upper()), (_t_, _e_ or "le"))
+        self.cb_numview_type.setFixedWidth(MAIN_W)
+        self.cb_numview_type.setProperty("tr_tooltip", "numview_type_tip")
+        self.cb_numview_type.setToolTip(self._t("numview_type_tip"))
+        self.cb_numview_type.currentIndexChanged.connect(self._on_numview_type_changed)
+        sw_extra_row(row, "numview", self.sw_numview, self.cb_numview_type); row += 1
+
         # 协议高亮开关不在此卡片——挪进「帧解析」对话框（复用其 frame_rules、不常用），见
         # FrameParseDialog.chk_highlight 与 set_proto_highlight()。
 
@@ -1097,6 +1312,10 @@ class CommTool(QMainWindow):
         sw_extra_row(row, "line_split", self.sw_line_split, self.cb_line_nl); row += 1
 
         self.sw_log_file = IOSSwitch(False)
+        # 文件名变量说明挂在开关上：用户是在这里开功能、随后才看到文件对话框，
+        # 到了对话框里再想起有变量可用就晚了
+        self.sw_log_file.setToolTip(self._t("log_vars_tip"))
+        self.sw_log_file.setProperty("tr_tooltip", "log_vars_tip")
         self.sw_log_file.toggled.connect(self.on_log_file_toggled)
         # 实时记录按文件大小分包：到设定大小切到新文件（可编辑自定义，如 3M）
         self.cb_log_split = QComboBox()
@@ -1319,6 +1538,11 @@ class CommTool(QMainWindow):
         self.txt_recv.setObjectName("RecvBox")
         self.txt_recv.setFont(mono_font(self._recv_font_size))
         self.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
+        # 「选中即算校验和」的发现性入口：状态栏那个标签平时是隐藏的（没选区就没内容），
+        # 提示挂在数据区自己身上，用户才可能碰到。协议高亮模式下会被它自己的字段气泡接管
+        # （见 eventFilter 的 ToolTip 分支），那是有意的——那种模式有更具体的东西要说。
+        self.txt_recv.setProperty("tr_tooltip", "sel_chk_hint")
+        self.txt_recv.setToolTip(self._t("sel_chk_hint"))
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
         self._build_search_bar()
@@ -1335,6 +1559,13 @@ class CommTool(QMainWindow):
         self._kw_timer.setSingleShot(True)
         self._kw_timer.setInterval(150)
         self._kw_timer.timeout.connect(self._refresh_extra_selections)
+        # 选中即算校验和：selectionChanged 在拖选过程中逐字符触发，节流到 ~120ms 一次，
+        # 否则每动一格就跑 9 遍纯 Python 校验循环，长选区拖选会明显掉帧
+        self._sel_chk_timer = QTimer(self)
+        self._sel_chk_timer.setSingleShot(True)
+        self._sel_chk_timer.setInterval(120)
+        self._sel_chk_timer.timeout.connect(self._update_sel_checksum)
+        self.txt_recv.selectionChanged.connect(self._sel_chk_timer.start)
         # 浮动「回到底部」按钮：做成 txt_recv 子控件，悬在右下角；翻到上面才显示
         self.btn_to_bottom = QPushButton(self._t("to_bottom"), self.txt_recv)
         self.btn_to_bottom.setObjectName("ToBottomBtn")
@@ -1399,6 +1630,19 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # 选区校验结果使用应用内卡片，不交给各平台样式差异很大的原生 QToolTip。
+        if obj is getattr(self, "lbl_sel_chk", None):
+            et = event.type()
+            if et == QEvent.ToolTip:
+                if self._sel_chk_popup_payload:
+                    self._show_sel_checksum_popup()
+                elif self._sel_chk_popup is not None:
+                    self._sel_chk_popup.hide()
+                return True
+            if (self._sel_chk_popup is not None and self._sel_chk_popup.isVisible()
+                    and et in (QEvent.Leave, QEvent.MouseButtonPress, QEvent.Wheel)):
+                self._sel_chk_popup.hide()
+
         # 右下角版本号徽标：有新版时点一下打开「关于」走更新（无新版则普通标签、点击无反应）
         if obj is getattr(self, "lbl_version", None) and event.type() == QEvent.MouseButtonPress:
             if self._update_badge_version:
@@ -1518,7 +1762,7 @@ class CommTool(QMainWindow):
                 # 悬浮到协议高亮字段上 → 弹「规则 · 字段=值」解析气泡（仅普通 HEX 模式 + 协议高亮开启 + 有字段时接管）
                 elif (event.type() == QEvent.ToolTip and self._proto_hl_on
                       and self.sw_rx_hex.isChecked() and not self._hexdump_on
-                      and self._proto_fields):
+                      and not self._numview_on and self._proto_fields):
                     pos = self.txt_recv.cursorForPosition(event.pos()).position()
                     label = self._proto_field_at(pos)
                     if label:
@@ -1830,7 +2074,7 @@ class CommTool(QMainWindow):
         # 必须限定「普通 HEX 显示」模式：字段区间是按 HEX 渲染算的——切到文本模式位置无意义，
         # HEX 转储是另一种排版（偏移+HEX+ASCII）也不适用，两种都不画（切回普通 HEX 自动重现）。
         if (self._proto_hl_on and self.sw_rx_hex.isChecked()
-                and not self._hexdump_on and not capped):
+                and not self._hexdump_on and not self._numview_on and not capped):
             for fld in self._proto_fields:
                 cur = fld["cursor"]
                 if cur.selectionStart() == cur.selectionEnd():
@@ -1942,6 +2186,7 @@ class CommTool(QMainWindow):
         self._save_keyword_groups()
         self._kw_timer.stop()
         self._refresh_extra_selections()
+        self._update_sel_checksum()
 
     def _rebuild_kw_group_combo(self):
         """重建数据区标题栏的分组下拉：顶部「（关闭）」+ 各分组名，选中当前生效分组。"""
@@ -2577,6 +2822,8 @@ class CommTool(QMainWindow):
         return dump
 
     def _on_hexdump_toggled(self, on):
+        if on and getattr(self, "_numview_on", False):
+            self._flush_numview_carries()
         self._hexdump_on = bool(on)
         self.settings.setValue("hexdump_view", self._hexdump_on)
         self._refresh_hex_toggle_state()   # hexdump 接管 HEX 显示 → 灰掉 HEX 显示开关，明确优先级
@@ -2590,17 +2837,226 @@ class CommTool(QMainWindow):
         self.settings.setValue("hexdump_width", self.cb_hexdump_width.currentText())
         self._reset_recv_state()   # 换每行字节数 → 下一块按新宽度起新 block（不重排已有内容）
 
+    # ----- 数值视图（字节流按 u8/i16/f32… 解读成数值序列）-----
+    def _numview_spec(self):
+        """当前选中的 (类型, 字节序)；下拉尚未建好或数据异常时回退 ('u16','le')。"""
+        cb = getattr(self, "cb_numview_type", None)
+        if cb is None:
+            return "u16", "le"
+        spec = cb.currentData()
+        if not (isinstance(spec, tuple) and len(spec) == 2):
+            return "u16", "le"
+        return spec
+
+    def _numview_block(self, data, carry=True, source=None):
+        """字节 → 数值序列块。carry=True 时把凑不满一个数的尾部字节留到下一包（RX 连续流）；
+        TCP Server 按 source 分流，避免不同客户端的碎片拼成同一个数。TX 是一次成帧、与 RX 流无关，
+        用 carry=False 独立成块，免得两条方向互相污染余数。"""
+        typ, endian = self._numview_spec()
+        if carry:
+            data = self._numview_carries.get(source, b"") + bytes(data)
+        text, rest = convert.format_numeric(data, typ, endian)
+        if carry:
+            if rest:
+                self._numview_carries[source] = rest
+            else:
+                self._numview_carries.pop(source, None)
+        elif rest:
+            # TX 与 UDP 数据报是独立边界，余数既不能拼到下一帧，也不能静默消失。
+            tail = self._t("numview_tail", data=rest.hex(" ").upper())
+            text = text + ("\n" if text else "") + tail
+        # 同 _hexdump_block：多行块在时间戳/箭头开启时前置换行，避免首行被推右、续行纵向错位
+        if text and self.sw_show_timestamp.isChecked():
+            text = "\n" + text
+        return text
+
+    def _flush_numview_carries(self, sources=None):
+        """连续流结束/换口径时，把未凑整的 RX 尾字节明确显示出来，不让它们随 reset 静默消失。"""
+        carries = getattr(self, "_numview_carries", {})
+        wanted = set(carries) if sources is None else set(sources)
+        tails = []
+        for source in list(carries):
+            if source in wanted:
+                rest = carries.pop(source)
+                if rest:
+                    tails.append(rest)
+        if not tails or not hasattr(self, "txt_recv"):
+            return
+        for rest in tails:
+            text = self._t("numview_tail", data=rest.hex(" ").upper())
+            self._append_block_data(text, direction="rx", force_new_block=True,
+                                    view_mode=VIEW_NUMERIC)
+            self._last_direction = "rx"
+
+    def _on_numview_toggled(self, on):
+        if not on:
+            self._flush_numview_carries()
+        self._numview_on = bool(on)
+        self.settings.setValue("numview", self._numview_on)
+        self._refresh_hex_toggle_state()   # 数值视图接管显示 → 灰掉 HEX 显示 / HEX 转储，明确优先级
+        self._reset_recv_state()           # 切视图 → 下一数据块从干净状态起（含清余数、清协议字段）
+        # 同 _on_hexdump_toggled：_reset_recv_state 清了 _proto_fields，但旧 ExtraSelection 还挂在
+        # 视图上，不刷新则旧协议色块残留到下一包才消失（协议高亮仅普通 HEX 模式适用）
+        self._kw_timer.stop()
+        self._refresh_extra_selections()
+        self._update_sel_checksum()        # 视图变了 → 选区字节的解读方式也变，重算校验和
+
+    def _on_numview_type_changed(self, *_):
+        self._flush_numview_carries()
+        idx = self.cb_numview_type.currentIndex()
+        self.settings.setValue("numview_type", idx)
+        self._reset_recv_state()   # 换类型 → 余数按旧宽度攒的已无意义，清掉从下一包重新对齐
+
+    # ----- 选中即算校验和 -----
+    # 选区字节数上限。定这个数不是防内存，是防卡界面：9 种算法里多数是纯 Python 逐位
+    # 循环，整条链路跑在 GUI 线程上（120ms 节流后）。实测本机：提取 64 KB 只要 ~70ms，
+    # 但对它算完 9 种要 ~280ms —— 瓶颈在计算不在提取。按 16 KB 卡到 ~85ms，仍远大于
+    # 任何真实帧长（这功能是给「选中一帧看 CRC」用的，不是给大文件算校验的，
+    # 那是工具箱的活）。改大前先按上面的数据估一下停顿。
+    _SEL_CHK_MAX = 16 * 1024
+    # 状态栏直出的三种（覆盖绝大多数嵌入式协议），其余 6 种在 tooltip 里
+    _SEL_CHK_BRIEF = ((5, "Modbus"), (3, "XOR"), (1, "SUM"))
+
+    def _selected_hex_bytes(self, cursor, limit=None):
+        """按正文 fragment 保存的实际视图类型提取选中的 HEX token。
+
+        返回 bytes；若选区触及文本/数值/终端等不可无损还原的正文，返回 None 并整段拒算。
+        视图类型跟内容一起存，所以切换视图后选择历史数据仍按它当时的格式解析。
+
+        limit：取够这么多字节就停。本函数在 120ms 节流后跑在 GUI 线程上，而「最大行数」
+        可配到 100 万行；Ctrl+A 全选时逐块扫正则实测 1 万行要 ~190ms，按上限推是十几秒的
+        界面卡死。超过上限上层本就只会拒算、不会用这些字节，没必要把整篇文档扫完。
+        """
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        if start >= end:
+            return b""
+        block = self.txt_recv.document().findBlock(start)
+        out = bytearray()
+        while block.isValid() and block.position() < end:
+            line = block.text()
+            block_pos = block.position()
+            lo = max(0, start - block_pos)
+            hi = min(len(line), end - block_pos)
+            views = set()
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    frag_start = frag.position()
+                    frag_end = frag_start + frag.length()
+                    if frag_end > start and frag_start < end:
+                        view = frag.charFormat().property(VIEW_PROP)
+                        if view is not None:
+                            views.add(view)
+                it += 1
+            if views - {VIEW_HEX, VIEW_HEXDUMP}:
+                return None
+            if len(views) > 1:   # 同一行格式损坏/混合时不猜
+                return None
+            if views:
+                view = next(iter(views))
+                out.extend(convert.hex_line_selection_to_bytes(
+                    line, lo, hi, hexdump=(view == VIEW_HEXDUMP),
+                    limit=None if limit is None else limit - len(out)))
+            if limit is not None and len(out) > limit:
+                break      # 已确定超限，多扫无益（返回值只用于 len > limit 的判定）
+            block = block.next()
+        return bytes(out)
+
+    def _sel_chk_popup_content(self, data: bytes):
+        """生成卡片内容；名称复用工具箱的 CHECKSUM_KEYS，避免同一算法两套叫法。"""
+        rows = [
+            (self._t(CHECKSUM_KEYS[idx]),
+             self.compute_checksum(data, idx).hex(" ").upper())
+            for idx in range(1, len(CHECKSUM_KEYS))
+        ]
+        return (
+            self._t("sel_chk_popup_title"),
+            self._t("sel_chk_popup_meta", n=self.fmt_bytes(len(data)), m=len(rows)),
+            rows,
+        )
+
+    def _show_sel_checksum_popup(self):
+        # isVisible() 在主窗口尚未 show 的离屏测试中也会返回 False；这里只需确认标签
+        # 自身没有被业务逻辑隐藏，实际悬停事件只可能来自已显示窗口。
+        if not self._sel_chk_popup_payload or self.lbl_sel_chk.isHidden():
+            return
+        if self._sel_chk_popup is None:
+            self._sel_chk_popup = ChecksumPopup()
+        title, meta, rows = self._sel_chk_popup_payload
+        tid = self._theme_id()
+        self._sel_chk_popup.set_content(title, meta, rows, chrome_for(tid))
+        self._sel_chk_popup.show_for(self.lbl_sel_chk)
+
+    def _hide_sel_checksum(self):
+        """收起状态栏的校验和显示（连同它左边那条分隔，免得悬空）。"""
+        self.lbl_sel_chk.setText("")
+        self.lbl_sel_chk.setToolTip("")
+        self._sel_chk_popup_payload = None
+        if self._sel_chk_popup is not None:
+            self._sel_chk_popup.hide()
+        self.lbl_sel_chk.hide()
+        self._sel_chk_sep.hide()
+
+    def _update_sel_checksum(self):
+        """数据区选区变化 → 状态栏就地显示这段字节的校验和（节流后调用）。"""
+        if not hasattr(self, "lbl_sel_chk"):
+            return
+        cur = self.txt_recv.textCursor()
+        if not cur.hasSelection():
+            self._hide_sel_checksum()
+            return
+        data = self._selected_hex_bytes(cur, limit=self._SEL_CHK_MAX)
+        if data is None or not data:
+            # 选中的全是装饰（时间戳/箭头/纯文本），一个字节也解析不出 → 什么都不显示，
+            # 而不是显示"0 字节"的空结果
+            self._hide_sel_checksum()
+            return
+
+        if len(data) > self._SEL_CHK_MAX:
+            # 超限只说明未算，不报字节数 —— 提取在够数时就提前收工了，len(data) 只是
+            # 「超过上限」的证据、不是选区实际大小，拿它当数字报出来会是假精确。
+            # 也不截断一部分去算：那会给出一个"看着像真的"的错值，比不给结果危险得多。
+            self.lbl_sel_chk.setText(self._t("sel_chk_too_big", n=self._SEL_CHK_MAX // 1024))
+            self.lbl_sel_chk.setToolTip("")
+            self._sel_chk_popup_payload = None
+            if self._sel_chk_popup is not None:
+                self._sel_chk_popup.hide()
+        else:
+            head = "%s %s" % (self._t("sel_chk"), self.fmt_bytes(len(data)))
+            brief = ["%s %s" % (name, self.compute_checksum(data, idx).hex(" ").upper())
+                     for idx, name in self._SEL_CHK_BRIEF]
+            self.lbl_sel_chk.setText("%s · %s" % (head, "  ".join(brief)))
+            self._sel_chk_popup_payload = self._sel_chk_popup_content(data)
+            # 非空 tooltip 属性让 Qt 按系统悬停延时派发 QEvent.ToolTip；事件过滤器会
+            # 消费事件并显示 ChecksumPopup，因此这个纯文本不会交给原生提示框绘制。
+            self.lbl_sel_chk.setToolTip(self._sel_chk_popup_payload[0])
+            if self._sel_chk_popup is not None and self._sel_chk_popup.isVisible():
+                self._show_sel_checksum_popup()
+        self.lbl_sel_chk.show()
+        self._sel_chk_sep.show()
+
     def _refresh_hex_toggle_state(self):
-        """集中管理 HEX 显示 / HEX dump 两开关的可用性：终端模式两者都禁用；hexdump 开启时
-        HEX 显示被其接管 → 灰掉（避免「关了 HEX 显示为何还是十六进制」的困惑）。每行字节数下拉仅
-        hexdump 开启(且非终端)时可选。"""
+        """集中管理 HEX 显示 / HEX 转储 / 数值视图 三个显示开关的可用性。
+
+        优先级：终端模式 > 数值视图 ≡ HEX 转储 > HEX 显示。终端模式下三者全禁用；
+        HEX 转储与数值视图都「接管整个数据区」，语义冲突 → 互相灰掉对方（要换得先关当前这个，
+        和 hexdump 灰掉 HEX 显示是同一套规则），任一开启都会灰掉 HEX 显示，避免
+        「关了 HEX 显示为何还是十六进制 / 数字」的困惑。两个附属下拉各自仅在本模式开启时可选。"""
         term = getattr(self, "_terminal_on", False)
+        num = getattr(self, "_numview_on", False)
         if hasattr(self, "sw_hexdump"):
-            self.sw_hexdump.setEnabled(not term)
+            # 异常/导入配置若让两个模式同时为 True，HEX 转储按渲染优先级获胜且保持可操作，
+            # 用户仍能先关掉它退出冲突态，不能把两个开关一起锁死。
+            self.sw_hexdump.setEnabled(not term and (not num or self._hexdump_on))
+        if hasattr(self, "sw_numview"):
+            self.sw_numview.setEnabled(not term and not self._hexdump_on)
         if hasattr(self, "sw_rx_hex"):
-            self.sw_rx_hex.setEnabled(not term and not self._hexdump_on)
+            self.sw_rx_hex.setEnabled(not term and not self._hexdump_on and not num)
         if hasattr(self, "cb_hexdump_width"):
             self.cb_hexdump_width.setEnabled(not term and self._hexdump_on)
+        if hasattr(self, "cb_numview_type"):
+            self.cb_numview_type.setEnabled(not term and num)
 
     @staticmethod
     def _parse_port(text):
@@ -2639,20 +3095,12 @@ class CommTool(QMainWindow):
             except (ValueError, TypeError):
                 self.toast(self._t("err_bad_baud"), error=True)
                 return
-            parity_map = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
-                          "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
-                          "Space": serial.PARITY_SPACE}
-            stopbits_map = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
-                            "2": serial.STOPBITS_TWO}
-            databits_map = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
-                            "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
-            flow_map = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
             databits = reconnect_cfg[3] if reconnect_cfg else self.cb_databits.currentText()
             parity = reconnect_cfg[4] if reconnect_cfg else self.cb_parity.currentText()
             stopbits = reconnect_cfg[5] if reconnect_cfg else self.cb_stopbits.currentText()
             flow = reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6 else self.cb_flow.currentText()
-            conn = SerialConn(port, baud, databits_map[databits], parity_map[parity],
-                              stopbits_map[stopbits], flow=flow_map.get(flow, "none"))
+            conn = SerialConn(port, baud, _DATABITS_MAP[databits], _PARITY_MAP[parity],
+                              _STOPBITS_MAP[stopbits], flow=_FLOW_MAP.get(flow, "none"))
         elif proto == PROTO_VIRTUAL:
             # 离线模式：无参数可校验，直接建环回连接（回环开关随用随切）
             conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
@@ -2776,6 +3224,48 @@ class CommTool(QMainWindow):
         if hasattr(self, "sw_rts"):
             self.sw_rts.setEnabled(self.cb_flow.currentText() != "RTS/CTS")
 
+    def _apply_serial_params_live(self, *_):
+        """串口已连接时改 波特率/数据位/校验位/停止位/流控 → 直接应用到活动连接，不断开。
+
+        只挂在 activated / editingFinished 这类「用户亲手操作」的信号上——切配置、导入配置
+        的程序化 setCurrentText 不会触发它们，绝不会把别的配置的参数悄悄打进正在跑的串口。
+        应用成功后同步 _conn_cfg（连接签名真源）：Modbus 主机的 RTU t3.5 静默窗、就绪门禁、
+        掉线自动重连 全都读它，不同步的话主机轮询会立即因「UI 与实际连接不一致」暂停。
+        """
+        if (getattr(self, "_conn_proto", None) != PROTO_SERIAL
+                or self.conn is None or not getattr(self.conn, "is_open", False)):
+            return
+        try:
+            baud = int(str(self.cb_baud.currentText()).strip())
+            if baud <= 0:
+                raise ValueError(baud)
+        except (ValueError, TypeError):
+            self.toast(self._t("err_bad_baud"), error=True)
+            return
+        sig = self._conn_config_signature(PROTO_SERIAL)
+        if sig == self._conn_cfg:
+            return      # editingFinished 失焦也会来一次；值没变就不重复应用、不重复提示
+        flow = self.cb_flow.currentText()
+        ok = self.conn.apply_params(
+            baud=baud,
+            bytesize=_DATABITS_MAP[self.cb_databits.currentText()],
+            parity=_PARITY_MAP[self.cb_parity.currentText()],
+            stopbits=_STOPBITS_MAP[self.cb_stopbits.currentText()],
+            flow=_FLOW_MAP.get(flow, "none"))
+        if not ok:
+            return      # 失败已由 conn 的 error_occurred 走统一错误提示/掉线路径
+        self._conn_cfg = sig
+        # 流控切到 RTS/CTS 后手动 RTS 开关要禁用（硬件接管）。目前 _on_flow_changed 靠
+        # currentIndexChanged 与本函数的 activated 同帧触发而"顺带"生效，是巧合耦合；
+        # 显式调一次，任何绕过 UI 信号直接调本函数的路径（脚本/快捷键）也能正确联动。
+        self._on_flow_changed()
+        # 状态栏「● COM3 @ 115200」跟着新波特率刷新
+        self.lbl_state.setText(f"● {sig[1]} @ {baud}")
+        parity_ch = self.cb_parity.currentText()[0]     # None→N / Even→E / Odd→O / Mark→M / Space→S
+        self.toast(self._t("live_params_applied",
+                           p=f"{baud} {self.cb_databits.currentText()}"
+                             f"{parity_ch}{self.cb_stopbits.currentText()}"))
+
     def _pulse_reset(self):
         """DTR 拉低 ~120ms 再恢复到开关状态，触发 Arduino 等的自动复位电路（不同板子复位方式或异，可用 DTR/RTS 手动控制）。"""
         if self._conn_proto != PROTO_SERIAL or self.conn is None:
@@ -2822,6 +3312,7 @@ class CommTool(QMainWindow):
         self._rx_pending_cr = False
         self._inc_decoder = None
         self._txt_ends_with_nl = True
+        self._numview_carries = {}     # 数值视图余数：数据流断点后各来源旧的半个数都已无意义
         if hasattr(self, "_proto_fields"):
             self._proto_fields.clear()    # 清屏/重连：旧帧的字段高亮 cursor 一并清掉
         if reset_dashboard:
@@ -2938,8 +3429,11 @@ class CommTool(QMainWindow):
     def _on_clients_changed(self, clients):
         """TCP Server 客户端列表变化 → 刷新「目标」下拉（含「全部」）。"""
         active = {key for key, _label in clients}
+        self._flush_numview_carries(set(self._numview_carries) - active)
         self._modbus_buffers = {key: buf for key, buf in self._modbus_buffers.items()
                                 if key in active}
+        self._numview_carries = {key: buf for key, buf in self._numview_carries.items()
+                                 if key in active}
         if not hasattr(self, "cb_target"):
             return
         cur = self.cb_target.currentData()
@@ -3072,6 +3566,7 @@ class CommTool(QMainWindow):
         if self._script_running():
             self._script_worker.stop()
         self._dsl_abort()          # 断连 → 中止 DSL 剩余步骤，别对着断掉的连接空发
+        self._flush_numview_carries()
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
         self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
         self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
@@ -3248,11 +3743,13 @@ class CommTool(QMainWindow):
 
     def set_settings_enabled(self, enabled):
         # 远程框(ed_remote_*)启用由 _update_net_fields 统管(TCP恒开/UDP看开关)；
-        # 目标客户端下拉(cb_target)连接期间要可切换发送目标，不锁
+        # 目标客户端下拉(cb_target)连接期间要可切换发送目标，不锁。
+        # 波特率/数据位/校验位/停止位 连接期间不锁：改动即应用到活动串口
+        # (_apply_serial_params_live，pyserial 属性赋值即时生效)，试波特率不必断开重连。
+        # 换端口/换协议仍必须重开连接，保持锁定。
         for w in (self.cb_proto, self.cb_local_ip, self.ed_local_port,
                   self.ed_group, self.sw_udp_remote,
-                  self.cb_port, self.cb_baud, self.cb_databits,
-                  self.cb_parity, self.cb_stopbits, self.btn_refresh):
+                  self.cb_port, self.btn_refresh):
             w.setEnabled(enabled)
 
     # ----- 主题 -----
@@ -3323,6 +3820,8 @@ class CommTool(QMainWindow):
             self._script_dlg.refresh_theme()
         if getattr(self, "_rr_dlg", None) is not None:
             self._rr_dlg.refresh_theme()
+        if getattr(self, "_rd_dlg", None) is not None:
+            self._rd_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -3359,6 +3858,7 @@ class CommTool(QMainWindow):
         self._on_encoding_changed()
         self._kw_timer.stop()
         self._refresh_extra_selections()
+        self._update_sel_checksum()
 
     def _on_encoding_changed(self):
         """切换编码时重置增量解码状态，悬挂字节别用新 codec 错误解码"""
@@ -3417,7 +3917,7 @@ class CommTool(QMainWindow):
             return
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
-            self._on_data_received_impl(data)
+            self._on_data_received_impl(data, source=reply_target)
         except Exception as e:
             self.rx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)
@@ -3492,7 +3992,7 @@ class CommTool(QMainWindow):
             except Exception:
                 pass
 
-    def _on_data_received_impl(self, data: bytes):
+    def _on_data_received_impl(self, data: bytes, source=None):
         self.rx_bytes += len(data)
         self.rx_packets += 1
         # 标签刷新交给 1Hz 的 _rate_timer：高频收包路径只累加整数计数器，
@@ -3509,6 +4009,21 @@ class CommTool(QMainWindow):
             self._append_block_data(self._hexdump_block(data), direction="rx",
                                     force_new_block=True)
             self._last_direction = "rx"
+            self._last_recv_time = time.monotonic()
+            self._pending_line_break = False
+            return
+
+        # 数值视图：整段按选定类型/字节序解读成数值序列（同 hexdump 各块 force_new 独立起行）。
+        # 尾部凑不满一个数的字节由 _numview_block 留作余数带到下一包，此时本包可能一个数都凑不出
+        # → 文本为空，跳过追加（否则平白多出一个空块 / 一行时间戳）。
+        if self._numview_on:
+            # 串口/TCP/虚拟连接是连续流，允许跨底层 chunk 补齐一个数；UDP 回调是完整数据报，
+            # 报文边界不可跨越，尾字节由 _numview_block 直接以 HEX 标出。
+            carry = self._conn_proto not in (PROTO_UDP, PROTO_UDP_MULTICAST)
+            block = self._numview_block(data, carry=carry, source=source)
+            if block:
+                self._append_block_data(block, direction="rx", force_new_block=True)
+                self._last_direction = "rx"
             self._last_recv_time = time.monotonic()
             self._pending_line_break = False
             return
@@ -3597,7 +4112,8 @@ class CommTool(QMainWindow):
             self._pending_line_break = False
         self._last_recv_time = now
 
-    def _append_block_data(self, text: str, direction: str, force_new_block: bool):
+    def _append_block_data(self, text: str, direction: str, force_new_block: bool,
+                           view_mode=None):
         theme = self._theme()
         # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
@@ -3645,6 +4161,16 @@ class CommTool(QMainWindow):
         body_fmt = QTextCharFormat()
         body_fmt.setForeground(QColor(body_color))
         body_fmt.setProperty(ROLE_PROP, body_role)
+        if view_mode is None:
+            if self._hexdump_on:
+                view_mode = VIEW_HEXDUMP
+            elif self._numview_on:
+                view_mode = VIEW_NUMERIC
+            elif self.sw_rx_hex.isChecked():
+                view_mode = VIEW_HEX
+            else:
+                view_mode = VIEW_TEXT
+        body_fmt.setProperty(VIEW_PROP, view_mode)
         cursor.setCharFormat(body_fmt)
         first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
         body_start_pos = cursor.position()         # 正文起始字符位置（供协议高亮做字节→字符映射）
@@ -4056,6 +4582,21 @@ class CommTool(QMainWindow):
             from rec_replay_dialog import RecReplayDialog
             self._rr_dlg = RecReplayDialog(self)
         dlg = self._rr_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_rec_diff(self):
+        """打开会话比较（单实例，复用并刷新主题/语言）。
+
+        纯离线工具：只读两个 .ctrec 文件、不碰连接，因此不进 _io_task_busy 占用表。
+        """
+        if getattr(self, "_rd_dlg", None) is None:
+            from rec_diff_dialog import RecDiffDialog
+            self._rd_dlg = RecDiffDialog(self)
+        dlg = self._rd_dlg
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.show()
@@ -5409,7 +5950,8 @@ class CommTool(QMainWindow):
         if not text:
             return
         try:
-            self._append_block_data(text + "\n", direction="tx", force_new_block=True)
+            self._append_block_data(text + "\n", direction="tx", force_new_block=True,
+                                    view_mode=VIEW_TEXT)
         except Exception:
             pass
 
@@ -5686,7 +6228,8 @@ class CommTool(QMainWindow):
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
         "ser_flow", "serial_dtr", "serial_rts",
         # 数据区显示
-        "rx_hex", "hexdump_view", "hexdump_width", "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
+        "rx_hex", "hexdump_view", "hexdump_width", "numview", "numview_type",
+        "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",
         "log_split", "filter_highlight", "recv_font_size",
         # 发送区
@@ -6409,6 +6952,8 @@ class CommTool(QMainWindow):
         try:
             if self._hexdump_on:
                 disp = self._hexdump_block(frame)
+            elif self._numview_on:
+                disp = self._numview_block(frame, carry=False)
             elif self.sw_rx_hex.isChecked():
                 disp = self._bytes_to_hex(frame) + " "
             else:
@@ -6684,6 +7229,8 @@ class CommTool(QMainWindow):
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
         if self._hexdump_on:
             display = self._hexdump_block(data)
+        elif self._numview_on:
+            display = self._numview_block(data, carry=False)
         elif self.sw_rx_hex.isChecked():
             display = self._bytes_to_hex(data) + " "
         else:
@@ -6735,7 +7282,8 @@ class CommTool(QMainWindow):
         起作用。终端是纯字节流逐字符直发：HEX 显示 / 时间戳 / 分包 / 超时 / 换行分包，以及
         HEX 发送 / 追加换行 / 定时 / 校验 全被绕过。仍有用的（字符编码 / 自动换行 / 最大行数 /
         实时记录）不动。关闭终端模式后全部恢复可配置。"""
-        for name in ("sw_rx_hex", "sw_hexdump", "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
+        for name in ("sw_rx_hex", "sw_hexdump", "sw_numview", "cb_numview_type",
+                     "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
                      "sw_line_split", "cb_line_nl",
                      "sw_tx_hex", "sw_append_newline", "cb_append_nl",
                      "sw_period", "ed_period_ms", "cb_checksum"):
@@ -6743,8 +7291,9 @@ class CommTool(QMainWindow):
             if w is not None:
                 w.setEnabled(not on)
         self._refresh_hex_toggle_state()   # 退出终端后按 hexdump 状态复算 HEX 显示可用性（否则被上面一律置回可用）
+        self._update_sel_checksum()        # 进出终端换了显示口径，旧的选区校验和结果作废
         # 连同标签文字一起淡化，让禁用的整行统一「暗下去」（只灰控件、标签还满色 → 不明显）
-        for k in ("hex_display", "hexdump_view", "show_timestamp", "packet_split", "timeout", "line_split",
+        for k in ("hex_display", "hexdump_view", "numview", "show_timestamp", "packet_split", "timeout", "line_split",
                   "hex_send", "append_newline", "period", "checksum"):
             for lab in self._setting_labels.get(k, ()):
                 if on:
@@ -6846,10 +7395,12 @@ class CommTool(QMainWindow):
         discard_csi = self._term_discard_csi
         self._term_discard_csi = False
         buf = []
+        term_fmt = QTextCharFormat(cur.charFormat())
+        term_fmt.setProperty(VIEW_PROP, VIEW_TERMINAL)
 
         def _flush():
             if buf:
-                cur.insertText("".join(buf))
+                cur.insertText("".join(buf), term_fmt)
                 del buf[:]
 
         for ch in text:
@@ -6885,7 +7436,7 @@ class CommTool(QMainWindow):
             elif ch == "\n":
                 _flush()
                 cur.movePosition(QTextCursor.End)
-                cur.insertText("\n")
+                cur.insertText("\n", term_fmt)
             elif ch == "\t" or (ch >= " " and ch != "�"):
                 # 覆盖式打印：行尾→追加（可批量）；行内→替换光标右侧字符。U+FFFD(无效字节)丢弃。
                 if cur.atBlockEnd():
@@ -6894,7 +7445,7 @@ class CommTool(QMainWindow):
                     _flush()
                     cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
                     cur.removeSelectedText()
-                    cur.insertText(ch)
+                    cur.insertText(ch, term_fmt)
             # 其它控制符（BEL/NUL 等）丢弃
         _flush()
         self._term_esc = esc          # 未完成的转义序列留到下次拼接
@@ -7026,12 +7577,27 @@ class CommTool(QMainWindow):
         """改分包大小：实时记录进行中也即时生效。"""
         self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
 
-    def _log_segment_path(self) -> str:
-        """当前分包序号对应的文件名：第 0 包用原始路径，之后加 _001/_002…后缀。"""
-        if self._log_seg <= 0:
-            return self._log_base_path
-        root, ext = os.path.splitext(self._log_base_path)
-        return f"{root}_{self._log_seg:03d}{ext}"
+    def _log_conn_token(self) -> str:
+        """%port 变量的取值：串口用设备名，网络用「IP_端口」，未连接时留空。"""
+        proto = getattr(self, "_conn_proto", None)
+        cfg = getattr(self, "_conn_cfg", None)
+        if proto == PROTO_SERIAL and cfg and len(cfg) > 1 and cfg[1]:
+            return str(cfg[1])
+        if proto == PROTO_TCP_CLIENT and cfg and len(cfg) > 2:
+            return "%s_%s" % (cfg[1], cfg[2])
+        if proto:
+            return str(proto)
+        return ""
+
+    def _log_segment_path(self, when=None) -> str:
+        """当前分包对应的文件名：展开 %date/%time/%port/%n 变量，再按需追加序号。
+
+        when 由调用方传入（跨日轮转要用「新一天的时刻」而不是开始记录时的），
+        规则本身在 Qt-free 的 log_naming 里，便于单测。
+        """
+        return log_naming.segment_path(
+            self._log_base_path, when or datetime.now(),
+            port=self._log_conn_token(), seg=self._log_seg)
 
     def _set_log_path_label(self, path):
         """更新状态栏的日志文件路径显示（仅记录时显示，太长中间省略，悬停看全路径）。"""
@@ -7050,11 +7616,16 @@ class CommTool(QMainWindow):
         if hasattr(self, "_log_path_sep"):
             self._log_path_sep.show()
 
-    def _open_log_segment(self, path) -> bool:
+    def _open_log_segment(self, path, when=None) -> bool:
         try:
+            # 目录可能来自 %date 之类的变量展开，先建出来再开文件
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             self._log_file = open(path, "a", encoding="utf-8")
             self._log_file_path = path
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._log_opened_at = when or datetime.now()
+            ts = self._log_opened_at.strftime("%Y-%m-%d %H:%M:%S")
             self._log_file.write(self._t("log_header", time=ts))
             self._log_file.flush()
             self._set_log_path_label(path)
@@ -7063,22 +7634,45 @@ class CommTool(QMainWindow):
             self.toast(self._t("err_open_log", e=e), error=True)
             return False
 
-    def _maybe_rotate_log(self):
-        """写入后若超过分包上限，切到下一个分包文件。"""
-        if not (self._log_file and self._log_limit > 0):
+    def _close_log_segment(self, when):
+        """写尾注 → 刷盘 → 关闭当前分包（轮转与停止记录共用）。"""
+        if not self._log_file:
             return
         try:
-            if self._log_file.tell() < self._log_limit:
-                return
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._log_file.write(self._t("log_footer", time=ts))
+            self._log_file.write(self._t("log_footer",
+                                         time=when.strftime("%Y-%m-%d %H:%M:%S")))
             self._log_file.flush()    # close 前先刷盘，避免 close 失败时尾部缓冲丢失
             self._log_file.close()
         except Exception:
             pass
-        self._log_seg += 1
         self._log_file = None
-        if not self._open_log_segment(self._log_segment_path()):
+
+    def _maybe_rotate_log(self, now=None):
+        """写入后判断要不要换文件：跨自然日 或 超过分包上限。
+
+        跨日优先且序号归零 —— 文件名里已经带了新日期，再从 _003 接着数会让人以为
+        这天的记录是从第 4 段开始的。跨日轮转只在文件名含日期变量时才有意义
+        （否则换日期也是同一个文件名，白白切断），判定在 log_naming 里。
+        """
+        if not self._log_file:
+            return
+        now = now or datetime.now()
+        if log_naming.should_roll_date(self._log_opened_at, now, self._log_base_path):
+            self._close_log_segment(now)
+            self._log_seg = 0
+            if not self._open_log_segment(self._log_segment_path(now), when=now):
+                self.sw_log_file.setChecked(False)
+            return
+        if self._log_limit <= 0:
+            return
+        try:
+            if self._log_file.tell() < self._log_limit:
+                return
+        except Exception:
+            return
+        self._close_log_segment(now)
+        self._log_seg += 1
+        if not self._open_log_segment(self._log_segment_path(now), when=now):
             self.sw_log_file.setChecked(False)
 
     def on_log_file_toggled(self, on):
@@ -7093,10 +7687,13 @@ class CommTool(QMainWindow):
                 self.sw_log_file.blockSignals(False)
                 return
             self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
+            # 存模板原文（可能含 %date/%port）：每次开分包时重新展开，跨日才能拿到新日期
             self._log_base_path = path
             self._log_seg = 0
-            if self._open_log_segment(path):
-                self.toast(self._t("log_started", path=path))
+            now = datetime.now()
+            real = self._log_segment_path(now)
+            if self._open_log_segment(real, when=now):
+                self.toast(self._t("log_started", path=real))
             else:
                 self.sw_log_file.setChecked(False)
         else:
@@ -7104,16 +7701,10 @@ class CommTool(QMainWindow):
 
     def _close_log_file(self):
         if self._log_file:
-            try:
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self._log_file.write(self._t("log_footer", time=ts))
-                self._log_file.flush()
-                self._log_file.close()
-            except Exception:
-                pass
+            self._close_log_segment(datetime.now())
             self.toast(self._t("log_stopped", path=self._log_file_path))
-            self._log_file = None
             self._log_file_path = ""
+            self._log_opened_at = None
             self._set_log_path_label("")
 
     def change_recv_font_size(self, delta):
@@ -7395,6 +7986,8 @@ class CommTool(QMainWindow):
             self._script_dlg.retranslate()
         if getattr(self, "_rr_dlg", None) is not None:
             self._rr_dlg.retranslate()
+        if getattr(self, "_rd_dlg", None) is not None:
+            self._rd_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -7411,6 +8004,9 @@ class CommTool(QMainWindow):
             self._xfer_dlg.retranslate()
         if getattr(self, "_bridge_dlg", None) is not None:
             self._bridge_dlg.retranslate()
+        # 选中即算校验和的状态栏文案是算出来的（含「选中」「选区过大」等译词），
+        # tr_text 机制刷不到 —— 重算一次，让它跟着切语言
+        self._update_sel_checksum()
 
     # ----- 持久化 -----
     @staticmethod
@@ -7501,6 +8097,8 @@ class CommTool(QMainWindow):
             s.setValue("rx_hex", self.sw_rx_hex.isChecked())
             s.setValue("hexdump_view", self.sw_hexdump.isChecked())
             s.setValue("hexdump_width", self.cb_hexdump_width.currentText())
+            s.setValue("numview", self.sw_numview.isChecked())
+            s.setValue("numview_type", self.cb_numview_type.currentIndex())
             s.setValue("proto_highlight", self._proto_hl_on)
             s.setValue("wrap", self.sw_wrap.isChecked())
             s.setValue("show_timestamp", self.sw_show_timestamp.isChecked())
@@ -7589,9 +8187,29 @@ class CommTool(QMainWindow):
         show_ts_raw = s.value("show_timestamp", legacy_ts if legacy_ts is not None else False)
         pkt_split_raw = s.value("packet_split", False)   # 不继承旧 timestamp 键：分包与时间戳互相独立，老用户升级不该被强制开分包
         self.sw_rx_hex.setChecked(to_bool(s.value("rx_hex", False)), animate=False)
-        self.sw_hexdump.setChecked(to_bool(s.value("hexdump_view", False)), animate=False)
+        hexdump_on = to_bool(s.value("hexdump_view", False))
+        numview_on = to_bool(s.value("numview", False))
+        if hexdump_on and numview_on:
+            # 两种模式都接管整个数据区；导入/手改配置冲突时沿用既有渲染优先级：HEX 转储获胜。
+            # 同时修正持久值，避免下次启动再次进入冲突态。
+            numview_on = False
+            s.setValue("numview", False)
+        self.sw_hexdump.setChecked(hexdump_on, animate=False)
         self._hexdump_on = self.sw_hexdump.isChecked()
         restore_combo(self.cb_hexdump_width, "hexdump_width")
+        # 数值视图：先钳好下拉再置开关——setChecked 会触发 _on_numview_toggled 走一遍
+        # _refresh_hex_toggle_state / _reset_recv_state，此时类型下拉必须已是本配置的值
+        nv_idx = s.value("numview_type", 2)          # 默认 u16 LE（下拉第 3 项）
+        try:
+            nv_idx = int(nv_idx)
+        except (TypeError, ValueError):
+            nv_idx = 2
+        if not 0 <= nv_idx < self.cb_numview_type.count():
+            nv_idx = 2
+        self.cb_numview_type.setCurrentIndex(nv_idx)
+        self.sw_numview.setChecked(numview_on, animate=False)
+        self._numview_on = self.sw_numview.isChecked()
+        self._numview_carries.clear()                # 切配置＝数据流断点，各来源旧余数作废
         self._proto_hl_on = to_bool(s.value("proto_highlight", False))   # 开关在「帧解析」对话框，这里只同步状态
         self._proto_fields.clear()    # 切配置时清掉上一配置遗留的字段高亮
         if getattr(self, "_frame_dlg", None) is not None:
@@ -7755,10 +8373,12 @@ class CommTool(QMainWindow):
         menu.addAction("6. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
         menu.addAction("7. " + self._t("sc_title")).triggered.connect(lambda *_: self.open_script_console())
         menu.addAction("8. " + self._t("rr_title")).triggered.connect(lambda *_: self.open_rec_replay())
+        # 会话比较紧跟录制/回放：它比的就是那边产出的 .ctrec，同一组工作流
+        menu.addAction("9. " + self._t("rd_title")).triggered.connect(lambda *_: self.open_rec_diff())
         menu.addSeparator()
-        menu.addAction("9. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("10. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
-        mbm_label = "11. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        menu.addAction("10. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("11. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
+        mbm_label = "12. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         return menu
 
@@ -8298,11 +8918,15 @@ class CommTool(QMainWindow):
             self._tooltip_popup.hide()
             self._tooltip_popup.deleteLater()
             self._tooltip_popup = None
+        if self._sel_chk_popup is not None:
+            self._sel_chk_popup.hide()
+            self._sel_chk_popup.deleteLater()
+            self._sel_chk_popup = None
         # 子对话框统一 parent=None（避开 Qt 父子链对主窗 WM_NCHITTEST 的干扰），
         # 主窗关闭时必须显式收掉，否则进程退不干净（独立顶层窗会留着）。
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
-                     "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg"):
+                     "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

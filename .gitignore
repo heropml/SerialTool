@@ -41,6 +41,7 @@ recovered_pycdc.py
 # 编辑器 / IDE
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 
