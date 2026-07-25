@@ -13,13 +13,13 @@ from collections import deque
 from datetime import datetime
 import serial
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
-from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat,
+from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat, QFont,
                          QFontMetrics, QTextFormat, QPalette, QKeySequence)
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
                              QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip, QDialog,
-                             QGraphicsOpacityEffect)
+                             QGraphicsOpacityEffect, QStackedLayout)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -29,7 +29,8 @@ from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, 
 from i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
 from fonts import ui_font, mono_font, localize_qss
-from widgets import make_label, IOSSwitch, TitleBar, Card
+from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
+                     SuffixLineEdit)
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
@@ -37,7 +38,9 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 from virtual_io import VirtualConn, PROTO_VIRTUAL
 import send_dsl
+import ansi
 import binproto
+import triggers
 import convert
 import snippets
 import log_naming
@@ -67,6 +70,11 @@ VIEW_HEX = 2
 VIEW_HEXDUMP = 3
 VIEW_NUMERIC = 4
 VIEW_TERMINAL = 5
+
+# ANSI 着色：存「颜色标识」而非解析好的颜色，切主题时按新主题明暗重解析（见 _recolor_history）。
+# 存序号的会跟着主题走，设备指定的精确色(#RRGGBB)不跟着变。
+ANSI_FG_PROP = QTextFormat.UserProperty + 3
+ANSI_BG_PROP = QTextFormat.UserProperty + 4
 
 # 串口参数：UI 文案 → pyserial 常量。open_conn 建连接与 _apply_serial_params_live
 # 动态改参数共用同一份，两处解释绝不允许分叉。
@@ -533,6 +541,22 @@ class CommTool(QMainWindow):
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
         self._hexdump_on = self.settings.value("hexdump_view", False, type=bool)        # HEX dump 视图（偏移+HEX+ASCII 三列）
         self._numview_on = self.settings.value("numview", False, type=bool)             # 数值视图（字节流按数值类型解读）
+        # ANSI 着色（文本模式）：按设备发的 SGR 转义给日志上色，顺带吃掉光标/擦除等非 SGR 序列
+        self._ansi_on = self.settings.value("ansi_color", False, type=bool)
+        self._ansi_state = None    # 跨包延续的样式（颜色常常跨包）
+        self._ansi_pending = ""    # 跨包未收完的转义序列残片
+        self._ansi_states = {}     # TCP Server：每客户端独立样式/残片，防并发来源互相染色
+        self._ansi_pendings = {}
+        # 触发告警：命中规则就响铃 / 托盘通知 / 数据区打标（无人值守盯梢）
+        self._triggers = self._load_triggers()
+        self._trigger_engine = triggers.TriggerEngine(self._triggers)
+        self._triggers_dlg = None
+        self._trg_dec_buf = {}      # 触发引擎的增量解码状态，按方向/来源流隔离
+        self._trg_dec = {}
+        self._trg_dec_codec = None
+        self._trg_ansi_pending = {} # 跨块未完成的 ANSI 转义残片，同样按流隔离
+        self._trg_tail_bytes = {}   # 跨块回看的尾巴，按流隔离（关键字可能被劈成两半）
+        self._trg_tail_text = {}
         # 数值视图余数按来源隔离：TCP Server 多客户端的半个数不能互相拼接；普通串口/单连接用 None 键。
         self._numview_carries = {}
         self._proto_hl_on = self.settings.value("proto_highlight", False, type=bool)     # 协议高亮（HEX 模式按帧解析规则给字段上色）
@@ -540,8 +564,12 @@ class CommTool(QMainWindow):
         self._proto_rules_raw = None              # frame_rules 上次解析时的原始串（变了才重解析）
         self._proto_rules_cache = []              # 解析后的规则缓存
         self._terminal_enter = self._safe_enter_idx(self.settings.value("terminal_enter", 0))   # 0=CR 1=LF 2=CRLF
+        self._term_sgr = None  # 终端渲染：当前 SGR 样式（跨块延续，ANSI 着色开时才上色）
         self._term_esc = ""    # 终端渲染：跨块未完成的 ANSI/CSI 转义序列缓冲
         self._term_discard_csi = False  # 超长 CSI：跨块丢弃到终止字节，避免残片显示
+        self._term_discard_osc = False  # 超长 OSC：丢弃到 BEL / ST，避免标题内容漏进正文
+        self._term_osc_prev_esc = False
+        self._term_streams = {}  # TCP Server：每个客户端独立 SGR/转义残片，防串色/串控制码
         self._term_pos = None  # 终端渲染：跨块延续的光标绝对位置（None=从文末开始）
         self._setting_labels = {}   # 设置项标签引用（i18n key → QLabel），终端模式淡化禁用行用
         self._mbm_inflight = None    # 在途请求 {i,unit,func,qty,tid,variant}；None=空闲可发下一条
@@ -758,7 +786,9 @@ class CommTool(QMainWindow):
         self.h_splitter.addWidget(right_container)
         self.h_splitter.setStretchFactor(0, 0)
         self.h_splitter.setStretchFactor(1, 1)
-        self.h_splitter.setSizes([280, 860])
+        # 侧栏默认 300：数据区「显示方式」那行要同时容下 模式下拉 + 彩色开关/附属参数两列
+        # （原来那一列只放 40px 的开关），280 会差十几像素、逼出横向滚动条。上限仍 380、可拖。
+        self.h_splitter.setSizes([300, 840])
 
         content_layout.addWidget(self.h_splitter, 1)
 
@@ -912,7 +942,10 @@ class CommTool(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setObjectName("Sidebar")
-        scroll.setMinimumWidth(260)
+        # 最小宽从 260 提到 305：数据区「显示方式」行要同时容下 模式下拉 + 附属参数/彩色开关
+        # 两列（原来那一列只放 40px 开关）。横向滚动条是关的，宽度不够不会出滚动条、
+        # 而是直接把最右一列（开关 / 下拉 / 「清空」按钮）切掉，所以必须用最小宽兜住。
+        scroll.setMinimumWidth(305)
         scroll.setMaximumWidth(380)
         return scroll
 
@@ -1202,7 +1235,12 @@ class CommTool(QMainWindow):
 
         MAIN_W = 90
         grid = QGridLayout()
+        # 开关列与下拉列锁同宽：同一张卡片里的折叠组是另一个网格，两边共用这套列宽，
+        # 各行的开关 / 下拉才会纵向对齐（否则每个网格按自己最长的标签各算各的，整组会错位）。
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, MAIN_W)
+        grid.setColumnMinimumWidth(2, MAIN_W)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(6)
 
@@ -1225,28 +1263,38 @@ class CommTool(QMainWindow):
             grid.addWidget(lbl(key), row, 0)
             grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
 
-        def input_with_ms(input_widget):
-            input_widget.setAlignment(Qt.AlignRight)
-            box = QWidget()
-            box.setFixedWidth(MAIN_W)
-            h = QHBoxLayout(box); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
-            h.addWidget(input_widget, 1)
-            h.addWidget(make_label("ms", color=COLOR_TEXT_SECONDARY))
-            return box
-
         row = 0
+        # ── 显示方式：文本 / HEX / HEX 转储 / 数值 ──
+        # 这四者本来就互斥（都是「数据区正文怎么渲染」的取值），过去是三个开关 + 一套互相灰掉
+        # 的逻辑，既占三行又让人困惑「为什么开了没反应 / 为什么是灰的」。合成一个下拉后互斥
+        # 由类型天然保证。三个开关保留为状态源（不显示）：全仓十几处 isChecked() 读取与
+        # rx_hex/hexdump_view/numview 三个配置键因此都不用动，老配置也照常读回。
         self.sw_rx_hex = IOSSwitch(False)
         # 切 HEX/文本 显示时复位增量解码状态。HEX 分支的字节不进文本解码流(见
         # _on_data_received_impl)，若不复位，文本模式残留的半个多字节会和切回文本后的
         # 新数据错位拼接 → 整段乱码。代价仅是丢掉那个正好跨切换点、注定要被劈开的字符
         # ——两害取其轻，是有意行为，勿当 bug 移除（移除会把"丢一字符"换成"乱码一片"）。
         self.sw_rx_hex.toggled.connect(self._on_hex_display_changed)
-        sw_row(row, "hex_display", self.sw_rx_hex); row += 1
-
-        # HEX dump 视图：偏移 + HEX + ASCII 三列（二进制协议调试；开启时优先于 HEX 显示 / 换行分包）
-        # 同行右侧带「每行字节数」下拉(8/16/32/64)，仅 hexdump 开启时可选
         self.sw_hexdump = IOSSwitch(self._hexdump_on)
         self.sw_hexdump.toggled.connect(self._on_hexdump_toggled)
+        self.sw_numview = IOSSwitch(self._numview_on)
+        self.sw_numview.toggled.connect(self._on_numview_toggled)
+        for _sw in (self.sw_rx_hex, self.sw_hexdump, self.sw_numview):
+            _sw.hide()                      # 只作状态源，界面上由 cb_view_mode 代表
+
+        self.cb_view_mode = QComboBox()
+        # 项名用短词（行标签已经说了「显示方式」，不必再带「视图 / 显示」后缀）：
+        # 原来复用 hexdump_view / numview 那两个长键，英文 "Numeric view" 会被下拉宽度裁掉。
+        for _key, _data in (("view_text", "text"), ("view_hex", "hex"),
+                            ("view_dump", "dump"), ("view_num", "num")):
+            self.cb_view_mode.addItem(self._t(_key), _data)
+        self.cb_view_mode.setFixedWidth(MAIN_W)
+        self.cb_view_mode.setProperty("tr_tooltip", "view_mode_tip")
+        self.cb_view_mode.setToolTip(self._t("view_mode_tip"))
+        self.cb_view_mode.currentIndexChanged.connect(self._on_view_mode_changed)
+
+        # 附属参数（每行字节数 / 数值类型）跟着模式换：同一格用 QStackedLayout 叠三页，
+        # 选文本/HEX 时是空页 —— 比过去「常驻但灰着」少一份视觉噪音。
         self.cb_hexdump_width = QComboBox()
         self.cb_hexdump_width.addItems(["8", "16", "32", "64"])
         self.cb_hexdump_width.setCurrentText("16")
@@ -1254,16 +1302,7 @@ class CommTool(QMainWindow):
         self.cb_hexdump_width.setProperty("tr_tooltip", "hexdump_width_tip")
         self.cb_hexdump_width.setToolTip(self._t("hexdump_width_tip"))
         self.cb_hexdump_width.currentIndexChanged.connect(self._on_hexdump_width_changed)
-        # 同「换行分包 / 实时记录」风格：开关在中列、下拉在最右列（与其它下拉右对齐）
-        sw_extra_row(row, "hexdump_view", self.sw_hexdump, self.cb_hexdump_width); row += 1
 
-        # 数值视图：字节流按 u8/i8/u16/i16/u32/i32/f32 × 大小端 解读成数值序列（看 ADC / 传感器原始值）。
-        # 与 HEX 转储同为「接管数据区」的显示模式，二者互斥（见 _refresh_hex_toggle_state）。
-        # 类型与字节序合并进一个下拉：8 位无字节序之分，故不单列字节序开关，省一行且没有无效组合。
-        self.sw_numview = IOSSwitch(self._numview_on)
-        self.sw_numview.setProperty("tr_tooltip", "numview_tip")
-        self.sw_numview.setToolTip(self._t("numview_tip"))
-        self.sw_numview.toggled.connect(self._on_numview_toggled)
         self.cb_numview_type = QComboBox()
         for _t_, _e_ in (("u8", ""), ("i8", ""),
                          ("u16", "le"), ("u16", "be"), ("i16", "le"), ("i16", "be"),
@@ -1275,7 +1314,41 @@ class CommTool(QMainWindow):
         self.cb_numview_type.setProperty("tr_tooltip", "numview_type_tip")
         self.cb_numview_type.setToolTip(self._t("numview_type_tip"))
         self.cb_numview_type.currentIndexChanged.connect(self._on_numview_type_changed)
-        sw_extra_row(row, "numview", self.sw_numview, self.cb_numview_type); row += 1
+
+        # ANSI 着色只对「按文本渲染」有意义（文本 与 终端模式），故不再单占一行 ——
+        # 直接放进本行右侧那格：选文本时才露面，选 HEX / 转储 / 数值时自动消失，
+        # 比过去「常驻但灰着」更省一行也更少困惑。
+        self.sw_ansi = IOSSwitch(self._ansi_on)
+        self.sw_ansi.toggled.connect(self._on_ansi_toggled)
+        _ansi_page = QWidget()
+        _ansi_page.setFixedWidth(MAIN_W)   # 与其余页（下拉）同宽，本列各行才对得齐
+        _ah = QHBoxLayout(_ansi_page)
+        _ah.setContentsMargins(0, 0, 0, 0)
+        _ah.setSpacing(4)
+        self.lbl_ansi = make_label(self._t("ansi_color"), color=COLOR_TEXT_SECONDARY)
+        _ah.addStretch(1)
+        _ah.addWidget(self.lbl_ansi)
+        _ah.addWidget(self.sw_ansi)
+        for _w in (_ansi_page, self.lbl_ansi, self.sw_ansi):
+            _w.setToolTip(self._t("ansi_tip"))
+        _ansi_page.setProperty("tr_tooltip", "ansi_tip")
+        self.sw_ansi.setProperty("tr_tooltip", "ansi_tip")
+
+        self._view_extra = QStackedLayout()
+        self._view_extra.setContentsMargins(0, 0, 0, 0)
+        _blank = QWidget(); _blank.setFixedWidth(MAIN_W)
+        self._view_extra.addWidget(_ansi_page)             # 0 = 文本：ANSI 着色开关
+        self._view_extra.addWidget(_blank)                 # 1 = HEX：无附属参数
+        self._view_extra.addWidget(self.cb_hexdump_width)  # 2 = HEX 转储
+        self._view_extra.addWidget(self.cb_numview_type)   # 3 = 数值
+        _extra_host = QWidget()
+        _extra_host.setLayout(self._view_extra)
+        _extra_host.setFixedWidth(MAIN_W)
+
+        grid.addWidget(lbl("view_mode"), row, 0)
+        grid.addWidget(self.cb_view_mode, row, 1, alignment=Qt.AlignRight)
+        grid.addWidget(_extra_host, row, 2, alignment=Qt.AlignRight)
+        row += 1
 
         # 协议高亮开关不在此卡片——挪进「帧解析」对话框（复用其 frame_rules、不常用），见
         # FrameParseDialog.chk_highlight 与 set_proto_highlight()。
@@ -1296,11 +1369,32 @@ class CommTool(QMainWindow):
         self.sw_show_timestamp = IOSSwitch(False)
         sw_row(row, "show_timestamp", self.sw_show_timestamp); row += 1
 
+        # 时间分包留在常显区：调试时常按包间隔切分显示，属于要反复调的项。
+        # 超时并进同一行 —— 它本来就只在分包开启时有意义，单占一行是浪费。
+        # 「ms」内嵌进输入框右端（不再框外单占一格），行更紧凑、数字与单位也连成一体。
         self.sw_packet_split = IOSSwitch(False)
-        sw_row(row, "packet_split", self.sw_packet_split); row += 1
+        self.ed_packet_timeout = SuffixLineEdit("20", "ms")
+        self.ed_packet_timeout.setFixedWidth(MAIN_W)
+        sw_extra_row(row, "packet_split", self.sw_packet_split,
+                     self.ed_packet_timeout); row += 1
 
-        self.ed_packet_timeout = QLineEdit("20")
-        extra_row(row, "timeout", input_with_ms(self.ed_packet_timeout)); row += 1
+        layout.addLayout(grid)
+
+        # ── 「更多」折叠组：分包 / 记录 这类设一次就不再动的选项 ──
+        # 设置项只增不减，全平铺会把侧栏顶穿。常调的（显示方式 / 编码 / 换行 / 时间戳）留在
+        # 外面，其余收进来；展开状态持久化，习惯把它开着的人不用每次点。
+        more = QGridLayout()
+        # 折叠组是独立网格，列宽本来各算各的 → 与上面的常显行错位。三处对齐：
+        # ①边距清零（布局装到 widget 上会自动拿样式的默认边距，整组会被推右 ~9px）；
+        # ②两个网格用同一套列最小宽，开关列 / 下拉列的左右边缘才落在同一条竖线上；
+        # ③列拉伸也一致，多余空间统一由标签列吃掉。
+        more.setContentsMargins(0, 0, 0, 0)
+        more.setColumnStretch(0, 1)
+        more.setColumnMinimumWidth(1, MAIN_W)
+        more.setColumnMinimumWidth(2, MAIN_W)
+        more.setHorizontalSpacing(6)
+        more.setVerticalSpacing(6)
+        grid, mrow = more, 0     # 下面沿用同一套 sw_row/extra_row 辅助函数（闭包读 grid）
 
         self.sw_line_split = IOSSwitch(False)
         self.cb_line_nl = QComboBox()
@@ -1311,7 +1405,7 @@ class CommTool(QMainWindow):
         self.cb_line_nl.setFixedWidth(MAIN_W)
         # 切换换行模式时把待定 \r 冲出来（防止从 CRLF 切到 LF/CR 后旧 \r 永远见不到）
         self.cb_line_nl.currentIndexChanged.connect(lambda _: self._flush_pending_cr())
-        sw_extra_row(row, "line_split", self.sw_line_split, self.cb_line_nl); row += 1
+        sw_extra_row(mrow, "line_split", self.sw_line_split, self.cb_line_nl); mrow += 1
 
         self.sw_log_file = IOSSwitch(False)
         # 文件名变量说明挂在开关上：用户是在这里开功能、随后才看到文件对话框，
@@ -1330,16 +1424,21 @@ class CommTool(QMainWindow):
         self.cb_log_split.setToolTip(self._t("log_split_tip"))
         self.cb_log_split.setProperty("tr_tooltip", "log_split_tip")
         self.cb_log_split.currentTextChanged.connect(self._on_log_split_changed)
-        sw_extra_row(row, "real_time_log", self.sw_log_file, self.cb_log_split); row += 1
-
+        sw_extra_row(mrow, "real_time_log", self.sw_log_file, self.cb_log_split); mrow += 1
 
         self.ed_max_lines = QLineEdit("10000")
         self.ed_max_lines.setAlignment(Qt.AlignRight)
         self.ed_max_lines.setFixedWidth(MAIN_W)
         self.ed_max_lines.editingFinished.connect(self._on_max_lines_changed)
-        extra_row(row, "max_lines", self.ed_max_lines); row += 1
+        extra_row(mrow, "max_lines", self.ed_max_lines); mrow += 1
 
-        layout.addLayout(grid)
+        self.sec_recv_more = CollapsibleSection(
+            self._t("more_settings"),
+            expanded=self.settings.value("sec_recv_more", False, type=bool))
+        self.sec_recv_more.setContentLayout(more)
+        self.sec_recv_more.toggled.connect(
+            lambda on: self.settings.setValue("sec_recv_more", on))
+        layout.addWidget(self.sec_recv_more)
         layout.addStretch(1)  # 卡片被拉伸时吃掉多余空间，让按钮始终贴卡片底部
 
         # 保存 / 清空：保存贴左，清空贴右
@@ -1375,7 +1474,12 @@ class CommTool(QMainWindow):
 
         MAIN_W = 90
         grid = QGridLayout()
+        # 开关列与下拉列锁同宽：同一张卡片里的折叠组是另一个网格，两边共用这套列宽，
+        # 各行的开关 / 下拉才会纵向对齐（否则每个网格按自己最长的标签各算各的，整组会错位）。
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, MAIN_W)
+        grid.setColumnMinimumWidth(2, MAIN_W)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(6)
 
@@ -1398,15 +1502,6 @@ class CommTool(QMainWindow):
             grid.addWidget(lbl(key), row, 0)
             grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
 
-        def input_with_ms(input_widget):
-            input_widget.setAlignment(Qt.AlignRight)
-            box = QWidget()
-            box.setFixedWidth(MAIN_W)
-            h = QHBoxLayout(box); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
-            h.addWidget(input_widget, 1)
-            h.addWidget(make_label("ms", color=COLOR_TEXT_SECONDARY))
-            return box
-
         row = 0
         self.sw_tx_hex = IOSSwitch(False)
         sw_row(row, "hex_send", self.sw_tx_hex); row += 1
@@ -1421,9 +1516,9 @@ class CommTool(QMainWindow):
 
         self.sw_period = IOSSwitch(False)
         self.sw_period.toggled.connect(self.on_period_toggled)
-        self.ed_period_ms = QLineEdit("1000")
-        sw_extra_row(row, "period", self.sw_period,
-                     input_with_ms(self.ed_period_ms)); row += 1
+        self.ed_period_ms = SuffixLineEdit("1000", "ms")   # 单位内嵌，同「时间分包」那行
+        self.ed_period_ms.setFixedWidth(MAIN_W)
+        sw_extra_row(row, "period", self.sw_period, self.ed_period_ms); row += 1
 
         self.cb_checksum = QComboBox()
         for ck_key in CHECKSUM_KEYS:
@@ -1434,7 +1529,8 @@ class CommTool(QMainWindow):
         layout.addLayout(grid)
 
         # 终端模式相关设置单独框成一组（终端模式 / 本地回显 / 回车），视觉上与上面的通用发送设置
-        # 区分开。SettingsGroup 边框用半透明灰，明暗主题下都协调、无需跟随主题重刷。
+        # 区分开 —— 它自成一类，故保留边框；框内比外层缩进一点是有框分组该有的样子，
+        # 不去跟外面的列强行对齐。
         term_frame = QFrame()
         term_frame.setObjectName("SettingsGroup")
         # 只要边框、不要底色；用强调蓝边框醒目地框出这一组（明暗主题都协调、无需跟随主题重刷）
@@ -1444,6 +1540,7 @@ class CommTool(QMainWindow):
         tg = QGridLayout(term_frame)
         tg.setContentsMargins(10, 6, 10, 6)
         tg.setColumnStretch(0, 1)
+        tg.setColumnMinimumWidth(2, MAIN_W)   # 框内自己的下拉列锁同宽，三行之间对齐
         tg.setHorizontalSpacing(6)
         tg.setVerticalSpacing(6)
 
@@ -1467,7 +1564,19 @@ class CommTool(QMainWindow):
         tg.addWidget(lbl("term_enter"), 2, 0)
         tg.addWidget(self.cb_term_enter, 2, 2, alignment=Qt.AlignRight)
 
-        layout.addWidget(term_frame)
+        # 终端整组收进折叠section：它是「切一次就长期不动」的模式开关，平时占三行不划算。
+        # 展开状态持久化；开着终端模式时强制展开 —— 正处在终端里却把开关折起来，
+        # 会让人找不到怎么退出。
+        self.sec_send_term = CollapsibleSection(
+            self._t("term_mode"),
+            expanded=self.settings.value("sec_send_term", False, type=bool) or self._terminal_on)
+        _tl = QVBoxLayout()
+        _tl.setContentsMargins(0, 0, 0, 0)
+        _tl.addWidget(term_frame)
+        self.sec_send_term.setContentLayout(_tl)
+        self.sec_send_term.toggled.connect(
+            lambda on: self.settings.setValue("sec_send_term", on))
+        layout.addWidget(self.sec_send_term)
         return card
 
     def build_receive_card(self):
@@ -1632,6 +1741,12 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
+        # 这是装在 QApplication 上的全局过滤器：窗口销毁之后（deleteLater 已跑、Python 侧属性
+        # 已清）Qt 仍可能回调进来，此时在「半个对象」上跑逻辑会直接 AttributeError 崩掉。
+        # _mac_tooltip 是 __init__ 里最早设的那批之一（且早于 installEventFilter），
+        # 用它当「实例是否可用」的哨兵：没有就直接放行，别处理。
+        if not hasattr(self, "_mac_tooltip"):
+            return False
         # 选区校验结果使用应用内卡片，不交给各平台样式差异很大的原生 QToolTip。
         if obj is getattr(self, "lbl_sel_chk", None):
             et = event.type()
@@ -2384,6 +2499,7 @@ class CommTool(QMainWindow):
         # 每个角色的目标色只算一次(原来每片段都建 QColor + 调 _role_color)
         role_col = {r: QColor(self._role_color(r, theme))
                     for r in (None, ROLE_TS, ROLE_RX, ROLE_TX)}
+        is_dark = theme.get("mode") == "dark"      # ANSI 调色板按主题明暗选那一套
         ranges = []  # (start, end, QColor)，相邻同色自动合并
         block = doc.begin()
         while block.isValid():
@@ -2391,14 +2507,27 @@ class CommTool(QMainWindow):
             while not it.atEnd():
                 frag = it.fragment()
                 if frag.isValid():
-                    role = frag.charFormat().property(ROLE_PROP)
-                    col = role_col.get(role, role_col[None])
+                    fmt = frag.charFormat()
+                    # ANSI 着色的正文按存下的颜色标识重解析：调色板序号跟新主题明暗走
+                    # （深色配色留在浅色底上会看不见），设备指定的精确色则原样保留。
+                    spec = fmt.property(ANSI_FG_PROP)
+                    acol = (ansi.color_of_spec(spec, is_dark, theme["fg"], theme["bg"])
+                            if spec else None)
+                    role = fmt.property(ROLE_PROP)
+                    col = QColor(acol) if acol else role_col.get(role, role_col[None])
+                    # 背景色同理：ANSI 的 40-47/100-107 也是调色板序号，不跟着重解析的话，
+                    # 深色底选的底色留到浅色底上会和文字糊成一片。
+                    bspec = fmt.property(ANSI_BG_PROP)
+                    bcol = (ansi.color_of_spec(bspec, is_dark, theme["fg"], theme["bg"])
+                            if bspec else None)
+                    bg = QColor(bcol) if bcol else None
                     start = frag.position()
                     end = start + frag.length()
-                    if ranges and ranges[-1][1] == start and ranges[-1][2] == col:
-                        ranges[-1] = (ranges[-1][0], end, col)   # 合并相邻同色
+                    if (ranges and ranges[-1][1] == start and ranges[-1][2] == col
+                            and ranges[-1][3] == bg):
+                        ranges[-1] = (ranges[-1][0], end, col, bg)   # 合并相邻同色
                     else:
-                        ranges.append((start, end, col))
+                        ranges.append((start, end, col, bg))
                 it += 1
             block = block.next()
         if not ranges:
@@ -2407,11 +2536,13 @@ class CommTool(QMainWindow):
         cur = QTextCursor(doc)
         cur.beginEditBlock()
         try:
-            for start, end, col in ranges:
+            for start, end, col, bg in ranges:
                 cur.setPosition(start)
                 cur.setPosition(end, QTextCursor.KeepAnchor)
                 fmt = QTextCharFormat()
                 fmt.setForeground(col)
+                if bg is not None:
+                    fmt.setBackground(bg)
                 cur.mergeCharFormat(fmt)
         finally:
             cur.endEditBlock()
@@ -2907,6 +3038,65 @@ class CommTool(QMainWindow):
         self._refresh_extra_selections()
         self._update_sel_checksum()        # 视图变了 → 选区字节的解读方式也变，重算校验和
 
+    def _view_mode_of_state(self):
+        """三个状态开关 → 下拉该显示哪一项。渲染优先级同 _on_data_received_impl：
+        转储 > 数值 > HEX > 文本（异常配置让多个同时为真时，显示与实际渲染保持一致）。"""
+        if self._hexdump_on:
+            return "dump"
+        if self._numview_on:
+            return "num"
+        return "hex" if self.sw_rx_hex.isChecked() else "text"
+
+    def _sync_view_mode_combo(self):
+        """状态 → 下拉（导入配置 / 加载会话后调）。只改显示，不再回头触发切换逻辑。"""
+        cb = getattr(self, "cb_view_mode", None)
+        if cb is None:
+            return
+        idx = max(0, cb.findData(self._view_mode_of_state()))
+        if idx != cb.currentIndex():
+            cb.blockSignals(True)
+            cb.setCurrentIndex(idx)
+            cb.blockSignals(False)
+        self._sync_view_extra()
+
+    def _sync_view_extra(self):
+        """附属参数页跟着当前模式换（转储→每行字节数，数值→类型，其余→空页）。"""
+        stack = getattr(self, "_view_extra", None)
+        if stack is None:
+            return
+        if getattr(self, "_terminal_on", False):
+            # 终端模式绕过所有渲染选项，但 ANSI 着色对它仍然生效 → 强制显示那一页，
+            # 免得「显示方式」恰好停在 HEX 时开关被藏起来、终端里想关颜色却找不到。
+            stack.setCurrentIndex(0)
+            return
+        mode = self.cb_view_mode.currentData()
+        stack.setCurrentIndex({"text": 0, "hex": 1, "dump": 2, "num": 3}.get(mode, 0))
+
+    def _on_view_mode_changed(self, *_):
+        """下拉 → 状态开关。先关掉不再生效的模式再开新的，避免两个「接管数据区」的
+        模式短暂同时为真；各自的 toggled 处理器会做复位/重画，这里不重复那些活。"""
+        mode = self.cb_view_mode.currentData() or "text"
+        if mode != "dump" and self.sw_hexdump.isChecked():
+            self.sw_hexdump.setChecked(False, animate=False)
+        if mode != "num" and self.sw_numview.isChecked():
+            self.sw_numview.setChecked(False, animate=False)
+        self.sw_rx_hex.setChecked(mode == "hex", animate=False)
+        if mode == "dump":
+            self.sw_hexdump.setChecked(True, animate=False)
+        elif mode == "num":
+            self.sw_numview.setChecked(True, animate=False)
+        self._sync_view_extra()
+
+    def _on_ansi_toggled(self, on):
+        self._ansi_on = bool(on)
+        self.settings.setValue("ansi_color", self._ansi_on)
+        # 切换即从干净状态起：残留的半个转义序列 / 上一段颜色对新模式都没意义
+        self._ansi_state = None
+        self._ansi_pending = ""
+        self._term_sgr = None      # 终端那份也清，免得重新打开时旧颜色复活
+        self._term_streams = {}
+        self._reset_recv_state()
+
     def _on_numview_type_changed(self, *_):
         self._flush_numview_carries()
         idx = self.cb_numview_type.currentIndex()
@@ -3043,26 +3233,22 @@ class CommTool(QMainWindow):
         self._sel_chk_sep.show()
 
     def _refresh_hex_toggle_state(self):
-        """集中管理 HEX 显示 / HEX 转储 / 数值视图 三个显示开关的可用性。
+        """显示方式相关控件的可用性 + 下拉与状态的同步。
 
-        优先级：终端模式 > 数值视图 ≡ HEX 转储 > HEX 显示。终端模式下三者全禁用；
-        HEX 转储与数值视图都「接管整个数据区」，语义冲突 → 互相灰掉对方（要换得先关当前这个，
-        和 hexdump 灰掉 HEX 显示是同一套规则），任一开启都会灰掉 HEX 显示，避免
-        「关了 HEX 显示为何还是十六进制 / 数字」的困惑。两个附属下拉各自仅在本模式开启时可选。"""
+        四种渲染方式合成一个下拉后，互斥由类型天然保证（不再需要开关之间互相灰掉）。
+        这里只剩两件事：终端模式下整组不可配（终端是纯字节流，绕过所有渲染选项）；
+        ANSI 着色仅「按文本渲染」的两种情形有效（普通文本 与 终端模式），其余灰掉，
+        避免开了没反应的困惑。"""
         term = getattr(self, "_terminal_on", False)
         num = getattr(self, "_numview_on", False)
-        if hasattr(self, "sw_hexdump"):
-            # 异常/导入配置若让两个模式同时为 True，HEX 转储按渲染优先级获胜且保持可操作，
-            # 用户仍能先关掉它退出冲突态，不能把两个开关一起锁死。
-            self.sw_hexdump.setEnabled(not term and (not num or self._hexdump_on))
-        if hasattr(self, "sw_numview"):
-            self.sw_numview.setEnabled(not term and not self._hexdump_on)
-        if hasattr(self, "sw_rx_hex"):
-            self.sw_rx_hex.setEnabled(not term and not self._hexdump_on and not num)
+        if hasattr(self, "cb_view_mode"):
+            self.cb_view_mode.setEnabled(not term)
+            self._sync_view_mode_combo()
         if hasattr(self, "cb_hexdump_width"):
-            self.cb_hexdump_width.setEnabled(not term and self._hexdump_on)
+            self.cb_hexdump_width.setEnabled(not term)
         if hasattr(self, "cb_numview_type"):
-            self.cb_numview_type.setEnabled(not term and num)
+            self.cb_numview_type.setEnabled(not term)
+        # ANSI 着色只在它那一页露面（文本 / 终端），不再需要「显示但灰着」这种状态
 
     @staticmethod
     def _parse_port(text):
@@ -3315,10 +3501,18 @@ class CommTool(QMainWindow):
         self._last_direction = None
         self._pending_line_break = False
         self._rx_decode_buffer = b""
+        self._rx_decode_buffers = {}   # TCP Server 每客户端独立半字符
         self._rx_pending_cr = False
+        self._rx_pending_cr_source = None
         self._inc_decoder = None
+        self._inc_decoders = {}
         self._txt_ends_with_nl = True
         self._numview_carries = {}     # 数值视图余数：数据流断点后各来源旧的半个数都已无意义
+        self._ansi_state = None        # 同理：断点后旧颜色不该染到新数据上
+        self._ansi_pending = ""
+        self._ansi_states = {}
+        self._ansi_pendings = {}
+        self._reset_trigger_decoders() # 触发引擎的半个字符同样作废
         if hasattr(self, "_proto_fields"):
             self._proto_fields.clear()    # 清屏/重连：旧帧的字段高亮 cursor 一并清掉
         if reset_dashboard:
@@ -3440,6 +3634,27 @@ class CommTool(QMainWindow):
                                 if key in active}
         self._numview_carries = {key: buf for key, buf in self._numview_carries.items()
                                  if key in active}
+        self._rx_decode_buffers = {key: buf for key, buf in self._rx_decode_buffers.items()
+                                   if key in active}
+        self._inc_decoders = {key: dec for key, dec in self._inc_decoders.items()
+                              if key in active}
+        self._ansi_states = {key: state for key, state in self._ansi_states.items()
+                             if key in active}
+        self._ansi_pendings = {key: pending for key, pending in self._ansi_pendings.items()
+                               if key in active}
+        if self._rx_pending_cr and self._rx_pending_cr_source not in active:
+            self._flush_pending_cr()
+        self._term_streams = {key: state for key, state in self._term_streams.items()
+                              if key in active}
+        # 触发匹配的半字符 / ANSI 残片 / 回看尾巴也属于某个客户端的字节流。
+        # 客户端离开后立即丢掉，既防重连误拼，也避免长期监听时状态表随历史客户端增长。
+        for states in (self._trg_dec_buf, self._trg_dec, self._trg_ansi_pending,
+                       self._trg_tail_bytes, self._trg_tail_text):
+            for stream_key in list(states):
+                if (isinstance(stream_key, tuple) and len(stream_key) == 2
+                        and stream_key[1] not in (None, "__all__")
+                        and stream_key[1] not in active):
+                    states.pop(stream_key, None)
         if not hasattr(self, "cb_target"):
             return
         cur = self.cb_target.currentData()
@@ -3523,6 +3738,7 @@ class CommTool(QMainWindow):
         if not self._rx_pending_cr:
             return
         self._rx_pending_cr = False
+        self._rx_pending_cr_source = None
         force_new = (self._last_direction != "rx") or self._pending_line_break
         self._append_block_data("\r", direction="rx", force_new_block=force_new)
         self._last_direction = "rx"
@@ -3830,6 +4046,8 @@ class CommTool(QMainWindow):
             self._rd_dlg.refresh_theme()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.refresh_theme()
+        if getattr(self, "_triggers_dlg", None) is not None:
+            self._triggers_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.refresh_theme()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -3864,13 +4082,17 @@ class CommTool(QMainWindow):
         协议高亮的字段区间按 HEX 渲染算得，切到文本模式须立刻撤掉旧高亮（refresh 里按当前
         模式判定），否则旧色块残留在已渲染的 HEX 文本上。"""
         self._on_encoding_changed()
+        self._refresh_hex_toggle_state()   # HEX 显示不解释转义序列 → 联动 ANSI 着色开关的可用性
         self._kw_timer.stop()
         self._refresh_extra_selections()
         self._update_sel_checksum()
 
     def _on_encoding_changed(self):
         """切换编码时重置增量解码状态，悬挂字节别用新 codec 错误解码"""
+        self._reset_trigger_decoders()   # 触发引擎与显示区共用编码设置，一起复位
         self._rx_decode_buffer = b""
+        self._rx_decode_buffers = {}
+        self._inc_decoders = {}
         enc = self._get_codec()
         if enc == "auto":
             self._inc_decoder = None
@@ -3880,9 +4102,24 @@ class CommTool(QMainWindow):
             except (LookupError, TypeError):
                 self._inc_decoder = None  # 罕见的找不到 codec 直接回退 auto
 
-    def _decode_rx(self, data: bytes) -> str:
-        """按选定编码增量解码。Auto 走 UTF-8 优先 / GBK 回退；其他走 Python 标准增量解码器"""
+    def _decode_rx(self, data: bytes, source=None) -> str:
+        """按选定编码增量解码。Auto 走 UTF-8 优先 / GBK 回退；其他走 Python 标准增量解码器。
+
+        TCP Server 的每个客户端是独立字节流，半个多字节字符必须按 source 隔离；否则 A 的
+        UTF-8 前两字节会和 B 的末字节拼成一个线路上从未出现过的字符。
+        """
+        stream_source = (source if getattr(self, "_conn_proto", None) == PROTO_TCP_SERVER
+                         else None)
         if self._get_codec() != "auto":
+            if stream_source is not None:
+                dec = self._inc_decoders.get(stream_source)
+                if dec is None:
+                    try:
+                        dec = codecs.getincrementaldecoder(self._get_codec())(errors="replace")
+                    except (LookupError, TypeError):
+                        return data.decode("latin-1")
+                    self._inc_decoders[stream_source] = dec
+                return dec.decode(data, final=False)
             if self._inc_decoder is None:
                 # 第一次调用 / 刚切到具体编码 — 初始化
                 self._on_encoding_changed()
@@ -3891,26 +4128,33 @@ class CommTool(QMainWindow):
             # codec lookup 失败兜底
             return data.decode("latin-1")
 
-        # Auto 模式 — 原 UTF-8 优先, 不完整就缓存, 真乱码回退 GBK
-        self._rx_decode_buffer += data
-        if not self._rx_decode_buffer:
-            return ""
-        try:
-            text = self._rx_decode_buffer.decode("utf-8")
-            self._rx_decode_buffer = b""
+        # Auto 模式 — UTF-8 优先, 不完整就缓存, 真乱码回退 GBK
+        if stream_source is not None:
+            text, self._rx_decode_buffers[stream_source] = self._decode_auto_chunk(
+                self._rx_decode_buffers.get(stream_source, b""), data)
             return text
+        text, self._rx_decode_buffer = self._decode_auto_chunk(self._rx_decode_buffer, data)
+        return text
+
+    @staticmethod
+    def _decode_auto_chunk(buf: bytes, data: bytes):
+        """Auto 编码的增量解码核心：UTF-8 优先、半个字符留到下次、真乱码整段回退 GBK。
+        返回 (文本, 新缓冲)。
+
+        抽成纯函数是为了让「显示路径」和「触发告警」各持一份缓冲、共用同一套解码规则 ——
+        两边口径不同会出怪事：用户看到正确中文，带中文关键字的触发规则却看到乱码而漏报。"""
+        buf = buf + data
+        if not buf:
+            return "", b""
+        try:
+            return buf.decode("utf-8"), b""
         except UnicodeDecodeError as e:
-            if (e.end == len(self._rx_decode_buffer)
-                    and "unexpected end of data" in str(e.reason)):
+            if e.end == len(buf) and "unexpected end of data" in str(e.reason):
                 try:
-                    text = self._rx_decode_buffer[:e.start].decode("utf-8")
-                    self._rx_decode_buffer = self._rx_decode_buffer[e.start:]
-                    return text
+                    return buf[:e.start].decode("utf-8"), buf[e.start:]
                 except UnicodeDecodeError:
                     pass
-            text = self._rx_decode_buffer.decode("gbk", errors="replace")
-            self._rx_decode_buffer = b""
-            return text
+            return buf.decode("gbk", errors="replace"), b""
 
     def on_data_received(self, data: bytes, reply_target=None):
         # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
@@ -3956,6 +4200,11 @@ class CommTool(QMainWindow):
                 self._recorder.on_rx(data)
             except Exception:
                 pass
+        # 触发告警：命中就响铃 / 托盘通知 / 数据区打标（自带兜底，不影响收包主流程）
+        try:
+            self._triggers_feed(data, "rx", source=reply_target)
+        except Exception:
+            pass
         # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
         ddlg = getattr(self, "_dash_dlg", None)
         if ddlg is not None and ddlg.isVisible():
@@ -4008,7 +4257,7 @@ class CommTool(QMainWindow):
 
         # 终端模式：纯字节流直接追加显示，绕过 HEX / 时间戳 / 方向 / 分行 / 分包 等所有装饰。
         if self._terminal_on:
-            self._terminal_append(self._decode_rx(data))
+            self._terminal_append(self._decode_rx(data, source=source), source=source)
             return
 
         # HEX dump 视图：每个收包整段转储为「偏移 + HEX + ASCII」多行块（各块 force_new：独立起行、
@@ -4040,19 +4289,52 @@ class CommTool(QMainWindow):
         use_line_split = self.sw_line_split.isChecked() and not use_hex
         now = time.monotonic()
 
+        ansi_spans = None      # ANSI 着色：[(起, 止, 样式)]，下标相对下面这个 text
         if use_hex:
             text = self._bytes_to_hex(data) + " "
         else:
-            text = self._decode_rx(data)
+            text = self._decode_rx(data, source=source)
+            if self._ansi_on:
+                # 剥掉转义序列（顺带吃掉光标/擦除等非 SGR 的，不再显示成乱码），
+                # 留下纯文本给后面的分行/分包逻辑，颜色以字符区间的形式另存。
+                stream_source = (source if self._conn_proto == PROTO_TCP_SERVER else None)
+                if stream_source is None:
+                    st0, pd0 = self._ansi_state, self._ansi_pending
+                else:
+                    st0 = self._ansi_states.get(stream_source)
+                    pd0 = self._ansi_pendings.get(stream_source, "")
+                # 快速通道：没有转义符、没有残片、上一包也没留下颜色时，逐字符解析纯属
+                # 白跑（每包热路径）。三个条件缺一不可——有残片要拼收尾；上一包颜色
+                # 未复位时，本包纯文本也要继续着那个色，跳过解析会掉色。
+                if pd0 or "\x1b" in text or (st0 is not None and not st0.is_default()):
+                    runs, state, pending = ansi.parse(text, st0, pd0)
+                    if stream_source is None:
+                        self._ansi_state, self._ansi_pending = state, pending
+                    else:
+                        self._ansi_states[stream_source] = state
+                        if pending:
+                            self._ansi_pendings[stream_source] = pending
+                        else:
+                            self._ansi_pendings.pop(stream_source, None)
+                    text, ansi_spans = self._ansi_flatten(runs)
 
         # 跨 chunk 的 \r\n 处理 — Auto(0) 和 CRLF(1) 都需要
         # （LF/CR 模式因为单字符就是终止符，无歧义，不需要 defer）
         cross_chunk_crlf = False
         nl_mode_for_defer = self.cb_line_nl.currentIndex() if use_line_split else -1
         if nl_mode_for_defer in (0, 1):
+            stream_source = source if self._conn_proto == PROTO_TCP_SERVER else None
+            # TCP Server 的各客户端不是同一条字节流：A 包尾的 CR 不能与 B 包头的 LF
+            # 合成一个虚构 CRLF。来源切换时先按孤立 CR 冲出，再处理当前客户端。
+            if (self._rx_pending_cr
+                    and self._rx_pending_cr_source != stream_source):
+                self._flush_pending_cr()
             if self._rx_pending_cr:
                 if text.startswith("\n"):
                     text = text[1:]
+                    # 删了首字符 → ANSI 颜色区间要跟着左移一位，否则整段色块错位
+                    # （表现为一行的头一个字符没上色、末字符多上了色）
+                    ansi_spans = self._ansi_shift(ansi_spans, -1, len(text))
                     cross_chunk_crlf = True
                 else:
                     # 没接到 \n —— Auto 模式下 \r 单字符也是换行；
@@ -4060,10 +4342,14 @@ class CommTool(QMainWindow):
                     # 渲染时仍会把它当换行显示。两种模式都先把 \r 还回去，
                     # 后续 split 按规则处理（Auto 把它当换行；CRLF 视为数据）
                     text = "\r" + text
+                    ansi_spans = self._ansi_shift(ansi_spans, 1, len(text))  # 补了首字符 → 右移
                 self._rx_pending_cr = False
+                self._rx_pending_cr_source = None
             if text.endswith("\r"):
                 self._rx_pending_cr = True
+                self._rx_pending_cr_source = stream_source
                 text = text[:-1]
+                ansi_spans = self._ansi_shift(ansi_spans, 0, len(text))      # 削了尾字符 → 收界
 
             if cross_chunk_crlf and not text:
                 self._pending_line_break = True
@@ -4071,18 +4357,10 @@ class CommTool(QMainWindow):
                 return
 
         if use_line_split:
-            nl_mode = self.cb_line_nl.currentIndex()
-            if nl_mode == 1:
-                segments = text.split("\r\n")
-            elif nl_mode == 2:
-                segments = text.split("\n")
-            elif nl_mode == 3:
-                segments = text.split("\r")
-            else:
-                normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-                segments = normalized.split("\n")
+            segments, seg_starts = self._split_lines_with_offsets(
+                text, self.cb_line_nl.currentIndex())
         else:
-            segments = [text]
+            segments, seg_starts = [text], [0]
 
         for i, seg in enumerate(segments):
             is_first = (i == 0)
@@ -4108,7 +4386,11 @@ class CommTool(QMainWindow):
             if is_last and seg == "" and use_line_split and len(segments) > 1:
                 continue
 
-            body_pos = self._append_block_data(seg, direction="rx", force_new_block=force_new_block)
+            # ANSI 着色：把整段的颜色区间切出属于本行的部分（分行后下标要换算成行内偏移）
+            seg_runs = (self._ansi_slice(ansi_spans, seg_starts[i], seg_starts[i] + len(seg))
+                        if ansi_spans else None)
+            body_pos = self._append_block_data(seg, direction="rx", force_new_block=force_new_block,
+                                               runs=seg_runs)
             self._last_direction = "rx"
             # 协议高亮：HEX 模式下整段=一帧（seg 即 hex(data)），按帧解析规则给字段上色
             if use_hex and self._proto_hl_on and body_pos is not None:
@@ -4120,8 +4402,106 @@ class CommTool(QMainWindow):
             self._pending_line_break = False
         self._last_recv_time = now
 
+    @staticmethod
+    def _split_lines_with_offsets(text, nl_mode):
+        r"""按换行模式切段，并给出每段在 text 中的起始下标（ANSI 着色要按下标把颜色切回每行）。
+
+        与原先的 split 等价：Auto(0) 等价于把 \r\n 和 \r 都归一成 \n 再 split，这里用一条
+        正则一次切完，顺带拿到偏移（先 replace 再 split 会丢掉原串下标）。"""
+        sep = {1: r"\r\n", 2: r"\n", 3: r"\r"}.get(nl_mode, r"\r\n|\r|\n")
+        segs, starts, pos = [], [], 0
+        for m in re.finditer(sep, text):
+            segs.append(text[pos:m.start()])
+            starts.append(pos)
+            pos = m.end()
+        segs.append(text[pos:])
+        starts.append(pos)
+        return segs, starts
+
+    @staticmethod
+    def _ansi_flatten(runs):
+        """ansi.parse 的分段结果 → (纯文本, [(起, 止, 样式)])。默认样式的段不记区间，
+        让绝大多数无色文本走原来的整段插入路径，零额外开销。"""
+        parts, spans, pos = [], [], 0
+        for seg, st in runs:
+            if not seg:
+                continue
+            parts.append(seg)
+            if not st.is_default():
+                spans.append((pos, pos + len(seg), st))
+            pos += len(seg)
+        return "".join(parts), spans
+
+    @staticmethod
+    def _ansi_shift(spans, delta, limit):
+        """跨包 CRLF 处理会在 text 首尾增删字符，颜色区间必须跟着平移并收进 [0, limit)，
+        否则整段色块错位一位（表现为行首字符没上色、行尾多上一格）。"""
+        if not spans:
+            return spans
+        out = []
+        for s, e, st in spans:
+            s2, e2 = max(0, s + delta), min(limit, e + delta)
+            if s2 < e2:
+                out.append((s2, e2, st))
+        return out
+
+    @staticmethod
+    def _ansi_slice(spans, start, end):
+        """取 [start, end) 内的样式区间，换算成相对该段的 (行内偏移, 长度, 样式)。"""
+        out = []
+        for s, e, st in spans:
+            a, b = max(s, start), min(e, end)
+            if a < b:
+                out.append((a - start, b - a, st))
+        return out
+
+    def _apply_sgr_format(self, fmt, st, dark=None):
+        """把 ANSI 样式写进字符格式。颜色同时存一份「标识」(ANSI_*_PROP)：切主题时据此按
+        新主题明暗重解析，避免深色配色留在浅色底上看不见（见 _recolor_history）。"""
+        if dark is None:
+            dark = self._theme().get("mode") == "dark"
+        theme = self._theme()
+        fg, bg = st.fg, st.bg
+        if st.reverse:
+            # 反显：前后景对调；缺省那侧存「主题正文色 / 底色」的记号（不是当场算好的颜色），
+            # 这样切深浅主题时能跟着重解析，不会把为深底选的颜色留在浅底上。
+            fg = bg if bg is not None else ansi.SPEC_THEME_BG
+            bg = st.fg if st.fg is not None else ansi.SPEC_THEME_FG
+        if st.bold and isinstance(fg, int) and fg < 8:
+            fg += 8            # 粗体 + 基础色 → 取亮色版，与终端惯例一致
+        fg_spec = fg if isinstance(fg, str) else ansi.spec_of(fg)
+        bg_spec = bg if isinstance(bg, str) else ansi.spec_of(bg)
+        fmt.setProperty(ANSI_FG_PROP, fg_spec)
+        fmt.setProperty(ANSI_BG_PROP, bg_spec)
+        col = ansi.color_of_spec(fg_spec, dark, theme["fg"], theme["bg"])
+        if col:
+            fmt.setForeground(QColor(col))
+        bcol = ansi.color_of_spec(bg_spec, dark, theme["fg"], theme["bg"])
+        if bcol:
+            fmt.setBackground(QColor(bcol))
+        if st.bold:
+            fmt.setFontWeight(QFont.Bold)
+        if st.underline:
+            fmt.setFontUnderline(True)
+
+    def _insert_ansi_runs(self, cursor, text, runs, body_fmt):
+        """按 ANSI 样式区间分段插入正文；区间之外的部分用默认正文格式。"""
+        pos = 0
+        for off, length, st in runs:
+            if off > pos:
+                cursor.setCharFormat(body_fmt)
+                cursor.insertText(text[pos:off])
+            fmt = QTextCharFormat(body_fmt)
+            self._apply_sgr_format(fmt, st)
+            cursor.setCharFormat(fmt)
+            cursor.insertText(text[off:off + length])
+            pos = off + length
+        if pos < len(text):
+            cursor.setCharFormat(body_fmt)
+            cursor.insertText(text[pos:])
+
     def _append_block_data(self, text: str, direction: str, force_new_block: bool,
-                           view_mode=None):
+                           view_mode=None, runs=None, role=None):
         theme = self._theme()
         # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
@@ -4164,8 +4544,11 @@ class CommTool(QMainWindow):
                 log_pieces.append(prefix)
                 self._txt_ends_with_nl = False
 
-        # 正文用 body_color
-        body_role = ROLE_TX if direction == "tx" else ROLE_RX
+        # 正文用 body_color；role 可由调用方指定 —— 告警标记这类「我们自己插的说明行」
+        # 要用装饰角色(ROLE_TS)，否则会被当成设备发来的 RX 正文参与关键字过滤与统计。
+        body_role = role if role is not None else (ROLE_TX if direction == "tx" else ROLE_RX)
+        if role is not None:
+            body_color = self._role_color(role, theme)
         body_fmt = QTextCharFormat()
         body_fmt.setForeground(QColor(body_color))
         body_fmt.setProperty(ROLE_PROP, body_role)
@@ -4182,7 +4565,10 @@ class CommTool(QMainWindow):
         cursor.setCharFormat(body_fmt)
         first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
         body_start_pos = cursor.position()         # 正文起始字符位置（供协议高亮做字节→字符映射）
-        cursor.insertText(text)
+        if runs:
+            self._insert_ansi_runs(cursor, text, runs, body_fmt)   # ANSI 着色：按样式分段插
+        else:
+            cursor.insertText(text)
         log_pieces.append(text)
         if text:
             self._txt_ends_with_nl = text.endswith("\n")
@@ -4583,11 +4969,174 @@ class CommTool(QMainWindow):
                 and not self._seq_running() and not self._ar_in_flight):
             self._macro.on_tx(data)
 
-    def _record_stream_tx(self, data):
+    def _record_stream_tx(self, data, source=None):
         """数据录制的 TX 采集：录线路上真实发出的字节（含自动应答/Modbus 回复，
         因为录的是「线路现场」而非「用户意图」——这点与宏录制相反）。"""
         if self._recorder.recording:
             self._recorder.on_tx(data)
+        self._triggers_feed(data, "tx", source=source)  # TCP Server 按发送目标隔离流尾巴
+
+    # ---------------- 触发告警：命中规则 → 响铃 / 托盘通知 / 数据区打标 ----------------
+    def _load_triggers(self):
+        raw = self.settings.value("triggers", "")
+        try:
+            return triggers.sanitize_list(json.loads(raw)) if raw else []
+        except (ValueError, TypeError):
+            return []       # 配置坏掉退回空表，不因一条坏规则让整个功能不可用
+
+    def _save_triggers(self):
+        """落盘 + 让引擎换上新规则（换规则会清命中统计，故调用方已做编辑去抖）。"""
+        self.settings.setValue("triggers", json.dumps(self._triggers, ensure_ascii=False))
+        self._trigger_engine.set_rules(self._triggers)
+        # 新规则只观察生效后的数据；不能拿旧规则时期留下的半字符/尾巴与下一块拼接。
+        self._reset_trigger_decoders()
+
+    def _triggers_feed(self, data, direction, source=None):
+        """把一包数据喂给告警引擎并执行命中动作。收发路径都会调，故先做最省的短路判断。"""
+        eng = getattr(self, "_trigger_engine", None)
+        if eng is None or not eng.active():
+            return
+        data = bytes(data)
+        # 串口/TCP/虚拟连接是连续字节流，需要跨底层回调拼半字符和关键字；UDP/组播
+        # 每次回调就是完整数据报，跨报文拼接会制造线路上从未出现过的假关键字。
+        carry = getattr(self, "_conn_proto", None) not in (PROTO_UDP, PROTO_UDP_MULTICAST)
+        # TCP Server 的每个客户端都有独立字节流；其余协议 source=None，仍按收/发隔离。
+        stream_key = (direction, source if getattr(self, "_conn_proto", None) == PROTO_TCP_SERVER
+                      else None)
+        text = ""
+        if eng.needs_text():       # 全是 HEX 规则时不必解码，省掉每包一次 decode
+            try:
+                text = self._decode_for_triggers(data, stream_key, carry=carry)
+                # 剥掉 ANSI 转义再匹配：彩色日志里一行真正的开头是 "I (123)"，
+                # 前面那串 \x1b[0;32m 是显示格式不是内容 —— 不剥的话「前缀」和
+                # 「^ 锚定的正则」永远命中不了，用户会以为规则写错了。
+                pending = self._trg_ansi_pending.get(stream_key, "") if carry else ""
+                # 快速通道：绝大多数包根本没有转义符，逐字符解析纯属白跑（这是每包热路径）。
+                # 有上一包的残片时仍必须进解析——残片要与本包拼接收尾。
+                if pending or "\x1b" in text:
+                    runs, _state, pending = ansi.parse(text, pending=pending)
+                    text = "".join(piece for piece, _style in runs)
+                    if carry:
+                        if pending:
+                            self._trg_ansi_pending[stream_key] = pending
+                        else:
+                            self._trg_ansi_pending.pop(stream_key, None)
+            except Exception:
+                text = ""
+        # 跨块回看：串口是字节流，关键字常被底层读操作劈成两半（"ERR" | "OR"）。
+        # 拼上一块的尾巴一起匹配，引擎只认「结束位置落在本块内」的命中，故不会重复计数。
+        keep = eng.lookback()
+        if keep and carry:
+            tb = self._trg_tail_bytes.get(stream_key, b"")
+            tt = self._trg_tail_text.get(stream_key, "")
+            new_data_at, new_text_at = len(tb), len(tt)
+            data_all, text_all = tb + data, tt + text
+            self._trg_tail_bytes[stream_key] = data_all[-keep:]
+            self._trg_tail_text[stream_key] = text_all[-keep:]
+        else:
+            data_all, text_all, new_data_at, new_text_at = data, text, 0, 0
+        # 命中次数与最后命中时间由引擎在计数时一并记（含冷却期内的命中），这里只管执行动作
+        for idx, rule in eng.feed(data_all, direction, text_all,
+                                  new_data_at=new_data_at, new_text_at=new_text_at):
+            self._fire_trigger(idx, rule, direction)
+
+    def _decode_for_triggers(self, data, stream_key, carry=True):
+        """触发引擎的增量解码：与数据区**同一套编码规则**（Auto 走 UTF-8 优先 / GBK 回退），
+        但用自己的缓冲。
+
+        为什么不直接复用 _decode_rx：①它的缓冲属于显示路径，共享会互相吃掉对方留存的半个
+        多字节字符；②触发要在 HEX / 转储 / 数值 等**任何显示模式**下都能按文本匹配，不能
+        绑在文本显示那条路上。每条来源流各持一份状态 —— 混用会让不同客户端或 RX/TX
+        的半个字符拼在一起，两边都乱。UDP 数据报 carry=False，每包独立解码。"""
+        if not isinstance(stream_key, tuple):  # 兼容内部测试/旧调用传 "rx"、"tx"
+            stream_key = (stream_key, None)
+        bufs = self._trg_dec_buf
+        codec = self._get_codec()
+        if not carry:
+            if codec == "auto":
+                text, _unused = self._decode_auto_chunk(b"", data)
+                return text
+            try:
+                return data.decode(codec, errors="replace")
+            except LookupError:
+                return data.decode("latin-1")
+        if codec != "auto":
+            dec = self._trg_dec.get(stream_key)
+            if dec is None or self._trg_dec_codec != codec:
+                if self._trg_dec_codec != codec:
+                    self._trg_dec.clear()          # 换了编码：旧解码器的残留字节按新编码无意义
+                    self._trg_dec_codec = codec
+                try:
+                    dec = codecs.getincrementaldecoder(codec)(errors="replace")
+                except LookupError:
+                    return data.decode("latin-1")  # 同 _decode_rx 的兜底
+                self._trg_dec[stream_key] = dec
+            return dec.decode(data, final=False)
+        text, bufs[stream_key] = self._decode_auto_chunk(bufs.get(stream_key, b""), data)
+        return text
+
+    def _reset_trigger_decoders(self):
+        """数据流断点 / 换编码：旧的半个字符与跨块尾巴对新数据都没意义，清掉重来。"""
+        self._trg_dec_buf = {}
+        self._trg_dec = {}
+        self._trg_dec_codec = None
+        self._trg_ansi_pending = {}
+        self._trg_tail_bytes = {}
+        self._trg_tail_text = {}
+
+    def _fire_trigger(self, idx, rule, direction):
+        """执行一条命中规则的动作。任一动作出错都不该影响其余动作与收包主流程。"""
+        name = rule.get("name") or rule.get("pattern") or self._t("trg_unnamed")
+        if rule.get("beep", True):
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
+        if rule.get("notify", True):
+            msg = self._t("trg_fired", name=name, dir=direction.upper())
+            # 托盘通知是「人不在场」的主要送达方式；没有托盘（部分 Linux 桌面）退回状态栏提示
+            shown = False
+            if self._tray is not None:
+                try:
+                    self._tray.showMessage(self._t("trg_notify_title"), msg,
+                                           QSystemTrayIcon.Warning, 5000)
+                    shown = True
+                except Exception:
+                    shown = False
+            if not shown:
+                self.toast(msg, error=True)
+        if rule.get("mark", False):
+            # 数据区打标：单独起一行，用装饰角色(ROLE_TS) —— 这是我们自己插的说明，
+            # 不是设备发来的数据，不该参与关键字过滤 / 被当成 RX 正文。
+            try:
+                marker = "⚠ %s %s" % (self._t("trg_mark_prefix"), name)
+                if self._terminal_on:
+                    # 终端渲染维护自己的光标，普通 append 不会更新它；直接插标记会让下一包
+                    # 回到旧光标覆盖标记。标记独占一行并把终端光标移到其后。
+                    shown = self.txt_recv.toPlainText()
+                    decorated = ("" if not shown or shown.endswith("\n") else "\n")
+                    decorated += marker + "\n"
+                    self._append_block_data(decorated, direction="rx",
+                                            force_new_block=False,
+                                            view_mode=VIEW_TERMINAL, role=ROLE_TS)
+                    self._term_pos = self.txt_recv.document().characterCount() - 1
+                else:
+                    self._append_block_data(marker, direction="rx",
+                                            force_new_block=True, role=ROLE_TS)
+                self._last_direction = None      # 标记行不属于收发流，别让下一包接着它续行
+            except Exception:
+                pass
+
+    def open_triggers(self):
+        """打开触发告警对话框（单实例、非模态）。"""
+        dlg = getattr(self, "_triggers_dlg", None)
+        if dlg is None:
+            from triggers_dialog import TriggersDialog
+            dlg = TriggersDialog(self)
+            self._triggers_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _replay_inject_target(self):
         """回放的注入落点：只有虚拟连接能接受「收到的数据」注入。
@@ -4920,8 +5469,19 @@ class CommTool(QMainWindow):
     def _xfer_send(self, data):
         """worker 线程经队列信号回到 GUI 线程发字节（连接可能已断，兜底不崩）。"""
         if self.conn is not None:
+            payload = bytes(data)
             try:
-                self.conn.send(bytes(data), self._xfer_target)
+                sent = self.conn.send(payload, self._xfer_target)
+            except Exception:
+                return
+            # 录制与 TX 告警描述的是线路上真实发出的字节；无目标、零写或短写都不能
+            # 把整块登记为成功。TCP Client 半帧还要沿用普通发送路径的断流保护。
+            if sent == SEND_NO_TARGET or sent != len(payload):
+                self._abort_partial_tcp_stream(sent, len(payload))
+                return
+            # 文件传输同样绕过 _send_text：补上采集入口，否则「发送」范围的触发规则盯不到
+            try:
+                self._record_stream_tx(payload, source=self._xfer_target)
             except Exception:
                 pass
 
@@ -6271,7 +6831,7 @@ class CommTool(QMainWindow):
         "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
         "ser_flow", "serial_dtr", "serial_rts",
         # 数据区显示
-        "rx_hex", "hexdump_view", "hexdump_width", "numview", "numview_type",
+        "rx_hex", "hexdump_view", "hexdump_width", "numview", "numview_type", "ansi_color",
         "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
         "line_split", "line_nl_mode", "encoding", "max_lines",
         "log_split", "filter_highlight", "recv_font_size",
@@ -6298,6 +6858,8 @@ class CommTool(QMainWindow):
         "modbus_master_split",
         # 自动化测试序列
         "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
+        # 触发告警
+        "triggers",
         # 帧构造器
         "frame_builder_fields", "frame_builder_split",
         # 终端模式
@@ -6528,6 +7090,7 @@ class CommTool(QMainWindow):
             self._set_terminal_enabled(term_on)   # 变了 → 切换 + 同步开关/占位/禁用态
         else:
             self._apply_terminal_ui(term_on)      # 值未变也确保禁用态正确（_load_settings 动过其它开关）
+        self._reload_section_states()
 
     def _send_subst(self, raw, hex_mode):
         """发送区动态字段替换：
@@ -6982,8 +7545,9 @@ class CommTool(QMainWindow):
         if not self._is_open():
             return False
         frame = bytes(frame)
+        send_target = self._send_target()
         try:
-            sent = self.conn.send(frame, self._send_target())
+            sent = self.conn.send(frame, send_target)
         except Exception:
             return False
         # 串口 write() 允许返回短写；只有整帧全部交付才可登记为成功并等待响应。
@@ -7003,6 +7567,11 @@ class CommTool(QMainWindow):
                 disp = frame.decode(self._send_codec(), errors="replace")
             self._append_block_data(disp, direction="tx", force_new_block=True)
             self._last_direction = "tx"
+        except Exception:
+            pass
+        # Modbus 主机也是绕过 _send_text 的直发路径：录制与「发送」范围的触发规则都得盯到
+        try:
+            self._record_stream_tx(frame, source=send_target)
         except Exception:
             pass
         return True
@@ -7236,8 +7805,9 @@ class CommTool(QMainWindow):
             self.toast(self._t("err_checksum", e=e), error=True)
             return False
 
+        send_target = self._send_target() if target is None else target
         try:
-            sent = self.conn.send(data, self._send_target() if target is None else target)
+            sent = self.conn.send(data, send_target)
         except Exception as e:
             self.tx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)
@@ -7266,7 +7836,7 @@ class CommTool(QMainWindow):
 
         if record_macro:
             self._macro_record_tx(data)
-        self._record_stream_tx(data)   # 数据录制录线路现场，与 record_macro 无关
+        self._record_stream_tx(data, source=send_target)  # 录线路现场，与 record_macro 无关
 
         # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
         # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
@@ -7282,7 +7852,7 @@ class CommTool(QMainWindow):
         self._last_direction = "tx"
         return True
 
-    # ----- 终端模式（轻量串口终端：逐字符即时发送 + 纯字节流显示，不解析 ANSI）-----
+    # ----- 终端模式（轻量串口终端：逐字符即时发送 + 基础 VT 行编辑 / ANSI SGR）-----
     @staticmethod
     def _safe_enter_idx(v):
         """回车映射索引安全解析：损坏/越界的 settings 值不让 __init__ 抛异常、不让下拉越界。"""
@@ -7297,7 +7867,12 @@ class CommTool(QMainWindow):
         self._terminal_on = on
         self._term_esc = ""           # 切换时清掉未完成的转义序列残留
         self._term_discard_csi = False
+        self._term_discard_osc = False
+        self._term_osc_prev_esc = False
+        self._term_streams = {}
         self._term_pos = None         # 光标位置重置（下次从文末开始）
+        self._term_sgr = None         # 颜色也归零：上一次会话结尾若停在红色，重进终端
+                                      # 不该让新会话的第一行凭空是红的
         self.settings.setValue("terminal_mode", on)
         self.settings.sync()
         # 同步开关控件（程序化调用时）；阻断信号避免 setChecked → toggled → 本函数 递归
@@ -7325,7 +7900,10 @@ class CommTool(QMainWindow):
         起作用。终端是纯字节流逐字符直发：HEX 显示 / 时间戳 / 分包 / 超时 / 换行分包，以及
         HEX 发送 / 追加换行 / 定时 / 校验 全被绕过。仍有用的（字符编码 / 自动换行 / 最大行数 /
         实时记录）不动。关闭终端模式后全部恢复可配置。"""
-        for name in ("sw_rx_hex", "sw_hexdump", "sw_numview", "cb_numview_type",
+        if on and hasattr(self, "sec_send_term"):
+            # 正处在终端模式里却把这组折起来 → 找不到怎么退出，故开启时强制展开
+            self.sec_send_term.setExpanded(True)
+        for name in ("cb_view_mode", "cb_hexdump_width", "cb_numview_type",
                      "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
                      "sw_line_split", "cb_line_nl",
                      "sw_tx_hex", "sw_append_newline", "cb_append_nl",
@@ -7336,7 +7914,7 @@ class CommTool(QMainWindow):
         self._refresh_hex_toggle_state()   # 退出终端后按 hexdump 状态复算 HEX 显示可用性（否则被上面一律置回可用）
         self._update_sel_checksum()        # 进出终端换了显示口径，旧的选区校验和结果作废
         # 连同标签文字一起淡化，让禁用的整行统一「暗下去」（只灰控件、标签还满色 → 不明显）
-        for k in ("hex_display", "hexdump_view", "numview", "show_timestamp", "packet_split", "timeout", "line_split",
+        for k in ("view_mode", "show_timestamp", "packet_split", "timeout", "line_split",
                   "hex_send", "append_newline", "period", "checksum"):
             for lab in self._setting_labels.get(k, ()):
                 if on:
@@ -7396,8 +7974,9 @@ class CommTool(QMainWindow):
             return
         if not self._is_open():
             return
+        send_target = self._send_target()
         try:
-            sent = self.conn.send(data, self._send_target())
+            sent = self.conn.send(data, send_target)
         except Exception as e:
             self.tx_errors += 1
             self._refresh_stat_labels(with_tooltip=False)
@@ -7415,10 +7994,17 @@ class CommTool(QMainWindow):
         self.tx_bytes += len(data)
         self.tx_packets += 1
         self._macro_record_tx(data)
+        # 终端是绕过 _send_text 的直发路径，采集入口得在这里补一次：数据录制录的是「线路
+        # 现场」，终端里敲进去的字节当然算；范围含「发送」的触发规则同样要盯得到，
+        # 否则在终端里敲的命令永远不命中。两件事都由 _record_stream_tx 一个入口带上。
+        try:
+            self._record_stream_tx(data, source=send_target)
+        except Exception:
+            pass
         if self._terminal_echo and echo:
             self._terminal_append(echo)
 
-    def _terminal_append(self, text):
+    def _terminal_append(self, text, source=None):
         r"""把收到的字节流按终端语义渲染到数据区（轻量 VT）：处理 \b(光标左移)、\r(回行首)、
         \n(换行)、覆盖式打印，以及行编辑常用的 CSI 序列 ESC[J/ESC[K(擦除)、ESC[C/ESC[D(光标
         左右)；颜色 ESC[..m、定位 ESC[..H 等其它 CSI 忽略（不显示成乱码）。不解析全屏 TUI。"""
@@ -7433,13 +8019,43 @@ class CommTool(QMainWindow):
             cur.setPosition(pos)
         else:
             cur.movePosition(QTextCursor.End)
-        esc = self._term_esc          # 跨块残留的未完成转义序列
-        self._term_esc = ""
-        discard_csi = self._term_discard_csi
-        self._term_discard_csi = False
+        stream_source = source if self._conn_proto == PROTO_TCP_SERVER else None
+        if stream_source is None:
+            term_sgr = self._term_sgr
+            esc = self._term_esc          # 跨块残留的未完成转义序列
+            self._term_esc = ""
+            discard_csi = self._term_discard_csi
+            self._term_discard_csi = False
+            discard_osc = self._term_discard_osc
+            self._term_discard_osc = False
+            osc_prev_esc = self._term_osc_prev_esc
+            self._term_osc_prev_esc = False
+        else:
+            # 多客户端共用一个显示文档，但协议解析状态不能共用：否则 A 的半条 ESC[
+            # 会吃掉 B 的正文，A 的红色 SGR 也会把 B 的日志染红。
+            stream = self._term_streams.get(stream_source, {})
+            term_sgr = stream.get("sgr")
+            esc = stream.get("esc", "")
+            discard_csi = stream.get("discard_csi", False)
+            discard_osc = stream.get("discard_osc", False)
+            osc_prev_esc = stream.get("osc_prev_esc", False)
         buf = []
-        term_fmt = QTextCharFormat(cur.charFormat())
-        term_fmt.setProperty(VIEW_PROP, VIEW_TERMINAL)
+        # 基础格式必须从零构造，不能沿用光标处的格式：光标停在上一段带色文字后面时，
+        # 继承来的格式会连 ANSI 的颜色和属性一起带上 —— 关掉 ANSI 着色后新文字仍是红的。
+        base_fmt = QTextCharFormat()
+        base_fmt.setForeground(QColor(self._theme()["fg"]))
+        base_fmt.setProperty(VIEW_PROP, VIEW_TERMINAL)
+
+        def _make_fmt():
+            """当前 SGR 样式对应的字符格式；关掉 ANSI 着色时恒为无色的基础格式。"""
+            st = term_sgr
+            if not self._ansi_on or st is None or st.is_default():
+                return base_fmt
+            f = QTextCharFormat(base_fmt)
+            self._apply_sgr_format(f, st)
+            return f
+
+        term_fmt = _make_fmt()
 
         def _flush():
             if buf:
@@ -7447,6 +8063,15 @@ class CommTool(QMainWindow):
                 del buf[:]
 
         for ch in text:
+            if discard_osc:
+                # 超长 OSC（设置标题/超链接等）继续吞到 BEL 或 ST(ESC \)。只丢当前控制序列，
+                # 终止后的普通正文仍照常显示。
+                if ch == "\x07" or (osc_prev_esc and ch == "\\"):
+                    discard_osc = False
+                    osc_prev_esc = False
+                else:
+                    osc_prev_esc = (ch == "\x1b")
+                continue
             if discard_csi:
                 # 超长 CSI 的剩余部分全部吃掉；遇终止字节后恢复普通解析。
                 if "\x40" <= ch <= "\x7e":
@@ -7454,17 +8079,33 @@ class CommTool(QMainWindow):
                 continue
             if esc:                   # 正在收集转义序列
                 esc += ch
-                if len(esc) > 64:
+                if esc.startswith("\x1b]"):       # OSC：BEL 或 ST(ESC \) 结束
+                    if ch == "\x07" or esc.endswith("\x1b\\"):
+                        esc = ""
+                    elif len(esc) > ansi.MAX_PENDING:
+                        osc_prev_esc = (ch == "\x1b")
+                        esc = ""
+                        discard_osc = True
+                elif esc.startswith("\x1b[") and len(esc) > 64:
                     # 异常设备可能一直发 ESC[ + 参数却不给终止字母；限制跨块缓冲长度，
                     # 避免内存持续增长，也避免最终对超长数字执行 int()。
                     esc = ""
                     discard_csi = True
-                elif len(esc) == 2 and ch != "[":
-                    esc = ""          # ESC 后不是 '['（非 CSI，如 ESC( 等）：吃掉、不处理
-                elif len(esc) >= 3 and "\x40" <= ch <= "\x7e":
+                elif esc.startswith("\x1b[") and len(esc) >= 3 and "\x40" <= ch <= "\x7e":
                     _flush()
-                    self._term_handle_csi(cur, esc)   # CSI 终止字母到达 → 处理
+                    term_sgr = self._term_handle_csi(cur, esc, term_sgr)
+                    term_fmt = _make_fmt()            # SGR 可能改了颜色 → 后续字符用新格式
                     esc = ""
+                elif len(esc) == 2:
+                    # CSI / OSC 继续收；其它 ESC 序列若第二字节是 intermediate(0x20-0x2F)
+                    # 还需再等终止字节，如 ESC(B。ESC7/ESC= 这类两字节序列则已完整吃掉。
+                    if ch not in ("[", "]") and not ("\x20" <= ch <= "\x2f"):
+                        esc = ""
+                elif not esc.startswith(("\x1b[", "\x1b]")):
+                    # ESC + intermediate* + final(0x30-0x7E)：整条吃掉，不把 ESC(B 的 B
+                    # 或字符集/键盘模式控制码漏进终端正文。
+                    if "\x30" <= ch <= "\x7e" or len(esc) > 16:
+                        esc = ""
                 continue
             if ch == "\x1b":
                 _flush()
@@ -7491,18 +8132,35 @@ class CommTool(QMainWindow):
                     cur.insertText(ch, term_fmt)
             # 其它控制符（BEL/NUL 等）丢弃
         _flush()
-        self._term_esc = esc          # 未完成的转义序列留到下次拼接
-        self._term_discard_csi = discard_csi
+        if stream_source is None:
+            self._term_sgr = term_sgr
+            self._term_esc = esc          # 未完成的转义序列留到下次拼接
+            self._term_discard_csi = discard_csi
+            self._term_discard_osc = discard_osc
+            self._term_osc_prev_esc = osc_prev_esc
+        else:
+            self._term_streams[stream_source] = {
+                "sgr": term_sgr,
+                "esc": esc,
+                "discard_csi": discard_csi,
+                "discard_osc": discard_osc,
+                "osc_prev_esc": osc_prev_esc,
+            }
         self._term_pos = cur.position()   # 光标位置留到下块延续
+        # 终端路径不经过 _append_block_data，但退出终端后普通文本仍会读取这份行尾状态。
+        # 不同步的话，终端末尾没有换行时下一条普通 RX 会被误当成「文档本来就在行首」。
+        self._txt_ends_with_nl = self.txt_recv.document().lastBlock().text() == ""
         if was_bottom:
             self._scroll_recv_to_bottom()
 
-    def _term_handle_csi(self, cur, seq):
+    def _term_handle_csi(self, cur, seq, sgr=None):
         """处理一条 CSI 序列 seq = ESC[ <参数> <终止字母>。只管行编辑相关：擦除 J/K + 光标左右
-        C/D；其余（颜色 m、定位 H/f、上下移 A/B 等）忽略，避免显示成乱码。"""
+        C/D，以及颜色 m；定位 H/f、上下移 A/B 等其余序列忽略，避免显示成乱码。"""
         final = seq[-1]
         params = seq[2:-1]            # ESC[ 与终止字母之间的参数串，如 ""、"0"、"2"、"5"
-        if final == "J":              # 擦除显示：0/缺省=光标到文末；2=全清
+        if final == "m":              # SGR：颜色 / 粗体 / 下划线 —— 记进状态，供后续字符取格式
+            sgr = ansi.apply_params(sgr or ansi.DEFAULT, params)
+        elif final == "J":            # 擦除显示：0/缺省=光标到文末；2=全清
             if params in ("", "0"):
                 c2 = QTextCursor(cur)
                 c2.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
@@ -7527,6 +8185,7 @@ class CommTool(QMainWindow):
                 if cur.atBlockEnd():
                     break             # 到行尾即停
                 cur.movePosition(QTextCursor.Right)
+        return sgr
 
     @staticmethod
     def compute_checksum(data: bytes, index: int) -> bytes:
@@ -7962,6 +8621,15 @@ class CommTool(QMainWindow):
 
         if hasattr(self, "cb_line_nl"):
             self.cb_line_nl.setItemText(0, self._t("nl_auto"))
+        if hasattr(self, "cb_view_mode"):
+            for i, k in enumerate(("view_text", "view_hex", "view_dump", "view_num")):
+                self.cb_view_mode.setItemText(i, self._t(k))
+        if hasattr(self, "sec_recv_more"):
+            self.sec_recv_more.setTitle(self._t("more_settings"))
+        if hasattr(self, "sec_send_term"):
+            self.sec_send_term.setTitle(self._t("term_mode"))
+        if hasattr(self, "lbl_ansi"):     # 「着色」在下拉那格里，不走 _setting_labels 的统一刷新
+            self.lbl_ansi.setText(self._t("ansi_color"))
 
         if hasattr(self, "cb_encoding"):
             self.cb_encoding.setItemText(0, self._t("encoding_auto"))
@@ -8033,6 +8701,8 @@ class CommTool(QMainWindow):
             self._rd_dlg.retranslate()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.retranslate()
+        if getattr(self, "_triggers_dlg", None) is not None:
+            self._triggers_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.retranslate()
         if getattr(self, "_ar_dlg", None) is not None:
@@ -8135,6 +8805,8 @@ class CommTool(QMainWindow):
             # 配置槽切换会在本函数返回后替换 self.settings；先让构造器把防抖中的编辑写回旧槽位。
             if getattr(self, "_frame_builder_dlg", None) is not None:
                 self._frame_builder_dlg.commit_pending()
+            if getattr(self, "_triggers_dlg", None) is not None:
+                self._triggers_dlg.flush_pending()   # 同上：防抖窗口里的规则编辑别丢
             s = self.settings
             s.setValue("geometry", self.saveGeometry())
             s.setValue("h_splitter", self.h_splitter.saveState())
@@ -8181,9 +8853,21 @@ class CommTool(QMainWindow):
         except Exception:
             pass
 
+    def _reload_section_states(self):
+        """按当前配置槽恢复侧栏折叠状态；终端模式开启时终端组必须保持展开。"""
+        s = self.settings
+        if hasattr(self, "sec_recv_more"):
+            self.sec_recv_more.setExpanded(
+                s.value("sec_recv_more", False, type=bool), emit=False)
+        if hasattr(self, "sec_send_term"):
+            term_on = s.value("terminal_mode", getattr(self, "_terminal_on", False), type=bool)
+            expanded = s.value("sec_send_term", False, type=bool) or term_on
+            self.sec_send_term.setExpanded(expanded, emit=False)
+
     def _load_settings(self):
         s = self.settings
         self._load_send_hist()      # 发送命令历史(↑↓ 导航)
+        self._reload_section_states()
 
         def to_bool(v, default=False):
             if isinstance(v, bool):
@@ -8259,7 +8943,19 @@ class CommTool(QMainWindow):
         self._proto_fields.clear()    # 切配置时清掉上一配置遗留的字段高亮
         if getattr(self, "_frame_dlg", None) is not None:
             self._frame_dlg.sync_highlight()
-        self._refresh_hex_toggle_state()   # 启动/切配置后按 hexdump 状态同步 HEX 显示 / 每行字节数可用性
+        # ANSI 着色 / 触发告警：同样随配置切换恢复（切配置=换一套工作现场）
+        self._ansi_on = to_bool(s.value("ansi_color", False))
+        self.sw_ansi.setChecked(self._ansi_on, animate=False)
+        self._ansi_state = None
+        self._ansi_pending = ""
+        self._ansi_states = {}
+        self._ansi_pendings = {}
+        self._triggers = self._load_triggers()
+        self._trigger_engine.set_rules(self._triggers)
+        self._reset_trigger_decoders()
+        if getattr(self, "_triggers_dlg", None) is not None:
+            self._triggers_dlg._reload_list()
+        self._refresh_hex_toggle_state()   # 启动/切配置后同步显示方式下拉与 ANSI 可用性
         self.sw_wrap.setChecked(to_bool(s.value("wrap", True)), animate=False)
         self.sw_show_timestamp.setChecked(to_bool(show_ts_raw), animate=False)
         self.sw_packet_split.setChecked(to_bool(pkt_split_raw), animate=False)
@@ -8422,10 +9118,13 @@ class CommTool(QMainWindow):
         menu.addAction("8. " + self._t("rr_title")).triggered.connect(lambda *_: self.open_rec_replay())
         # 会话比较紧跟录制/回放：它比的就是那边产出的 .ctrec，同一组工作流
         menu.addAction("9. " + self._t("rd_title")).triggered.connect(lambda *_: self.open_rec_diff())
+        # 触发告警归自动化组：它是「命中→动作」的无人值守那一环，与序列/脚本同属放着自己跑
+        trg_label = "10. " + self._t("trg_title") + (" ●" if self._trigger_engine.active() else "")
+        menu.addAction(trg_label).triggered.connect(lambda *_: self.open_triggers())
         menu.addSeparator()
-        menu.addAction("10. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("11. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
-        mbm_label = "12. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
+        menu.addAction("11. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
+        menu.addAction("12. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
+        mbm_label = "13. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
         menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
         return menu
 
@@ -8974,7 +9673,7 @@ class CommTool(QMainWindow):
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
                      "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
-                     "_snip_dlg"):
+                     "_snip_dlg", "_triggers_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

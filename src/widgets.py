@@ -5,8 +5,8 @@ from PyQt5.QtCore import (Qt, QEvent, QPropertyAnimation, QEasingCurve, QPoint,
                           pyqtSignal, pyqtProperty)
 from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon, QPen, QPalette
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
-                             QComboBox, QGraphicsDropShadowEffect, QMainWindow,
-                             QApplication)
+                             QVBoxLayout, QComboBox, QLineEdit,
+                             QGraphicsDropShadowEffect, QMainWindow, QApplication)
 from theme import COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_GREEN
 from fonts import ui_font
 
@@ -314,6 +314,126 @@ class Card(QFrame):
         self.setGraphicsEffect(shadow)
 
 
+# ============== 内嵌单位的输入框 ==============
+class SuffixLineEdit(QLineEdit):
+    """右端内嵌单位（ms / 行…）的输入框。
+
+    单位贴进框里而不是在框外单占一格：侧栏本来就窄，那一格既挤掉了输入框宽度，
+    又让「数字 + 单位」在视觉上被切成两块。文字右对齐、右边距给单位留位，
+    输入再长也不会压到单位上。
+    """
+
+    def __init__(self, text="", suffix="", parent=None):
+        super().__init__(text, parent)
+        self._suffix = QLabel(suffix, self)
+        # 点在单位上等于点输入框（否则用户点右半边会没反应）
+        self._suffix.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._suffix.setFont(ui_font(11))
+        self._suffix.setProperty("theme_color_role", "secondary")   # 跟随主题重刷次要色
+        self._suffix.setStyleSheet(
+            "color: %s; background: transparent;" % COLOR_TEXT_SECONDARY)
+        self.setAlignment(Qt.AlignRight)
+        self._sync_suffix()
+
+    def setSuffix(self, text):
+        self._suffix.setText(text)
+        self._sync_suffix()
+
+    def suffixLabel(self):
+        return self._suffix
+
+    def _sync_suffix(self):
+        self._suffix.adjustSize()
+        self.setTextMargins(0, 0, self._suffix.width() + 8, 0)
+        self._place_suffix()
+
+    def _place_suffix(self):
+        r = self.rect()
+        self._suffix.move(r.right() - self._suffix.width() - 6,
+                          (r.height() - self._suffix.height()) // 2)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_suffix()
+
+
+# ============== 可折叠分组 ==============
+class CollapsibleSection(QWidget):
+    """侧栏设置卡片里的「更多 ▸」折叠组：点标题行收起 / 展开内容。
+
+    设置项只增不减，全平铺会把侧栏顶穿；常调的留在外面，设一次就不动的（分包、记录…）
+    收进来。只管折叠行为，内容布局由调用方给（setContentLayout），故两张卡片都能复用。
+
+    标题行用 QLabel 而非 QPushButton：按钮的默认外观/焦点框在这套 iOS 风格里显得重，
+    这里只要一行可点的次要色文字。
+    """
+
+    toggled = pyqtSignal(bool)      # 展开状态变化（调用方据此持久化）
+
+    def __init__(self, title="", expanded=False, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._expanded = bool(expanded)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(4)
+
+        self._header = QLabel()
+        self._header.setObjectName("SectionHeader")
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setFont(ui_font(11))
+        self._header.setStyleSheet(
+            "color: %s; background: transparent;" % COLOR_TEXT_SECONDARY)
+        self._header.setProperty("theme_color_role", "secondary")
+        self._header.installEventFilter(self)
+        root.addWidget(self._header)
+
+        self._body = QWidget()
+        root.addWidget(self._body)
+
+        self._sync()
+
+    # ---- 内容 ----
+    def setContentLayout(self, layout):
+        old = self._body.layout()
+        if old is not None:                 # 换布局：先把旧的摘掉，否则 Qt 会警告并忽略新布局
+            QWidget().setLayout(old)
+        self._body.setLayout(layout)
+
+    def body(self):
+        return self._body
+
+    # ---- 展开 / 收起 ----
+    def isExpanded(self):
+        return self._expanded
+
+    def setExpanded(self, on, emit=True):
+        on = bool(on)
+        if on == self._expanded:
+            return
+        self._expanded = on
+        self._sync()
+        if emit:
+            self.toggled.emit(on)
+
+    def setTitle(self, text):
+        self._title = text
+        self._sync()
+
+    def _sync(self):
+        self._header.setText(("▾ " if self._expanded else "▸ ") + self._title)
+        self._body.setVisible(self._expanded)
+
+    def eventFilter(self, obj, ev):
+        # 只有左键是“点击展开”；右键松开不应悄悄改变配置状态。
+        if (obj is self._header and ev.type() == QEvent.MouseButtonRelease
+                and ev.button() == Qt.LeftButton):
+            self.setExpanded(not self._expanded)
+            return True
+        return super().eventFilter(obj, ev)
+
+
 # ============== 标签 ==============
 def make_label(text, size=11, bold=False, color=COLOR_TEXT):
     lbl = QLabel(text)
@@ -325,5 +445,4 @@ def make_label(text, size=11, bold=False, color=COLOR_TEXT):
         lbl.setProperty("theme_color_role", "primary")
     lbl.setStyleSheet(f"color: {color}; background: transparent;")
     return lbl
-
 

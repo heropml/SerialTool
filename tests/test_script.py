@@ -2417,12 +2417,15 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         try:
             if o_term:
                 w._set_terminal_enabled(False)
+            # 合并成「显示方式」下拉后：开转储不是把 HEX 显示灰掉，而是真的切走那个模式，
+            # 且下拉显示要跟着状态走（三个开关退居幕后当状态源）。
             w.sw_hexdump.setChecked(False)
-            self.assertTrue(w.sw_rx_hex.isEnabled())
+            w._refresh_hex_toggle_state()
+            self.assertNotEqual(w.cb_view_mode.currentData(), "dump")
             w.sw_hexdump.setChecked(True)
-            self.assertFalse(w.sw_rx_hex.isEnabled())     # 被 hexdump 接管 → 灰
+            self.assertEqual(w.cb_view_mode.currentData(), "dump")
             w.sw_hexdump.setChecked(False)
-            self.assertTrue(w.sw_rx_hex.isEnabled())      # 恢复
+            self.assertNotEqual(w.cb_view_mode.currentData(), "dump")
         finally:
             w.sw_hexdump.setChecked(o_hd)
             if o_term:
@@ -2889,8 +2892,10 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         try:
             w.sw_hexdump.setChecked(False)   # 控制变量：hexdump 关，专测终端对 HEX 显示等的禁用/恢复
             w._set_terminal_enabled(True)
-            for name in ("sw_rx_hex", "sw_hexdump", "sw_show_timestamp", "sw_line_split",
-                         "sw_tx_hex", "sw_append_newline", "cb_checksum"):
+            # 显示方式合并成下拉后，禁用的是 cb_view_mode（三个开关退居幕后当状态源，
+            # 不再出现在界面上，其 isEnabled 已无意义）
+            for name in ("cb_view_mode", "cb_hexdump_width", "sw_show_timestamp",
+                         "sw_line_split", "sw_tx_hex", "sw_append_newline", "cb_checksum"):
                 self.assertFalse(getattr(w, name).isEnabled(), name + " 应不可配置")
             self.assertTrue(w.cb_encoding.isEnabled())   # 编码仍可用
             self.assertTrue(w.sw_wrap.isEnabled())       # 自动换行仍可用
@@ -2917,7 +2922,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertTrue(w.sw_terminal.isChecked())
             self.assertTrue(w.sw_term_echo.isChecked())
             self.assertEqual(w.cb_term_enter.currentIndex(), 2)
-            self.assertFalse(w.sw_rx_hex.isEnabled())   # 终端开 → 其它设置不可配置
+            self.assertFalse(w.cb_view_mode.isEnabled())   # 终端开 → 其它设置不可配置
         finally:
             for k in ("terminal_mode", "terminal_echo", "terminal_enter"):
                 w.settings.remove(k)
@@ -3695,6 +3700,11 @@ class ProtoHighlightTests(unittest.TestCase):
         w.settings.setValue("frame_rules", rule if rule is not None else self.RULE)
         w._proto_rules_raw = None            # 强制重解析（清缓存）
         w._proto_fields.clear()
+        # 数值视图 / HEX 转储在渲染路径里都排在 HEX 之前且直接 return —— 前面的用例若把任一个
+        # 留在开启态，本类的协议高亮就永远跑不到（表现为 _proto_fields 空、KeyError）。
+        # 用开关而非私有标志，顺带走它们各自的复位（清余数 / 清字段）。
+        w.sw_numview.setChecked(False, animate=False)
+        w.sw_hexdump.setChecked(False, animate=False)
         w.sw_rx_hex.setChecked(True)
         w._hexdump_on = False
         w.sw_line_split.setChecked(False)
@@ -5504,6 +5514,15 @@ class FormatNumericTests(unittest.TestCase):
 class NumericViewTests(unittest.TestCase):
     """数值视图在主窗里的接线：接管显示、与转储互斥、跨包不错位。"""
 
+    def tearDown(self):
+        """本类会把共享主窗留在「数值视图」态。数值视图在渲染路径里排在 HEX 之前且直接
+        return，留着会让后面所有依赖 HEX/文本渲染的用例莫名失败（协议高亮那一组就是这么
+        被带崩的，且只在特定执行顺序下复现，很难查）。谁开的谁关。"""
+        w = _win()
+        w.sw_numview.setChecked(False, animate=False)
+        w.sw_hexdump.setChecked(False, animate=False)
+        w._reset_recv_state()
+
     def _setup(self, idx=2):
         w = _win()
         w.sw_hexdump.setChecked(False, animate=False)
@@ -5601,29 +5620,35 @@ class NumericViewTests(unittest.TestCase):
         self.assertIn(w._t("numview_tail", data="34"), w.txt_recv.toPlainText())
 
     def test_mutually_exclusive_with_hexdump(self):
-        """两者都接管整个数据区，语义冲突 → 互相灰掉对方。"""
+        """四种渲染方式合成一个下拉后，互斥由类型天然保证：选中一个，其余真的被关掉
+        （旧设计是三个开关互相「灰掉」，只是不让点、状态仍可能同时为真）。
+        附属参数页也跟着模式换：数值→类型页，转储→每行字节数页。"""
         w = self._setup()
-        self.assertFalse(w.sw_hexdump.isEnabled())
-        self.assertFalse(w.sw_rx_hex.isEnabled())
-        self.assertTrue(w.cb_numview_type.isEnabled())
-        w.sw_numview.setChecked(False, animate=False)
-        self.assertTrue(w.sw_hexdump.isEnabled())
-        self.assertTrue(w.sw_rx_hex.isEnabled())
-        self.assertFalse(w.cb_numview_type.isEnabled())
-        w.sw_hexdump.setChecked(True, animate=False)
-        self.assertFalse(w.sw_numview.isEnabled())
-        w.sw_hexdump.setChecked(False, animate=False)
+        self.assertEqual(w.cb_view_mode.currentData(), "num")
+        self.assertEqual(w._view_extra.currentIndex(), 3)      # 数值类型页
+        w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("dump"))
+        self.assertTrue(w._hexdump_on)
+        self.assertFalse(w._numview_on)                        # 换模式=旧模式真的关掉
+        self.assertFalse(w.sw_rx_hex.isChecked())
+        self.assertEqual(w._view_extra.currentIndex(), 2)      # 每行字节数页
+        w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("text"))
+        self.assertFalse(w._hexdump_on or w._numview_on or w.sw_rx_hex.isChecked())
+        self.assertEqual(w._view_extra.currentIndex(), 0)      # 文本页＝ANSI 着色开关
+        self.assertTrue(w.sw_ansi.isVisibleTo(w))              # 只在文本模式露面
+        w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("hex"))
+        self.assertEqual(w._view_extra.currentIndex(), 1)      # HEX 页无附属参数
+        self.assertFalse(w.sw_ansi.isVisibleTo(w))             # HEX 不解释转义序列 → 藏起来
 
     def test_hexdump_wins_when_both_set_programmatically(self):
-        """冲突态下转储获胜，而且获胜开关必须可操作，不能把两个开关一起锁死。"""
+        """坏配置让两个模式同时为真时：渲染按转储优先，下拉也必须显示转储 ——
+        显示与实际渲染不一致会让人以为看错了。"""
         w = self._setup()
         w.sw_hexdump.blockSignals(True)
         w.sw_hexdump.setChecked(True, animate=False)
         w.sw_hexdump.blockSignals(False)
         w._hexdump_on = True
         w._refresh_hex_toggle_state()
-        self.assertTrue(w.sw_hexdump.isEnabled())
-        self.assertFalse(w.sw_numview.isEnabled())
+        self.assertEqual(w.cb_view_mode.currentData(), "dump")
         w.txt_recv.clear(); w._reset_recv_state()
         w._on_data_received_impl(bytes([0x34, 0x12]))
         self.assertIn("00000000", w.txt_recv.toPlainText())   # 走了转储而非数值
@@ -5676,7 +5701,8 @@ class NumericViewTests(unittest.TestCase):
         w = self._setup()
         try:
             w._apply_terminal_ui(True)
-            labels = w._setting_labels.get("numview", ())
+            # 数值视图并入「显示方式」下拉后，淡化的是那一行的标签
+            labels = w._setting_labels.get("view_mode", ())
             self.assertTrue(labels)
             self.assertTrue(all(label.graphicsEffect() is not None for label in labels))
         finally:
