@@ -1,9 +1,9 @@
 {
-  "version": "1.3.4",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.4/CommTool_Setup_v1.3.4.exe",
+  "version": "1.3.5",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.5/CommTool_Setup_v1.3.5.exe",
   "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.4/CommTool_v1.3.4.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.4/CommTool_v1.3.4.dmg"
+    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.5/CommTool_v1.3.5.dmg",
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.5/CommTool_v1.3.5.dmg"
   ],
-  "notes": "本版围绕「看得更清、改得更快、比得出差异」：1) 数值视图：字节流按 u8/i8/u16/i16/u32/i32/f32 × 大小端 12 种组合解读成数值序列，看 ADC / 传感器原始值不必手动换算；尾部不满一个数的字节留到下一包续拼、跨包不错位，列宽按类型固定、多包纵向对齐。2) 选中即算校验和：数据区选中一段字节，状态栏就地出 Modbus/XOR/SUM，悬浮弹全 9 种校验；自动跳过时间戳/箭头/转储偏移与 ASCII 列，文本/数值/终端视图不可无损还原则明确拒算。3) 动态改串口参数：连接期间即可改波特率/数据位/校验位/停止位/流控，不断开、不丢接收缓冲，试波特率不必反复重连；参数原子应用、中途失败自动回滚。4) 日志增强：文件名支持 %date/%time/%datetime/%port/%n 变量，含日期变量时跨自然日自动开新文件、序号归零，按天归档。5) 会话比较（功能 → 会话比较）：选两个 .ctrec 逐条对齐，比出相同/内容不同/仅A有/仅B有并报时差；对齐用线性空间 LCS，某边少一帧只报一处、后续不整体错位，可导出 CSV。无新依赖。"
+  "notes": "本版围绕日志更像终端、异常主动提醒、常用命令随手取用：ANSI 彩色显示支持 SGR 基础色、亮色、256 色、真彩及跨包状态；触发告警支持文本/HEX、收发范围、冷却、响铃、托盘通知和数据区打标；发送模板库支持常用文本/HEX 命令、搜索、JSON 导入导出和直接发送；文本、HEX、转储、数值显示方式整合为互斥下拉。无新依赖。"
 }

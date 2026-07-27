@@ -1316,7 +1316,7 @@ class CommTool(QMainWindow):
         self.cb_numview_type.currentIndexChanged.connect(self._on_numview_type_changed)
 
         # ANSI 着色只对「按文本渲染」有意义（文本 与 终端模式），故不再单占一行 ——
-        # 直接放进本行右侧那格：选文本时才露面，选 HEX / 转储 / 数值时自动消失，
+        # 直接放进本行附属参数格：选文本时才露面，选 HEX / 转储 / 数值时自动消失，
         # 比过去「常驻但灰着」更省一行也更少困惑。
         self.sw_ansi = IOSSwitch(self._ansi_on)
         self.sw_ansi.toggled.connect(self._on_ansi_toggled)
@@ -1346,8 +1346,11 @@ class CommTool(QMainWindow):
         _extra_host.setFixedWidth(MAIN_W)
 
         grid.addWidget(lbl("view_mode"), row, 0)
-        grid.addWidget(self.cb_view_mode, row, 1, alignment=Qt.AlignRight)
-        grid.addWidget(_extra_host, row, 2, alignment=Qt.AlignRight)
+        # 主选项固定放在最右列，与下面的字符编码 / 开关右边缘对齐；模式附属项
+        # （ANSI、转储列宽、数值类型）放在中间列。这样 HEX 模式没有附属项时，
+        # 下拉也不会孤零零停在中间、右侧留出一整列空白。
+        grid.addWidget(_extra_host, row, 1, alignment=Qt.AlignRight)
+        grid.addWidget(self.cb_view_mode, row, 2, alignment=Qt.AlignRight)
         row += 1
 
         # 协议高亮开关不在此卡片——挪进「帧解析」对话框（复用其 frame_rules、不常用），见

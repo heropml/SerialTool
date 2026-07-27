@@ -51,8 +51,13 @@ $SetupName   = "CommTool_Setup_v$Version.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
 $OnefileName = "CommTool_v$Version.exe"
 $OnefilePath = Join-Path $Root "dist_onefile\$OnefileName"
+$MacName     = "CommTool_v$Version.dmg"
 # 下载源走 Gitee（全球可达；updater 第一源为 Gitee raw latest.json）
 $DownloadUrl = "https://gitee.com/$Repo/releases/download/$Tag/$SetupName"
+$MacUrls     = @(
+    "https://gitee.com/$Repo/releases/download/$Tag/$MacName",
+    "https://github.com/$Repo/releases/download/$Tag/$MacName"
+)
 
 Write-Host "==== 发版 CommTool $Tag ====" -ForegroundColor Cyan
 
@@ -73,7 +78,12 @@ $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$V
 
 # ---- 2. 更新 latest.json（url 指向 Gitee Release）----
 Write-Host "② 更新 latest.json → $Version（url 指向 Gitee $Tag）"
-$manifest = [ordered]@{ version = $Version; url = $DownloadUrl; notes = $Notes }
+$manifest = [ordered]@{
+    version = $Version
+    url = $DownloadUrl
+    url_mac = $MacUrls
+    notes = $Notes
+}
 $json = $manifest | ConvertTo-Json -Depth 3
 [IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json)
 

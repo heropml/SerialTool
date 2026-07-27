@@ -198,7 +198,7 @@ class AnsiRenderTests(unittest.TestCase):
             w._on_theme_changed()
 
     def test_ansi_switch_only_shown_for_text_and_terminal(self):
-        """着色开关并进「显示方式」那一行右侧：只在文本模式露面（HEX/转储/数值不解释
+        """着色开关并进「显示方式」那一行的附属参数格：只在文本模式露面（HEX/转储/数值不解释
         转义序列），终端模式下强制露面（终端里同样按 SGR 上色，要能关掉）。"""
         w = self.w
         for mode, page in (("text", 0), ("hex", 1), ("dump", 2), ("num", 3)):

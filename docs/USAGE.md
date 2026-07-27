@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.5
+
+This release makes device logs feel more like a terminal, alerts you when unattended equipment misbehaves, and keeps frequently used commands one click away:
+
+- **ANSI color display** — Text view and terminal mode now render the device's own SGR colors, including standard/bright colors, 256-color and true-color output, bold, underline, and reverse video. Color state and incomplete escapes continue correctly across chunks; TCP Server clients keep independent state. Cursor movement, title-setting, and other non-display escapes are removed instead of appearing as `^[[0;32m` noise.
+- **Trigger alerts** — Function → Trigger Alerts matches text or HEX using Contains / Equals / Prefix / Regex rules, scoped to RX, TX, or both. A hit can beep, show a tray notification, and mark the data area. Cooldown suppresses repeated actions without losing hit counts or the last-hit time. Serial/TCP rules can match keywords split across chunks, while UDP preserves datagram boundaries.
+- **Send snippet library** — Open it from the Multi-Send window to store frequently used text or HEX commands. Search, add/delete, import/export JSON, double-click to fill the send box, or fill and send immediately. It reuses the normal send path, so newline, checksum, and target settings behave exactly like manual sending.
+- **Unified view selector** — Text, HEX, HEX Dump, and Numeric rendering are now one mutually exclusive dropdown. Mode-specific controls appear alongside it: ANSI for Text, row width for Dump, and type/byte order for Numeric. No new dependencies.
+
+---
+
 ## What's New in v1.3.4
 
 This release is about seeing more clearly, changing faster, and telling recordings apart:
@@ -683,7 +694,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.3`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.5`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
