@@ -41,7 +41,12 @@ class ConnectionPresetsDialog(QDialog):
 
         # ===== Left: search + list + actions =====
         left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(8)
+        # Mirror right's "Name" label so search lines up with the name field.
+        self.lbl_list = QLabel()
+        self.lbl_list.setObjectName("MsHint")
+        left.addWidget(self.lbl_list)
         self.ed_search = QLineEdit()
         self.ed_search.setObjectName("SnipSearch")
         self.ed_search.textChanged.connect(self._reload_list)
@@ -88,6 +93,7 @@ class ConnectionPresetsDialog(QDialog):
 
         # ===== Right: editor + apply =====
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(8)
         self.lbl_name = QLabel()
         self.lbl_name.setObjectName("MsHint")
@@ -394,6 +400,7 @@ class ConnectionPresetsDialog(QDialog):
         self.flush_pending()
         t = self.app._t
         self.setWindowTitle(t("cpreset_title"))
+        self.lbl_list.setText(t("cpreset_list_label"))
         self.ed_search.setPlaceholderText(t("cpreset_search_ph"))
         self.btn_save_cur.setText(t("cpreset_save_current"))
         self.btn_copy.setText(t("cpreset_copy"))

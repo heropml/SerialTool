@@ -46,6 +46,7 @@ import convert
 import snippets
 import connection_presets
 import seq_context
+import sequence_dataset
 import log_naming
 import modbus_slave
 import modbus_master
@@ -540,6 +541,8 @@ class CommTool(QMainWindow):
         self._ar_in_flight = False       # 正在发自动应答的回复 → 宏录制跳过（不是用户手动发）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
+        self._seq_dataset = None     # CSV dataset dict or None
+        self._seq_dataset_row = None # current CSV row meta for this round
         self._seq_loop_i = 0          # 当前第几轮（0 基）
         self._seq_stop_on_fail = False  # 某轮失败即停止后续循环
         self._seq_rounds = []         # 每轮汇总 [{round,ok,total,ms,pass}]（供循环汇总/报告）
@@ -6035,7 +6038,7 @@ class CommTool(QMainWindow):
             except Exception:
                 pass
 
-    def _seq_start(self, steps, loops=1, stop_on_fail=False):
+    def _seq_start(self, steps, loops=1, stop_on_fail=False, dataset=None):
         """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
         stop_on_fail=某轮失败即停后续循环。需已连接；运行期由 on_data_received 抑制
         自动应答/Modbus 主机（三者共用收流，序列是主动驱动方，结束自动恢复、不改它们开关）。"""
@@ -6057,7 +6060,13 @@ class CommTool(QMainWindow):
         self._seq_gen += 1
         self._seq_pause_peer_engines()
         self._seq_summary = None
-        self._seq_loops = max(1, min(self._ar_to_int(loops), _SEQ_MAX_LOOPS))   # 钳上限，防无界内存/巨表
+        self._seq_dataset = dataset if (dataset and dataset.get("rows")) else None
+        self._seq_dataset_row = None
+        if self._seq_dataset:
+            n_rows = len(self._seq_dataset["rows"])
+            self._seq_loops = max(1, min(n_rows, _SEQ_MAX_LOOPS))
+        else:
+            self._seq_loops = max(1, min(self._ar_to_int(loops), _SEQ_MAX_LOOPS))
         self._seq_loop_i = 0
         self._seq_stop_on_fail = bool(stop_on_fail)
         self._seq_rounds = []
@@ -6068,8 +6077,16 @@ class CommTool(QMainWindow):
 
     def _seq_begin_round(self):
         """开始新一轮：重置本轮每步结果，从第 0 步跑起（首轮若在等 Modbus 在途则由释放检查触发）。"""
-        # Fresh per-round context (P0-3 CSV can later seed RoundContext(...)).
-        self._seq_ctx = seq_context.RoundContext()
+        # Per-round context: CSV row seeds (if any) then extractors may update.
+        seed = None
+        self._seq_dataset_row = None
+        ds = getattr(self, "_seq_dataset", None)
+        if ds and ds.get("rows"):
+            rows = ds["rows"]
+            if 0 <= self._seq_loop_i < len(rows):
+                self._seq_dataset_row = rows[self._seq_loop_i]
+                seed = self._seq_dataset_row.get("seeds")
+        self._seq_ctx = seq_context.RoundContext(seed)
         self._seq_runtime_step = None
         self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
                              for s in self._seq_steps]
@@ -6249,8 +6266,13 @@ class CommTool(QMainWindow):
         # on_timeout=continue 也是所有步跑完后按此判）。
         round_ok = (passed == total)
         round_ms = int((time.monotonic() - self._seq_round_t0) * 1000)
-        self._seq_rounds.append({"round": self._seq_loop_i + 1, "ok": passed,
-                                 "total": total, "ms": round_ms, "pass": round_ok})
+        round_rec = {"round": self._seq_loop_i + 1, "ok": passed,
+                     "total": total, "ms": round_ms, "pass": round_ok}
+        row = getattr(self, "_seq_dataset_row", None)
+        if row:
+            round_rec["csv_row"] = row.get("number")
+            round_rec["csv_label"] = row.get("label") or ""
+        self._seq_rounds.append(round_rec)
         self._seq_loop_i += 1
         more = self._seq_loop_i < self._seq_loops and not (self._seq_stop_on_fail and not round_ok)
         if more:
@@ -6274,9 +6296,14 @@ class CommTool(QMainWindow):
         # 整体 PASS：未被中止、至少跑过一轮、每一跑过的轮都通过（提前停止时 rounds_pass<rounds_total → 非 PASS）
         ok = (not stopped) and rounds_total > 0 and rounds_pass == rounds_total
         ms = int((time.monotonic() - self._seq_t0) * 1000)
-        return {"ok": steps_ok, "total": steps_total, "ms": ms, "pass": ok,
-                "loops": self._seq_loops, "rounds": rounds_total,
-                "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped)}
+        out = {"ok": steps_ok, "total": steps_total, "ms": ms, "pass": ok,
+               "loops": self._seq_loops, "rounds": rounds_total,
+               "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped)}
+        ds = getattr(self, "_seq_dataset", None)
+        if ds:
+            out["csv_path"] = ds.get("path") or ""
+            out["csv_rows"] = len(ds.get("rows") or [])
+        return out
 
     def _seq_finalize(self):
         """整条序列（全部循环）结束：出聚合汇总 + toast + 恢复对端引擎。"""
@@ -7485,6 +7512,7 @@ class CommTool(QMainWindow):
         "device_plot_tags", "device_dash_tags",
         # 自动化测试序列
         "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
+        "sequence_csv_path",
         # 触发告警
         "triggers",
         # 帧构造器

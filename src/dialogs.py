@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLin
                              QTableWidget, QHeaderView, QAbstractItemView, QFileDialog, QMenu)
 from theme import chrome_for, THEME_DEFAULT
 import seq_context
+import sequence_dataset
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
@@ -1586,6 +1587,14 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # 循环运行配置：循环次数 + 某轮失败即停（持久化，关窗 sync）
         self._loops_cfg = max(1, self._to_int(app.settings.value("sequence_loops", 1), 1))
         self._stopfail_cfg = str(app.settings.value("sequence_stop_on_fail", "")).lower() in ("1", "true")
+        self._csv_path = str(app.settings.value("sequence_csv_path", "") or "").strip()
+        self._csv_dataset = None
+        if self._csv_path:
+            try:
+                self._csv_dataset = sequence_dataset.load_dataset(self._csv_path)
+            except Exception:
+                # Keep path so UI can show stale hint and enable Clear.
+                self._csv_dataset = None
         # 下拉列宽按各自选项文案自动算（含最长项，避免像 ModbusCRC16 被截断；日后加更长的项也自适应）
         self._cs_w = self._combo_w(CHECKSUM_KEYS, self._CS_MIN_W)
         self._mode_w = self._combo_w(self._MODE_KEYS, self._MODE_MIN_W)
@@ -1629,6 +1638,16 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.cb_stopfail = QCheckBox()          # 某轮失败即停止后续循环
         self.cb_stopfail.setChecked(self._stopfail_cfg)
         self.cb_stopfail.toggled.connect(lambda *_: self._save_loop_cfg())
+        self.btn_csv = QPushButton()
+        self.btn_csv.setObjectName("PlotGhostBtn")
+        self.btn_csv.clicked.connect(self._on_pick_csv)
+        self.btn_csv_clear = QPushButton()
+        self.btn_csv_clear.setObjectName("PlotGhostBtn")
+        self.btn_csv_clear.clicked.connect(self._on_clear_csv)
+        self.lbl_csv = QLabel("")
+        self.lbl_csv.setObjectName("MsHint")
+        self.lbl_csv.setMaximumWidth(260)
+        self._refresh_csv_ui()
         top.addWidget(self.btn_run)             # 左侧：操作序列的按钮 + 循环配置，统一间距
         top.addWidget(self.btn_stop)
         top.addWidget(self.btn_add)
@@ -1636,7 +1655,10 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         top.addWidget(self.lbl_loops)
         top.addWidget(self.ed_loops)
         top.addWidget(self.cb_stopfail)
-        top.addStretch(1)                       # 与右侧输出区之间的分隔
+        top.addWidget(self.btn_csv)
+        top.addWidget(self.btn_csv_clear)
+        top.addWidget(self.lbl_csv)
+        top.addStretch(1)
         self.lbl_summary = QLabel("")           # 运行状态/汇总
         self.lbl_summary.setObjectName("SeqSummary")
         self.lbl_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -1985,11 +2007,15 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         if self._save_timer.isActive():
             self._save_timer.stop()
             self._commit()
+        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
+        # CSV-bound: ed_loops shows row count -- never persist that as manual loops.
+        if self._csv_dataset and self._csv_dataset.get("rows"):
+            return
         loops = self._to_int(self.ed_loops.text(), 0)
         if loops < 1:
             return
+        self._loops_cfg = loops
         self.app.settings.setValue("sequence_loops", loops)
-        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
 
     def reload_rows(self):
         self._loading = True
@@ -2007,21 +2033,101 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
     # ---------------- 运行 / 结果 ----------------
     def _save_loop_cfg(self):
-        """循环次数 / 失败即停 变化时持久化（closeEvent 统一 sync）。非法(空/0)会纠正为 1 并 toast 提示。"""
+        """Persist loop count / stop-on-fail. CSV-bound keeps unbound loop preference."""
+        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
+        self._stopfail_cfg = self.cb_stopfail.isChecked()
+        if self._csv_dataset and self._csv_dataset.get("rows"):
+            return
         loops = self._to_int(self.ed_loops.text(), 0)
-        if loops < 1:                           # 空 / 0（校验器已挡字母负号）→ 纠正 + 明确反馈，不静默
+        if loops < 1:
             loops = 1
             self.app.toast(self.app._t("seq_loops_invalid"))
         self.ed_loops.setText(str(loops))
+        self._loops_cfg = loops
         self.app.settings.setValue("sequence_loops", loops)
-        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
+
+    def _refresh_csv_ui(self):
+        bound = bool(self._csv_dataset and self._csv_dataset.get("rows"))
+        running = bool(getattr(self.app, "_seq_on", False))
+        self.ed_loops.setEnabled((not bound) and (not running))
+        self.lbl_loops.setEnabled((not bound) and (not running))
+        if bound:
+            n = len(self._csv_dataset["rows"])
+            self.ed_loops.setText(str(n))
+            self.lbl_csv.setText(sequence_dataset.dataset_status(self._csv_dataset))
+            self.lbl_csv.setToolTip(self._csv_dataset.get("path") or "")
+            self.btn_csv_clear.setEnabled(not running)
+        else:
+            self.ed_loops.setText(str(max(1, getattr(self, "_loops_cfg", 1))))
+            stale = bool(getattr(self, "_csv_path", "") or "")
+            self.lbl_csv.setText(self.app._t("seq_csv_stale") if stale else "")
+            self.lbl_csv.setToolTip(self._csv_path if stale else "")
+            self.btn_csv_clear.setEnabled(stale and (not running))
+
+    def _save_csv_cfg(self):
+        self.app.settings.setValue("sequence_csv_path", self._csv_path or "")
+
+    def _on_pick_csv(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.app._t("seq_csv_pick_title"), self._csv_path or "",
+            "CSV (*.csv);;All (*.*)")
+        if not path:
+            return
+        try:
+            ds = sequence_dataset.load_dataset(path)
+        except sequence_dataset.DatasetError as e:
+            self.app.toast(self.app._t(e.code, **e.kwargs), error=True)
+            return
+        except Exception as e:
+            self.app.toast(self.app._t("seq_csv_load_failed", e=e), error=True)
+            return
+        self._csv_path = ds["path"]
+        self._csv_dataset = ds
+        self._save_csv_cfg()
+        self._refresh_csv_ui()
+        msg = self.app._t("seq_csv_loaded", n=len(ds["rows"]))
+        if ds.get("truncated"):
+            msg += " " + self.app._t("seq_csv_truncated", n=sequence_dataset.MAX_ROWS)
+        self.app.toast(msg)
+
+    def _on_clear_csv(self):
+        self._csv_path = ""
+        self._csv_dataset = None
+        self._save_csv_cfg()
+        self._refresh_csv_ui()
+        self.app.toast(self.app._t("seq_csv_cleared"))
 
     def _on_run(self):
-        self._commit()              # 确保用当前表内容跑（含未到防抖窗、尚未落盘的编辑）
-        loops = max(1, self._to_int(self.ed_loops.text(), 1))
-        self.ed_loops.setText(str(loops))   # 清空/非法时回写实际生效值，别让框里留空白与真实 loops 不符
-        self.app._seq_start(self._all_steps(), loops=loops,
-                            stop_on_fail=self.cb_stopfail.isChecked())
+        self._commit()
+        ds = self._csv_dataset
+        # Always re-read when a path is bound so external CSV edits take effect.
+        if self._csv_path:
+            try:
+                ds = sequence_dataset.load_dataset(self._csv_path)
+                self._csv_dataset = ds
+                self._refresh_csv_ui()
+            except sequence_dataset.DatasetError as e:
+                self.app.toast(self.app._t(e.code, **e.kwargs), error=True)
+                self._csv_dataset = None
+                self._refresh_csv_ui()
+                return
+            except Exception as e:
+                self.app.toast(self.app._t("seq_csv_load_failed", e=e), error=True)
+                self._csv_dataset = None
+                self._refresh_csv_ui()
+                return
+        if ds and ds.get("rows"):
+            loops = len(ds["rows"])
+            self.ed_loops.setText(str(loops))
+            self.app._seq_start(self._all_steps(), loops=loops,
+                                stop_on_fail=self.cb_stopfail.isChecked(),
+                                dataset=ds)
+        else:
+            loops = max(1, self._to_int(self.ed_loops.text(), 1))
+            self.ed_loops.setText(str(loops))
+            self.app._seq_start(self._all_steps(), loops=loops,
+                                stop_on_fail=self.cb_stopfail.isChecked(),
+                                dataset=None)
 
     def _result_detail(self, res):
         """返回当前语言的结果详情。新结果保存 detail_key 以支持运行后切换语言；
@@ -2091,7 +2197,9 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             self.lbl_summary.setText("")
         self.btn_run.setEnabled(not running)
         self.btn_stop.setEnabled(running)
-        self.ed_loops.setEnabled(not running)   # 运行中不改循环参数
+        csv_bound = bool(self._csv_dataset and self._csv_dataset.get("rows"))
+        self.ed_loops.setEnabled((not running) and (not csv_bound))
+        self.lbl_loops.setEnabled((not running) and (not csv_bound))
         self.cb_stopfail.setEnabled(not running)
         self.btn_steps.setEnabled(not running)  # 运行中不导入步骤（结构性变更会与在跑快照错位）
         # 只有正常收尾并产生汇总才是完整报告；用户停止/断连时保留的部分结果
@@ -2114,6 +2222,11 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         运行用的是启动时的快照，改字段不影响在跑的步骤，也不会错位；且禁用勾选框会丢失选中蓝色渲染，
         看着像被取消，反而误导。"""
         self.btn_add.setEnabled(enabled)
+        self.btn_csv.setEnabled(enabled)
+        stale = bool(getattr(self, "_csv_path", "") or "") and not (
+            self._csv_dataset and self._csv_dataset.get("rows"))
+        bound = bool(self._csv_dataset and self._csv_dataset.get("rows"))
+        self.btn_csv_clear.setEnabled(enabled and (bound or stale))
         for d in self._rows:
             btn = d.get("del")
             if btn is not None:
@@ -2168,7 +2281,17 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                 t("seq_col_mode"), t("seq_col_timeout"), t("seq_col_result"),
                 t("seq_report_elapsed"), t("seq_report_detail")]
 
+    def _report_is_csv(self):
+        """True when the last run was CSV-driven (any row count)."""
+        summ = getattr(self.app, "_seq_summary", None) or {}
+        if summ.get("csv_path"):
+            return True
+        return any(("csv_row" in r) for r in (summ.get("round_list") or []))
+
     def _report_is_loop(self):
+        # Multi-round OR CSV-driven (incl. single-row) so reports keep csv_row/label.
+        if self._report_is_csv():
+            return True
         return int((getattr(self.app, "_seq_summary", None) or {}).get("loops", 1) or 1) > 1
 
     def _loop_summary_text(self, summ, verdict):
@@ -2183,28 +2306,49 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
     def _report_summary_line(self):
         summ = getattr(self.app, "_seq_summary", None) or {}
         if not summ:
-            return "", False       # 无汇总数据不当作"通过"，避免假绿（调用方一般已守卫，此为独立安全默认）
+            return "", False
         passed = bool(summ.get("pass"))
         verdict = self.app._t("seq_pass" if passed else "seq_fail")
-        if int(summ.get("loops", 1) or 1) > 1:      # 循环：通过轮 R/N（提前停止标计划总数）· 累计步 X/Y
-            return self._loop_summary_text(summ, verdict), passed
-        return self.app._t("seq_summary", ok=summ.get("ok", 0), total=summ.get("total", 0),
-                           ms=summ.get("ms", 0), verdict=verdict), passed
+        if int(summ.get("loops", 1) or 1) > 1:
+            line = self._loop_summary_text(summ, verdict)
+        else:
+            line = self.app._t("seq_summary", ok=summ.get("ok", 0), total=summ.get("total", 0),
+                               ms=summ.get("ms", 0), verdict=verdict)
+        csv_path = summ.get("csv_path") or ""
+        if csv_path:
+            line = line + " | " + self.app._t("seq_report_csv_src", path=csv_path)
+        return line, passed
 
     def _report_table(self, rows):
         """返回 (表头列名, 行列表[{cells,cls}])：循环运行→按轮次表；单次→按步骤表。"""
         t = self.app._t
         if self._report_is_loop():
-            header = [t("seq_report_round"), t("seq_report_round_steps"),
-                      t("seq_report_verdict"), t("seq_report_elapsed")]
+            summ = getattr(self.app, "_seq_summary", None) or {}
+            has_csv = bool(summ.get("csv_path")) or any(
+                ("csv_row" in rr) for rr in (summ.get("round_list") or []))
+            if has_csv:
+                header = [t("seq_report_round"), t("seq_report_csv_row"),
+                          t("seq_report_csv_label"), t("seq_report_round_steps"),
+                          t("seq_report_verdict"), t("seq_report_elapsed")]
+            else:
+                header = [t("seq_report_round"), t("seq_report_round_steps"),
+                          t("seq_report_verdict"), t("seq_report_elapsed")]
             body = []
-            for r in (getattr(self.app, "_seq_summary", None) or {}).get("round_list", []):
+            for r in summ.get("round_list", []):
                 rp = bool(r.get("pass"))
-                body.append({"cells": [r.get("round", ""),
-                                       "%d/%d" % (r.get("ok", 0), r.get("total", 0)),
-                                       t("seq_pass" if rp else "seq_fail"),
-                                       "%dms" % int(r.get("ms", 0))],
-                             "cls": "ok" if rp else "fail"})
+                if has_csv:
+                    cells = [r.get("round", ""),
+                             r.get("csv_row", ""),
+                             r.get("csv_label", "") or "",
+                             "%d/%d" % (r.get("ok", 0), r.get("total", 0)),
+                             t("seq_pass" if rp else "seq_fail"),
+                             "%dms" % int(r.get("ms", 0))]
+                else:
+                    cells = [r.get("round", ""),
+                             "%d/%d" % (r.get("ok", 0), r.get("total", 0)),
+                             t("seq_pass" if rp else "seq_fail"),
+                             "%dms" % int(r.get("ms", 0))]
+                body.append({"cells": cells, "cls": "ok" if rp else "fail"})
             return header, body
         header = self._report_header()
         body = []
@@ -2448,6 +2592,11 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.lbl_loops.setText(self.app._t("seq_loops"))
         self.ed_loops.setToolTip(self.app._t("seq_loops_tip"))
         self.cb_stopfail.setText(self.app._t("seq_stop_on_fail"))
+        self.btn_csv.setText(self.app._t("seq_csv_btn"))
+        self.btn_csv.setToolTip(self.app._t("seq_csv_tip"))
+        self.btn_csv_clear.setText(self.app._t("seq_csv_clear"))
+        self.btn_csv_clear.setToolTip(self.app._t("seq_csv_clear_tip"))
+        self._refresh_csv_ui()
         self.btn_help.setToolTip(self.app._t("seq_help_btn"))   # 按钮固定 "?"，悬停/点开看完整说明
         self.lbl_hint.setText(self.app._t("seq_hint"))
         for lb in self._hdr_labels:                 # 表头列名（HEX 列不翻译）
