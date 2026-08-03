@@ -76,6 +76,9 @@ def collect_project_resources(settings):
             "snippets": _json_value(settings, "snippets", []),
             "groups": _json_value(settings, "multi_send_groups", []),
         },
+        "connection": {
+            "presets": _json_value(settings, "connection_presets", []),
+        },
         "automation": {
             "sequences": _json_value(settings, "sequence_rules", []),
             "scripts": _json_value(settings, "script_lib", []),
@@ -92,6 +95,7 @@ def merge_project_resources(settings, resources):
     resources = resources if isinstance(resources, dict) else {}
     device = resources.get("device", {})
     send = resources.get("send", {})
+    connection = resources.get("connection", {})
     automation = resources.get("automation", {})
     dashboard = resources.get("dashboard", {})
     mappings = (
@@ -100,6 +104,7 @@ def merge_project_resources(settings, resources):
         (device, "dash_tags", "device_dash_tags"),
         (send, "snippets", "snippets"),
         (send, "groups", "multi_send_groups"),
+        (connection, "presets", "connection_presets"),
         (automation, "sequences", "sequence_rules"),
         (automation, "scripts", "script_lib"),
     )

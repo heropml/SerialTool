@@ -173,3 +173,26 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
 - [ ] Gitee Release：`py -3 scripts/release_gitee.py`（见 6.2）
 - [ ] 验证两源 latest.json + Gitee 下载链接（见 6.3）
 - [ ] （有 Mac 时）补 `.dmg` 到两个 Release
+
+---
+
+## 八、提交与发布文案规则（必须遵守）
+
+每个版本的提交记录和 GitHub/Gitee Release 文案都要保留详细内容，不能只写一句摘要，也不能把历史版本的正文混进当前版本。
+
+### 8.1 Git 提交
+
+- 一个版本合并为一个最终发布提交，提交标题保持现有格式：
+  `release: comm-v<版本> — <本版本功能摘要>`
+- 提交正文必须详细，按功能分节说明本版本的功能、修复、兼容性、文档和测试；不要删除各项变更的具体描述。
+- 正文末尾保留完整测试结果，例如：`全量测试：739 passed，3 skipped，285 subtests passed。`
+- 发布前确认 `git log -1 --format='%H%n%B'` 能看到标题和完整正文；不要用只有标题的提交覆盖详细提交。
+- `docs/TODO.md` 不属于发布内容；如用户明确要求过滤，应在最终提交前移除，不要把它重新提交进去。
+
+### 8.2 GitHub/Gitee Release
+
+- GitHub 和 Gitee 使用同一个 tag：`comm-v<版本>`，标题只出现一次：`CommTool v<版本>`。
+- 当前 Release 文案只写当前版本（例如 v1.3.6）；v1.3.5 等历史版本必须留在各自的 Release，不能追加到 v1.3.6 的正文中。
+- Release 正文要保留完整的当前版本说明、分节内容、兼容性提示和下载表格；不能因为合并或整理而删掉底下各条具体文案。
+- 发布前检查正文中不存在旧版本标题、旧版本下载文件名或“历史归档”段落。
+- GitHub 与 Gitee 的正文格式和内容保持一致，资产名称、版本号与 tag 一致。

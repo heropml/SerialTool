@@ -44,6 +44,8 @@ import binproto
 import triggers
 import convert
 import snippets
+import connection_presets
+import seq_context
 import log_naming
 import modbus_slave
 import modbus_master
@@ -443,6 +445,8 @@ class CommTool(QMainWindow):
         self._oneshot_scan = None
         self.port_scanner = None
         self._pending_restore_port = None   # 启动时待恢复的上次串口设备名
+        self._serial_empty_selection = False
+        self._connection_presets = []
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self.do_send)
@@ -496,6 +500,8 @@ class CommTool(QMainWindow):
         # 运行态挂在这里，规则(步骤列表)存 settings；运行期抑制自动应答/Modbus（三者共用收流）。
         self._seq_rules = self._load_seq_rules()
         self._seq_on = False          # 是否正在运行
+        self._seq_ctx = seq_context.RoundContext()
+        self._seq_runtime_step = None
         self._seq_steps = []          # 本次运行的步骤快照
         self._seq_idx = 0             # 当前步
         self._seq_attempt = 1         # 当前步第几次尝试（含首次；步骤级重试用）
@@ -526,6 +532,7 @@ class CommTool(QMainWindow):
         self._rr_dlg = None                # 录制/回放对话框（单实例）
         self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
         self._snip_dlg = None              # 发送模板库对话框（单实例）
+        self._cpreset_dlg = None
         self._dsl_ops = None               # 命令 DSL 执行中的指令序列（None=空闲）
         self._dsl_idx = 0
         self._dsl_gen = 0                  # 代际：中止后让已排队的 QTimer 回调失效
@@ -701,7 +708,7 @@ class CommTool(QMainWindow):
     def _label_col_width(self) -> int:
         """网络设置左侧标签列宽：按当前语言下各标签的最大实测文本宽度自适应，
         避免英文单词(如 Remote Port)被输入框遮挡。"""
-        keys = ("protocol_type", "local_ip", "local_port", "group_addr",
+        keys = ("protocol_type", "cpreset_label", "local_ip", "local_port", "group_addr",
                 "remote_ip", "remote_port", "target_client", "use_remote",
                 "port", "baud_rate", "data_bits", "parity", "stop_bits")
         fm = QFontMetrics(ui_font(11))
@@ -993,6 +1000,35 @@ class CommTool(QMainWindow):
             layout.addWidget(row)
             return row
 
+        # connection presets row
+        preset_box = QWidget()
+        pbl_preset = QHBoxLayout(preset_box)
+        pbl_preset.setContentsMargins(0, 0, 0, 0)
+        pbl_preset.setSpacing(6)
+        self.cb_conn_preset = QComboBox()
+        self.cb_conn_preset.setMinimumWidth(100)
+        self.cb_conn_preset.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_conn_preset.setMinimumContentsLength(12)
+        self.cb_conn_preset.activated.connect(self._on_connection_preset_activated)
+        pbl_preset.addWidget(self.cb_conn_preset, 1)
+        self.btn_cpreset_save = QPushButton(self._t("cpreset_save_btn"))
+        self.btn_cpreset_save.setObjectName("GhostBtnSm")
+        self.btn_cpreset_save.setProperty("tr_text", "cpreset_save_btn")
+        self.btn_cpreset_save.setProperty("tr_tooltip", "cpreset_save_btn_tip")
+        self.btn_cpreset_save.setToolTip(self._t("cpreset_save_btn_tip"))
+        self.btn_cpreset_save.clicked.connect(
+            lambda *_: self.save_connection_preset_from_ui(prompt_name=True))
+        pbl_preset.addWidget(self.btn_cpreset_save)
+        self.btn_cpreset_manage = QPushButton(self._t("cpreset_manage_btn"))
+        self.btn_cpreset_manage.setObjectName("GhostBtnSm")
+        self.btn_cpreset_manage.setProperty("tr_text", "cpreset_manage_btn")
+        self.btn_cpreset_manage.setProperty("tr_tooltip", "cpreset_manage_btn_tip")
+        self.btn_cpreset_manage.setToolTip(self._t("cpreset_manage_btn_tip"))
+        self.btn_cpreset_manage.clicked.connect(self.open_connection_presets)
+        pbl_preset.addWidget(self.btn_cpreset_manage)
+        self.row_conn_preset = make_row("cpreset_label", preset_box)
+
         # 连接类型：串口 + 网络协议，统一进一个下拉
         self.cb_proto = QComboBox()
         self.cb_proto.addItems(CONN_TYPES)
@@ -1188,6 +1224,7 @@ class CommTool(QMainWindow):
         self._reset_timer = None   # 复位脉冲的单次定时器（懒建、挂 self 上，关窗随之销毁，不会在已析构对象上回调）
 
         self._update_net_fields()
+        self._rebuild_connection_preset_combo()
         return card
 
     def _update_net_fields(self):
@@ -2657,6 +2694,10 @@ class CommTool(QMainWindow):
         self._snippets, _snip_ok = self._load_snippets()
         if not _snip_ok:
             self._save_snippets()
+        self._connection_presets, _cpreset_ok = self._load_connection_presets()
+        if not _cpreset_ok:
+            self._save_connection_presets()
+        self._rebuild_connection_preset_combo()
         self._ms_cycle_seq = []
         self._ms_cycle_idx = 0
         self._ms_cycle_timer = QTimer(self)
@@ -4050,25 +4091,37 @@ class CommTool(QMainWindow):
         self.cb_port.clear()
         for device, label in port_list:
             self.cb_port.addItem(label, device)
-        if keep_device:
-            idx = -1
-            for i in range(self.cb_port.count()):
-                if self.cb_port.itemData(i) == keep_device:
-                    idx = i
-                    break
-            if idx < 0:
-                if allow_placeholder:
-                    # 选中口本次没枚举到、但仍在去抖宽限内（可能只是 USB 串口瞬时掉枚举/
-                    # 插拔瞬间）：保留为占位项并选中，**绝不让选择静默落到列表第一个口** ——
-                    # 否则「选了串口1，后台扫描时 COM1 短暂消失 → 默认跳第一个口(串口2) →
-                    # 用户没察觉就打开成串口2」。口回来后下次扫描选回真实项。
-                    self.cb_port.addItem(self._t("port_missing", port=keep_device), keep_device)
-                    idx = self.cb_port.count() - 1
-                else:
-                    # 已超过宽限、口确实长期不在（拔出/掉驱动）：删掉占位、回落到第一个真实口
-                    # （没有则不选），断开/拔出后下拉不再常驻「未检测到」残留项。
-                    idx = 0 if self.cb_port.count() else -1
-            self.cb_port.setCurrentIndex(idx)
+        # keep_device=None -> leave Qt default; keep_device='' -> explicit no-port
+        if keep_device is not None:
+            if keep_device == "":
+                idx = -1
+                for i in range(self.cb_port.count()):
+                    if self.cb_port.itemData(i) == "":
+                        idx = i
+                        break
+                if idx < 0:
+                    self.cb_port.insertItem(0, self._t("no_ports"), "")
+                    idx = 0
+                self.cb_port.setCurrentIndex(idx)
+            else:
+                idx = -1
+                for i in range(self.cb_port.count()):
+                    if self.cb_port.itemData(i) == keep_device:
+                        idx = i
+                        break
+                if idx < 0:
+                    if allow_placeholder:
+                        # 选中口本次没枚举到、但仍在去抖宽限内（可能只是 USB 串口瞬时掉枚举/
+                        # 插拔瞬间）：保留为占位项并选中，**绝不让选择静默落到列表第一个口** ——
+                        # 否则「选了串口1，后台扫描时 COM1 短暂消失 → 默认跳第一个口(串口2) →
+                        # 用户没察觉就打开成串口2」。口回来后下次扫描选回真实项。
+                        self.cb_port.addItem(self._t("port_missing", port=keep_device), keep_device)
+                        idx = self.cb_port.count() - 1
+                    else:
+                        # 已超过宽限、口确实长期不在（拔出/掉驱动）：删掉占位、回落到第一个真实口
+                        # （没有则不选），断开/拔出后下拉不再常驻「未检测到」残留项。
+                        idx = 0 if self.cb_port.count() else -1
+                self.cb_port.setCurrentIndex(idx)
         self.cb_port.blockSignals(False)
 
     def _select_serial_device(self, device):
@@ -4086,6 +4139,7 @@ class CommTool(QMainWindow):
     def _on_serial_port_selected(self, index):
         """用户显式改选其他真实端口：取消旧口重连并立即移除旧的“未检测到”占位。"""
         device = self.cb_port.itemData(index) if index >= 0 else None
+        self._serial_empty_selection = not bool(device)
         reconnect_device = (self._serial_reconnect_cfg[1]
                             if self._serial_reconnect_cfg else None)
         if (not reconnect_device or not device or device == reconnect_device
@@ -4140,7 +4194,15 @@ class CommTool(QMainWindow):
         # 选中口连续缺失去抖计数 —— **必须在「列表与上次相同就 return」去重之前更新**：
         # 口拔掉后端口列表很快稳定不变(就是少了那个口)，若把计数放在 return 之后，列表稳定
         # 后每次都提前 return、计数停更、占位永远删不掉。这里每次扫描都推进计数。
-        sel = reconnect_pending or self.cb_port.currentData() or pending
+        # Preserve intentional empty selection (""): `or` would skip it.
+        if self._serial_empty_selection:
+            sel = ""
+        elif reconnect_pending:
+            sel = reconnect_pending
+        elif self.cb_port.currentIndex() >= 0:
+            sel = self.cb_port.currentData()
+        else:
+            sel = pending
         if sel and not any(dev == sel for dev, _ in port_list):
             self._sel_missing_count += 1
         else:
@@ -4159,7 +4221,9 @@ class CommTool(QMainWindow):
         self._last_port_list = port_list
         # ① pending(启动恢复的上次端口)一旦真实出现就选回它，优先于一切——即便此前因长期不在
         #    已回落到别的口，设备插上的那次扫描仍能选回，不丢「恢复上次选择」能力。
-        if pending and any(dev == pending for dev, _ in port_list):
+        if self._serial_empty_selection:
+            keep, hold = "", True
+        elif pending and any(dev == pending for dev, _ in port_list):
             keep, hold = pending, True
             if pending == restore_pending:
                 self._pending_restore_port = None   # 上次端口已真实出现并将被选回 → 恢复完成
@@ -4167,7 +4231,8 @@ class CommTool(QMainWindow):
         else:
             # ② 否则保持用户当前选择；选中口短暂消失(去抖宽限内)→ 占位保留防漂移；
             #    长期不在(超宽限)→ 删占位、回落第一个真实口，下拉不留「未检测到」残留。
-            keep = reconnect_pending or sel
+            # Do not use or sel: empty-string selection is falsy.
+            keep = reconnect_pending if reconnect_pending else sel
             hold = bool(reconnect_pending) or self._sel_missing_count <= self._serial_missing_limit
         self._populate_port_combo(port_list, keep, allow_placeholder=hold)
         # 原端口一重新枚举就立即唤醒退避定时器；避免 UI 已显示端口但连接仍在等待。
@@ -4263,6 +4328,8 @@ class CommTool(QMainWindow):
             self._rd_dlg.refresh_theme()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.refresh_theme()
+        if getattr(self, "_cpreset_dlg", None) is not None:
+            self._cpreset_dlg.refresh_theme()
         if getattr(self, "_triggers_dlg", None) is not None:
             self._triggers_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
@@ -5440,6 +5507,215 @@ class CommTool(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
+
+    # ----- connection presets -----
+    def _load_connection_presets(self):
+        raw = self.settings.value("connection_presets", "")
+        if isinstance(raw, list):
+            return connection_presets.sanitize_list(raw), True
+        if isinstance(raw, str) and raw.strip():
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    return connection_presets.sanitize_list(data), True
+            except Exception:
+                pass
+        return [], False
+
+    def _save_connection_presets(self):
+        self.settings.setValue(
+            "connection_presets",
+            json.dumps(self._connection_presets, ensure_ascii=False))
+        self.settings.sync()
+
+    def _rebuild_connection_preset_combo(self, select_id=None):
+        if not hasattr(self, "cb_conn_preset"):
+            return
+        keep = select_id
+        if keep is None:
+            keep = self.cb_conn_preset.currentData()
+        self.cb_conn_preset.blockSignals(True)
+        self.cb_conn_preset.clear()
+        self.cb_conn_preset.addItem(self._t("cpreset_none"), None)
+        for p in connection_presets.sort_by_recent(self._connection_presets):
+            self.cb_conn_preset.addItem(connection_presets.display_label(p), p.get("id"))
+        idx = 0
+        if keep:
+            found = self.cb_conn_preset.findData(keep)
+            if found >= 0:
+                idx = found
+        self.cb_conn_preset.setCurrentIndex(idx)
+        self.cb_conn_preset.blockSignals(False)
+
+    def _on_connection_preset_activated(self, index):
+        pid = self.cb_conn_preset.itemData(index) if index >= 0 else None
+        if not pid:
+            return
+        self.apply_connection_preset(pid)
+
+    def _capture_connection_fields(self):
+        return connection_presets.capture_fields({
+            "net_proto": self.cb_proto.currentText(),
+            "ser_port": self.cb_port.currentData() or "",
+            "ser_baud": self.cb_baud.currentText(),
+            "ser_databits": self.cb_databits.currentText(),
+            "ser_parity": self.cb_parity.currentText(),
+            "ser_stopbits": self.cb_stopbits.currentText(),
+            "ser_flow": self.cb_flow.currentText(),
+            "serial_dtr": self.settings.value("serial_dtr", True, type=bool),
+            "serial_rts": self.settings.value("serial_rts", True, type=bool),
+            "net_local_ip": self.cb_local_ip.currentText(),
+            "net_local_port": self.ed_local_port.text(),
+            "net_remote_ip": self.ed_remote_ip.text(),
+            "net_remote_port": self.ed_remote_port.text(),
+            "net_use_remote": self.sw_udp_remote.isChecked(),
+            "net_group_addr": self.ed_group.text(),
+            "vconn_loopback": self.sw_vconn_loop.isChecked(),
+            "auto_reconnect": self.settings.value("auto_reconnect", True, type=bool),
+        })
+
+    def _apply_connection_fields(self, fields):
+        fields = connection_presets.capture_fields(fields)
+        proto = fields.get("net_proto") or PROTO_SERIAL
+        idx = self.cb_proto.findText(proto)
+        if idx >= 0:
+            self.cb_proto.setCurrentIndex(idx)
+        else:
+            self.cb_proto.setCurrentText(proto)
+
+        def set_combo_text(cb, value):
+            if value is None:
+                return
+            text_v = str(value)
+            i = cb.findText(text_v)
+            if i >= 0:
+                cb.setCurrentIndex(i)
+            elif cb.isEditable():
+                cb.setCurrentText(text_v)
+
+        set_combo_text(self.cb_baud, fields.get("ser_baud"))
+        set_combo_text(self.cb_databits, fields.get("ser_databits"))
+        set_combo_text(self.cb_parity, fields.get("ser_parity"))
+        set_combo_text(self.cb_stopbits, fields.get("ser_stopbits"))
+        set_combo_text(self.cb_flow, fields.get("ser_flow"))
+        port = fields.get("ser_port") or ""
+        if port:
+            self._serial_empty_selection = False
+            self._pending_restore_port = port
+            self._select_serial_device(port)
+        else:
+            # Empty ser_port in preset must clear the previous COM selection.
+            self._serial_empty_selection = True
+            self._pending_restore_port = None
+            ports = list(getattr(self, "_last_port_list", None) or [])
+            if not ports:
+                ports = [(self.cb_port.itemData(i), self.cb_port.itemText(i))
+                         for i in range(self.cb_port.count())]
+            self._populate_port_combo(ports, keep_device="", allow_placeholder=True)
+        self.cb_local_ip.setCurrentText(str(fields.get("net_local_ip") or ""))
+        self.ed_local_port.setText(str(fields.get("net_local_port") or ""))
+        self.ed_remote_ip.setText(str(fields.get("net_remote_ip") or ""))
+        self.ed_remote_port.setText(str(fields.get("net_remote_port") or ""))
+        self.sw_udp_remote.setChecked(bool(fields.get("net_use_remote")), animate=False)
+        self.ed_group.setText(str(fields.get("net_group_addr") or ""))
+        self.sw_vconn_loop.setChecked(bool(fields.get("vconn_loopback")), animate=False)
+        self.settings.setValue("serial_dtr", bool(fields.get("serial_dtr", True)))
+        self.settings.setValue("serial_rts", bool(fields.get("serial_rts", True)))
+        self.settings.setValue("auto_reconnect", bool(fields.get("auto_reconnect", True)))
+        if hasattr(self, "sw_dtr"):
+            self.sw_dtr.setChecked(bool(fields.get("serial_dtr", True)), animate=False)
+        if hasattr(self, "sw_rts"):
+            self.sw_rts.setChecked(bool(fields.get("serial_rts", True)), animate=False)
+        self._update_net_fields()
+
+    def apply_connection_preset(self, preset_id):
+        if self.conn is not None:
+            self.toast(self._t("cpreset_need_close"), error=True)
+            # Do not keep the rejected item selected; fall back to placeholder.
+            if hasattr(self, "cb_conn_preset"):
+                self.cb_conn_preset.blockSignals(True)
+                self.cb_conn_preset.setCurrentIndex(0)
+                self.cb_conn_preset.blockSignals(False)
+            return False
+        preset = connection_presets.find_by_id(self._connection_presets, preset_id)
+        if preset is None:
+            self.toast(self._t("cpreset_missing"), error=True)
+            return False
+        self._apply_connection_fields(preset)
+        self._connection_presets, touched = connection_presets.touch_last_used(
+            self._connection_presets, preset_id)
+        if touched is not None:
+            self._save_connection_presets()
+        self._rebuild_connection_preset_combo(select_id=preset_id)
+        # MRU reorder invalidates dialog list UserRole indices; refresh by id.
+        dlg = getattr(self, "_cpreset_dlg", None)
+        if dlg is not None:
+            dlg._reload_list(keep_id=preset_id)
+        self.toast(self._t("cpreset_applied", name=preset.get("name", "")))
+        return True
+
+    def save_connection_preset_from_ui(self, prompt_name=True, name=None, note=""):
+        from PyQt5.QtWidgets import QInputDialog
+        fields = self._capture_connection_fields()
+        if prompt_name and not name:
+            cur_id = self.cb_conn_preset.currentData() if hasattr(self, "cb_conn_preset") else None
+            default_name = ""
+            if cur_id:
+                cur = connection_presets.find_by_id(self._connection_presets, cur_id)
+                if cur:
+                    default_name = cur.get("name", "")
+            name, ok = QInputDialog.getText(
+                self, self._t("cpreset_save_title"),
+                self._t("cpreset_save_prompt"),
+                text=default_name or self._t("cpreset_new_name"))
+            if not ok:
+                return None
+            name = (name or "").strip()
+            if not name:
+                self.toast(self._t("cpreset_name_empty"), error=True)
+                return None
+        name = (name or self._t("cpreset_new_name")).strip()
+        existing = None
+        for p in self._connection_presets:
+            if p.get("name") == name:
+                existing = p
+                break
+        if existing is not None:
+            preset = dict(existing)
+            preset.update(fields)
+            if note:
+                preset["note"] = note
+            preset["name"] = name
+        else:
+            if len(self._connection_presets) >= connection_presets.MAX_PRESETS:
+                self.toast(self._t("cpreset_full", n=connection_presets.MAX_PRESETS), error=True)
+                return None
+            preset = connection_presets.make_preset(name, fields, note=note or "")
+        try:
+            self._connection_presets, _ = connection_presets.upsert(
+                self._connection_presets, preset)
+        except ValueError:
+            self.toast(self._t("cpreset_full", n=connection_presets.MAX_PRESETS), error=True)
+            return None
+        self._save_connection_presets()
+        self._rebuild_connection_preset_combo(select_id=preset.get("id"))
+        if getattr(self, "_cpreset_dlg", None) is not None:
+            self._cpreset_dlg.reload_cfg()
+        self.toast(self._t("cpreset_saved", name=name))
+        return preset
+
+    def open_connection_presets(self):
+        if getattr(self, "_cpreset_dlg", None) is None:
+            from connection_presets_dialog import ConnectionPresetsDialog
+            self._cpreset_dlg = ConnectionPresetsDialog(self)
+        dlg = self._cpreset_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg.reload_cfg()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     def open_dashboard(self):
         """打开数值仪表盘（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_dash_dlg", None) is None:
@@ -5792,6 +6068,9 @@ class CommTool(QMainWindow):
 
     def _seq_begin_round(self):
         """开始新一轮：重置本轮每步结果，从第 0 步跑起（首轮若在等 Modbus 在途则由释放检查触发）。"""
+        # Fresh per-round context (P0-3 CSV can later seed RoundContext(...)).
+        self._seq_ctx = seq_context.RoundContext()
+        self._seq_runtime_step = None
         self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
                              for s in self._seq_steps]
         self._seq_notify()
@@ -5813,13 +6092,35 @@ class CommTool(QMainWindow):
         self._seq_do_step(i)
 
     def _seq_do_step(self, i):
-        """执行第 i 步：发送(有内容才发) → 有期望则开超时等回包、无期望则延时进下一步。
-        重试会重入本方法但不重置总起点 _seq_step_total_t0（在 _seq_run_from 设，故耗时含所有尝试）。"""
+        """Run step i: expand ${vars}, send, then wait for expect if any."""
         step = self._seq_steps[i]
         self._seq_buf = b""
-        send = str(step.get("send", "") or "")
-        expect = str(step.get("expect", "") or "").strip()
-        if not send.strip() and not expect:              # 发送和期望都空 → 跳过（什么都不做，不误显"已发送"）
+        ctx = getattr(self, "_seq_ctx", None)
+        ctx_map = ctx.as_dict() if ctx is not None else {}
+        send_tmpl = step.get("send", "") or ""
+        expect_tmpl = step.get("expect", "") or ""
+        missing = []
+        seen = set()
+        for name in (seq_context.missing_vars(send_tmpl, ctx_map)
+                     + seq_context.missing_vars(expect_tmpl, ctx_map)):
+            if name not in seen:
+                seen.add(name)
+                missing.append(name)
+        runtime = dict(step)
+        runtime["send"] = seq_context.expand(send_tmpl, ctx_map)
+        runtime["expect"] = seq_context.expand(expect_tmpl, ctx_map)
+        self._seq_runtime_step = runtime
+        if missing:
+            # Undefined ${var}: fail immediately (no silent pure-send; retry cannot invent vars).
+            self.toast(self._t("seq_var_missing", names=", ".join(missing)), error=True)
+            ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
+            self._seq_set_result(i, "fail", ms, self._t("seq_st_var_missing"),
+                                "seq_st_var_missing", self._seq_attempt)
+            self._seq_after_fail(step)
+            return
+        send = str(runtime.get("send", "") or "")
+        expect = str(runtime.get("expect", "") or "").strip()
+        if not send.strip() and not expect:
             self._seq_set_result(i, "skip", 0, "")
             self._seq_schedule_next(step)
             return
@@ -5828,17 +6129,17 @@ class CommTool(QMainWindow):
                 ok = self._send_text(send, hex_mode=bool(step.get("send_hex", False)),
                                      checksum=self._ar_to_int(step.get("cs", 0)),
                                      record_macro=False, allow_during_exclusive=True)
-            except Exception:                            # _send_text 抛异常也当失败，别让序列卡死在"等回包"
+            except Exception:
                 ok = False
-            if not ok:                                   # 发送失败（HEX 非法/未连接/异常）→ 按重试策略处理
+            if not ok:
                 self._seq_step_failed("seq_st_send_fail")
                 return
-        if not expect:                                   # 纯发送步骤：不等回包，延时后下一步
+        if not expect:
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
             self._seq_set_result(i, "sent", ms, "", "", self._seq_attempt)
             self._seq_schedule_next(step)
             return
-        self._seq_set_result(i, "waiting", 0, "", "", self._seq_attempt)   # 等回包：开超时计时
+        self._seq_set_result(i, "waiting", 0, "", "", self._seq_attempt)
         self._seq_timer.stop()
         timeout = min(_SEQ_QTIMER_MAX_MS, max(1, self._ar_to_int(step.get("timeout", 1000))))
         self._seq_timer.start(timeout)
@@ -5858,10 +6159,17 @@ class CommTool(QMainWindow):
         if status != "waiting":
             return
         self._seq_buf += bytes(data)
-        if self._seq_step_match(self._seq_steps[i], self._seq_buf):
+        match_step = getattr(self, "_seq_runtime_step", None) or self._seq_steps[i]
+        if self._seq_step_match(match_step, self._seq_buf):
             self._seq_timer.stop()
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
-            self._seq_set_result(i, "pass", ms, "", "", self._seq_attempt)
+            extracted = self._seq_capture_vars(self._seq_steps[i], self._seq_buf)
+            detail = ""
+            if extracted:
+                detail = ",".join("%s=%s" % (k, extracted[k]) for k in list(extracted)[:4])
+            self._seq_set_result(i, "pass", ms, detail, "", self._seq_attempt)
+            if extracted and 0 <= i < len(self._seq_results):
+                self._seq_results[i]["extracted"] = dict(extracted)
             self._seq_schedule_next(self._seq_steps[i])
 
     def _seq_on_timeout(self):
@@ -6013,6 +6321,31 @@ class CommTool(QMainWindow):
         self._seq_notify()
         if toast_key:
             self.toast(self._t(toast_key))
+
+
+    def _seq_capture_vars(self, step, buf):
+        """Extract variables from a passed step into the round context."""
+        specs = step.get("extract")
+        if not specs:
+            dsl = step.get("extract_dsl") or step.get("vars") or ""
+            specs = seq_context.parse_extract_dsl(dsl)
+        specs = seq_context.sanitize_extractors(specs if isinstance(specs, list) else [])
+        if not specs:
+            return {}
+        try:
+            codec = self._get_codec()
+        except Exception:
+            codec = "utf-8"
+        enc = "utf-8" if codec == "auto" else codec
+        try:
+            text = buf.decode(enc, errors="replace")
+        except Exception:
+            text = ""
+        extracted = seq_context.extract(buf, specs, text=text, codec=codec)
+        ctx = getattr(self, "_seq_ctx", None)
+        if ctx is not None and extracted:
+            ctx.update(extracted)
+        return extracted
 
     def _seq_step_match(self, step, buf):
         """当前累积 buf 是否满足步骤期望（复用自动应答 _ar_hit_test：包含/相等/前缀 + HEX/文本）。"""
@@ -7134,6 +7467,7 @@ class CommTool(QMainWindow):
         "theme", "language",
         # 多条发送 / 关键字 / 帧解析 / 绘图
         "multi_send_groups", "multi_send_group_idx", "multi_send_split", "snippets",
+        "connection_presets",
         "keyword_groups", "keyword_active",
         "frame_rules",
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
@@ -7339,6 +7673,10 @@ class CommTool(QMainWindow):
         self._snippets, snippets_ok = self._load_snippets()
         if not snippets_ok:
             self._save_snippets()
+        self._connection_presets, cpresets_ok = self._load_connection_presets()
+        if not cpresets_ok:
+            self._save_connection_presets()
+        self._rebuild_connection_preset_combo()
         self._keyword_groups, self._keyword_active, _ = self._load_keyword_groups()
         self._rebuild_kw_group_combo()
         self._refresh_extra_selections()    # 高亮规则变了 → 重画数据区 extra selections
@@ -7353,6 +7691,8 @@ class CommTool(QMainWindow):
             self._keyword_dlg._reload_rows()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.reload_cfg()
+        if getattr(self, "_cpreset_dlg", None) is not None:
+            self._cpreset_dlg.reload_cfg()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.reload_config()
         if getattr(self, "_device_center_dlg", None) is not None:
@@ -9392,6 +9732,9 @@ class CommTool(QMainWindow):
             self._rd_dlg.retranslate()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.retranslate()
+        if getattr(self, "_cpreset_dlg", None) is not None:
+            self._cpreset_dlg.retranslate()
+        self._rebuild_connection_preset_combo()
         if getattr(self, "_triggers_dlg", None) is not None:
             self._triggers_dlg.retranslate()
         if getattr(self, "_frame_dlg", None) is not None:
@@ -9514,6 +9857,8 @@ class CommTool(QMainWindow):
                 self._keyword_dlg.flush_pending()
             if getattr(self, "_snip_dlg", None) is not None:
                 self._snip_dlg.flush_pending()
+            if getattr(self, "_cpreset_dlg", None) is not None:
+                self._cpreset_dlg.flush_pending()
             if getattr(self, "_ar_dlg", None) is not None:
                 self._ar_dlg.flush_pending()
             if getattr(self, "_seq_dlg", None) is not None:
@@ -11186,7 +11531,7 @@ class CommTool(QMainWindow):
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
                      "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
-                     "_snip_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
+                     "_snip_dlg", "_cpreset_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

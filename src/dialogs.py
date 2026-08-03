@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLin
                              QListWidget, QListWidgetItem, QSplitter,
                              QTableWidget, QHeaderView, QAbstractItemView, QFileDialog, QMenu)
 from theme import chrome_for, THEME_DEFAULT
+import seq_context
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
@@ -1660,6 +1661,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self._hdr_layout.addWidget(lead)
         # 左组标签：名称(固定) 发送(伸展) HEX(固定) 校验(固定)；右组：期望(伸展) HEX 模式 超时 超时动作 延时(均固定)
         hleft = self._mk_hdr_group([("seq_col_name", self._NAME_W), ("seq_col_send", None),
+                                    ("seq_col_extract", None),
                                     ("HEX", self._HEX_W), ("seq_col_cs", self._cs_w)])
         hright = self._mk_hdr_group([("seq_col_expect", None), ("HEX", self._HEX_W),
                                      ("seq_col_mode", self._mode_w), ("seq_col_timeout", self._TO_W),
@@ -1881,9 +1883,15 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         d["retry"].setToolTip(self.app._t("seq_retry_tip"))
         d["retry"].textChanged.connect(self._schedule)
 
+        d["extract"] = QLineEdit(str(step.get("extract_dsl") or "") or seq_context.extractors_to_dsl(step.get("extract") or []))
+        d["extract"].setPlaceholderText(self.app._t("seq_extract_ph"))
+        d["extract"].setToolTip(self.app._t("seq_extract_tip"))
+        d["extract"].textChanged.connect(self._schedule)
+
         # 只把两个数据框放进可拖：左组[名称 发送↔ HEX 校验] / 右组[期望↔ HEX 模式 超时 超时动作 延时 重试]，
         # 组内数据框伸展、其余固定；两组装进 2 面板 splitter，拖中间分隔条即调发送/期望相对宽（各行+表头同步）。
         left = self._mk_row_group([(d["name"], self._NAME_W), (d["send"], None),
+                                   (d["extract"], None),
                                    (d["shex"], self._HEX_W), (cb_cs, self._cs_w)])
         right = self._mk_row_group([(d["exp"], None), (d["ehex"], self._HEX_W),
                                     (cb_mode, self._mode_w), (d["to"], self._TO_W),
@@ -1940,6 +1948,8 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             "on_timeout": "continue" if d["of"].currentIndex() == 1 else "stop",
             "delay": min(self._MAX_TIMER_MS, self._to_int(d["dl"].text(), 0)),
             "retry": self._to_int(d["retry"].text(), 0),
+            "extract_dsl": d["extract"].text().strip(),
+            "extract": seq_context.parse_extract_dsl(d["extract"].text()),
         }
 
     def _all_steps(self):
@@ -2389,7 +2399,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                    for k in ("on", "send_hex", "expect_hex")):
                 return None
             if any(k in step and not isinstance(step[k], str)
-                   for k in ("name", "send", "expect")):
+                   for k in ("name", "send", "expect", "extract_dsl")):
                 return None
             if "on_timeout" in step and step["on_timeout"] not in ("stop", "continue"):
                 return None
@@ -2408,6 +2418,14 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             if not 0 <= retry <= self._MAX_RETRY:
                 return None
             step["retry"] = retry
+            if "extract" in step and not isinstance(step["extract"], list):
+                return None
+            if "extract" in step:
+                step["extract"] = seq_context.sanitize_extractors(step["extract"])
+            dsl = step.get("extract_dsl")
+            if isinstance(dsl, str) and dsl.strip():
+                step["extract"] = seq_context.parse_extract_dsl(dsl)
+                step["extract_dsl"] = dsl.strip()
             out.append(step)
         return out
 
@@ -2438,6 +2456,9 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         for d in self._rows:                        # 下拉项/占位随语言刷新（保留选中项）
             d["send"].setPlaceholderText(self.app._t("seq_send_ph"))
             d["exp"].setPlaceholderText(self.app._t("seq_expect_ph"))
+            if "extract" in d:
+                d["extract"].setPlaceholderText(self.app._t("seq_extract_ph"))
+                d["extract"].setToolTip(self.app._t("seq_extract_tip"))
             d["retry"].setToolTip(self.app._t("seq_retry_tip"))
             for i, k in enumerate(CHECKSUM_KEYS):
                 if i < d["cs"].count():
