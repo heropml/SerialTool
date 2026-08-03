@@ -37,6 +37,18 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.7
+
+This release closes the loop from reusable connections to CI-ready test artifacts:
+
+- **Named connection presets** — save every serial or network parameter, plus notes and the auto-reconnect policy, as a named preset. The connection bar gains a preset dropdown with Save / Manage; presets support most-recently-used ordering, duplicate, delete, JSON import/export and travel inside `.ctproj`. Applying a preset while connected is refused (the dropdown falls back to its placeholder), so live parameters are never swapped underneath you.
+- **Sequence variables and context** — sequence **Send** / **Expect** fields accept `${name}` templates, and each step can extract variables from its reply by text, HEX, regex group or Modbus field for later steps to use; scope is per round and `$${` escapes a literal `${`. An undefined variable now fails the step immediately instead of silently degrading to a plain send, so aging loops cannot report false passes.
+- **CSV data-driven sequences** — bind a CSV dataset to run one round per row, with the header row seeding `${var}` and the loop count taken from the row count; reports carry the CSV row number and a device label (taken from a `device_id` / `sn` / `name` column). Decoding falls back utf-8 → GBK (Excel "Save as CSV") → latin-1.
+- **Test report export now includes JUnit XML** — **Export Report** offers HTML / CSV / **JUnit XML**, the last of which drops straight into Jenkins or GitLab CI. All three formats now record the app version, start and end time, run parameters (loops, step count, stop-on-fail) and the CSV path, plus per step the elapsed time, failure reason and key frames (TX / RX hex). **Behaviour change: a mid-run stop or disconnect now still produces a summary and can be exported** (flagged as stopped) instead of being discarded, and multi-round runs expand every step of every round.
+- **I/O statistics and diagnostics** — the status bar adds packet rate (pkt/s, where a "packet" is a transport-level read/write chunk, not a protocol frame); tooltips add peak packet rate, packet size min/avg/max, a size histogram, timeout counters split by sequence / Modbus master / connection, and the average rate over the last minute. The plot dialog can subscribe to `rx_Bps`, `tx_Bps`, `rx_pps` and `tx_pps`. Resetting statistics leaves recordings and the data area untouched. No new dependencies.
+
+---
+
 ## What's New in v1.3.6
 
 This release turns CommTool into a project-oriented debugging workspace:
@@ -705,7 +717,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.6`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.7`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

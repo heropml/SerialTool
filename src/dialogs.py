@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLin
 from theme import chrome_for, THEME_DEFAULT
 import seq_context
 import sequence_dataset
+import junit_report
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
@@ -2262,13 +2263,21 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             md = self._to_int(s.get("mode", 0), 0)
             mode_name = t(self._MODE_KEYS[md]) if (exp and 0 <= md < len(self._MODE_KEYS)) else "—"
             status = res.get("status", "pending")
+            detail = self._result_detail(res)
+            frames = []
+            if res.get("tx"):
+                frames.append("TX=%s" % res.get("tx"))
+            if res.get("rx_hex"):
+                frames.append("RX=%s" % res.get("rx_hex"))
+            if frames:
+                detail = (detail + " | " if detail else "") + " ".join(frames)
             rows.append({
                 "no": i + 1, "name": str(s.get("name", "") or ""),
                 "send": send, "cs": cs_name, "expect": exp_disp, "mode": mode_name,
                 "timeout": "%dms" % self._to_int(s.get("timeout", 1000), 1000),
                 "status": self._status_report_text(res),
                 "elapsed": "%dms" % int(res.get("ms", 0)),
-                "detail": self._result_detail(res),
+                "detail": detail,
                 "enabled": bool(s.get("on", True)),
                 "ok": status in ("pass", "sent", "skip"), "fail": status == "fail",
             })
@@ -2293,6 +2302,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         if self._report_is_csv():
             return True
         return int((getattr(self.app, "_seq_summary", None) or {}).get("loops", 1) or 1) > 1
+
+    def _report_by_round(self):
+        """轮次表要有轮次数据才成立；一轮都没跑完时回退到逐步骤表（否则表是空的）。"""
+        if not self._report_is_loop():
+            return False
+        summ = getattr(self.app, "_seq_summary", None) or {}
+        return bool(summ.get("round_list"))
 
     def _loop_summary_text(self, summ, verdict):
         """循环汇总文案：通过轮 R/N；实际跑过轮数 < 计划(失败即停/中途停止)时标出「计划 M 轮」，避免误读。"""
@@ -2319,13 +2335,74 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             line = line + " | " + self.app._t("seq_report_csv_src", path=csv_path)
         return line, passed
 
-    def _report_table(self, rows):
-        """返回 (表头列名, 行列表[{cells,cls}])：循环运行→按轮次表；单次→按步骤表。"""
+    def _report_meta_rows(self):
+        """Extra metadata lines for HTML/CSV/JUnit."""
+        from version import __version__ as _ver
         t = self.app._t
-        if self._report_is_loop():
+        summ = getattr(self.app, "_seq_summary", None) or {}
+        started = summ.get("started_at") or getattr(self.app, "_seq_started_at", "") or ""
+        finished = summ.get("finished_at") or getattr(self.app, "_seq_finished_at", "") or ""
+        ver = summ.get("version") or _ver
+        rows = [
+            (t("seq_report_time"), started),
+            (t("seq_report_finished"), finished),
+            (t("seq_report_version"), "CommTool %s" % ver),
+            (t("seq_report_params"), t(
+                "seq_report_params_val",
+                loops=summ.get("loops", 1),
+                steps=summ.get("step_count", len(getattr(self.app, "_seq_steps", []) or [])),
+                stop=t("seq_stop_on_fail") if summ.get("stop_on_fail") else "-",
+            )),
+        ]
+        if summ.get("csv_path"):
+            rows.append((t("seq_report_csv_file"), summ.get("csv_path")))
+        return [(k, v) for k, v in rows if v not in ("", None)]
+
+    def _report_table(self, rows):
+        """Return (header, body[{cells,cls}]). Loop/CSV uses per-step rows when snapshots exist."""
+        t = self.app._t
+        if self._report_by_round():
             summ = getattr(self.app, "_seq_summary", None) or {}
-            has_csv = bool(summ.get("csv_path")) or any(
-                ("csv_row" in rr) for rr in (summ.get("round_list") or []))
+            rounds = list(summ.get("round_list") or [])
+            has_csv = bool(summ.get("csv_path")) or any(("csv_row" in rr) for rr in rounds)
+            has_steps = any(rr.get("steps") for rr in rounds)
+            if has_steps:
+                header = [t("seq_report_round")]
+                if has_csv:
+                    header += [t("seq_report_csv_row"), t("seq_report_csv_label")]
+                header += ["#", t("seq_col_name"), t("seq_col_send"), t("seq_col_expect"),
+                           t("seq_col_result"), t("seq_report_elapsed"), t("seq_report_detail")]
+                body = []
+                for r in rounds:
+                    defs = r.get("step_defs") or []
+                    results = r.get("steps") or []
+                    for i, step in enumerate(defs):
+                        if not step.get("on", True):
+                            continue
+                        res = results[i] if i < len(results) else {}
+                        st = res.get("status", "pending")
+                        detail = self._result_detail(res)
+                        frames = []
+                        if res.get("tx"):
+                            frames.append("TX=%s" % res.get("tx"))
+                        if res.get("rx_hex"):
+                            frames.append("RX=%s" % res.get("rx_hex"))
+                        if frames:
+                            detail = (detail + " | " if detail else "") + " ".join(frames)
+                        send = str(step.get("send", "") or "")
+                        if step.get("send_hex"):
+                            send += " (HEX)"
+                        exp = str(step.get("expect", "") or "").strip() or "-"
+                        cells = [r.get("round", "")]
+                        if has_csv:
+                            cells += [r.get("csv_row", ""), r.get("csv_label", "") or ""]
+                        cells += [i + 1, str(step.get("name", "") or ""), send, exp,
+                                  self._status_report_text(res),
+                                  "%dms" % int(res.get("ms", 0)), detail]
+                        cls = ("ok" if st in ("pass", "sent", "skip")
+                               else ("fail" if st == "fail" else ""))
+                        body.append({"cells": cells, "cls": cls})
+                return header, body
             if has_csv:
                 header = [t("seq_report_round"), t("seq_report_csv_row"),
                           t("seq_report_csv_label"), t("seq_report_round_steps"),
@@ -2334,7 +2411,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                 header = [t("seq_report_round"), t("seq_report_round_steps"),
                           t("seq_report_verdict"), t("seq_report_elapsed")]
             body = []
-            for r in summ.get("round_list", []):
+            for r in rounds:
                 rp = bool(r.get("pass"))
                 if has_csv:
                     cells = [r.get("round", ""),
@@ -2362,13 +2439,16 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         import html as _h
         t = self.app._t
         summ_line, passed = self._report_summary_line()
-        started = getattr(self.app, "_seq_started_at", "") or ""
         header, body = self._report_table(rows)
         th = "".join("<th>%s</th>" % _h.escape(str(x)) for x in header)
         trs = []
         for b in body:
             tds = "".join("<td>%s</td>" % _h.escape(str(x)) for x in b["cells"])
             trs.append('<tr class="%s">%s</tr>' % (b["cls"], tds))
+        meta_html = "".join(
+            "<div class='meta'>%s: %s</div>" % (_h.escape(str(k)), _h.escape(str(v)))
+            for k, v in self._report_meta_rows()
+        )
         return (
             "<!doctype html><html><head><meta charset='utf-8'><title>%(title)s</title><style>"
             "body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;margin:24px;color:#222;}"
@@ -2385,14 +2465,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             ".foot{color:#aaa;font-size:11px;margin-top:16px;}"
             "</style></head><body>"
             "<h1>%(title)s</h1>"
-            "<div class='meta'>%(timelbl)s: %(started)s</div>"
+            "%(meta)s"
             "%(verdict_html)s"
             "<table><thead><tr>%(th)s</tr></thead><tbody>%(rows)s</tbody></table>"
             "<div class='foot'>CommTool · %(title)s</div></body></html>"
         ) % {
             "title": _h.escape(t("seq_report_title")),
-            "timelbl": _h.escape(t("seq_report_time")),
-            "started": _h.escape(started),
+            "meta": meta_html,
             "verdict_html": ("<div><span class='verdict'>%s</span></div>" % _h.escape(summ_line))
                             if summ_line else "",
             "accent": "#2f9e44" if passed else "#e03131",
@@ -2406,10 +2485,11 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         header, body = self._report_table(rows)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow([t("seq_report_title")])
-        w.writerow([t("seq_report_time"), getattr(self.app, "_seq_started_at", "") or ""])
+        w.writerow([self._csv_safe(t("seq_report_title"))])
+        for k, v in self._report_meta_rows():
+            w.writerow([self._csv_safe(k), self._csv_safe(v)])
         if summ_line:
-            w.writerow([summ_line])
+            w.writerow([self._csv_safe(summ_line)])
         w.writerow([])
         w.writerow([self._csv_safe(x) for x in header])
         for b in body:
@@ -2433,11 +2513,38 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         low = path.lower()
         if low.endswith(".csv"):
             return "csv", path
+        if low.endswith(".xml"):
+            return "junit", path
         if low.endswith(".html") or low.endswith(".htm"):
             return "html", path
-        if "csv" in (sel or "").lower():
+        sel_l = (sel or "").lower()
+        if "csv" in sel_l:
             return "csv", path + ".csv"
+        if "xml" in sel_l or "junit" in sel_l:
+            return "junit", path + ".xml"
         return "html", path + ".html"
+
+    def _build_report_junit(self, rows):
+        """Build JUnit XML from the latest sequence snapshot."""
+        from version import __version__ as _ver
+        steps = getattr(self.app, "_seq_steps", []) or []
+        results = getattr(self.app, "_seq_results", []) or []
+        summ = getattr(self.app, "_seq_summary", None) or {}
+        cases = junit_report.cases_from_snapshot(
+            steps, results, summ, detail_resolver=self._result_detail)
+        meta = {
+            "app": "CommTool",
+            "version": summ.get("version") or _ver,
+            "started_at": summ.get("started_at") or getattr(self.app, "_seq_started_at", "") or "",
+            "finished_at": summ.get("finished_at") or getattr(self.app, "_seq_finished_at", "") or "",
+            "loops": summ.get("loops"),
+            "stop_on_fail": summ.get("stop_on_fail"),
+            "csv_path": summ.get("csv_path"),
+            "csv_rows": summ.get("csv_rows"),
+            "pass": summ.get("pass"),
+            "stopped": summ.get("stopped"),
+        }
+        return junit_report.build_junit_xml("CommTool.Sequence", cases, meta)
 
     def _on_export(self):
         """导出上一次运行的测试报告（按保存对话框选的扩展名/过滤器出 HTML 或 CSV）。"""
@@ -2452,16 +2559,19 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # 留给 _report_fmt 根据过滤器补全，用户手动输入的扩展名仍优先。
         default = "CommTool_seq_report_%s" % (ts or "report")
         path, _sel = QFileDialog.getSaveFileName(self, self.app._t("seq_export"), default,
-                                                 "HTML (*.html);;CSV (*.csv)")
+                                                 "HTML (*.html);;CSV (*.csv);;JUnit XML (*.xml)")
         if not path:
             return
         try:
             # 循环模式按轮次出表(_report_table 直接读 round_list)，逐步骤 rows 用不上，不白算
-            rows = [] if self._report_is_loop() else self._report_rows(steps, results)
+            rows = [] if self._report_by_round() else self._report_rows(steps, results)
             fmt, path = self._report_fmt(path, _sel)
             if fmt == "csv":
                 with open(path, "w", encoding="utf-8-sig", newline="") as f:
                     f.write(self._build_report_csv(rows))
+            elif fmt == "junit":
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(self._build_report_junit(rows))
             else:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self._build_report_html(rows))
@@ -2689,5 +2799,3 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             self._commit()
         self.app.settings.sync()
         super().closeEvent(e)
-
-

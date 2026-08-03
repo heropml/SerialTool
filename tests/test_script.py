@@ -424,6 +424,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         fake._mbm_set_result = lambda *_args: None
         fake._t = lambda key: key
         fake._mbm_tick = lambda: None
+        fake._stat_note_timeout = lambda *_args: None
         before = time.monotonic()
         CommTool._mbm_on_timeout(fake)
         self.assertIsNone(fake._mbm_inflight)
@@ -1362,7 +1363,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                  "on_timeout": "continue", "delay": 0},
                 {"on": True, "send": "GO", "expect": "", "delay": 0},
             ])
-            self._seq_pump(150)
+            self._seq_pump(400)
             self.assertFalse(w._seq_running())
             self.assertEqual(w._seq_results[0]["status"], "fail")
             self.assertEqual(w._seq_results[1]["status"], "sent")
@@ -1503,6 +1504,25 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w._seq_on = False
             w._seq_summary, w._seq_rounds = o_summary, o_rounds
+
+    def test_sequence_abort_after_round_snapshot_does_not_duplicate_round(self):
+        w = _win()
+        old_summary, old_rounds = getattr(w, "_seq_summary", None), getattr(w, "_seq_rounds", [])
+        try:
+            w._seq_on = True
+            w._seq_steps = [{"on": True, "send": "GO", "expect": ""}]
+            w._seq_loops = 3
+            w._seq_loop_i = 1
+            w._seq_t0 = 0.0
+            w._seq_results = [{"status": "sent", "ms": 5, "detail": ""}]
+            w._seq_rounds = [{"round": 1, "ok": 1, "total": 1, "ms": 5, "pass": True}]
+            w._seq_round_snapshot_taken = True
+            w._seq_summary = None
+            w._seq_abort("seq_stopped")
+            assert len(w._seq_summary["round_list"]) == 1
+        finally:
+            w._seq_on = False
+            w._seq_summary, w._seq_rounds = old_summary, old_rounds
 
     def test_sequence_loop_summary_shows_planned_when_partial(self):
         """回归(P2)：提前停止(失败即停/中途停)时汇总标出计划总轮数，避免"0/1"被误读；跑满不标。"""
@@ -2040,6 +2060,20 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertEqual(dlg._report_fmt("a.html", "CSV (*.csv)"), ("html", "a.html"))
             self.assertEqual(dlg._report_fmt("rep", "CSV (*.csv)"), ("csv", "rep.csv"))
             self.assertEqual(dlg._report_fmt("rep", "HTML (*.html)"), ("html", "rep.html"))
+            self.assertEqual(dlg._report_fmt("a.xml", "HTML (*.html)"), ("junit", "a.xml"))
+            self.assertEqual(dlg._report_fmt("rep", "JUnit XML (*.xml)"), ("junit", "rep.xml"))
+            w._seq_finished_at = "2026-07-04 21:15:31"
+            w._seq_summary = {"ok": 1, "total": 2, "ms": 520, "pass": False,
+                              "loops": 1, "step_count": 2, "version": "1.3.6",
+                              "started_at": "2026-07-04 21:15:30",
+                              "finished_at": "2026-07-04 21:15:31"}
+            junit = dlg._build_report_junit([])
+            self.assertIn("testsuite", junit)
+            self.assertIn("failure", junit)
+            self.assertIn("1.3.6", junit)
+            html = dlg._build_report_html(rows)
+            self.assertIn("1.3.6", html)
+            self.assertIn("2026-07-04 21:15:31", html)
             # 无汇总数据不当作通过（独立安全默认）
             w._seq_summary = None
             self.assertEqual(dlg._report_summary_line(), ("", False))

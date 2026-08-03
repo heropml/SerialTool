@@ -47,6 +47,7 @@ import snippets
 import connection_presets
 import seq_context
 import sequence_dataset
+import io_stats
 import log_naming
 import modbus_slave
 import modbus_master
@@ -439,7 +440,8 @@ class CommTool(QMainWindow):
         self._tx_peak = 0
         self._rx_bytes_mark = 0   # 上次采样时的累计字节，用于算每秒增量
         self._tx_bytes_mark = 0
-        self._rate_time_mark = time.monotonic()  # 实际采样时刻，避免 GUI 延迟扭曲 B/s
+        self._rate_time_mark = time.monotonic()
+        self._io_stats = io_stats.IoStatsAccumulator()
 
         # 串口端口扫描（仅串口模式用）：后台轮询线程避免 comports() 卡 GUI
         self._last_port_list = []
@@ -540,9 +542,11 @@ class CommTool(QMainWindow):
         self._dsl_record = True
         self._ar_in_flight = False       # 正在发自动应答的回复 → 宏录制跳过（不是用户手动发）
         self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
+        self._seq_finished_at = ""
         self._seq_loops = 1           # 循环次数（整条序列跑几轮）
         self._seq_dataset = None     # CSV dataset dict or None
         self._seq_dataset_row = None # current CSV row meta for this round
+        self._seq_round_snapshot_taken = False
         self._seq_loop_i = 0          # 当前第几轮（0 基）
         self._seq_stop_on_fail = False  # 某轮失败即停止后续循环
         self._seq_rounds = []         # 每轮汇总 [{round,ok,total,ms,pass}]（供循环汇总/报告）
@@ -3794,9 +3798,14 @@ class CommTool(QMainWindow):
         # 串口已打开成功后 reader 运行时报错(拔出/掉线等)：文案用"连接中断"而非"打开失败"
         if proto == PROTO_SERIAL and self._conn_engaged:
             key = "err_serial_runtime"
-        if msg == ERR_CONN_TIMEOUT:   # net_io 超时哨兵 → 按当前语言翻译（避免硬编码中文）
+        was_conn_timeout = (msg == ERR_CONN_TIMEOUT)
+        if was_conn_timeout:   # net_io timeout sentinel -> localized text
             msg = self._t("err_conn_timeout")
-        self.rx_errors += 1           # 连接/链路错误计入 RX 侧错误统计
+        self._stat_note_rx_error()           # connection/link errors count as RX errors
+        if was_conn_timeout:
+            _note_to = getattr(self, "_stat_note_timeout", None)
+            if callable(_note_to):
+                _note_to("conn")
         self._refresh_stat_labels(with_tooltip=False)
         # 串口首次掉线必须提示一次；仅当已经持有重连目标（即后续自动重试）时静默。
         # 不用 attempts 判断，避免残留/边界计数让首次掉线被误判成重试而吞掉提示。
@@ -4462,7 +4471,7 @@ class CommTool(QMainWindow):
         try:
             self._on_data_received_impl(data, source=reply_target)
         except Exception as e:
-            self.rx_errors += 1
+            self._stat_note_rx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
         # 波形图（若已打开）：用同一份原始数据自行缓冲/解析/绘曲线，与显示区解耦；
@@ -4547,8 +4556,7 @@ class CommTool(QMainWindow):
                 pass
 
     def _on_data_received_impl(self, data: bytes, source=None):
-        self.rx_bytes += len(data)
-        self.rx_packets += 1
+        self._stat_note_rx(len(data))
         # 标签刷新交给 1Hz 的 _rate_timer：高频收包路径只累加整数计数器，
         # 不每包重建文案 + setText（会触发状态栏重排），高吞吐下避免无谓的 GUI 线程开销。
 
@@ -5667,10 +5675,13 @@ class CommTool(QMainWindow):
                 cur = connection_presets.find_by_id(self._connection_presets, cur_id)
                 if cur:
                     default_name = cur.get("name", "")
-            name, ok = QInputDialog.getText(
-                self, self._t("cpreset_save_title"),
-                self._t("cpreset_save_prompt"),
-                text=default_name or self._t("cpreset_new_name"))
+            dlg = QInputDialog(self)
+            dlg.setWindowTitle(self._t("cpreset_save_title"))
+            dlg.setLabelText(self._t("cpreset_save_prompt"))
+            dlg.setTextValue(default_name or self._t("cpreset_new_name"))
+            dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+            ok = dlg.exec_() == QInputDialog.Accepted
+            name = dlg.textValue()
             if not ok:
                 return None
             name = (name or "").strip()
@@ -6071,7 +6082,8 @@ class CommTool(QMainWindow):
         self._seq_stop_on_fail = bool(stop_on_fail)
         self._seq_rounds = []
         self._seq_t0 = time.monotonic()
-        self._seq_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 墙钟起始时间，供导出报告用
+        self._seq_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._seq_finished_at = ""  # 墙钟起始时间，供导出报告用
         self.toast(self._t("seq_running_toast"))
         self._seq_begin_round()
 
@@ -6090,6 +6102,7 @@ class CommTool(QMainWindow):
         self._seq_runtime_step = None
         self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
                              for s in self._seq_steps]
+        self._seq_round_snapshot_taken = False
         self._seq_notify()
         if not self._seq_waiting_mbm:            # 本轮计时从"真正开跑"起；等 Modbus 释放的那段不计入本轮
             self._seq_round_t0 = time.monotonic()
@@ -6151,6 +6164,8 @@ class CommTool(QMainWindow):
             if not ok:
                 self._seq_step_failed("seq_st_send_fail")
                 return
+            if 0 <= i < len(self._seq_results):
+                self._seq_results[i]["tx"] = send
         if not expect:
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
             self._seq_set_result(i, "sent", ms, "", "", self._seq_attempt)
@@ -6184,7 +6199,10 @@ class CommTool(QMainWindow):
             detail = ""
             if extracted:
                 detail = ",".join("%s=%s" % (k, extracted[k]) for k in list(extracted)[:4])
-            self._seq_set_result(i, "pass", ms, detail, "", self._seq_attempt)
+            rx_hex = bytes(self._seq_buf or b"").hex()
+            if len(rx_hex) > 512:
+                rx_hex = rx_hex[:512] + "..."
+            self._seq_set_result(i, "pass", ms, detail, "", self._seq_attempt, rx_hex=rx_hex)
             if extracted and 0 <= i < len(self._seq_results):
                 self._seq_results[i]["extracted"] = dict(extracted)
             self._seq_schedule_next(self._seq_steps[i])
@@ -6196,6 +6214,9 @@ class CommTool(QMainWindow):
         i = self._seq_idx
         if not (0 <= i < len(self._seq_results)) or self._seq_results[i].get("status") != "waiting":
             return
+        _note_to = getattr(self, "_stat_note_timeout", None)
+        if callable(_note_to):
+            _note_to("seq")
         self._seq_step_failed("seq_st_fail")
 
     def _seq_step_failed(self, detail_key):
@@ -6217,7 +6238,11 @@ class CommTool(QMainWindow):
             QTimer.singleShot(max(delay, _SEQ_RETRY_GUARD_MS),
                               lambda: self._seq_retry(gen, i, attempt))
             return
-        self._seq_set_result(i, "fail", ms, self._t(detail_key), detail_key, self._seq_attempt)
+        rx_hex = bytes(getattr(self, "_seq_buf", b"") or b"").hex()
+        if len(rx_hex) > 512:
+            rx_hex = rx_hex[:512] + "..."
+        self._seq_set_result(i, "fail", ms, self._t(detail_key), detail_key, self._seq_attempt,
+                             rx_hex=rx_hex)
         self._seq_after_fail(step)
 
     def _seq_retry(self, gen, i, attempt):
@@ -6253,26 +6278,35 @@ class CommTool(QMainWindow):
         if self._seq_on and gen == self._seq_gen:
             self._seq_run_from(nxt)
 
-    def _seq_round_done(self):
-        """本轮所有启用步骤跑完（或失败停止）：记录本轮汇总，再决定跑下一轮还是整体收尾。"""
-        self._seq_timer.stop()
-        # 只统计「启用且真正执行」的步骤：空步骤(send与expect都空)标记 skip，既不是测试项，也不该
-        # 被算作「通过」——从 total 与 passed 里都排除，汇总显示 通过 X/Y 才不会把跳过误显为通过。
+    def _seq_append_round_snapshot(self):
+        """Record current round aggregate + per-step results into _seq_rounds."""
+        if getattr(self, "_seq_round_snapshot_taken", False):
+            return
+        self._seq_round_snapshot_taken = True
         enabled = [self._seq_results[i] for i, s in enumerate(self._seq_steps)
                    if s.get("on", True) and i < len(self._seq_results)]
         total = sum(1 for r in enabled if r.get("status") != "skip")
         passed = sum(1 for r in enabled if r.get("status") in ("pass", "sent"))
-        # 本轮结论只看结果：全部执行步骤都通过才算本轮 PASS（失败停止时必有步骤未通过 → passed<total；
-        # on_timeout=continue 也是所有步跑完后按此判）。
         round_ok = (passed == total)
-        round_ms = int((time.monotonic() - self._seq_round_t0) * 1000)
+        t0 = getattr(self, "_seq_round_t0", None) or getattr(self, "_seq_t0", time.monotonic())
+        round_ms = int((time.monotonic() - t0) * 1000)
         round_rec = {"round": self._seq_loop_i + 1, "ok": passed,
-                     "total": total, "ms": round_ms, "pass": round_ok}
+                     "total": total, "ms": round_ms, "pass": round_ok,
+                     "steps": [dict(r) for r in (self._seq_results or [])],
+                     "step_defs": [dict(s) for s in (self._seq_steps or [])]}
         row = getattr(self, "_seq_dataset_row", None)
         if row:
             round_rec["csv_row"] = row.get("number")
             round_rec["csv_label"] = row.get("label") or ""
         self._seq_rounds.append(round_rec)
+
+    def _seq_round_done(self):
+        """本轮所有启用步骤跑完（或失败停止）：记录本轮汇总，再决定跑下一轮还是整体收尾。"""
+        self._seq_timer.stop()
+        # 只统计「启用且真正执行」的步骤：空步骤(send与expect都空)标记 skip，既不是测试项，也不该
+        # 被算作「通过」——从 total 与 passed 里都排除，汇总显示 通过 X/Y 才不会把跳过误显为通过。
+        self._seq_append_round_snapshot()
+        round_ok = bool(self._seq_rounds and self._seq_rounds[-1].get("pass"))
         self._seq_loop_i += 1
         more = self._seq_loop_i < self._seq_loops and not (self._seq_stop_on_fail and not round_ok)
         if more:
@@ -6298,7 +6332,12 @@ class CommTool(QMainWindow):
         ms = int((time.monotonic() - self._seq_t0) * 1000)
         out = {"ok": steps_ok, "total": steps_total, "ms": ms, "pass": ok,
                "loops": self._seq_loops, "rounds": rounds_total,
-               "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped)}
+               "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped),
+               "started_at": getattr(self, "_seq_started_at", "") or "",
+               "finished_at": getattr(self, "_seq_finished_at", "") or "",
+               "version": APP_VERSION,
+               "stop_on_fail": bool(getattr(self, "_seq_stop_on_fail", False)),
+               "step_count": len(getattr(self, "_seq_steps", []) or [])}
         ds = getattr(self, "_seq_dataset", None)
         if ds:
             out["csv_path"] = ds.get("path") or ""
@@ -6308,6 +6347,7 @@ class CommTool(QMainWindow):
     def _seq_finalize(self):
         """整条序列（全部循环）结束：出聚合汇总 + toast + 恢复对端引擎。"""
         self._seq_on = False
+        self._seq_finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._refresh_workspace_statuses()
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
@@ -6330,6 +6370,7 @@ class CommTool(QMainWindow):
         if not self._seq_on:
             return
         self._seq_on = False
+        self._seq_finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._refresh_workspace_statuses()
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
@@ -6339,11 +6380,18 @@ class CommTool(QMainWindow):
         i = self._seq_idx
         if 0 <= i < len(self._seq_results) and self._seq_results[i].get("status") in ("waiting", "retry"):
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
-            self._seq_results[i] = {"status": "stopped", "ms": ms, "detail": "",
-                                    "attempt": self._seq_results[i].get("attempt", 1)}
+            prev = self._seq_results[i] if isinstance(self._seq_results[i], dict) else {}
+            rec = {"status": "stopped", "ms": ms, "detail": "",
+                   "attempt": prev.get("attempt", 1)}
+            for k in ("tx", "rx_hex", "extracted"):
+                if k in prev:
+                    rec[k] = prev[k]
+            self._seq_results[i] = rec
+        # Snapshot in-progress round so mid-stop still exports.
+        if self._seq_results and not getattr(self, "_seq_round_snapshot_taken", False):
+            self._seq_append_round_snapshot()
         # 循环运行已完成 ≥1 轮就出汇总，让长时间老化的已跑结果可导出（否则中途停止=白跑，无法导出）。
-        if self._seq_rounds:
-            self._seq_summary = self._seq_build_summary(stopped=True)
+        self._seq_summary = self._seq_build_summary(stopped=True)
         self._seq_resume_peer_engines()
         self._seq_notify()
         if toast_key:
@@ -6388,10 +6436,17 @@ class CommTool(QMainWindow):
                 text = ""
         return self._ar_hit_test(rule, buf, text)
 
-    def _seq_set_result(self, i, status, ms, detail, detail_key="", attempt=1):
+    def _seq_set_result(self, i, status, ms, detail, detail_key="", attempt=1, **extra):
         if 0 <= i < len(self._seq_results):
-            self._seq_results[i] = {"status": status, "ms": ms, "detail": detail,
-                                    "detail_key": detail_key, "attempt": attempt}
+            prev = self._seq_results[i] if isinstance(self._seq_results[i], dict) else {}
+            rec = {"status": status, "ms": ms, "detail": detail,
+                   "detail_key": detail_key, "attempt": attempt}
+            for k in ("tx", "rx_hex", "extracted"):
+                if k in prev:
+                    rec[k] = prev[k]
+            if extra:
+                rec.update(extra)
+            self._seq_results[i] = rec
         self._seq_notify()
 
     def _seq_notify(self):
@@ -8264,8 +8319,7 @@ class CommTool(QMainWindow):
         if sent == SEND_NO_TARGET or sent != len(frame):
             self._abort_partial_tcp_stream(sent, len(frame))
             return False
-        self.tx_bytes += len(frame)
-        self.tx_packets += 1
+        self._stat_note_tx(len(frame))
         try:
             if self._hexdump_on:
                 disp = self._hexdump_block(frame)
@@ -8444,6 +8498,9 @@ class CommTool(QMainWindow):
         if info is None:
             return
         self._mbm_set_result(info["i"], "timeout", self._t("mbm_st_timeout"))
+        _note_to = getattr(self, "_stat_note_timeout", None)
+        if callable(_note_to):
+            _note_to("mbm")
         self._mbm_inflight = None
         self._mbm_buf = b""
         # RTU/ASCII 无事务 ID：超时后至少再隔离一个"本请求完整超时窗口"。隔离期间收到迟到
@@ -8795,12 +8852,12 @@ class CommTool(QMainWindow):
         try:
             sent = self.conn.send(data, send_target)
         except Exception as e:
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_send_failed", e=e), error=True)
             return False
         if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return False
@@ -8810,14 +8867,16 @@ class CommTool(QMainWindow):
             # MBAP/应用帧边界，必须断开重建。统计只记底层明确接收的实际字节数。
             if 0 < sent < len(data):
                 self.tx_bytes += sent
+                acc = getattr(self, "_io_stats", None)
+                if acc is not None:
+                    acc.note_tx_bytes(sent)
             self._abort_partial_tcp_stream(sent, len(data))
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_send_failed"), error=True)
             return False
 
-        self.tx_bytes += len(data)
-        self.tx_packets += 1
+        self._stat_note_tx(len(data))
         # 同收包路径：成功发送只累加计数器，标签刷新交 1Hz 定时器（多帧连发时不每帧重排状态栏）。
 
         if record_macro:
@@ -8971,21 +9030,20 @@ class CommTool(QMainWindow):
         try:
             sent = self.conn.send(data, send_target)
         except Exception as e:
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_send_failed", e=e), error=True)
             return
         if sent == SEND_NO_TARGET:
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return
         if sent <= 0:
-            self.tx_errors += 1
+            self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             return
-        self.tx_bytes += len(data)
-        self.tx_packets += 1
+        self._stat_note_tx(len(data))
         self._macro_record_tx(data)
         # 终端是绕过 _send_text 的直发路径，采集入口得在这里补一次：数据录制录的是「线路
         # 现场」，终端里敲进去的字节当然算；范围含「发送」的触发规则同样要盯得到，
@@ -9512,39 +9570,79 @@ class CommTool(QMainWindow):
         return f"{n/1024/1024:.2f} MB"
 
     # ----- 收发速率 / 包统计 -----
+    def _stat_note_rx(self, n):
+        n = int(n or 0)
+        self.rx_bytes += n
+        self.rx_packets += 1
+        self._io_stats.note_rx(n)
+
+    def _stat_note_tx(self, n):
+        n = int(n or 0)
+        self.tx_bytes += n
+        self.tx_packets += 1
+        self._io_stats.note_tx(n)
+
+    def _stat_note_rx_error(self, count=1):
+        self.rx_errors += max(0, int(count))
+        self._io_stats.note_rx_error(count)
+
+    def _stat_note_tx_error(self, count=1):
+        self.tx_errors += max(0, int(count))
+        self._io_stats.note_tx_error(count)
+
+    def _stat_note_timeout(self, kind):
+        acc = getattr(self, "_io_stats", None)
+        if acc is not None:
+            acc.note_timeout(kind)
+
     def _fmt_rate(self, bps):
         return self.fmt_bytes(int(bps)) + "/s"
 
     def _tick_rate(self):
-        """1Hz 采样：按真实时间间隔换算 B/s，并记录峰值。"""
+        """1Hz sample: B/s + pps + peaks + history via IoStatsAccumulator."""
         now = time.monotonic()
-        elapsed = max(0.001, now - self._rate_time_mark)
-        self._rx_rate = max(0, int((self.rx_bytes - self._rx_bytes_mark) / elapsed))
-        self._tx_rate = max(0, int((self.tx_bytes - self._tx_bytes_mark) / elapsed))
-        self._rx_bytes_mark = self.rx_bytes
-        self._tx_bytes_mark = self.tx_bytes
-        self._rate_time_mark = now
-        if self._rx_rate > self._rx_peak:
-            self._rx_peak = self._rx_rate
-        if self._tx_rate > self._tx_peak:
-            self._tx_peak = self._tx_rate
+        rates = self._io_stats.tick(now=now)
+        self._rx_rate = rates["rx_rate"]
+        self._tx_rate = rates["tx_rate"]
+        self._rx_peak = self._io_stats.rx_peak
+        self._tx_peak = self._io_stats.tx_peak
+        self._rx_bytes_mark = self._io_stats._rx_bytes_mark
+        self._tx_bytes_mark = self._io_stats._tx_bytes_mark
+        self._rate_time_mark = self._io_stats._time_mark
         self._refresh_stat_labels()
         rr_dlg = getattr(self, "_rr_dlg", None)
         if rr_dlg is not None and rr_dlg.isVisible():
             rr_dlg.tick_stat()
+        try:
+            plot = getattr(self, "_plot_dlg", None)
+            if plot is not None and plot.isVisible() and hasattr(plot, "feed_named_samples"):
+                plot.feed_named_samples([
+                    {"tag": "rx_Bps", "value": float(self._rx_rate)},
+                    {"tag": "tx_Bps", "value": float(self._tx_rate)},
+                    {"tag": "rx_pps", "value": float(self._io_stats.rx_pps)},
+                    {"tag": "tx_pps", "value": float(self._io_stats.tx_pps)},
+                ])
+        except Exception:
+            pass
 
     def _refresh_stat_labels(self, with_tooltip=True):
-        """刷新状态栏 RX/TX 统计：字节 · 包数 · 速率（错误 >0 时追加 ⚠）。
-        高频收发路径传 with_tooltip=False 跳过 tooltip 重建，tooltip 走 1Hz 采样刷新。"""
+        """Refresh status-bar RX/TX: bytes, packets, B/s, pps."""
         if not hasattr(self, "lbl_rx_stat"):
             return
         unit = self._t("stat_pkt_unit")
-        rx = f"RX {self.fmt_bytes(self.rx_bytes)} · {self.rx_packets} {unit} · {self._fmt_rate(self._rx_rate)}"
+        pps_u = self._t("stat_pps_unit")
+        mid = "\u00b7"
+        warn = "\u26a0"
+        rx = ("RX %s %s %s %s %s %s %s %s %s" % (
+            self.fmt_bytes(self.rx_bytes), mid, self.rx_packets, unit,
+            mid, self._fmt_rate(self._rx_rate), mid, self._io_stats.rx_pps, pps_u))
         if self.rx_errors:
-            rx += f" · ⚠{self.rx_errors}"
-        tx = f"TX {self.fmt_bytes(self.tx_bytes)} · {self.tx_packets} {unit} · {self._fmt_rate(self._tx_rate)}"
+            rx += " %s %s%s" % (mid, warn, self.rx_errors)
+        tx = ("TX %s %s %s %s %s %s %s %s %s" % (
+            self.fmt_bytes(self.tx_bytes), mid, self.tx_packets, unit,
+            mid, self._fmt_rate(self._tx_rate), mid, self._io_stats.tx_pps, pps_u))
         if self.tx_errors:
-            tx += f" · ⚠{self.tx_errors}"
+            tx += " %s %s%s" % (mid, warn, self.tx_errors)
         self.lbl_rx_stat.setText(rx)
         self.lbl_tx_stat.setText(tx)
         if with_tooltip:
@@ -9552,24 +9650,48 @@ class CommTool(QMainWindow):
             self.lbl_tx_stat.setToolTip(self._stat_tooltip("tx"))
 
     def _stat_tooltip(self, direction):
+        acc = self._io_stats
         if direction == "rx":
-            head, b, p, r, pk, e = (self._t("stat_tip_rx"), self.rx_bytes,
-                                    self.rx_packets, self._rx_rate, self._rx_peak, self.rx_errors)
+            head = self._t("stat_tip_rx")
+            b, p, r, pk, e = (self.rx_bytes, self.rx_packets, self._rx_rate,
+                              self._rx_peak, self.rx_errors)
+            pps, peak_pps = acc.rx_pps, acc.rx_peak_pps
         else:
-            head, b, p, r, pk, e = (self._t("stat_tip_tx"), self.tx_bytes,
-                                    self.tx_packets, self._tx_rate, self._tx_peak, self.tx_errors)
-        total = self.fmt_bytes(b) + (f" ({b:,} B)" if b >= 1024 else "")
-        return "\n".join([
+            head = self._t("stat_tip_tx")
+            b, p, r, pk, e = (self.tx_bytes, self.tx_packets, self._tx_rate,
+                              self._tx_peak, self.tx_errors)
+            pps, peak_pps = acc.tx_pps, acc.tx_peak_pps
+        total = self.fmt_bytes(b) + ((" (%s B)" % format(b, ",")) if b >= 1024 else "")
+        smin, smax, savg = acc.size_summary(direction)
+        lines = [
             head,
-            f"{self._t('stat_total')}: {total}",
-            f"{self._t('stat_packets')}: {p:,}",
-            f"{self._t('stat_rate')}: {self._fmt_rate(r)}",
-            f"{self._t('stat_peak')}: {self._fmt_rate(pk)}",
-            f"{self._t('stat_errors')}: {e:,}",
-        ])
+            self._t("stat_tip_packet_note"),
+            "%s: %s" % (self._t("stat_total"), total),
+            "%s: %s" % (self._t("stat_packets"), format(p, ",")),
+            "%s: %s" % (self._t("stat_rate"), self._fmt_rate(r)),
+            "%s: %s %s" % (self._t("stat_pps"), pps, self._t("stat_pps_unit")),
+            "%s: %s" % (self._t("stat_peak"), self._fmt_rate(pk)),
+            "%s: %s %s" % (self._t("stat_peak_pps"), peak_pps, self._t("stat_pps_unit")),
+            "%s: %s" % (self._t("stat_errors"), format(e, ",")),
+        ]
+        if smin is not None:
+            lines.append("%s: min=%s avg=%.1f max=%s" % (
+                self._t("stat_size"), smin, savg, smax))
+            lines.append("%s: %s" % (self._t("stat_size_hist"), acc.hist_label(direction)))
+        to = acc.timeouts
+        lines.append("%s: seq=%s mbm=%s conn=%s" % (
+            self._t("stat_timeouts"), to.get("seq", 0), to.get("mbm", 0), to.get("conn", 0)))
+        if acc.history:
+            n = min(60, len(acc.history))
+            recent = acc.history[-n:]
+            key = "rx_bps" if direction == "rx" else "tx_bps"
+            avg_bps = int(sum(x[key] for x in recent) / n)
+            lines.append("%s: %s" % (self._t("stat_avg_rate_1m"), self._fmt_rate(avg_bps)))
+        return "\n".join(lines)
 
     def _reset_stats(self):
-        """清零收发统计（字节/包/错误/速率/峰值），不动数据区内容。"""
+        """Clear I/O counters only; does not touch recordings or the receive view."""
+        self._io_stats.reset()
         self.rx_bytes = self.tx_bytes = 0
         self.rx_packets = self.tx_packets = 0
         self.rx_errors = self.tx_errors = 0
