@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.6
+
+This release turns CommTool into a project-oriented debugging workspace:
+
+- **Workspace and projects** — Terminal, Protocol, Simulation, Automation, Data and Bridge now have dedicated pages. The project menu supports New, Open, Save, Save As, recent projects and optional startup restore.
+- **Device Center and Modbus Scan** — define register tags with type, byte order, scale, offset and units; import or export them as CSV. Scan slave IDs or 03/04 register ranges over an open serial or TCP Client link, then add successful results to the register map. A scan temporarily takes over the Modbus scheduler, protects in-flight RTU replies, locks conflicting Modbus edits and restores the previous configuration afterwards. Each batch is limited to 512 targets.
+- **Structured records** — record named Modbus values and protocol fields, filter them by source or keyword, save/load CSV and replay on the original time axis.
+- **Portable project resources** — `.ctproj` v2 explicitly packs register maps, snippets, multi-send groups, sequences, scripts and dashboard settings while remaining compatible with v1 projects. A v1 project that has no register-map or snippet resources initializes those two resources as empty; export current shared content first if it must be retained.
+
+---
+
 ## What's New in v1.3.5
 
 This release makes device logs feel more like a terminal, alerts you when unattended equipment misbehaves, and keeps frequently used commands one click away:
@@ -694,7 +705,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.5`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.6`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

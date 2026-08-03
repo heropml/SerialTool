@@ -774,6 +774,9 @@ class BridgeDialog(QDialog):
         self.lbl_bridge_status.setText(self.app._t("bg_bridging"))
         self.panel_a.set_settings_enabled(False)
         self.panel_b.set_settings_enabled(False)
+        refresh = getattr(self.app, "_refresh_workspace_statuses", None)
+        if refresh is not None:
+            refresh()
 
     def _on_bridge_stopped(self, reason):
         self.btn_start.setVisible(True)
@@ -781,6 +784,9 @@ class BridgeDialog(QDialog):
         self.lbl_bridge_status.setText(self.app._t("bg_stopped_status"))
         self.panel_a.set_settings_enabled(True)
         self.panel_b.set_settings_enabled(True)
+        refresh = getattr(self.app, "_refresh_workspace_statuses", None)
+        if refresh is not None:
+            refresh()
         self._reset_log_decoders()
         self._log_to_view(f"Bridge stopped{f': {reason}' if reason else ''}")
         if reason and reason != "User stopped" and " error:" not in reason:

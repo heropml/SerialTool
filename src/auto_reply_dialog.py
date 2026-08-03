@@ -947,6 +947,16 @@ class AutoReplyDialog(QDialog):
         ed_addr = QLineEdit(str(_i(cfg.get("addr", 1))))
         ed_addr.setFixedWidth(60)
         top.addWidget(ed_addr)
+        top.addSpacing(12)
+        top.addWidget(QLabel(t("ar_modbus_variant")))
+        cb_variant = QComboBox()
+        cb_variant.setFixedWidth(90)
+        cb_variant.addItem(t("ar_modbus_variant_rtu"), "rtu")
+        cb_variant.addItem(t("ar_modbus_variant_ascii"), "ascii")
+        cur_variant = (cfg.get("variant") or "rtu").lower()
+        idx = cb_variant.findData(cur_variant if cur_variant in ("rtu", "ascii") else "rtu")
+        cb_variant.setCurrentIndex(idx if idx >= 0 else 0)
+        top.addWidget(cb_variant)
         top.addStretch(1)
         btn_help = QPushButton("?")
         btn_help.setObjectName("ArHelpBtn")
@@ -1076,6 +1086,7 @@ class AutoReplyDialog(QDialog):
             return
 
         out = {"on": cb_on.isChecked(), "addr": _parse_int(ed_addr.text(), 1),
+               "variant": cb_variant.currentData() or "rtu",
                "coils": {}, "discrete": {}, "holding": {}, "input": {}}
         for rr in reg_rows:
             space = space_keys[rr["space"].currentIndex()]
@@ -1212,6 +1223,12 @@ class AutoReplyDialog(QDialog):
             "on": self.cb_sm_on.isChecked(),
             "init": self.ed_sm_init.text().strip(),
         })
+
+    def flush_pending(self):
+        """工程/配置保存前提交仍处于防抖窗口内的规则编辑。"""
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._commit()
 
     # ---------------- 主题 / 语言 ----------------
     def refresh_theme(self):

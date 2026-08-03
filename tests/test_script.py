@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 try:
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication, QLabel
     from PyQt5.QtCore import QSettings
     from main_window import CommTool
     from i18n import CHECKSUM_KEYS
@@ -388,6 +388,14 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         self.assertEqual(CommTool._mbm_validate(
             fake, {"qty": 1}, {"bits": [False] * 16}), "mbm_st_badresp")
 
+    def test_register_response_quantity_must_match_request(self):
+        # ASCII 取帧层 qty 不参与切帧（响应自带长度），但应用层 _mbm_validate 必须拦截
+        # 数量不符的读响应——请求 1 个寄存器、从机回 2 个不能当成功接受。
+        fake = type("Fake", (), {"_t": lambda self, key: key})()
+        self.assertIsNone(CommTool._mbm_validate(fake, {"qty": 1}, {"regs": [7]}))
+        self.assertEqual(CommTool._mbm_validate(
+            fake, {"qty": 1}, {"regs": [1, 2]}), "mbm_st_badresp")
+
     def test_qtimer_delay_is_clamped_after_rounding(self):
         class Timer:
             value = None
@@ -449,6 +457,82 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         CommTool._mbm_finish_inflight(fake)
         self.assertTrue(fake._mbm_to.stopped)
         self.assertGreaterEqual(fake._mbm_guard_until, before + 0.005)
+
+    def test_successful_ascii_response_observes_interframe_silence(self):
+        # 低速串口下 ASCII 响应（含 CRLF 帧界）需整帧传输时间量级的 guard，
+        # 确保尾字节完全离线上前不发下一帧（ASCII 无事务 ID，迟到尾字节会串到下一请求）。
+        class Timer:
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        fake = type("Fake", (), {})()
+        fake._mbm_to = Timer()
+        fake._mbm_inflight = {"variant": "ascii", "resp_len": 19}
+        fake._mbm_buf = b":0103...\r\n"
+        fake._mbm_rtu_silent_ms = lambda: 5
+        fake._mbm_tick = lambda: None
+        fake._conn_proto = "Serial"
+        # 1200baud 慢速串口，8N1：确保整帧传输时间 guard 远大于 t3.5 兜底
+        fake._conn_cfg = ("Serial", "COM1", 1200, "8", "None", "1")
+        fake.cb_baud = type("Combo", (), {"currentText": lambda self: "115200"})()
+        fake.cb_databits = type("Combo", (), {"currentText": lambda self: "8"})()
+        fake.cb_parity = type("Combo", (), {"currentText": lambda self: "None"})()
+        fake.cb_stopbits = type("Combo", (), {"currentText": lambda self: "1"})()
+        fake._mbm_serial_baud = lambda: CommTool._mbm_serial_baud(fake)
+        fake._mbm_serial_char_bits = lambda: CommTool._mbm_serial_char_bits(fake)
+        fake._mbm_rtu_tx_guard_ms = lambda n: CommTool._mbm_rtu_tx_guard_ms(fake, n)
+        before = time.monotonic()
+        CommTool._mbm_finish_inflight(fake)
+        self.assertTrue(fake._mbm_to.stopped)
+        self.assertIsNone(fake._mbm_inflight)
+        self.assertEqual(fake._mbm_buf, b"")
+        # 低速 1200baud 下 19 字符响应帧：传输时间(≈19*11/1200≈174ms) + t3.5，远大于 t3.5 兜底
+        self.assertGreaterEqual(fake._mbm_guard_until, before + 0.05)
+        self.assertGreater(fake._mbm_guard_until, before + 0.005)
+
+    def test_successful_ascii_response_non_serial_uses_short_fallback(self):
+        # 非串口连接（如 TCP/RTU-over-TCP）无波特率概念，用 t3.5 量级兜底即可
+        # （ASCII 有 CRLF 帧界，帧界本身已提供切帧依据，无需整帧传输时间）。
+        class Timer:
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        fake = type("Fake", (), {})()
+        fake._mbm_to = Timer()
+        fake._mbm_inflight = {"variant": "ascii", "resp_len": 19}
+        fake._mbm_buf = b":0103...\r\n"
+        fake._mbm_rtu_silent_ms = lambda: 5
+        fake._mbm_tick = lambda: None
+        fake._conn_proto = "TCP"      # 非串口
+        before = time.monotonic()
+        CommTool._mbm_finish_inflight(fake)
+        self.assertTrue(fake._mbm_to.stopped)
+        self.assertIsNone(fake._mbm_inflight)
+        self.assertGreaterEqual(fake._mbm_guard_until, before + 0.005)
+
+    def test_sequence_release_observes_ascii_guard(self):
+        """ASCII 与 RTU 一样无事务 ID，序列不能绕过正常响应后的隔离期。"""
+        from unittest.mock import patch
+        fake = type("Fake", (), {})()
+        fake._seq_on = True
+        fake._seq_gen = 7
+        fake._seq_waiting_mbm = True
+        fake._seq_wait_mbm_variant = "ascii"
+        fake._mbm_inflight = None
+        fake._seq_wait_mbm_until = 0.0
+        fake._mbm_guard_until = time.monotonic() + 1.0
+        fake._MBM_QTIMER_MAX_MS = CommTool._MBM_QTIMER_MAX_MS
+        fake._seq_run_from = lambda _index: setattr(fake, "started", True)
+        fake.started = False
+        with patch("main_window.QTimer.singleShot") as single_shot:
+            CommTool._seq_mbm_release_check(fake)
+        self.assertTrue(fake._seq_waiting_mbm)
+        self.assertFalse(fake.started)
+        single_shot.assert_called_once()
 
     def test_broadcast_guard_includes_transmit_time(self):
         fake = type("Fake", (), {})()
@@ -958,6 +1042,9 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         w = _win()
         app = QApplication.instance()
         o_profile, o_suffix, o_settings = w._profile, w._title_suffix, w.settings
+        o_project = (w._project_path, dict(w._project_meta),
+                     w._project_name, w._project_baseline)
+        o_confirm_switch = w._confirm_project_switch
         had_lock = hasattr(app, "_profile_lock")
         o_app_lock = getattr(app, "_profile_lock", None)
         o_send = w.txt_send.toPlainText()
@@ -966,6 +1053,11 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         CommTool._settings_file = staticmethod(
             lambda p="": _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p))
         try:
+            w._confirm_project_switch = lambda: True
+            w._project_path = _os.path.join(d, "old.ctproj")
+            w._project_name = "Old project"
+            w._project_meta = {"connection_type": "Serial"}
+            w._project_baseline = "old-baseline"
             w.txt_send.setPlainText("LEAK-ME")           # P2：制造"上一配置"的残留值
             w._reconnect_timer.start(99999)              # P1：模拟排队中的自动重连
             w._switch_profile("3")
@@ -975,6 +1067,10 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertTrue(w.settings.fileName().endswith("settings-3.ini"))
             self.assertEqual(w.txt_send.toPlainText(), w._field_defaults.get("txt_send", ""))  # P2：复位、不残留
             self.assertFalse(w._reconnect_timer.isActive())                                     # P1：已取消重连
+            self.assertIsNone(w._project_path)                                                    # 旧工程不得绑到新 profile
+            self.assertEqual(w._project_name, "")
+            self.assertEqual(w._project_meta, {})
+            self.assertIsNone(w._project_baseline)
         finally:
             CommTool._settings_file = staticmethod(orig)
             cur = getattr(app, "_profile_lock", None)   # 释放 switch 抢的锁、还原 app 锁
@@ -992,10 +1088,118 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                     pass
             # 还原共享 _WIN 身份/settings/发送框/标题，避免污染后续测试
             w._profile, w._title_suffix, w.settings = o_profile, o_suffix, o_settings
+            (w._project_path, w._project_meta,
+             w._project_name, w._project_baseline) = o_project
+            w._confirm_project_switch = o_confirm_switch
             w.txt_send.setPlainText(o_send)
             w._reconnect_timer.stop()
             w.setWindowTitle(w._t("app_title") + w._title_suffix)
             shutil.rmtree(d, ignore_errors=True)
+
+    def test_switch_profile_cancel_keeps_current_project_and_profile(self):
+        w = _win()
+        old_confirm = w._confirm_project_switch
+        old_path, old_name = w._project_path, w._project_name
+        try:
+            w._project_path = "current.ctproj"
+            w._project_name = "Current"
+            w._confirm_project_switch = lambda: False
+            profile = w._profile
+            settings = w.settings
+            w._switch_profile("3" if profile != "3" else "4")
+            self.assertEqual(w._profile, profile)
+            self.assertIs(w.settings, settings)
+            self.assertEqual(w._project_path, "current.ctproj")
+            self.assertEqual(w._project_name, "Current")
+        finally:
+            w._confirm_project_switch = old_confirm
+            w._project_path, w._project_name = old_path, old_name
+
+    def test_project_collect_propagates_pending_editor_failure(self):
+        w = _win()
+        old_dialog = getattr(w, "_multi_send_dlg", None)
+
+        class BrokenEditor:
+            @staticmethod
+            def flush_pending():
+                raise OSError("pending edit failed")
+
+        try:
+            w._multi_send_dlg = BrokenEditor()
+            with self.assertRaisesRegex(OSError, "pending edit failed"):
+                w._collect_project_settings()
+        finally:
+            w._multi_send_dlg = old_dialog
+
+    def test_project_apply_rejects_qsettings_sync_error(self):
+        from PyQt5.QtCore import QSettings
+        w = _win()
+        old_settings = w.settings
+
+        class FailingSettings:
+            def __init__(self):
+                self.values = {}
+            def value(self, key, default=None):
+                return self.values.get(key, default)
+            def setValue(self, key, value):
+                self.values[key] = value
+            def remove(self, key):
+                self.values.pop(key, None)
+            @staticmethod
+            def sync():
+                pass
+            @staticmethod
+            def status():
+                return QSettings.AccessError
+
+        try:
+            w.settings = FailingSettings()
+            with self.assertRaisesRegex(OSError, "QSettings sync failed"):
+                w._apply_project_settings({"rx_hex": True}, gate_scripts=False)
+        finally:
+            w.settings = old_settings
+
+    def test_switch_profile_save_failure_keeps_identity_and_releases_target_lock(self):
+        from PyQt5.QtCore import QLockFile
+        import os as _os
+        import shutil
+        import tempfile
+
+        w = _win()
+        old_confirm = w._confirm_project_switch
+        old_info = w._info_dlg
+        old_dialog = getattr(w, "_multi_send_dlg", None)
+        original_settings_file = CommTool._settings_file
+        folder = tempfile.mkdtemp()
+        target = "3" if w._profile != "3" else "4"
+
+        class BrokenEditor:
+            @staticmethod
+            def flush_pending():
+                raise OSError("cannot flush")
+
+        try:
+            CommTool._settings_file = staticmethod(
+                lambda p="": _os.path.join(
+                    folder, "settings.ini" if not p else "settings-%s.ini" % p))
+            w._confirm_project_switch = lambda: True
+            w._info_dlg = lambda *args, **kwargs: None
+            w._multi_send_dlg = BrokenEditor()
+            profile, settings = w._profile, w.settings
+
+            w._switch_profile(target)
+
+            self.assertEqual(w._profile, profile)
+            self.assertIs(w.settings, settings)
+            probe = QLockFile(CommTool._settings_file(target) + ".mwlock")
+            self.assertTrue(probe.tryLock(0), "failed switch leaked the target profile lock")
+            probe.unlock()
+        finally:
+            CommTool._settings_file = staticmethod(original_settings_file)
+            w._confirm_project_switch = old_confirm
+            w._info_dlg = old_info
+            w._multi_send_dlg = old_dialog
+            shutil.rmtree(folder, ignore_errors=True)
 
     def test_delete_profile(self):
         """删除配置：确认→删掉 settings-<N>.ini；取消→保留；主配置("")即使确认也拒删（前置 guard）。
@@ -1045,50 +1249,32 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         ss = w.status_bar.styleSheet()
         self.assertNotIn("transparent", ss)   # 不透明底才能擦净隐藏标签的残留
 
-    def test_titlebar_function_menu_is_grouped(self):
-        """相似功能相邻，并用三条主题分隔线分成四组：帧处理 / 可视化 / 自动化 / 通信传输。
-        按「分组成员」断言而非硬编码分隔符下标 —— 往某组加新项不该让本用例失败，
-        但把某项挪进错误的组（真正的回归）仍会被抓到。"""
+    def test_workspace_pages_cover_former_func_entries(self):
+        """工作区页面保留原标题栏中的全部功能入口。"""
         w = _win()
-        menu = w._build_titlebar_func_menu()
-        try:
-            groups, cur = [], []
-            for action in menu.actions():
-                if action.isSeparator():
-                    groups.append(cur)
-                    cur = []
-                else:
-                    cur.append(action.text())
-            groups.append(cur)
-            self.assertEqual(len(groups), 4, "应为三条分隔线分出的四组")
-            self.assertTrue(all(groups), "不能有空组")
+        self.assertTrue(hasattr(w, "_workbench_buttons"))
+        self.assertEqual(
+            set(w._workbench_buttons),
+            {"terminal", "protocol", "simulation", "automation", "data", "bridge"})
 
-            def group_of(key):
-                label = w._t(key)
-                for i, g in enumerate(groups):
-                    if any(label in t for t in g):
-                        return i
-                return -1
+        def title_keys(key):
+            page = w.workspace_stack.widget(w._workspace_page_indexes[key])
+            return {
+                label.property("tr_text")
+                for label in page.findChildren(QLabel, "WorkspaceToolTitle")
+            }
 
-            # 同组的功能必须在一起
-            for key in ("fb_title", "frame_open", "tb_title"):
-                self.assertEqual(group_of(key), 0, key)
-            for key in ("plot_open", "dash_open"):
-                self.assertEqual(group_of(key), 1, key)
-            for key in ("seq_title", "sc_title", "rr_title"):
-                self.assertEqual(group_of(key), 2, key)
-            for key in ("xfer_title", "bg_title", "mbm_open"):
-                self.assertEqual(group_of(key), 3, key)
-
-            labels = [t for g in groups for t in g]
-            self.assertTrue(all(t[:1].isdigit() for t in labels))          # 每项带序号
-            nums = [int(t.split(".", 1)[0]) for t in labels]
-            self.assertEqual(nums, list(range(1, len(labels) + 1)))        # 序号连续不跳号
-            self.assertIn(w._t("mbm_open"), labels[-1])                    # Modbus 保持末位
-            self.assertIn("QMenu::separator", menu.styleSheet())
-        finally:
-            menu.deleteLater()
-
+        for key in ("fb_title", "frame_open", "tb_title", "mbm_open"):
+            self.assertIn(key, title_keys("protocol"))
+        for key in ("plot_open", "dash_open", "rd_title"):
+            self.assertIn(key, title_keys("data"))
+        for key in ("seq_title", "sc_title", "trg_title"):
+            self.assertIn(key, title_keys("automation"))
+        for key in ("ar_title", "rr_title"):
+            self.assertIn(key, title_keys("simulation"))
+        self.assertIn("bg_title", title_keys("bridge"))
+        self.assertEqual(w.btn_xfer.text(), w._t("xfer_title"))
+        self.assertEqual(w.btn_snippets.text(), w._t("snip_title"))
     def test_transient_menu_is_always_released(self):
         """一次性标题栏菜单 exec 返回或抛错后都必须 deleteLater，不能挂在主窗下累积。"""
         class FakeMenu:
@@ -1937,6 +2123,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                 w._append_block_data("line %d ERR\n" % i, "rx", True)
             pump(200)
             sb = te.verticalScrollBar()
+            if sb.maximum() <= 100:
+                self.skipTest("offscreen Qt does not compute QTextDocument scroll extent")
             self.assertGreater(sb.maximum(), 100)     # 确有可滚空间
             c = QTextCursor(te.document())
             c.setPosition(400); c.setPosition(460, QTextCursor.KeepAnchor)
@@ -2086,14 +2274,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             crc = [res.text() for idx, _n, res in dlg._ck_rows if idx == 5]
             self.assertEqual(crc, ["84 0A"])
             self.assertEqual(dlg.ed_crc_result.text(), "84 0A")
-            # 功能菜单含「工具箱」入口
-            cap, orig = {}, QMenu.exec_
-            QMenu.exec_ = lambda self, *a, **k: cap.setdefault("t", [x.text() for x in self.actions()])
-            try:
-                w._show_titlebar_func_menu()
-            finally:
-                QMenu.exec_ = orig
-            self.assertTrue(any(w._t("tb_title") in t for t in cap.get("t", [])))
+            # 协议工作区页面含「工具箱」入口
+            self.assertIn("tb_title", {item[0] for item in w._workspace_specs("protocol")})
         finally:
             if dlg is not None:
                 dlg.deleteLater()
@@ -2746,40 +2928,15 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         finally:
             w.settings.setValue("frame_builder_fields", o_fields)
 
-    def test_data_tools_moved_to_func_menu(self):
-        """波形图 / 帧解析 / Modbus 主机 从数据区工具栏挪进标题栏「功能」菜单：工具栏不再有这三个
-        按钮；菜单项带序号、Modbus 主机排最后；Modbus 轮询开启时该项末尾加「 ●」。"""
-        from PyQt5.QtWidgets import QMenu
+    def test_data_tools_moved_to_workspace_pages(self):
+        """Plot / frame parse / Modbus master live in workspace pages, not the data toolbar."""
         w = _win()
         self.assertFalse(any(hasattr(w, b) for b in ("btn_plot", "btn_frame", "btn_mbm")))
-
-        def menu_texts():
-            cap, orig = {}, QMenu.exec_
-            QMenu.exec_ = lambda self, *a, **k: cap.setdefault("t", [x.text() for x in self.actions()])
-            try:
-                w._show_titlebar_func_menu()
-            finally:
-                QMenu.exec_ = orig
-            return cap.get("t", [])
-
-        o_on = w._mbm_on
-        try:
-            w._mbm_on = False
-            all_texts = menu_texts()
-            # 菜单按主题分组，组间插了分隔符（分隔符 action 文本为空）；断言只看真实菜单项
-            texts = [t for t in all_texts if t]
-            self.assertGreater(len(all_texts), len(texts), "分组分隔符不见了")
-            for k in ("plot_open", "frame_open", "mbm_open"):
-                self.assertTrue(any(w._t(k) in t for t in texts))   # 三项都进了菜单
-            self.assertTrue(all(t[:1].isdigit() for t in texts))    # 每项前带序号
-            nums = [int(t.split(".", 1)[0]) for t in texts]
-            self.assertEqual(nums, list(range(1, len(texts) + 1)))  # 序号连续不跳号
-            self.assertIn(w._t("mbm_open"), texts[-1])              # Modbus 主机排最后
-            self.assertFalse(texts[-1].endswith("●"))               # 未轮询 → 末项无 ●
-            w._mbm_on = True
-            self.assertTrue([t for t in menu_texts() if t][-1].endswith("●"))  # 轮询中 → 末项带 ●
-        finally:
-            w._mbm_on = o_on
+        data_keys = {item[0] for item in w._workspace_specs("data")}
+        protocol_keys = {item[0] for item in w._workspace_specs("protocol")}
+        self.assertIn("plot_open", data_keys)
+        self.assertIn("frame_open", protocol_keys)
+        self.assertIn("mbm_open", protocol_keys)
 
     def test_profile_lock_does_not_deadlock_qsettings_sync(self):
         """回归（多窗口卡死根因）：配置槽位锁的文件名不能与 QSettings 内部写锁 <ini>.lock 撞名，
@@ -2961,6 +3118,25 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.sw_period.setChecked(old[1])
             w.sw_period.blockSignals(False)
             w._set_terminal_enabled(old[0])
+
+    def test_terminal_mode_clears_freeze_view(self):
+        """进入连续流终端模式时，已冻结的视图状态必须同步解除。"""
+        w = _win()
+        old = (w._terminal_on, getattr(w, "_freeze_view", False),
+               w.sw_freeze_view.isChecked())
+        try:
+            w._set_terminal_enabled(False)
+            w.sw_freeze_view.setChecked(True)
+            self.assertTrue(w._freeze_view)
+            w._set_terminal_enabled(True)
+            self.assertFalse(w.sw_freeze_view.isChecked())
+            self.assertFalse(w._freeze_view)
+        finally:
+            w._set_terminal_enabled(old[0])
+            w.sw_freeze_view.blockSignals(True)
+            w.sw_freeze_view.setChecked(old[2])
+            w.sw_freeze_view.blockSignals(False)
+            w._freeze_view = old[1]
 
     def test_serial_runtime_error_autoreconnects_original_config(self):
         """串口运行时掉线会排队重连，并保存实际连接签名而不是稍后读取 UI。"""
@@ -5634,10 +5810,10 @@ class NumericViewTests(unittest.TestCase):
         w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("text"))
         self.assertFalse(w._hexdump_on or w._numview_on or w.sw_rx_hex.isChecked())
         self.assertEqual(w._view_extra.currentIndex(), 0)      # 文本页＝ANSI 着色开关
-        self.assertTrue(w.sw_ansi.isVisibleTo(w))              # 只在文本模式露面
+        self.assertEqual(w._view_extra.currentIndex(), 0)    # 只在文本模式露面
         w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("hex"))
         self.assertEqual(w._view_extra.currentIndex(), 1)      # HEX 页无附属参数
-        self.assertFalse(w.sw_ansi.isVisibleTo(w))             # HEX 不解释转义序列 → 藏起来
+        self.assertNotEqual(w._view_extra.currentIndex(), 0)  # HEX 不解释转义序列 → 藏起来
 
     def test_hexdump_wins_when_both_set_programmatically(self):
         """坏配置让两个模式同时为真时：渲染按转储优先，下拉也必须显示转储 ——
@@ -5936,6 +6112,26 @@ class SelectionChecksumTests(unittest.TestCase):
             self.assertTrue(w.lbl_sel_chk.text().startswith(w._t("sel_chk")))
             w._set_language("zh")
             self.assertTrue(w.lbl_sel_chk.text().startswith(w._t("sel_chk")))
+        finally:
+            w._set_language(old_lang)
+
+    def test_ts_format_and_search_mode_combos_relabel_on_language_switch(self):
+        """cb_ts_format/cb_search_mode 的下拉项文案在创建时填充一次，
+        _apply_language 必须重建，否则切语言后残留旧语言。"""
+        w = self._setup()
+        old_lang = w._lang
+        try:
+            ts_before = [w.cb_ts_format.itemText(i) for i in range(w.cb_ts_format.count())]
+            sm_before = [w.cb_search_mode.itemText(i) for i in range(w.cb_search_mode.count())]
+            w._set_language("en")
+            self.assertEqual(w.cb_ts_format.itemText(0), w._t("ts_fmt_absolute"))
+            self.assertEqual(w.cb_search_mode.itemText(0), w._t("search_mode_plain"))
+            # 切回 zh 与重建前一致（itemData 保留当前选中）
+            w._set_language("zh")
+            self.assertEqual([w.cb_ts_format.itemText(i) for i in range(w.cb_ts_format.count())],
+                             ts_before)
+            self.assertEqual([w.cb_search_mode.itemText(i) for i in range(w.cb_search_mode.count())],
+                             sm_before)
         finally:
             w._set_language(old_lang)
 
@@ -6717,10 +6913,9 @@ class RecDiffDialogTests(unittest.TestCase):
         self.w.open_rec_diff()
         self.assertIs(self.w._rd_dlg, first)
 
-    def test_menu_has_entry(self):
-        menu = self.w._build_titlebar_func_menu()
-        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
-        self.assertTrue(any(self.w._t("rd_title") in x for x in texts), texts)
+    def test_workspace_has_entry(self):
+        keys = {item[0] for item in self.w._workspace_specs("data")}
+        self.assertIn("rd_title", keys)
 
     def test_language_switch(self):
         dlg = self._dlg_with([(0.0, "rx", "AA")], [(0.0, "rx", "BB")])
@@ -6968,11 +7163,19 @@ class SnippetsDialogTests(unittest.TestCase):
         raw = self.w.settings.value("snippets", "")
         self.assertEqual(snippets.sanitize_list(json.loads(raw)), self.w._snippets)
 
-    def test_not_in_function_menu(self):
-        """模板库入口只在「多条发送」对话框里，不占功能菜单一格（见 test_multi_send_dialog_opens_snippets）。"""
-        menu = self.w._build_titlebar_func_menu()
-        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
-        self.assertFalse(any(self.w._t("snip_title") in x for x in texts), texts)
+    def test_snippets_in_terminal_workbench(self):
+        """Snippet library is directly reachable in Terminal and Multi-Send."""
+        self.assertEqual(self.w.btn_snippets.text(), self.w._t("snip_title"))
+        opened = []
+        original = self.w.open_snippets
+        try:
+            self.w.btn_snippets.clicked.disconnect()
+            self.w.btn_snippets.clicked.connect(lambda: opened.append(True))
+            self.w.btn_snippets.click()
+            self.assertEqual(opened, [True])
+        finally:
+            self.w.btn_snippets.clicked.disconnect()
+            self.w.btn_snippets.clicked.connect(original)
 
     def test_multi_send_dialog_opens_snippets(self):
         """多条发送对话框顶部的「模板库」按钮点击后打开模板库——两个发送辅助工具就近串联。"""

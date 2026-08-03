@@ -13,7 +13,7 @@
 复用 modbus_slave 的 crc16 / _u16 / ModbusException，避免重复实现。
 """
 
-from modbus_slave import crc16, _u16, ModbusException
+from modbus_slave import crc16, _u16, ModbusException, lrc8, ascii_wrap, parse_ascii_frame
 
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)     # 01 线圈 / 02 离散输入 / 03 保持 / 04 输入寄存器
 WRITE_SINGLE = (0x05, 0x06)               # 05 写单线圈 / 06 写单寄存器
@@ -148,6 +148,16 @@ def build_tcp_request(tid, unit, func, addr, qty_or_val):
     return mbap + pdu
 
 
+def build_ascii_request(unit, func, addr, qty_or_val):
+    """Modbus ASCII 请求帧 = ``:`` + hex(unit+PDU+LRC).upper() + ``\\r\\n``。
+    RTU-over-TCP 无需独立函数：TCP 连接上选 RTU 变体即发 RTU 帧。"""
+    unit = _exact_int(unit, "ASCII unit must be an integer")
+    if not 0 <= unit <= 247:
+        raise ValueError("ASCII unit must be 0..247")
+    body = bytes([unit]) + _build_pdu(func, addr, qty_or_val)
+    return ascii_wrap(body)
+
+
 def parse_pdu(req_func, pdu):
     """解析响应 PDU（func 起）。成功返回 dict；异常响应抛 ModbusException；帧畸形抛 ValueError。
       读 01/02 → {"bits": [bool, ...]}（含末字节多余填充位，调用方按数量截断）
@@ -278,6 +288,26 @@ def take_tcp_response_matching(buf, req_tid, req_func, req_unit=None):
             off += total                       # 迟到/非本请求完整帧：安全跳过，继续找当前响应
             continue
         return parse_pdu(req_func, frame[7:]), off + total
+
+
+def take_ascii_response(buf, req_unit, req_func, qty=None):
+    """从 ASCII 字节流取一帧响应（首个完整 ``:``..\\n 帧）。
+    返回 (result, consumed)；未见完整帧返回 None；LRC 错/格式错/unit 不符抛 ValueError；
+    异常响应抛 ModbusException。qty 不参与切帧（ASCII 响应自带长度），仅为与 RTU/TCP 对齐而保留。"""
+    data = bytes(buf)
+    start = data.find(b":")
+    if start < 0:
+        return None                            # 无帧首：等更多字节（_mbm_buf 上限已兜底）
+    end = data.find(b"\n", start)
+    if end < 0:
+        return None                            # 帧未完
+    parsed = parse_ascii_frame(data[start:end + 1])
+    if parsed is None:
+        raise ValueError("ascii lrc or format error")
+    addr, func, payload = parsed
+    if addr != (int(req_unit) & 0xFF):
+        raise ValueError("unit mismatch")
+    return parse_pdu(req_func, bytes([func]) + payload), end + 1
 
 
 def _as_bool(v, default=True):

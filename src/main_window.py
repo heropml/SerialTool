@@ -7,6 +7,7 @@ import random
 import re
 import sys
 import time
+import traceback
 import types
 import multiprocessing
 from collections import deque
@@ -19,7 +20,7 @@ from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBo
                              QTextEdit, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout,
                              QSplitter, QScrollArea, QFrame, QFileDialog, QStatusBar,
                              QSystemTrayIcon, QMenu, QApplication, QShortcut, QToolTip, QDialog,
-                             QGraphicsOpacityEffect, QStackedLayout)
+                             QGraphicsOpacityEffect, QStackedLayout, QWidgetAction)
 try:
     from version import __version__ as APP_VERSION
 except Exception:
@@ -34,7 +35,7 @@ from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
-                    is_valid_ip)
+                    is_valid_ip, is_local_ipv4)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 from virtual_io import VirtualConn, PROTO_VIRTUAL
 import send_dsl
@@ -453,7 +454,9 @@ class CommTool(QMainWindow):
 
         self._reset_recv_state()   # 接收解析状态（方向/缓冲/增量解码器/换行）统一初始化
         self._log_file = None
+        self._freeze_view = False
         self._log_file_path = ""
+        self._log_ends_with_nl = True  # 日志文件流独立于可见文本区的行尾状态
         self._log_limit = 0       # 分包字节上限，0=不分包
         self._log_base_path = ""  # 用户选的原始路径(可含 %date/%port 等变量)，分包/跨日据此派生
         self._log_seg = 0         # 当前分包序号
@@ -483,6 +486,12 @@ class CommTool(QMainWindow):
             self.settings.setValue("autoreply_on", False)
         self._mbm_variant = self.settings.value("modbus_master_variant", "", type=str)  # ""=按连接自动
         self._mbm_echo = self.settings.value("modbus_master_echo", False, type=bool)  # 串口本地回显模式
+        self._device_registers = self._load_device_registers()
+        self._device_plot_tags = self._load_device_link("device_plot_tags")
+        self._device_dash_tags = self._load_device_link("device_dash_tags")
+        self._device_scan_state = None
+        self._device_scan_timeout_ms = 300
+        self._device_center_dlg = None
         # 自动化测试序列：顺序执行每步（发送 → 等回包匹配 → 超时按动作走），出「通过/失败」。
         # 运行态挂在这里，规则(步骤列表)存 settings；运行期抑制自动应答/Modbus（三者共用收流）。
         self._seq_rules = self._load_seq_rules()
@@ -510,6 +519,9 @@ class CommTool(QMainWindow):
         self._macro = MacroRecorder()    # 宏录制：把手动收发录成脚本（脚本控制台里启停）
         from rec_replay import StreamRecorder
         self._recorder = StreamRecorder()  # 数据录制：原始收发流按时序存 .ctrec，可当「设备」回放
+        from device_resources import StructuredRecorder
+        self._structured_recorder = StructuredRecorder()
+        self._structured_dlg = None
         self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
         self._rr_dlg = None                # 录制/回放对话框（单实例）
         self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
@@ -630,6 +642,10 @@ class CommTool(QMainWindow):
 
         self._closing_real = False
         self._tray = None
+        self._project_path = None
+        self._project_meta = {}
+        self._project_name = ""
+        self._project_baseline = None
 
         self.init_ui()
         self._rate_timer.start(1000)   # init_ui 后再启动统计采样，保证首 tick 时 lbl_rx_stat 已存在
@@ -653,6 +669,8 @@ class CommTool(QMainWindow):
         self.port_scanner = PortScannerThread(interval_ms=1500)
         self.port_scanner.scan_complete.connect(self._on_port_scan_complete)
         self.port_scanner.start()
+        # UI 和默认配置全部落定后再恢复工程，避免构造中途应用工程设置覆盖尚未创建的控件。
+        QTimer.singleShot(0, self._restore_last_project)
 
     def _t(self, key, **kwargs) -> str:
         s = self._L.get(key, key)
@@ -747,26 +765,25 @@ class CommTool(QMainWindow):
         self.title_bar.layout().insertWidget(
             self.title_bar.layout().indexOf(self.title_bar.btn_min),
             self.btn_titlebar_help)
-        # 「功能」下拉：放特殊/不常用功能（当前含「自动化序列」），插在「帮助」左侧
-        self.btn_titlebar_func = QPushButton(self._t("func_menu"))
-        self.btn_titlebar_func.setObjectName("TbHelpBtn")   # 复用帮助按钮样式
-        self.btn_titlebar_func.setProperty("tr_text", "func_menu")
-        self.btn_titlebar_func.setCursor(Qt.PointingHandCursor)
-        self.btn_titlebar_func.setFixedHeight(26)
-        self.btn_titlebar_func.clicked.connect(self._show_titlebar_func_menu)
-        self.title_bar.layout().insertWidget(
-            self.title_bar.layout().indexOf(self.btn_titlebar_help),
-            self.btn_titlebar_func)
-
         root.addWidget(self.title_bar)
+        root.addWidget(self._build_workbench_bar())
 
-        # 内容
+        # 工作区内容：终端保留完整收发界面，其余分类使用独立工具入口页。
+        self.workspace_host = QWidget()
+        self.workspace_host.setObjectName("WorkspaceHost")
+        self.workspace_stack = QStackedLayout(self.workspace_host)
+        self.workspace_stack.setContentsMargins(0, 0, 0, 0)
+        self.workspace_stack.setStackingMode(QStackedLayout.StackOne)
+        root.addWidget(self.workspace_host, 1)
+
+        # 终端工作区
         content = QWidget()
         content.setObjectName("Content")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(20, 12, 20, 12)
         content_layout.setSpacing(10)
-        root.addWidget(content, 1)
+        self.workspace_stack.addWidget(content)
+        self._workspace_page_indexes = {"terminal": 0}
 
         # 右侧改用 QVBoxLayout（去掉 v_splitter）：数据区拉伸，发送区自然高度贴底
         # 这样和左侧 sidebar 的结构一致（左侧 3 张卡也是数据区拉伸 + 发送区贴底）
@@ -791,6 +808,12 @@ class CommTool(QMainWindow):
         self.h_splitter.setSizes([300, 840])
 
         content_layout.addWidget(self.h_splitter, 1)
+
+        for workspace_key in ("protocol", "simulation", "automation", "data", "bridge"):
+            page = self._build_workspace_page(workspace_key)
+            self._workspace_page_indexes[workspace_key] = self.workspace_stack.addWidget(page)
+        saved_workspace = str(self.settings.value("active_workspace", "terminal") or "terminal")
+        self._switch_workspace(saved_workspace, persist=False)
 
         # 状态栏
         self.status_bar = QStatusBar()
@@ -1370,7 +1393,15 @@ class CommTool(QMainWindow):
         sw_row(row, "auto_wrap", self.sw_wrap); row += 1
 
         self.sw_show_timestamp = IOSSwitch(False)
-        sw_row(row, "show_timestamp", self.sw_show_timestamp); row += 1
+        self.cb_ts_format = QComboBox()
+        self.cb_ts_format.blockSignals(True)
+        for data, key in (("absolute", "ts_fmt_absolute"), ("time", "ts_fmt_time"),
+                          ("relative", "ts_fmt_relative"), ("epoch", "ts_fmt_epoch")):
+            self.cb_ts_format.addItem(self._t(key), data)
+        self.cb_ts_format.blockSignals(False)
+        self.cb_ts_format.setFixedWidth(MAIN_W)
+        self.cb_ts_format.currentIndexChanged.connect(self._on_ts_format_changed)
+        sw_extra_row(row, "show_timestamp", self.sw_show_timestamp, self.cb_ts_format); row += 1
 
         # 时间分包留在常显区：调试时常按包间隔切分显示，属于要反复调的项。
         # 超时并进同一行 —— 它本来就只在分包开启时有意义，单占一行是浪费。
@@ -1434,6 +1465,12 @@ class CommTool(QMainWindow):
         self.ed_max_lines.setFixedWidth(MAIN_W)
         self.ed_max_lines.editingFinished.connect(self._on_max_lines_changed)
         extra_row(mrow, "max_lines", self.ed_max_lines); mrow += 1
+
+        self.sw_freeze_view = IOSSwitch(False)
+        self.sw_freeze_view.setProperty("tr_tooltip", "freeze_view_tip")
+        self.sw_freeze_view.setToolTip(self._t("freeze_view_tip"))
+        self.sw_freeze_view.toggled.connect(self._on_freeze_view_toggled)
+        sw_row(mrow, "freeze_view", self.sw_freeze_view); mrow += 1
 
         self.sec_recv_more = CollapsibleSection(
             self._t("more_settings"),
@@ -1944,6 +1981,9 @@ class CommTool(QMainWindow):
         self._search_term = ""
         self._search_matches = []     # 存 QTextCursor
         self._search_idx = -1
+        self._search_match_capped = False
+        self._search_mode = "plain"   # plain / regex / hex
+        self._search_case = False     # 大小写敏感
         self._search_bar = QWidget(self.txt_recv)
         row = QHBoxLayout(self._search_bar)
         row.setContentsMargins(8, 6, 8, 6)
@@ -1954,6 +1994,22 @@ class CommTool(QMainWindow):
         self.ed_search.setFixedWidth(180)
         self.ed_search.textChanged.connect(self._do_search)
         self.ed_search.returnPressed.connect(self._search_next)
+        self.cb_search_mode = QComboBox()
+        self.cb_search_mode.setProperty("tr_tooltip", "search_mode")
+        self.cb_search_mode.setToolTip(self._t("search_mode"))
+        self.cb_search_mode.setFixedWidth(54)
+        self.cb_search_mode.blockSignals(True)
+        for data, key in (("plain", "search_mode_plain"), ("regex", "search_mode_regex"),
+                          ("hex", "search_mode_hex")):
+            self.cb_search_mode.addItem(self._t(key), data)
+        self.cb_search_mode.blockSignals(False)
+        self.cb_search_mode.currentIndexChanged.connect(lambda *_: self._on_search_mode_changed())
+        self.btn_search_case = QPushButton("Aa")
+        self.btn_search_case.setProperty("tr_tooltip", "search_case")
+        self.btn_search_case.setToolTip(self._t("search_case"))
+        self.btn_search_case.setCheckable(True)
+        self.btn_search_case.setFixedWidth(30)
+        self.btn_search_case.toggled.connect(self._on_search_case_toggled)
         self.lbl_search_cnt = QLabel("")
         self.btn_search_prev = QPushButton("▲")
         self.btn_search_prev.setProperty("tr_tooltip", "search_prev")
@@ -1972,6 +2028,8 @@ class CommTool(QMainWindow):
         self.btn_search_close.setFixedSize(26, 26)
         self.btn_search_close.clicked.connect(self._close_search)
         row.addWidget(self.ed_search)
+        row.addWidget(self.cb_search_mode)
+        row.addWidget(self.btn_search_case)
         row.addWidget(self.lbl_search_cnt)
         row.addWidget(self.btn_search_prev)
         row.addWidget(self.btn_search_next)
@@ -2020,16 +2078,27 @@ class CommTool(QMainWindow):
         self._refresh_extra_selections()   # 搜索段会收集匹配、clamp idx、刷新计数
         if not self._search_term:
             self._search_matches = []
+            self._search_match_capped = False
             self._update_search_count()
         if self._search_matches:
             self._goto_match(self._search_idx)
+
+    def _on_search_mode_changed(self):
+        data = self.cb_search_mode.currentData()
+        self._search_mode = data if data in ("plain", "regex", "hex") else "plain"
+        self._do_search()
+
+    def _on_search_case_toggled(self, checked):
+        self._search_case = bool(checked)
+        self._do_search()
 
     def _update_search_count(self):
         if not hasattr(self, "lbl_search_cnt"):
             return
         if self._search_matches:
+            suffix = "+" if getattr(self, "_search_match_capped", False) else ""
             self.lbl_search_cnt.setText(
-                f"{self._search_idx + 1}/{len(self._search_matches)}")
+                f"{self._search_idx + 1}/{len(self._search_matches)}{suffix}")
         elif self._search_term:
             self.lbl_search_cnt.setText(self._t("search_no_match"))
         else:
@@ -2065,6 +2134,7 @@ class CommTool(QMainWindow):
         self._search_term = ""
         self._search_matches = []
         self._search_idx = -1
+        self._search_match_capped = False
         if hasattr(self, "lbl_search_cnt"):
             self.lbl_search_cnt.setText("")
         self._refresh_extra_selections()
@@ -2227,14 +2297,28 @@ class CommTool(QMainWindow):
                 # 文档可能已变(实时接收新数据 / 搜索词变化)：全文 doc.find 重建匹配列表。
                 # 导航(上一个/下一个)不改文档，走 rebuild_search=False 跳过这段，避免大文档每次点击都全文扫描。
                 self._search_matches = []
-                pos = 0
-                while True:
-                    cur = doc.find(self._search_term, pos)
-                    if cur.isNull():
-                        break
+                self._search_match_capped = False
+                # 三模式（纯文本/正则/HEX）匹配由 search_helper 统一算出字符区间，再建选区光标。
+                # hexdump 视图下 HEX 搜索只对 hex 列生效（跳过偏移/ASCII 列误匹配）。
+                import search_helper
+                doc_text = doc.toPlainText()
+                spans = search_helper.find_spans(
+                    doc_text, self._search_term,
+                    getattr(self, "_search_mode", "plain"),
+                    getattr(self, "_search_case", False),
+                    hexdump=getattr(self, "_hexdump_on", False))
+                # search_helper 使用 Python 码点偏移；QTextCursor 使用 UTF-16 单元偏移。
+                # 含 emoji 等非 BMP 字符时，两者会在后续位置分叉。
+                spans = search_helper.to_utf16_spans(doc_text, spans)
+                if len(spans) > self._KW_MAX_SELECTIONS:
+                    self._search_match_capped = True
+                    spans = spans[:self._KW_MAX_SELECTIONS]
+                for start, end in spans:
+                    cur = QTextCursor(doc)
+                    cur.setPosition(start)
+                    cur.setPosition(end, QTextCursor.KeepAnchor)
                     cur.setKeepPositionOnInsert(True)   # 同上：防选区随末尾插入延伸
                     self._search_matches.append(cur)
-                    pos = cur.selectionEnd()
                 if not (0 <= self._search_idx < len(self._search_matches)):
                     self._search_idx = 0 if self._search_matches else -1
             # 用(已缓存或刚重建的)匹配列表着色：当前匹配橙色、其余淡黄
@@ -2657,7 +2741,21 @@ class CommTool(QMainWindow):
         self.btn_autoreply.clicked.connect(self._ar_btn_clicked)
         self.btn_autoreply.installEventFilter(self)
         btn_row.addWidget(self.btn_autoreply)
-        # 注：两行三按钮的等列宽对齐由 _align_send_card_cols() 在 init_ui 末尾 + 语言切换后调用
+
+        # 工作台页面化后，发送模板库也需要在终端保留直接可见入口。
+        self.btn_snippets = QPushButton(self._t("snip_title"))
+        self.btn_snippets.setObjectName("GhostBtn")
+        self.btn_snippets.setProperty("tr_text", "snip_title")
+        self.btn_snippets.clicked.connect(self.open_snippets)
+        btn_row.addWidget(self.btn_snippets)
+
+        # 工作台页面化后「终端」不再弹功能菜单，文件传输必须保留一个直接可见入口。
+        self.btn_xfer = QPushButton(self._t("xfer_title"))
+        self.btn_xfer.setObjectName("GhostBtn")
+        self.btn_xfer.setProperty("tr_text", "xfer_title")
+        self.btn_xfer.clicked.connect(self.open_xfer)
+        btn_row.addWidget(self.btn_xfer)
+        # 前三列仍与上一行多条发送控件对齐；模板库与文件传输作为快捷动作依次排在后面。
 
         btn_row.addStretch(1)
 
@@ -2872,6 +2970,106 @@ class CommTool(QMainWindow):
         }}
         QPushButton#TbHelpBtn:hover {{ background-color: {c['title_combo_hover']};
                                        border: 1px solid {c['separator']}; }}
+
+        QWidget#WorkbenchBar {{
+            background-color: {c['window_bg']};
+            border-bottom: 1px solid {c['separator']};
+        }}
+        QLabel#WorkbenchLabel {{
+            color: {c['text_sec']};
+            background: transparent;
+            padding-right: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        QPushButton#WorkbenchBtn {{
+            background-color: transparent;
+            color: {c['text']};
+            border: 1px solid transparent;
+            border-radius: 6px;
+            padding: 2px 14px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        QPushButton#WorkbenchBtn:hover {{
+            background-color: {c['title_combo_hover']};
+            border-color: {c['separator']};
+        }}
+        QPushButton#WorkbenchBtn:pressed {{
+            background-color: {c['accent']};
+            color: #FFFFFF;
+        }}
+        QPushButton#WorkbenchBtn[active="true"] {{
+            background-color: {c['accent']}; color: #FFFFFF; font-weight: 600;
+        }}
+        QWidget#WorkspaceHost, QWidget#WorkspacePage {{ background-color: {c['window_bg']}; }}
+        QLabel#WorkspacePageTitle {{
+            color: {c['text']}; background: transparent;
+            font-family: 'Segoe UI'; font-size: 22px; font-weight: 700;
+        }}
+        QLabel#WorkspacePageSubtitle {{
+            color: {c['text_sec']}; background: transparent;
+            font-family: 'Segoe UI'; font-size: 12px;
+        }}
+        QFrame#WorkspaceToolCard {{
+            background-color: {c['card_bg']}; border: 1px solid {c['separator']};
+            border-radius: 12px;
+        }}
+        QFrame#WorkspaceTemplatePanel {{
+            background-color: {_mix(c['card_bg'], c['accent'], 0.05)};
+            border: 1px solid {_mix(c['separator'], c['accent'], 0.25)};
+            border-radius: 12px;
+        }}
+        QLabel#WorkspaceTemplatePreview {{
+            color: {c['text_sec']}; background: transparent; border: 0px;
+            font-family: 'Segoe UI'; font-size: 11px;
+        }}
+        QFrame#WorkspaceToolCard:hover {{
+            background-color: {c['title_combo_hover']}; border-color: {c['accent']};
+        }}
+        QLabel#WorkspaceToolIcon {{
+            background-color: {_mix(c['card_bg'], c['accent'], 0.14)};
+            color: {c['accent']}; border: 0px; border-radius: 10px;
+            font-family: 'Segoe UI Symbol', 'Segoe UI';
+            font-size: 17px; font-weight: 700;
+        }}
+        QLabel#WorkspaceToolTitle {{
+            color: {c['text']}; background: transparent; border: 0px;
+            font-family: 'Segoe UI'; font-size: 14px; font-weight: 600;
+        }}
+        QLabel#WorkspaceStatusBadge {{
+            background-color: {_mix(c['card_bg'], c['text_sec'], 0.12)};
+            color: {c['text_sec']}; border: 0px; border-radius: 8px;
+            padding: 2px 8px; font-family: 'Segoe UI'; font-size: 10px;
+        }}
+        QLabel#WorkspaceStatusBadge[active="true"] {{
+            background-color: {_mix(c['card_bg'], '#34C759', 0.16)};
+            color: #28A745; font-weight: 600;
+        }}
+        QPushButton#WorkspaceOpenBtn {{
+            background-color: {c['accent']}; color: #FFFFFF; border: 0px;
+            border-radius: 6px; padding: 2px 14px;
+            font-family: 'Segoe UI'; font-size: 12px; font-weight: 600;
+        }}
+        QPushButton#WorkspaceOpenBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QFrame#WorkbenchSeparator {{
+            color: {c['separator']};
+            background-color: {c['separator']};
+            max-width: 1px;
+            margin: 4px 6px;
+        }}
+        QPushButton#ProjectBtn {{
+            background-color: transparent;
+            color: {c['text']};
+            border: 1px solid {c['separator']};
+            border-radius: 6px;
+            padding: 2px 10px;
+            font-size: 12px;
+        }}
+        QPushButton#ProjectBtn:hover {{
+            background-color: {c['title_combo_hover']};
+            border-color: {c['accent']};
+        }}
         QWidget#TitleBar QComboBox {{
             background-color: transparent;
             border: 1px solid transparent;
@@ -3300,11 +3498,16 @@ class CommTool(QMainWindow):
             # 离线模式：无参数可校验，直接建环回连接（回环开关随用随切）
             conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
         elif proto == PROTO_TCP_SERVER:
+            local_ip = self.cb_local_ip.currentText().strip()
+            if not is_local_ipv4(local_ip):
+                self._info_dlg(self._t("err_not_local_ip_title"),
+                               self._t("err_not_local_ip"), is_error=True)
+                return
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
                 self.toast(self._t("err_bad_port"), error=True)
                 return
-            conn = TcpServerConn(self.cb_local_ip.currentText().strip(), port)
+            conn = TcpServerConn(local_ip, port)
         elif proto == PROTO_TCP_CLIENT:
             ip = self.ed_remote_ip.text().strip()
             port = self._parse_port(self.ed_remote_port.text())
@@ -3316,6 +3519,11 @@ class CommTool(QMainWindow):
                 return
             conn = TcpClientConn(ip, port)
         elif proto == PROTO_UDP_MULTICAST:
+            local_ip = self.cb_local_ip.currentText().strip()
+            if not is_local_ipv4(local_ip):
+                self._info_dlg(self._t("err_not_local_ip_title"),
+                               self._t("err_not_local_ip"), is_error=True)
+                return
             port = self._parse_port(self.ed_local_port.text())
             if port is None:
                 self.toast(self._t("err_bad_port"), error=True)
@@ -3324,8 +3532,13 @@ class CommTool(QMainWindow):
             if not is_multicast_ipv4(group):
                 self.toast(self._t("err_not_multicast"), error=True)
                 return
-            conn = UdpGroupConn(self.cb_local_ip.currentText().strip(), group, port)
+            conn = UdpGroupConn(local_ip, group, port)
         else:  # UDP
+            local_ip = self.cb_local_ip.currentText().strip()
+            if not is_local_ipv4(local_ip):
+                self._info_dlg(self._t("err_not_local_ip_title"),
+                               self._t("err_not_local_ip"), is_error=True)
+                return
             lport = self._parse_port(self.ed_local_port.text())
             if lport is None:
                 self.toast(self._t("err_bad_port"), error=True)
@@ -3342,7 +3555,7 @@ class CommTool(QMainWindow):
                     return
             else:
                 rip, rport = "", 0   # 不指定远程：回复最近发来数据的对端
-            conn = UdpConn(self.cb_local_ip.currentText().strip(), lport, rip, rport)
+            conn = UdpConn(local_ip, lport, rip, rport)
 
         # TCP Server 额外携带来源客户端 key，让协议自动应答能精确回给请求方；
         # 其余连接仍走原有单参数信号。
@@ -3770,6 +3983,7 @@ class CommTool(QMainWindow):
             self.sw_log_file.setChecked(False)
         conn = self.conn
         self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
+        self._stop_device_scan(cancelled=True)
         self._conn_proto = None
         self._conn_cfg = None
         self._mbm_guard_until = 0.0   # 物理连接已断，旧响应不可能进入下一会话
@@ -4067,6 +4281,10 @@ class CommTool(QMainWindow):
             self._xfer_dlg.refresh_theme()
         if getattr(self, "_bridge_dlg", None) is not None:
             self._bridge_dlg.refresh_theme()
+        if getattr(self, "_device_center_dlg", None) is not None:
+            self._device_center_dlg.refresh_theme()
+        if getattr(self, "_structured_dlg", None) is not None:
+            self._structured_dlg.refresh_theme()
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
@@ -4203,6 +4421,12 @@ class CommTool(QMainWindow):
                 self._recorder.on_rx(data)
             except Exception:
                 pass
+        # 结构化记录：复用 frame_rules 抽取普通协议字段；Modbus 标签在响应解析成功后单独写入。
+        try:
+            if self._mbm_inflight is None:
+                self._structured_feed_protocol(data)
+        except Exception:
+            pass
         # 触发告警：命中就响铃 / 托盘通知 / 数据区打标（自带兜底，不影响收包主流程）
         try:
             self._triggers_feed(data, "rx", source=reply_target)
@@ -4505,6 +4729,11 @@ class CommTool(QMainWindow):
 
     def _append_block_data(self, text: str, direction: str, force_new_block: bool,
                            view_mode=None, runs=None, role=None):
+        if getattr(self, "_freeze_view", False):
+            # 冻结视图：不追加显示，但「实时记录/Log to File」仍按正常拼接落盘（与 .ctrec 录制/
+            # 统计/触发一样独立于视图）。否则冻结期间日志会静默丢一段数据，与"冻结只锁画面"的语义相悖。
+            self._write_log_block(text, direction, force_new_block)
+            return
         theme = self._theme()
         # TX 用主题里的 tx 色，RX 用 fg 默认色（主题切换后旧文字不会重涂）
         body_color = theme["tx"] if direction == "tx" else theme["fg"]
@@ -4521,21 +4750,14 @@ class CommTool(QMainWindow):
         cursor = QTextCursor(self.txt_recv.document())
         cursor.movePosition(QTextCursor.End)
 
-        log_pieces = []
-
+        prefix = ""
         if force_new_block:
             if not self._txt_ends_with_nl:
                 cursor.insertText("\n")
-                log_pieces.append("\n")
                 self._txt_ends_with_nl = True
-            prefix = ""
             if self.sw_show_timestamp.isChecked():
-                now = datetime.now()
-                prefix = (f"[{now.year}/{now.month:02d}/{now.day:02d} "
-                          f"{now.hour:02d}:{now.minute:02d}:{now.second:02d} "
-                          f"{now.microsecond // 1000:03d}] ")
                 # 箭头跟时间戳绑一起：时间戳关掉时也不显示，纯数据更干净
-                prefix += "→ " if direction == "tx" else "← "
+                prefix = self._timestamp_prefix(direction)
             if prefix:
                 # 时间戳 + 箭头用 ts 灰色（淡化）
                 ts_fmt = QTextCharFormat()
@@ -4544,7 +4766,6 @@ class CommTool(QMainWindow):
                 ts_fmt.setProperty(ROLE_PROP, ROLE_TS)
                 cursor.setCharFormat(ts_fmt)
                 cursor.insertText(prefix)
-                log_pieces.append(prefix)
                 self._txt_ends_with_nl = False
 
         # 正文用 body_color；role 可由调用方指定 —— 告警标记这类「我们自己插的说明行」
@@ -4572,7 +4793,6 @@ class CommTool(QMainWindow):
             self._insert_ansi_runs(cursor, text, runs, body_fmt)   # ANSI 着色：按样式分段插
         else:
             cursor.insertText(text)
-        log_pieces.append(text)
         if text:
             self._txt_ends_with_nl = text.endswith("\n")
 
@@ -4617,17 +4837,37 @@ class CommTool(QMainWindow):
 
         self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
 
-        if self._log_file:
-            try:
-                self._log_file.write("".join(log_pieces))
-                self._log_file.flush()
-                self._maybe_rotate_log()    # 超过分包上限则切到下一个文件
-            except Exception as e:
-                self.toast(self._t("err_log_write", e=e), error=True)
-                self._close_log_file()
-                self.sw_log_file.setChecked(False)
+        self._write_log_block(text, direction, force_new_block, prefix=prefix)
 
         return body_start_pos    # 正文起始字符位置，供协议高亮做字节→字符映射
+
+    def _write_log_block(self, text: str, direction: str, force_new_block: bool,
+                         prefix=None):
+        """把一个显示块写入实时日志；日志行尾状态与可见文本区完全独立。"""
+        if not self._log_file:
+            return
+        try:
+            pieces = []
+            if force_new_block:
+                if not getattr(self, "_log_ends_with_nl", True):
+                    pieces.append("\n")
+                    self._log_ends_with_nl = True
+                if self.sw_show_timestamp.isChecked():
+                    if prefix is None:
+                        prefix = self._timestamp_prefix(direction)
+                    if prefix:
+                        pieces.append(prefix)
+                        self._log_ends_with_nl = False
+            pieces.append(text)
+            if text:
+                self._log_ends_with_nl = text.endswith("\n")
+            self._log_file.write("".join(pieces))
+            self._log_file.flush()
+            self._maybe_rotate_log()    # 超过分包上限则切到下一个文件
+        except Exception as e:
+            self.toast(self._t("err_log_write", e=e), error=True)
+            self._close_log_file()
+            self.sw_log_file.setChecked(False)
 
     # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
     def _load_ms_groups(self):
@@ -4940,6 +5180,7 @@ class CommTool(QMainWindow):
             "replay": bool(getattr(self, "_replay_on", False)),
             "dsl": bool(getattr(self, "_dsl_ops", None)),
             "recording": bool(getattr(getattr(self, "_recorder", None), "recording", False)),
+            "device_scan": getattr(self, "_device_scan_state", None) is not None,
         }
         return any(active for name, active in states.items() if name not in excluded)
 
@@ -4991,6 +5232,7 @@ class CommTool(QMainWindow):
         """落盘 + 让引擎换上新规则（换规则会清命中统计，故调用方已做编辑去抖）。"""
         self.settings.setValue("triggers", json.dumps(self._triggers, ensure_ascii=False))
         self._trigger_engine.set_rules(self._triggers)
+        self._refresh_workspace_statuses()
         # 新规则只观察生效后的数据；不能拿旧规则时期留下的半字符/尾巴与下一块拼接。
         self._reset_trigger_decoders()
 
@@ -5263,6 +5505,14 @@ class CommTool(QMainWindow):
     def _set_autoreply_enabled(self, enabled):
         """设置自动应答总开关；开启时关闭 Modbus 主机，保证状态与实际执行一致。"""
         enabled = bool(enabled)
+        if enabled and getattr(self, "_device_scan_state", None) is not None:
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            if getattr(self, "_ar_dlg", None) is not None:
+                cb = self._ar_dlg.cb_enable
+                cb.blockSignals(True)
+                cb.setChecked(bool(self._ar_on))
+                cb.blockSignals(False)
+            return
         if enabled and getattr(self, "_mbm_on", False):
             self._set_mbm_enabled(False)
         self._ar_on = enabled
@@ -5275,10 +5525,20 @@ class CommTool(QMainWindow):
             cb.blockSignals(True)
             cb.setChecked(self._ar_on)
             cb.blockSignals(False)
+        self._refresh_workspace_statuses()
 
     def _set_mbm_enabled(self, enabled):
         """设置主机轮询总开关；开启时关闭自动应答，避免两个引擎争用同一接收流。"""
         enabled = bool(enabled)
+        scan_state = getattr(self, "_device_scan_state", None)
+        if scan_state is not None:
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            if getattr(self, "_mbm_dlg", None) is not None:
+                cb = self._mbm_dlg.cb_enable
+                cb.blockSignals(True)
+                cb.setChecked(bool(scan_state["old_on"]))
+                cb.blockSignals(False)
+            return
         if enabled and (self.send_timer.isActive() or self._ms_cycle_timer.isActive()):
             self.toast(self._t("io_exclusive_busy"), error=True)
             if getattr(self, "_mbm_dlg", None) is not None:
@@ -5298,6 +5558,7 @@ class CommTool(QMainWindow):
             cb.setChecked(enabled)
             cb.blockSignals(False)
         self._mbm_restart()
+        self._refresh_workspace_statuses()
 
     def _update_autoreply_btn(self):
         """自动应答开启时高亮「自动应答」按钮（动态属性 arActive + 重新 polish 生效）。"""
@@ -5306,6 +5567,16 @@ class CommTool(QMainWindow):
         self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
         self.btn_autoreply.style().unpolish(self.btn_autoreply)
         self.btn_autoreply.style().polish(self.btn_autoreply)
+
+    def _sync_autoreply_ui(self):
+        """同步自动应答控件，不修改持久化设置。"""
+        self._update_autoreply_btn()
+        dlg = getattr(self, "_ar_dlg", None)
+        cb = getattr(dlg, "cb_enable", None) if dlg is not None else None
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(bool(self._ar_on))
+            cb.blockSignals(False)
 
     # ================= 自动化测试序列（send → 等回包匹配 → 通过/失败） =================
     def _load_seq_rules(self):
@@ -5354,7 +5625,7 @@ class CommTool(QMainWindow):
         if self._mbm_inflight is not None:       # 仍在正常等响应/超时，由 Modbus 回调再次触发本检查
             return
         deadline = self._seq_wait_mbm_until
-        if self._seq_wait_mbm_variant == "rtu":
+        if self._seq_wait_mbm_variant in ("rtu", "ascii"):
             deadline = max(deadline, self._mbm_guard_until)
         remain = deadline - time.monotonic()
         if remain > 0:
@@ -5506,6 +5777,7 @@ class CommTool(QMainWindow):
             return
         self._seq_steps = [dict(s) for s in steps]
         self._seq_on = True
+        self._refresh_workspace_statuses()
         self._seq_gen += 1
         self._seq_pause_peer_engines()
         self._seq_summary = None
@@ -5701,6 +5973,7 @@ class CommTool(QMainWindow):
     def _seq_finalize(self):
         """整条序列（全部循环）结束：出聚合汇总 + toast + 恢复对端引擎。"""
         self._seq_on = False
+        self._refresh_workspace_statuses()
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
         self._seq_wait_mbm_until = 0.0
@@ -5722,6 +5995,7 @@ class CommTool(QMainWindow):
         if not self._seq_on:
             return
         self._seq_on = False
+        self._refresh_workspace_statuses()
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
         self._seq_wait_mbm_until = 0.0
@@ -5934,10 +6208,14 @@ class CommTool(QMainWindow):
                         continue
                     out[str(a)] = bool(v) if as_bool else (self._ar_to_int(v) & 0xFFFF)
             return out
+        variant = str(cfg.get("variant", "rtu") or "rtu").lower()
+        if variant not in ("rtu", "ascii"):
+            variant = "rtu"
         return {
             "on": bool(cfg.get("on", False)),
             # 从机地址限制为 1..247（0=广播、248-255 保留，都不是有效从机地址；坏值回落到 1，避免哑机）
             "addr": max(1, min(247, self._ar_to_int(cfg.get("addr", 1)) or 1)),
+            "variant": variant,
             "coils": _regmap(cfg.get("coils"), True),
             "discrete": _regmap(cfg.get("discrete"), True),
             "holding": _regmap(cfg.get("holding"), False),
@@ -5955,15 +6233,19 @@ class CommTool(QMainWindow):
         self.settings.sync()
 
     def _modbus_feed(self, data: bytes, reply_target=None):
-        """B4：Modbus 从机模式收到字节 → 长度感知切整帧 → 逐帧 handle → 有响应就发。"""
+        """B4：Modbus 从机模式收到字节 → 长度感知切整帧 → 逐帧 handle → 有响应就发。
+        ASCII 变体（_ar_modbus['variant']=='ascii'）用 ':'..CRLF 切帧 + handle_ascii。"""
+        ascii_mode = (self._ar_modbus.get("variant") or "rtu").lower() == "ascii"
+        splitter = modbus_slave.iter_ascii_frames if ascii_mode else modbus_slave.iter_frames
+        handler = self._modbus.handle_ascii if ascii_mode else self._modbus.handle
         if reply_target is None:
             self._ar_buf += bytes(data)
-            frames, self._ar_buf = modbus_slave.iter_frames(self._ar_buf)
+            frames, self._ar_buf = splitter(self._ar_buf)
             if len(self._ar_buf) > 8192:       # 防御：坏流不无界增长
                 self._ar_buf = self._ar_buf[-512:]
         else:
             buf = self._modbus_buffers.get(reply_target, b"") + bytes(data)
-            frames, remainder = modbus_slave.iter_frames(buf)
+            frames, remainder = splitter(buf)
             if len(remainder) > 8192:
                 remainder = remainder[-512:]
             if remainder:
@@ -5972,7 +6254,7 @@ class CommTool(QMainWindow):
                 self._modbus_buffers.pop(reply_target, None)
         for f in frames:
             try:
-                resp = self._modbus.handle(f)
+                resp = handler(f)
             except Exception:
                 resp = None
             if resp:
@@ -5990,8 +6272,15 @@ class CommTool(QMainWindow):
             if out is None:
                 self._ar_fault_note(fault)     # 丢包：不发
             else:
-                self._send_text(bytes(out).hex(" "), hex_mode=True, newline=0, checksum=0,
-                                target=reply_target)
+                out = bytes(out)
+                # 按从机配置的 variant 路由，不能嗅探首字节——RTU 从机地址 58 = 0x3A = ':' 会被
+                # 误判成 ASCII，二进制 RTU 帧被 decode('ascii','replace') 破坏，静默数据损坏。
+                if (self._ar_modbus.get("variant") or "rtu").lower() == "ascii":
+                    self._send_text(out.decode("ascii", "replace"), hex_mode=False,
+                                    newline=0, checksum=0, target=reply_target)
+                else:
+                    self._send_text(out.hex(" "), hex_mode=True, newline=0, checksum=0,
+                                    target=reply_target)
                 if fault:
                     self._ar_fault_note(fault)
         except Exception:
@@ -6836,7 +7125,7 @@ class CommTool(QMainWindow):
         # 数据区显示
         "rx_hex", "hexdump_view", "hexdump_width", "numview", "numview_type", "ansi_color",
         "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
-        "line_split", "line_nl_mode", "encoding", "max_lines",
+        "line_split", "line_nl_mode", "encoding", "max_lines", "ts_format", "freeze_view",
         "log_split", "filter_highlight", "recv_font_size",
         # 发送区
         "tx_hex", "append_newline", "append_nl_mode", "period_ms",
@@ -6844,7 +7133,7 @@ class CommTool(QMainWindow):
         # 主题/语言
         "theme", "language",
         # 多条发送 / 关键字 / 帧解析 / 绘图
-        "multi_send_groups", "multi_send_group_idx", "multi_send_split",
+        "multi_send_groups", "multi_send_group_idx", "multi_send_split", "snippets",
         "keyword_groups", "keyword_active",
         "frame_rules",
         "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
@@ -6858,7 +7147,8 @@ class CommTool(QMainWindow):
         "autoreply_modbus", "autoreply_split",
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
-        "modbus_master_split",
+        "modbus_master_split", "device_registers",
+        "device_plot_tags", "device_dash_tags",
         # 自动化测试序列
         "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
         # 触发告警
@@ -7023,8 +7313,11 @@ class CommTool(QMainWindow):
             s.setValue("modbus_master_on", False)
             s.sync()
         variant = s.value("modbus_master_variant", "", type=str)
-        self._mbm_variant = variant if variant in ("", "rtu", "tcp") else ""
+        self._mbm_variant = variant if variant in ("", "rtu", "tcp", "ascii") else ""
         self._mbm_echo = s.value("modbus_master_echo", False, type=bool)
+        self._device_registers = self._load_device_registers()
+        self._device_plot_tags = self._load_device_link("device_plot_tags")
+        self._device_dash_tags = self._load_device_link("device_dash_tags")
         if self._mbm_on and self._ar_on:
             # 加载结果也保持互斥（主机优先）。走 _set_autoreply_enabled 而非手设标志，
             # 才能一并复位状态机 + 同步「打开着的」自动应答对话框 checkbox（否则对话框
@@ -7043,6 +7336,9 @@ class CommTool(QMainWindow):
             self._ms_group_idx = 0
         self._rebuild_ms_group_combo()
         self._rebuild_ms_quick_bar()
+        self._snippets, snippets_ok = self._load_snippets()
+        if not snippets_ok:
+            self._save_snippets()
         self._keyword_groups, self._keyword_active, _ = self._load_keyword_groups()
         self._rebuild_kw_group_combo()
         self._refresh_extra_selections()    # 高亮规则变了 → 重画数据区 extra selections
@@ -7055,8 +7351,12 @@ class CommTool(QMainWindow):
         if getattr(self, "_keyword_dlg", None) is not None:
             self._keyword_dlg._reload_group_list()
             self._keyword_dlg._reload_rows()
+        if getattr(self, "_snip_dlg", None) is not None:
+            self._snip_dlg.reload_cfg()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.reload_config()
+        if getattr(self, "_device_center_dlg", None) is not None:
+            self._device_center_dlg.reload_cfg()
         if getattr(self, "_seq_dlg", None) is not None:
             self._seq_dlg.reload_rows()
         if getattr(self, "_frame_builder_dlg", None) is not None:
@@ -7308,6 +7608,33 @@ class CommTool(QMainWindow):
     _MBM_MIN_GUARD_MS = 60   # 超时隔离的下限；实际取本请求完整响应超时，低速大帧会自动增长
     _MBM_QTIMER_MAX_MS = 0x7FFFFFFF
 
+    def _load_device_registers(self):
+        from device_resources import normalize_registers
+        raw = self.settings.value("device_registers", "")
+        try:
+            data = json.loads(raw) if raw else []
+        except Exception:
+            data = []
+        return normalize_registers(data)
+
+    def _load_device_link(self, key):
+        """读寄存器→绘图/仪表盘 联动标签集（JSON 列表 → set），坏值容错。"""
+        try:
+            raw = self.settings.value(key, "")
+            data = json.loads(raw) if raw else []
+        except Exception:
+            data = []
+        if not isinstance(data, list):
+            return set()
+        return {str(t) for t in data if t}
+
+    def _save_device_link(self):
+        self.settings.setValue("device_plot_tags",
+                               json.dumps(sorted(self._device_plot_tags), ensure_ascii=False))
+        self.settings.setValue("device_dash_tags",
+                               json.dumps(sorted(self._device_dash_tags), ensure_ascii=False))
+        self.settings.sync()
+
     def _load_mbm_rules(self):
         raw = self.settings.value("modbus_master", "")
         try:
@@ -7333,8 +7660,9 @@ class CommTool(QMainWindow):
             pass
 
     def _mbm_variant_eff(self):
-        """生效变体：用户显式选优先；否则按连接类型（TCP Client→tcp，其余→rtu）。"""
-        if self._mbm_variant in ("rtu", "tcp"):
+        """生效变体：用户显式选优先；否则按连接类型（TCP Client→tcp，其余→rtu）。
+        RTU-over-TCP 无需单独变体：在 TCP Client 上显式选 'rtu' 即发 RTU 帧。"""
+        if self._mbm_variant in ("rtu", "tcp", "ascii"):
             return self._mbm_variant
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         return "tcp" if proto == PROTO_TCP_CLIENT else "rtu"
@@ -7379,7 +7707,7 @@ class CommTool(QMainWindow):
                 guard_ms = max(self._MBM_MIN_GUARD_MS,
                                int(old_info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
                 deadline = time.monotonic() + guard_ms / 1000.0
-                if self._seq_wait_mbm_variant == "rtu":
+                if self._seq_wait_mbm_variant in ("rtu", "ascii"):
                     self._mbm_guard_until = max(self._mbm_guard_until, deadline)
                 else:
                     self._seq_wait_mbm_until = max(self._seq_wait_mbm_until, deadline)
@@ -7449,12 +7777,20 @@ class CommTool(QMainWindow):
         """响应超时 = 处理余量(1s) + 串口收发传输时间。低波特率大帧(如 1200baud 255字节
         ~2.1s)下固定 1s 会在请求还没发完就误判超时，故按 帧长+波特率 动态加时。
         TCP / 非串口连接无波特率概念 → 用固定基值。"""
-        base = self._MBM_TIMEOUT_MS
+        base = (self._device_scan_timeout_ms
+                if self._device_scan_state is not None else self._MBM_TIMEOUT_MS)
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         if proto != PROTO_SERIAL:
             return base
         baud = self._mbm_serial_baud()
-        resp_len = modbus_master.rtu_normal_len(r["func"], r["qty"]) or 8
+        resp_rtu = modbus_master.rtu_normal_len(r["func"], r["qty"]) or 8
+        if self._mbm_variant_eff() == "ascii":
+            # ASCII 响应是 hex 编码（每字节 2 字符 + ':' + CRLF + LRC），比 RTU 长约 2 倍；
+            # 用 RTU 字节数会低估传输时间，低波特率大包下超时偏短而误判。
+            # 按生效 variant 判定，不嗅探帧首字节——RTU unit=58(0x3A=':') 会被误判。
+            resp_len = 2 * resp_rtu + 1
+        else:
+            resp_len = resp_rtu
         # 按实际数据位/校验/停止位计算，请求 + 响应两段传输。
         tx_ms = ((len(frame) + resp_len) * self._mbm_serial_char_bits()
                  * 1000.0 / baud)
@@ -7466,7 +7802,7 @@ class CommTool(QMainWindow):
         variant = self._mbm_variant_eff()
         if (r["unit"] is None or r["addr"] is None or r["period"] is None
                 or (r["func"] in modbus_master.READ_FUNCS and r["qty"] is None)
-                or (variant == "rtu" and r["unit"] > 247)):
+                or (variant in ("rtu", "ascii") and r["unit"] > 247)):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
             self._mbm_due[i] = time.monotonic() + 1.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
@@ -7478,8 +7814,8 @@ class CommTool(QMainWindow):
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
-        # RTU 地址 0 是广播：只允许写，且从机按规范不返回响应。读广播直接拒绝。
-        if variant == "rtu" and r["unit"] == 0 and r["func"] in modbus_master.READ_FUNCS:
+        # RTU/ASCII 地址 0 是广播：只允许写，且从机按规范不返回响应。读广播直接拒绝。
+        if variant in ("rtu", "ascii") and r["unit"] == 0 and r["func"] in modbus_master.READ_FUNCS:
             self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_read"))
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
@@ -7496,6 +7832,9 @@ class CommTool(QMainWindow):
                 frame = modbus_master.build_tcp_request(
                     self._mbm_tid, r["unit"], r["func"], r["addr"], arg)
                 tid = self._mbm_tid
+            elif variant == "ascii":
+                frame = modbus_master.build_ascii_request(r["unit"], r["func"], r["addr"], arg)
+                tid = None
             else:
                 frame = modbus_master.build_rtu_request(r["unit"], r["func"], r["addr"], arg)
                 tid = None
@@ -7504,8 +7843,8 @@ class CommTool(QMainWindow):
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
-        # RTU 广播写：发送成功即完成本轮，不登记 inflight、不启动响应超时。
-        if variant == "rtu" and r["unit"] == 0:
+        # RTU/ASCII 广播写：发送成功即完成本轮，不登记 inflight、不启动响应超时。
+        if variant in ("rtu", "ascii") and r["unit"] == 0:
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             sent_ok = self._mbm_send_raw(frame)
             # 广播无响应可作为帧结束锚点，自行覆盖发送时间+t3.5；期间本地回显也会被丢弃。
@@ -7525,12 +7864,12 @@ class CommTool(QMainWindow):
         elif r["func"] in modbus_master.WRITE_MULTI:
             exp_write = (r["addr"], r["qty"])
         # 先登记在途请求再发送：避免响应在 send() 内被同步投递时（罕见但可能）因 inflight
-        # 尚未就绪而被 _mbm_feed 丢弃；发送失败再回滚。echo=刚发的 RTU 帧，用于剥串口本地回显。
+        # 尚未就绪而被 _mbm_feed 丢弃；发送失败再回滚。echo=刚发出的 RTU/ASCII 帧，用于剥串口本地回显。
         self._mbm_buf = b""
         self._mbm_inflight = {"i": i, "unit": r["unit"], "func": r["func"],
                               "qty": r["qty"], "tid": tid, "variant": variant,
                               "addr": r["addr"], "exp_write": exp_write,
-                              "echo": frame if variant == "rtu" else None}
+                              "echo": frame if variant in ("rtu", "ascii") else None}
         self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
         timeout_ms = self._mbm_timeout_ms(frame, r)
         self._mbm_inflight["timeout_ms"] = timeout_ms
@@ -7584,12 +7923,14 @@ class CommTool(QMainWindow):
         坏帧/串口本地回显/杂散字节用「丢 1 字节重同步」处理，而非清空整缓冲——避免请求回显
         与合法响应粘包后把响应一并丢掉（RS-485 半双工本地回显常见）。"""
         if self._mbm_inflight is None:
-            # 超时隔离期间若迟到字节开始到达，从最后一个字节起重新满足 RTU t3.5，确保整帧
-            # 排空后才恢复发送；调度器原定时到点后会再次读取更新后的 guard_until。
-            if time.monotonic() < self._mbm_guard_until and self._mbm_variant_eff() == "rtu":
-                self._mbm_guard_until = max(
-                    self._mbm_guard_until,
-                    time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0)
+            # 超时隔离期间若迟到字节开始到达：RTU 从最后一字节起重新满足 t3.5 确保整帧排空；
+            # ASCII 无 t3.5 概念但同样需要丢掉隔离窗内的迟到字节（无 TID 可辨新旧请求）。
+            veff = self._mbm_variant_eff()
+            if time.monotonic() < self._mbm_guard_until and veff in ("rtu", "ascii"):
+                if veff == "rtu":
+                    self._mbm_guard_until = max(
+                        self._mbm_guard_until,
+                        time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0)
             return
         self._mbm_buf += bytes(data)
         if len(self._mbm_buf) > 4096:                 # 防异常流无界增长
@@ -7611,6 +7952,39 @@ class CommTool(QMainWindow):
                 if result is not None:
                     self._mbm_apply(info, result)
             return
+        if info["variant"] == "ascii":
+            # 本地回显模式（半双工 RS-485 适配器会回显刚发的 ASCII 请求帧）：先剥掉一份与请求
+            # 完全相同的前导回显，再解析真正响应。完整回显出现前保留缓冲继续等（与 RTU 分支一致）。
+            if self._mbm_echo and info.get("echo") and not info.get("echo_done"):
+                rest, found = modbus_master.strip_local_echo(self._mbm_buf, info["echo"])
+                if not found:
+                    return
+                self._mbm_buf = rest
+                info["echo_done"] = True
+            # 循环重同步：单 chunk 内可能坏帧+好帧粘在一起（串口 readyRead 多帧/TCP Nagle 合包），
+            # 或线噪声 ':' 夹在真响应前。坏帧（LRC 错/unit 不符/格式错）丢到本帧 \n 后继续试下一帧，
+            # 直到无可解析帧（返回 None 等更多字节）或缓冲空——与 RTU 分支的"丢1字节重同步"对齐。
+            while self._mbm_buf:
+                try:
+                    out = modbus_master.take_ascii_response(
+                        self._mbm_buf, info["unit"], info["func"], info["qty"])
+                except modbus_slave.ModbusException as e:
+                    self._mbm_set_result(info["i"], "exc", self._t("mbm_st_exc", code=e.code))
+                    self._mbm_finish_inflight()
+                    return
+                except ValueError:
+                    nl = self._mbm_buf.find(b"\n")
+                    self._mbm_buf = self._mbm_buf[nl + 1:] if nl >= 0 else b""
+                    continue                       # 丢掉坏帧，继续试后续
+                if out is None:
+                    return                         # 还需更多字节
+                result, consumed = out
+                self._mbm_buf = self._mbm_buf[consumed:]
+                # 记录响应帧长度（含 ':'、CRLF、LRC）：低速串口下 _mbm_finish_inflight 用它
+                # 算出"整帧含帧界完全离线上"的 guard 时长，避免尾字节迟到串到下一请求。
+                info["resp_len"] = consumed
+                self._mbm_apply(info, result)
+                return
         # RTU「本地回显模式」：串口适配器会回显发出的帧时，先剥掉一份与请求完全相同的前导回显，
         # 再解析真正的从机响应。写功能码 05/06 的成功响应与请求同形——仅此法能把回显与
         # 「写成功 / 写异常(86 xx)」区分开（内容判不了，故由用户按硬件实际声明）。
@@ -7643,12 +8017,16 @@ class CommTool(QMainWindow):
 
     def _mbm_apply(self, info, result):
         """对结构合法的响应做语义核对后写入结果行，并结束本次在途请求。"""
-        err = self._mbm_validate(info, result)        # 读数量 / 写回显核对
-        if err:
-            self._mbm_set_result(info["i"], "err", err)
-        else:
-            self._mbm_set_result(info["i"], "ok", self._mbm_fmt_result(info, result))
-        self._mbm_finish_inflight()
+        try:
+            err = self._mbm_validate(info, result)        # 读数量 / 写回显核对
+            if err:
+                self._mbm_set_result(info["i"], "err", err)
+            else:
+                self._structured_feed_modbus(info, result)
+                self._mbm_set_result(info["i"], "ok", self._mbm_fmt_result(info, result))
+        finally:
+            # 无论结果更新/格式化是否异常，都必须释放在途请求，否则 inflight 泄漏到超时。
+            self._mbm_finish_inflight()
 
     def _mbm_validate(self, info, result):
         """对结构合法的响应做语义核对：读回的数量是否够、写回显地址/值是否相符。
@@ -7671,9 +8049,24 @@ class CommTool(QMainWindow):
         info = self._mbm_inflight
         self._mbm_inflight = None
         self._mbm_buf = b""
-        # 正常响应后也必须留出 RTU t3.5 帧间静默，不能在最后一个响应字节后立即发下一帧。
-        if info is not None and info.get("variant") == "rtu":
-            self._mbm_guard_until = time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0
+        if info is not None and info.get("variant") in ("rtu", "ascii"):
+            # RTU/ASCII 均无事务 ID：正常响应后也必须留出帧间静默，不能刚收完响应立即发下一帧。
+            # RTU 无显式帧界，t3.5 是协议要求的帧间最小静默，按规范量级即可。
+            # ASCII 有 \r\n 帧界本不需 t3.5，但低速串口下响应尾字节可能还没离线上就发下一帧，
+            # 尾部 CRLF 迟到一个字节就会被下一轮轮询当线噪声/残响应吞掉 —— 用响应整帧传输时间
+            # （含帧界）量级的 guard，确保整帧含 CRLF 完全离线上再放行下一请求。
+            # 非串口（TCP/RTU-over-TCP）无波特率概念，用 t3.5 量级兜底（帧界本身已提供切帧依据）。
+            if info["variant"] == "rtu":
+                self._mbm_guard_until = time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0
+            elif info["variant"] == "ascii":
+                resp_len = int(info.get("resp_len") or 0)
+                if self._conn_proto == PROTO_SERIAL and resp_len > 0:
+                    # 传输时间 + t3.5 余量：低速大帧下确保整帧含 CRLF 离线上。
+                    self._mbm_guard_until = (
+                        time.monotonic()
+                        + self._mbm_rtu_tx_guard_ms(resp_len) / 1000.0)
+                else:
+                    self._mbm_guard_until = time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0
         self._mbm_tick()
         if getattr(self, "_seq_waiting_mbm", False):
             self._seq_mbm_release_check()
@@ -7685,9 +8078,9 @@ class CommTool(QMainWindow):
         self._mbm_set_result(info["i"], "timeout", self._t("mbm_st_timeout"))
         self._mbm_inflight = None
         self._mbm_buf = b""
-        # RTU 无事务 ID：超时后至少再隔离一个“本请求完整超时窗口”。隔离期间收到迟到
-        # 字节还会在 _mbm_feed 中延长到最后一字节后的 t3.5，显著降低误配到下一请求的风险。
-        if info.get("variant") == "rtu":
+        # RTU/ASCII 无事务 ID：超时后至少再隔离一个"本请求完整超时窗口"。隔离期间收到迟到
+        # 字节还会在 _mbm_feed 中延长到最后一字节后的 t3.5(RTU)，显著降低误配到下一请求的风险。
+        if info.get("variant") in ("rtu", "ascii"):
             guard_ms = max(self._MBM_MIN_GUARD_MS, int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)))
             self._mbm_guard_until = time.monotonic() + guard_ms / 1000.0
         elif getattr(self, "_seq_waiting_mbm", False):
@@ -7723,6 +8116,227 @@ class CommTool(QMainWindow):
                 dlg.update_result(i, status, text)
             except Exception:
                 pass
+        self._device_scan_result(i, status, text)
+
+    def _start_device_scan(self, rules, timeout_ms, on_result, on_done):
+        """临时复用 Modbus 半双工调度器执行一次性扫描，结束后恢复原轮询配置。"""
+        if self._device_scan_state is not None:
+            return False
+        if not self._is_open() or not self._mbm_connection_ready():
+            self.toast(self._t("device_scan_need_connection"), error=True)
+            return False
+        if self._io_task_busy(exclude=("modbus",)):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+            return False
+        normalized = [modbus_master.normalize_poll(rule) for rule in rules]
+        if not normalized:
+            return False
+        setting_keys = ("modbus_master", "modbus_master_on",
+                        "modbus_master_variant", "modbus_master_echo",
+                        "autoreply_on")
+        persisted = {
+            key: (self.settings.contains(key), self.settings.value(key, None))
+            for key in setting_keys
+        }
+        old_inflight = self._mbm_inflight
+        dlg = getattr(self, "_mbm_dlg", None)
+        self._device_scan_state = {
+            "rules": normalized,
+            "completed": set(),
+            "on_result": on_result,
+            "on_done": on_done,
+            "old_rules": self._mbm_rules,
+            "old_on": self._mbm_on,
+            "old_ar_on": self._ar_on,
+            "old_variant": self._mbm_variant,
+            "old_echo": self._mbm_echo,
+            "old_results": {
+                index: dict(result) for index, result in self._mbm_results.items()
+            },
+            "old_persisted": persisted,
+            "old_dlg_enabled": dlg.isEnabled() if dlg is not None else None,
+            "old_dlg_dirty": bool(dlg._dirty) if dlg is not None else None,
+            "finishing": False,
+        }
+        # 接管一个已经在轮询的 RTU/ASCII 主机时，旧请求的迟到响应不能误配给扫描首项。
+        if old_inflight is not None and self._mbm_variant_eff() in ("rtu", "ascii"):
+            guard_ms = max(self._MBM_MIN_GUARD_MS,
+                           int(old_inflight.get("timeout_ms", self._MBM_TIMEOUT_MS)))
+            self._mbm_guard_until = max(
+                self._mbm_guard_until, time.monotonic() + guard_ms / 1000.0)
+        self._device_scan_timeout_ms = max(50, min(5000, int(timeout_ms)))
+        # 扫描期间与主机互斥：临时关闭自动应答从机，避免 _mbm_on && _ar_on 双开
+        # （不变量与 _set_mbm_enabled 的开主机必关从机一致；结束由 _stop_device_scan 恢复）。
+        self._ar_on = False
+        self._sync_autoreply_ui()
+        try:
+            self._mbm_rules = normalized
+            self._mbm_on = True
+            if dlg is not None:
+                dlg.setEnabled(False)
+            self._mbm_restart()
+            self._refresh_workspace_statuses()
+        except Exception:
+            # 状态变更中途失败：回滚接管，避免 _device_scan_state 残留/对话框禁用/规则被替换。
+            self._stop_device_scan(cancelled=True)
+            return False
+        return True
+
+    def _device_scan_result(self, index, status, text):
+        state = self._device_scan_state
+        if state is None or index in state["completed"]:
+            return
+        state["completed"].add(index)
+        try:
+            state["on_result"](index, status, text)
+        except Exception:
+            pass
+        if len(state["completed"]) >= len(state["rules"]) and not state["finishing"]:
+            state["finishing"] = True
+            QTimer.singleShot(0, lambda: self._stop_device_scan(cancelled=False))
+
+    def _stop_device_scan(self, cancelled=False):
+        state = self._device_scan_state
+        if state is None:
+            return
+        self._device_scan_state = None
+        self._mbm_rules = state["old_rules"]
+        self._mbm_on = state["old_on"]
+        self._ar_on = bool(state.get("old_ar_on", False))   # 扫描期间被临时关掉的从机要恢复
+        self._mbm_variant = state["old_variant"]
+        self._mbm_echo = state["old_echo"]
+        # 即使未来新增了扫描期间可触发的配置入口，也把四个持久化键精确恢复，
+        # 避免内存已还原而重启后读到扫描态/临时修改。
+        for key, (existed, value) in state["old_persisted"].items():
+            if existed:
+                self.settings.setValue(key, value)
+            else:
+                self.settings.remove(key)
+        self.settings.sync()
+        self._mbm_restart()
+        # restart 会按设计清空结果（避免规则重排后错位）；扫描结束恢复的是原规则，
+        # 因而要在 restart 之后放回快照，并同步已打开的主机窗口。
+        self._mbm_results = state["old_results"]
+        dlg = getattr(self, "_mbm_dlg", None)
+        if dlg is not None:
+            dlg.setEnabled(state["old_dlg_enabled"]
+                           if state["old_dlg_enabled"] is not None else True)
+            # 扫描期间新打开/原本无草稿的窗口曾显示临时扫描规则，结束后重载原配置；
+            # 原本已有未应用草稿则完整保留，不替用户丢弃编辑。
+            if state["old_dlg_dirty"] is not True:
+                dlg.reload_config()
+            else:
+                for index, result in self._mbm_results.items():
+                    try:
+                        dlg.update_result(index, result.get("status", ""),
+                                          result.get("text", ""))
+                    except Exception:
+                        pass
+        self._sync_autoreply_ui()
+        try:
+            state["on_done"](bool(cancelled))
+        except Exception:
+            pass
+        self._refresh_workspace_statuses()
+
+    def _structured_add(self, samples):
+        added = self._structured_recorder.add(samples)
+        dlg = getattr(self, "_structured_dlg", None)
+        if added and dlg is not None:
+            try:
+                dlg.on_samples(added)
+            except Exception:
+                pass
+        return added
+
+    def _structured_feed_modbus(self, info, result):
+        # 设备扫描只是发现性请求，不应污染结构化录制或可见联动视图。
+        if getattr(self, "_device_scan_state", None) is not None:
+            return
+        if "regs" not in result:
+            return
+        try:
+            want_record = self._structured_recorder.recording
+            plot_tags = self._device_plot_tags
+            dash_tags = self._device_dash_tags
+            if not want_record and not plot_tags and not dash_tags:
+                return
+            from device_resources import decode_modbus_samples
+            samples = decode_modbus_samples(
+                self._device_registers, info["unit"], info["func"],
+                info["addr"], result["regs"])
+            if not samples:
+                return
+            if want_record:
+                self._structured_add(samples)
+            if plot_tags:
+                self._feed_named_view("_plot_dlg", plot_tags, samples)
+            if dash_tags:
+                self._feed_named_view("_dash_dlg", dash_tags, samples)
+        except Exception:
+            # 结构化附加功能不能阻断 Modbus 主流程；_mbm_apply 后续仍须写结果并释放 inflight。
+            pass
+
+    def _feed_named_view(self, attr, tags, samples):
+        """把命中 tags 的样本喂给 plot/dashboard（仅对话框可见时；与各自 feed 同条件）。"""
+        dlg = getattr(self, attr, None)
+        if dlg is None or not dlg.isVisible():
+            return
+        picked = [s for s in samples if s.get("tag") in tags]
+        if not picked:
+            return
+        try:
+            dlg.feed_named_samples(picked)
+        except Exception:
+            pass
+
+    def _structured_feed_protocol(self, data):
+        if not self._structured_recorder.recording:
+            return
+        rules = self._proto_rules()
+        rule = next((item for item in rules
+                     if not item["header"] or bytes(data).startswith(item["header"])), None)
+        if rule is None:
+            return
+        now = time.time()
+        samples = []
+        for name, offset, typ in rule["fields"]:
+            size = binproto.field_size(typ)
+            if size <= 0 or offset < 0 or offset + size > len(data):
+                continue
+            value = binproto.read_field(data, offset, typ)
+            if value is None:
+                continue
+            samples.append({
+                "timestamp": now, "source": "protocol", "tag": name,
+                "value": value, "unit": "",
+                "raw": bytes(data[offset:offset + size]).hex(" ").upper(),
+            })
+        self._structured_add(samples)
+
+    def _structured_replay_sample(self, sample):
+        self.status_bar.showMessage(
+            "%s = %s %s" % (sample.get("tag", ""), sample.get("value", ""),
+                             sample.get("unit", "")), 800)
+
+    def _open_device_center(self):
+        if self._device_center_dlg is None:
+            from device_center_dialog import DeviceCenterDialog
+            self._device_center_dlg = DeviceCenterDialog(self)
+        elif not self._device_center_dlg.isVisible():
+            self._device_center_dlg.reload_cfg()
+        self._device_center_dlg.show()
+        self._device_center_dlg.raise_()
+        self._device_center_dlg.activateWindow()
+
+    def _open_structured_record(self):
+        if self._structured_dlg is None:
+            from structured_record_dialog import StructuredRecordDialog
+            self._structured_dlg = StructuredRecordDialog(self)
+        self._structured_dlg.refresh_rows()
+        self._structured_dlg.show()
+        self._structured_dlg.raise_()
+        self._structured_dlg.activateWindow()
 
     def _open_modbus_master(self):
         if getattr(self, "_mbm_dlg", None) is None:
@@ -7731,6 +8345,7 @@ class CommTool(QMainWindow):
         dlg = self._mbm_dlg
         if not dlg._dirty:           # 保留尚未“应用”的界面草稿；已提交时才从运行配置刷新
             dlg.reload_rows()
+        dlg.setEnabled(self._device_scan_state is None)
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -7902,15 +8517,22 @@ class CommTool(QMainWindow):
         """终端模式开启时，把「对终端不生效」的显示 / 发送格式设置禁用（不可配置），避免误以为还
         起作用。终端是纯字节流逐字符直发：HEX 显示 / 时间戳 / 分包 / 超时 / 换行分包，以及
         HEX 发送 / 追加换行 / 定时 / 校验 全被绕过。仍有用的（字符编码 / 自动换行 / 最大行数 /
-        实时记录）不动。关闭终端模式后全部恢复可配置。"""
+        实时记录）不动。关闭终端模式后全部恢复可配置。
+        冻结视图同样禁用：终端是连续流（回车覆盖 / 光标移动 / 跨块续写），没有块级「追加」这个
+        可拦点，冻结会使显示与 _term_* 光标状态机失步。故终端模式下冻结开关不可配。"""
         if on and hasattr(self, "sec_send_term"):
             # 正处在终端模式里却把这组折起来 → 找不到怎么退出，故开启时强制展开
             self.sec_send_term.setExpanded(True)
+        if on and hasattr(self, "sw_freeze_view") and self.sw_freeze_view.isChecked():
+            # 终端是连续光标流，没有块级冻结语义；进入终端时清除此前冻结状态，
+            # 避免开关显示冻结但终端仍继续刷新造成状态欺骗。
+            self.sw_freeze_view.setChecked(False)
         for name in ("cb_view_mode", "cb_hexdump_width", "cb_numview_type",
                      "sw_show_timestamp", "sw_packet_split", "ed_packet_timeout",
                      "sw_line_split", "cb_line_nl",
                      "sw_tx_hex", "sw_append_newline", "cb_append_nl",
-                     "sw_period", "ed_period_ms", "cb_checksum"):
+                     "sw_period", "ed_period_ms", "cb_checksum",
+                     "sw_freeze_view"):
             w = getattr(self, name, None)
             if w is not None:
                 w.setEnabled(not on)
@@ -7918,7 +8540,7 @@ class CommTool(QMainWindow):
         self._update_sel_checksum()        # 进出终端换了显示口径，旧的选区校验和结果作废
         # 连同标签文字一起淡化，让禁用的整行统一「暗下去」（只灰控件、标签还满色 → 不明显）
         for k in ("view_mode", "show_timestamp", "packet_split", "timeout", "line_split",
-                  "hex_send", "append_newline", "period", "checksum"):
+                  "hex_send", "append_newline", "period", "checksum", "freeze_view"):
             for lab in self._setting_labels.get(k, ()):
                 if on:
                     eff = QGraphicsOpacityEffect(lab)
@@ -8333,6 +8955,7 @@ class CommTool(QMainWindow):
             ts = self._log_opened_at.strftime("%Y-%m-%d %H:%M:%S")
             self._log_file.write(self._t("log_header", time=ts))
             self._log_file.flush()
+            self._log_ends_with_nl = True
             self._set_log_path_label(path)
             return True
         except Exception as e:
@@ -8351,6 +8974,7 @@ class CommTool(QMainWindow):
         except Exception:
             pass
         self._log_file = None
+        self._log_ends_with_nl = True
 
     def _maybe_rotate_log(self, now=None):
         """写入后判断要不要换文件：跨自然日 或 超过分包上限。
@@ -8432,6 +9056,44 @@ class CommTool(QMainWindow):
         self.ed_max_lines.setText(str(n))
         if hasattr(self, 'txt_recv'):
             self.txt_recv.document().setMaximumBlockCount(n)
+
+    def _on_ts_format_changed(self):
+        data = self.cb_ts_format.currentData()
+        self._ts_format = data if data in ("absolute", "time", "relative", "epoch") else "absolute"
+        # 切到相对时间时重置会话锚点，让新格式从此刻起算
+        if self._ts_format == "relative":
+            self._ts_anchor = None
+        self.settings.setValue("ts_format", self._ts_format)
+        self.settings.sync()
+        self._refresh_project_dirty_label()
+
+    def _on_freeze_view_toggled(self, checked):
+        # 冻结视图：新数据仍计入统计/录制/触发，只是不追加到数据区（排查时锁定画面）。
+        self._freeze_view = bool(checked)
+        self.settings.setValue("freeze_view", self._freeze_view)
+        self.settings.sync()
+        self._refresh_project_dirty_label()
+
+    def _timestamp_prefix(self, direction):
+        """按当前 ts_format 算块前缀（含方向箭头）；时间戳关闭返回 ''。"""
+        if not self.sw_show_timestamp.isChecked():
+            return ""
+        fmt = getattr(self, "_ts_format", "absolute")
+        now = datetime.now()
+        if fmt == "time":
+            ts = "%02d:%02d:%02d.%03d" % (now.hour, now.minute, now.second,
+                                          now.microsecond // 1000)
+        elif fmt == "epoch":
+            ts = "%.3f" % time.time()
+        elif fmt == "relative":
+            if self._ts_anchor is None:
+                self._ts_anchor = time.time()
+            ts = "+%.3f" % (time.time() - self._ts_anchor)
+        else:                                  # absolute
+            ts = ("%04d/%02d/%02d %02d:%02d:%02d.%03d"
+                  % (now.year, now.month, now.day, now.hour, now.minute,
+                     now.second, now.microsecond // 1000))
+        return "[%s] %s" % (ts, "→ " if direction == "tx" else "← ")
 
     # ----- 文件 -----
     def save_recv(self):
@@ -8622,6 +9284,27 @@ class CommTool(QMainWindow):
                 self.cb_checksum.setCurrentIndex(idx)
             self.cb_checksum.blockSignals(False)
 
+        if hasattr(self, "cb_ts_format"):
+            data = self.cb_ts_format.currentData()
+            self.cb_ts_format.blockSignals(True)
+            self.cb_ts_format.clear()
+            for d, key in (("absolute", "ts_fmt_absolute"), ("time", "ts_fmt_time"),
+                           ("relative", "ts_fmt_relative"), ("epoch", "ts_fmt_epoch")):
+                self.cb_ts_format.addItem(self._t(key), d)
+            idx = self.cb_ts_format.findData(data)
+            self.cb_ts_format.setCurrentIndex(idx if idx >= 0 else 0)
+            self.cb_ts_format.blockSignals(False)
+        if hasattr(self, "cb_search_mode"):
+            data = self.cb_search_mode.currentData()
+            self.cb_search_mode.blockSignals(True)
+            self.cb_search_mode.clear()
+            for d, key in (("plain", "search_mode_plain"), ("regex", "search_mode_regex"),
+                           ("hex", "search_mode_hex")):
+                self.cb_search_mode.addItem(self._t(key), d)
+            idx = self.cb_search_mode.findData(data)
+            self.cb_search_mode.setCurrentIndex(idx if idx >= 0 else 0)
+            self.cb_search_mode.blockSignals(False)
+
         if hasattr(self, "cb_line_nl"):
             self.cb_line_nl.setItemText(0, self._t("nl_auto"))
         if hasattr(self, "cb_view_mode"):
@@ -8687,6 +9370,11 @@ class CommTool(QMainWindow):
         # 发送卡片两行三列等列宽：必须在 btn_ms_cycle 文字更新之后，否则取的是旧语言的 sizeHint
         self._align_send_card_cols()
         self._fit_data_toolbar()   # 数据区工具栏按钮宽度随语言重算，防新语言文字被裁
+        self._refresh_project_dirty_label()
+        if not (self._project_name or self._project_path):
+            self._update_project_label()
+        self._refresh_workspace_statuses()
+        self._retranslate_workspace_template_panel()
         # 多条发送/关键字高亮弹窗若开着也跟着切语言
         if getattr(self, "_multi_send_dlg", None) is not None:
             self._multi_send_dlg.retranslate()
@@ -8712,6 +9400,10 @@ class CommTool(QMainWindow):
             self._ar_dlg.retranslate()
         if getattr(self, "_mbm_dlg", None) is not None:
             self._mbm_dlg.retranslate()
+        if getattr(self, "_device_center_dlg", None) is not None:
+            self._device_center_dlg.retranslate()
+        if getattr(self, "_structured_dlg", None) is not None:
+            self._structured_dlg.retranslate()
         if getattr(self, "_seq_dlg", None) is not None:
             self._seq_dlg.retranslate()
         if getattr(self, "_frame_builder_dlg", None) is not None:
@@ -8803,13 +9495,36 @@ class CommTool(QMainWindow):
             pass
         return new_ini
 
-    def _save_settings(self):
+    def _save_settings(self, strict=False):
+        """Persist the visible workspace.
+
+        Normal autosave/exit callers keep the historical best-effort behaviour.
+        Project operations pass ``strict=True`` because writing a project from a
+        partially flushed workspace would silently lose the user's latest edits.
+        """
         try:
-            # 配置槽切换会在本函数返回后替换 self.settings；先让构造器把防抖中的编辑写回旧槽位。
+            # Profile switch replaces self.settings after return; flush debounced edits to the old slot first.
             if getattr(self, "_frame_builder_dlg", None) is not None:
                 self._frame_builder_dlg.commit_pending()
             if getattr(self, "_triggers_dlg", None) is not None:
-                self._triggers_dlg.flush_pending()   # 同上：防抖窗口里的规则编辑别丢
+                self._triggers_dlg.flush_pending()   # same: do not lose debounced rule edits
+            if getattr(self, "_multi_send_dlg", None) is not None:
+                self._multi_send_dlg.flush_pending()
+            if getattr(self, "_keyword_dlg", None) is not None:
+                self._keyword_dlg.flush_pending()
+            if getattr(self, "_snip_dlg", None) is not None:
+                self._snip_dlg.flush_pending()
+            if getattr(self, "_ar_dlg", None) is not None:
+                self._ar_dlg.flush_pending()
+            if getattr(self, "_seq_dlg", None) is not None:
+                self._seq_dlg.flush_pending()
+            if getattr(self, "_device_center_dlg", None) is not None:
+                self._device_center_dlg.commit_pending(
+                    notify=False, refresh_dirty=False)
+            # 联动标签兜底落盘：commit_pending 只在标签变更时调 _save_device_link，
+            # 若未来有路径直接改 _device_plot_tags/_device_dash_tags 而未走对话框，退出时仍要存。
+            if hasattr(self, "_save_device_link"):
+                self._save_device_link()
             s = self.settings
             s.setValue("geometry", self.saveGeometry())
             s.setValue("h_splitter", self.h_splitter.saveState())
@@ -8825,6 +9540,8 @@ class CommTool(QMainWindow):
             s.setValue("packet_split", self.sw_packet_split.isChecked())
             s.setValue("line_split", self.sw_line_split.isChecked())
             s.setValue("line_nl_mode", self.cb_line_nl.currentIndex())
+            s.setValue("ts_format", self.cb_ts_format.currentData() or "absolute")
+            s.setValue("freeze_view", getattr(self, "_freeze_view", False))
             s.setValue("encoding", self.cb_encoding.currentData())
             s.setValue("theme", self.cb_theme.currentData())
             s.setValue("packet_timeout", self.ed_packet_timeout.text())
@@ -8853,8 +9570,15 @@ class CommTool(QMainWindow):
             s.setValue("ser_stopbits", self.cb_stopbits.currentText())
             s.setValue("ser_flow", self.cb_flow.currentText())
             s.sync()
+            if strict and s.status() != QSettings.NoError:
+                raise OSError("QSettings sync failed (status=%s)" % int(s.status()))
+            self._refresh_project_dirty_label()
+            return True
         except Exception:
-            pass
+            traceback.print_exc()
+            if strict:
+                raise
+            return False
 
     def _reload_section_states(self):
         """按当前配置槽恢复侧栏折叠状态；终端模式开启时终端组必须保持展开。"""
@@ -8955,6 +9679,7 @@ class CommTool(QMainWindow):
         self._ansi_pendings = {}
         self._triggers = self._load_triggers()
         self._trigger_engine.set_rules(self._triggers)
+        self._refresh_workspace_statuses()
         self._reset_trigger_decoders()
         if getattr(self, "_triggers_dlg", None) is not None:
             self._triggers_dlg._reload_list()
@@ -8975,6 +9700,17 @@ class CommTool(QMainWindow):
                 self.cb_line_nl.setCurrentIndex(nl_idx)
         except (ValueError, TypeError):
             pass
+        ts_fmt = s.value("ts_format", "absolute") or "absolute"
+        if ts_fmt not in ("absolute", "time", "relative", "epoch"):
+            ts_fmt = "absolute"
+        self._ts_format = ts_fmt
+        self._ts_anchor = None      # 相对时间戳的会话起点（首次用时惰性定）
+        idx = self.cb_ts_format.findData(ts_fmt)
+        self.cb_ts_format.blockSignals(True)
+        self.cb_ts_format.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cb_ts_format.blockSignals(False)
+        freeze_saved = s.value("freeze_view", False, type=bool)
+        self.sw_freeze_view.setChecked(freeze_saved, animate=False)
         # 字符编码 — 按 codec name 查 itemData 找回上次选项
         enc_saved = s.value("encoding", "auto") or "auto"
         for i in range(self.cb_encoding.count()):
@@ -9095,48 +9831,807 @@ class CommTool(QMainWindow):
         self._closing_real = True
         self.close()
 
-    def _build_titlebar_func_menu(self):
-        """按功能分组构建标题栏菜单：帧处理 / 可视化 / 自动化 / 通信传输。"""
+
+    def _workspace_specs(self, key):
+        """工作区卡片定义；标题沿用各工具现有翻译。"""
+        return {
+            "protocol": (("fb_title", "◇+", self.open_frame_builder),
+                         ("frame_open", "<>", self.open_frame_parse),
+                         ("tb_title", "#", self.open_toolbox),
+                         ("mbm_open", "M", self._open_modbus_master),
+                         ("device_title", "R", self._open_device_center)),
+            "simulation": (("ar_title", "↩", self.open_auto_reply),
+                           ("rr_title", "◷", self.open_rec_replay)),
+            "automation": (("seq_title", "▶", self.open_sequence),
+                           ("sc_title", "{}", self.open_script_console),
+                           ("trg_title", "!", self.open_triggers)),
+            "data": (("plot_open", "∿", self.open_plot),
+                     ("dash_open", "▦", self.open_dashboard),
+                     ("rr_title", "◷", self.open_rec_replay),
+                     ("rd_title", "≠", self.open_rec_diff),
+                     ("structured_title", "Σ", self._open_structured_record)),
+            "bridge": (("bg_title", "⇄", self.open_bridge),),
+        }.get(key, ())
+
+    @staticmethod
+    def _workspace_template_options():
+        return (
+            ("project_proto_raw", "raw"),
+            ("project_proto_modbus_rtu", "modbus_rtu"),
+            ("project_proto_modbus_tcp", "modbus_tcp"),
+            ("project_proto_nmea", "nmea"),
+            ("project_proto_at", "at"),
+            ("project_proto_header", "fixed_header"),
+            ("project_proto_delimiter", "delimiter"),
+            ("project_proto_custom", "custom"),
+        )
+
+    def _build_protocol_template_panel(self):
+        panel = QFrame()
+        panel.setObjectName("WorkspaceTemplatePanel")
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(18, 13, 14, 13)
+        layout.setSpacing(12)
+        icon = QLabel("T")
+        icon.setObjectName("WorkspaceToolIcon")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setFixedSize(42, 42)
+        layout.addWidget(icon)
+        text_box = QVBoxLayout()
+        text_box.setSpacing(2)
+        title = QLabel(self._t("workspace_template_title"))
+        title.setObjectName("WorkspaceToolTitle")
+        title.setProperty("tr_text", "workspace_template_title")
+        text_box.addWidget(title)
+        self.lbl_workspace_template_preview = QLabel()
+        self.lbl_workspace_template_preview.setObjectName("WorkspaceTemplatePreview")
+        text_box.addWidget(self.lbl_workspace_template_preview)
+        layout.addLayout(text_box, 1)
+        self.cb_workspace_template = QComboBox()
+        self.cb_workspace_template.setMinimumWidth(150)
+        for text_key, template_id in self._workspace_template_options():
+            self.cb_workspace_template.addItem(self._t(text_key), template_id)
+        self.cb_workspace_template.currentIndexChanged.connect(
+            self._update_workspace_template_preview)
+        layout.addWidget(self.cb_workspace_template)
+        apply_btn = QPushButton(self._t("workspace_template_apply"))
+        apply_btn.setObjectName("WorkspaceOpenBtn")
+        apply_btn.setProperty("tr_text", "workspace_template_apply")
+        apply_btn.setFixedHeight(30)
+        apply_btn.clicked.connect(self._apply_workspace_protocol_template)
+        layout.addWidget(apply_btn)
+        self._update_workspace_template_preview()
+        return panel
+
+    def _update_workspace_template_preview(self, *_):
+        combo = getattr(self, "cb_workspace_template", None)
+        label = getattr(self, "lbl_workspace_template_preview", None)
+        if combo is None or label is None:
+            return
+        from project_templates import protocol_template_settings
+        cfg = protocol_template_settings(combo.currentData() or "raw")
+        yes = self._t("workspace_yes")
+        no = self._t("workspace_no")
+        framed = bool(cfg.get("packet_split") or cfg.get("line_split"))
+        label.setText(self._t(
+            "workspace_template_preview",
+            connection=cfg.get("net_proto", "Serial"),
+            rx=yes if cfg.get("rx_hex") else no,
+            tx=yes if cfg.get("tx_hex") else no,
+            framed=yes if framed else no,
+        ))
+
+    def _retranslate_workspace_template_panel(self):
+        combo = getattr(self, "cb_workspace_template", None)
+        if combo is None:
+            return
+        current = combo.currentData()
+        combo.blockSignals(True)
+        for index, (text_key, _template_id) in enumerate(
+                self._workspace_template_options()):
+            combo.setItemText(index, self._t(text_key))
+        index = combo.findData(current)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+        self._update_workspace_template_preview()
+
+    def _apply_workspace_protocol_template(self):
+        combo = getattr(self, "cb_workspace_template", None)
+        if combo is None:
+            return
+        template_name = combo.currentText()
+        if not self._confirm_dlg(
+                self._t("workspace_template_title"),
+                self._t("workspace_template_confirm", name=template_name),
+                ok_text=self._t("workspace_template_apply"), danger=False):
+            return
+        if not self._prepare_project_switch():
+            return
+        from project_templates import protocol_template_settings
+        cfg = protocol_template_settings(combo.currentData() or "raw")
+        # 旧版单规则配置会在 frame_rules 为空时被迁移；应用无规则模板时
+        # 必须同时清理，否则刚清空的规则会在界面重载后被重新写回。
+        legacy_frame_keys = ("frame_header", "frame_fields")
+        old = {
+            key: self.settings.value(key, None)
+            for key in (*cfg.keys(), *legacy_frame_keys)
+        }
+        try:
+            for key in legacy_frame_keys:
+                self.settings.remove(key)
+            for key, value in cfg.items():
+                self.settings.setValue(key, value)
+            self.settings.sync()
+            self._apply_loaded_settings()
+        except Exception as exc:
+            for key, value in old.items():
+                if value is None:
+                    self.settings.remove(key)
+                else:
+                    self.settings.setValue(key, value)
+            self.settings.sync()
+            try:
+                self._apply_loaded_settings()
+            except Exception:
+                pass
+            self._info_dlg(
+                self._t("workspace_template_title"),
+                self._t("workspace_template_fail", err=str(exc)), is_error=True)
+            return
+        self._refresh_project_dirty_label()
+        self.toast(self._t("workspace_template_applied", name=template_name))
+
+    def _build_workspace_page(self, key):
+        page = QWidget()
+        page.setObjectName("WorkspacePage")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(34, 28, 34, 28)
+        outer.setSpacing(8)
+        title = QLabel(self._t("wb_" + key))
+        title.setObjectName("WorkspacePageTitle")
+        title.setProperty("tr_text", "wb_" + key)
+        outer.addWidget(title)
+        subtitle_key = "workspace_" + key + "_tip"
+        subtitle = QLabel(self._t(subtitle_key))
+        subtitle.setObjectName("WorkspacePageSubtitle")
+        subtitle.setProperty("tr_text", subtitle_key)
+        subtitle.setWordWrap(True)
+        outer.addWidget(subtitle)
+        outer.addSpacing(16)
+        if key == "protocol":
+            outer.addWidget(self._build_protocol_template_panel())
+            outer.addSpacing(8)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        for index, (title_key, icon_text, callback) in enumerate(self._workspace_specs(key)):
+            card = QFrame()
+            card.setObjectName("WorkspaceToolCard")
+            card.setMinimumHeight(86)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(18, 14, 18, 14)
+            card_layout.setSpacing(12)
+            icon = QLabel(icon_text)
+            icon.setObjectName("WorkspaceToolIcon")
+            icon.setAlignment(Qt.AlignCenter)
+            icon.setFixedSize(42, 42)
+            card_layout.addWidget(icon, 0, Qt.AlignVCenter)
+            tool_title = QLabel(self._t(title_key))
+            tool_title.setObjectName("WorkspaceToolTitle")
+            tool_title.setProperty("tr_text", title_key)
+            tool_title.setWordWrap(True)
+            card_layout.addWidget(tool_title, 1, Qt.AlignVCenter)
+            status_badge = QLabel()
+            status_badge.setObjectName("WorkspaceStatusBadge")
+            status_badge.setProperty("tool_key", title_key)
+            status_badge.setAlignment(Qt.AlignCenter)
+            status_badge.hide()
+            card_layout.addWidget(status_badge, 0, Qt.AlignVCenter)
+            open_btn = QPushButton(self._t("workspace_open"))
+            open_btn.setObjectName("WorkspaceOpenBtn")
+            open_btn.setProperty("tr_text", "workspace_open")
+            open_btn.setCursor(Qt.PointingHandCursor)
+            open_btn.setFixedHeight(30)
+            open_btn.clicked.connect(lambda _checked=False, cb=callback: cb())
+            card_layout.addWidget(open_btn, 0, Qt.AlignVCenter)
+            grid.addWidget(card, index // 3, index % 3)
+        outer.addLayout(grid)
+        outer.addStretch(1)
+        return page
+
+    def _workspace_status_info(self, tool_key):
+        """返回 (文案, 是否活跃)；None 表示该工具没有可展示的运行状态。"""
+        if tool_key == "ar_title":
+            active = bool(getattr(self, "_ar_on", False))
+            return self._t("workspace_enabled" if active else "workspace_inactive"), active
+        if tool_key == "mbm_open":
+            active = bool(getattr(self, "_mbm_on", False))
+            return self._t("workspace_enabled" if active else "workspace_inactive"), active
+        if tool_key == "trg_title":
+            engine = getattr(self, "_trigger_engine", None)
+            active = bool(engine is not None and engine.active())
+            return self._t("workspace_enabled" if active else "workspace_inactive"), active
+        if tool_key == "seq_title":
+            active = bool(getattr(self, "_seq_on", False))
+            return self._t("workspace_running" if active else "workspace_stopped"), active
+        if tool_key == "bg_title":
+            dialog = getattr(self, "_bridge_dlg", None)
+            engine = getattr(dialog, "engine", None) if dialog is not None else None
+            active = bool(engine is not None and engine.is_active())
+            return self._t("workspace_running" if active else "workspace_stopped"), active
+        if tool_key == "structured_title":
+            active = bool(getattr(getattr(self, "_structured_recorder", None),
+                                  "recording", False))
+            return self._t("workspace_running" if active else "workspace_stopped"), active
+        if tool_key == "device_title":
+            active = getattr(self, "_device_scan_state", None) is not None
+            return self._t("workspace_running" if active else "workspace_stopped"), active
+        return None
+
+    def _refresh_workspace_statuses(self):
+        for badge in self.findChildren(QLabel, "WorkspaceStatusBadge"):
+            info = self._workspace_status_info(str(badge.property("tool_key") or ""))
+            badge.setVisible(info is not None)
+            if info is None:
+                continue
+            text, active = info
+            badge.setText(text)
+            badge.setProperty("active", "true" if active else "false")
+            badge.style().unpolish(badge)
+            badge.style().polish(badge)
+
+    def _switch_workspace(self, key, persist=True):
+        indexes = getattr(self, "_workspace_page_indexes", {})
+        if key not in indexes:
+            key = "terminal"
+        if key not in indexes:
+            return
+        stack = getattr(self, "workspace_stack", None)
+        if stack is None:
+            return
+        stack.setCurrentIndex(indexes[key])
+        self._active_workspace = key
+        for button_key, button in getattr(self, "_workbench_buttons", {}).items():
+            button.setProperty("active", "true" if button_key == key else "false")
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self._refresh_workspace_statuses()
+        if persist:
+            self.settings.setValue("active_workspace", key)
+
+    def _build_workbench_bar(self):
+        """Top workbench nav: feature group menus + project menu."""
+        bar = QWidget(self)
+        bar.setObjectName("WorkbenchBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 5, 20, 5)
+        layout.setSpacing(6)
+
+        label = QLabel(self._t("workbench_label"))
+        label.setObjectName("WorkbenchLabel")
+        label.setProperty("tr_text", "workbench_label")
+        layout.addWidget(label)
+
+        self._workbench_buttons = {}
+        for key in ("terminal", "protocol", "simulation", "automation", "data", "bridge"):
+            btn = QPushButton(self._t("wb_" + key))
+            btn.setObjectName("WorkbenchBtn")
+            btn.setProperty("tr_text", "wb_" + key)
+            btn.setProperty("active", "false")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.clicked.connect(lambda _checked=False, k=key: self._switch_workspace(k))
+            layout.addWidget(btn)
+            self._workbench_buttons[key] = btn
+        layout.addStretch(1)
+
+        project_sep = QFrame()
+        project_sep.setObjectName("WorkbenchSeparator")
+        project_sep.setFrameShape(QFrame.VLine)
+        layout.addWidget(project_sep)
+        self.btn_project_menu = QPushButton(self._t("project_menu"))
+        self.btn_project_menu.setObjectName("ProjectBtn")
+        self.btn_project_menu.setCursor(Qt.PointingHandCursor)
+        self.btn_project_menu.setFixedHeight(30)
+        self.btn_project_menu.setMinimumWidth(76)
+        self.btn_project_menu.setMaximumWidth(200)
+        self.btn_project_menu.clicked.connect(self._show_project_menu)
+        layout.addWidget(self.btn_project_menu)
+        self._update_project_label()
+        return bar
+
+    def _update_project_label(self, dirty=None):
+        if not hasattr(self, "btn_project_menu"):
+            return
+        if not (self._project_name or self._project_path):
+            self.btn_project_menu.setText(self._t("project_menu"))
+            self.btn_project_menu.setToolTip(self._t("project_menu"))
+            return
+        name = self._project_name or os.path.splitext(
+            os.path.basename(self._project_path))[0]
+        full_text = name + (" *" if dirty is True else "") + " ▾"
+        # Elide long names so the project button stays compact beside workbench groups.
+        shown = QFontMetrics(self.btn_project_menu.font()).elidedText(
+            full_text, Qt.ElideMiddle, 172)
+        self.btn_project_menu.setText(shown)
+        self.btn_project_menu.setToolTip(self._project_path or name)
+
+    def _build_project_menu(self):
         menu = QMenu(self)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
             QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
                      border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
-            QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
+            QMenu::item {{ padding: 6px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
             QMenu::separator {{ height: 1px; background-color: {c['separator']};
-                                margin: 4px 8px; }}
+                                margin: 5px 10px; }}
+            QWidget#ProjectRestoreRow {{ background: transparent; border-radius: 5px; }}
+            QLabel#ProjectRestoreLabel {{ color: {c['text']}; background: transparent;
+                                           font-family: 'Segoe UI'; font-size: 12px; }}
         """)
-        menu.addAction("1. " + self._t("fb_title")).triggered.connect(lambda *_: self.open_frame_builder())
-        menu.addAction("2. " + self._t("frame_open")).triggered.connect(lambda *_: self.open_frame_parse())
-        menu.addAction("3. " + self._t("tb_title")).triggered.connect(lambda *_: self.open_toolbox())
+        for text_key, callback in (("project_new", self.new_project),
+                                   ("project_open", self.open_project)):
+            menu.addAction(self._t(text_key)).triggered.connect(
+                lambda _checked=False, cb=callback: cb())
+        recent = self._recent_projects()
+        if recent:
+            recent_menu = menu.addMenu(self._t("project_recent"))
+            recent_menu.setToolTipsVisible(True)
+            for path in recent:
+                action = recent_menu.addAction(os.path.basename(path))
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda _checked=False, p=path: self._open_project_path(p))
+            recent_menu.addSeparator()
+            recent_menu.addAction(self._t("project_recent_clear")).triggered.connect(
+                self._clear_recent_projects)
         menu.addSeparator()
-        menu.addAction("4. " + self._t("plot_open")).triggered.connect(lambda *_: self.open_plot())
-        menu.addAction("5. " + self._t("dash_open")).triggered.connect(lambda *_: self.open_dashboard())
+        menu.addAction(self._t("project_save")).triggered.connect(
+            lambda *_: self.save_project())
+        menu.addAction(self._t("project_save_as")).triggered.connect(
+            lambda *_: self.save_project(save_as=True))
+        if self._project_name or self._project_path:
+            menu.addSeparator()
+            menu.addAction(self._t("project_close")).triggered.connect(
+                lambda *_: self.close_project())
         menu.addSeparator()
-        # 模板库不进功能菜单：入口放在「多条发送」对话框顶部（两个发送辅助工具就近串联，
-        # 见 MultiSendDialog.btn_snippets），避免菜单里再占一格。
-        menu.addAction("6. " + self._t("seq_title")).triggered.connect(lambda *_: self.open_sequence())
-        menu.addAction("7. " + self._t("sc_title")).triggered.connect(lambda *_: self.open_script_console())
-        menu.addAction("8. " + self._t("rr_title")).triggered.connect(lambda *_: self.open_rec_replay())
-        # 会话比较紧跟录制/回放：它比的就是那边产出的 .ctrec，同一组工作流
-        menu.addAction("9. " + self._t("rd_title")).triggered.connect(lambda *_: self.open_rec_diff())
-        # 触发告警归自动化组：它是「命中→动作」的无人值守那一环，与序列/脚本同属放着自己跑
-        trg_label = "10. " + self._t("trg_title") + (" ●" if self._trigger_engine.active() else "")
-        menu.addAction(trg_label).triggered.connect(lambda *_: self.open_triggers())
-        menu.addSeparator()
-        menu.addAction("11. " + self._t("xfer_title")).triggered.connect(lambda *_: self.open_xfer())
-        menu.addAction("12. " + self._t("bg_title")).triggered.connect(lambda *_: self.open_bridge())
-        mbm_label = "13. " + self._t("mbm_open") + (" ●" if getattr(self, "_mbm_on", False) else "")
-        menu.addAction(mbm_label).triggered.connect(lambda *_: self._open_modbus_master())
+        restore_action = QWidgetAction(menu)
+        restore_row = QWidget()
+        restore_row.setObjectName("ProjectRestoreRow")
+        restore_layout = QHBoxLayout(restore_row)
+        # QMenu 本身有 4px padding，普通菜单项另有 18px 左内边距。
+        # QWidgetAction 的内容从 action 矩形起点直接布局，因此这里用 19px
+        # （含 1px 的样式边界补偿），让文字起点与“新建 / 打开 / 保存”一致。
+        restore_layout.setContentsMargins(19, 5, 10, 5)
+        restore_layout.setSpacing(18)
+        restore_label = QLabel(self._t("project_restore_on_startup"))
+        restore_label.setObjectName("ProjectRestoreLabel")
+        restore_layout.addWidget(restore_label, 1)
+        restore_switch = IOSSwitch(
+            self.settings.value("restore_last_project", True, type=bool))
+        restore_switch.set_theme_colors(c['separator'], "#FFFFFF")
+        restore_switch.toggled.connect(self._set_restore_last_project)
+        restore_layout.addWidget(restore_switch)
+        restore_action.setDefaultWidget(restore_row)
+        menu.addAction(restore_action)
         return menu
 
-    def _show_titlebar_func_menu(self):
-        """在标题栏「功能」按钮下方显示分组菜单。"""
-        menu = self._build_titlebar_func_menu()
+    def _show_project_menu(self):
+        dirty = self._project_is_dirty()
+        self._update_project_label(dirty)
+        menu = self._build_project_menu()
         from PyQt5.QtCore import QPoint
-        self._exec_transient_menu(menu, self.btn_titlebar_func.mapToGlobal(
-            QPoint(0, self.btn_titlebar_func.height())))
+        self._exec_transient_menu(
+            menu, self.btn_project_menu.mapToGlobal(
+                QPoint(0, self.btn_project_menu.height())))
+
+    def _recent_projects(self):
+        raw = self.settings.value("recent_projects", "[]")
+        try:
+            paths = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except Exception:
+            paths = []
+        valid = [str(p) for p in paths if p and os.path.isfile(str(p))][:8]
+        if valid != paths:
+            self.settings.setValue("recent_projects", json.dumps(valid, ensure_ascii=False))
+        return valid
+
+    def _clear_recent_projects(self):
+        self.settings.setValue("recent_projects", "[]")
+        self.settings.sync()
+
+    def _set_restore_last_project(self, enabled):
+        self.settings.setValue("restore_last_project", bool(enabled))
+        self.settings.sync()
+
+    def _restore_last_project(self):
+        """启动后静默恢复上次工程；不存在的路径直接清理，不弹错误框。"""
+        if self._project_name or self._project_path:
+            return
+        if not self.settings.value("restore_last_project", True, type=bool):
+            return
+        path = str(self.settings.value("last_project_path", "") or "")
+        if not path:
+            return
+        if not os.path.isfile(path):
+            self.settings.remove("last_project_path")
+            self._recent_projects()
+            self.settings.sync()
+            return
+        if not self._open_project_path(
+                path, confirm=False, notify=False, notify_errors=False):
+            # 文件存在但已损坏/版本不兼容/应用失败时也要忘掉，否则每次启动都会重复失败。
+            self.settings.remove("last_project_path")
+            self._remove_recent_project(path)
+            self.settings.sync()
+
+    def _remove_recent_project(self, path):
+        raw = self.settings.value("recent_projects", "[]")
+        try:
+            paths = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except Exception:
+            paths = []
+        target = os.path.normcase(os.path.abspath(str(path)))
+        kept = [str(item) for item in paths if item and
+                os.path.normcase(os.path.abspath(str(item))) != target]
+        self.settings.setValue("recent_projects", json.dumps(kept[:8], ensure_ascii=False))
+
+    def _add_recent_project(self, path):
+        path = os.path.abspath(path)
+        paths = [p for p in self._recent_projects()
+                 if os.path.normcase(os.path.abspath(p)) != os.path.normcase(path)]
+        paths.insert(0, path)
+        self.settings.setValue("recent_projects", json.dumps(paths[:8], ensure_ascii=False))
+        self.settings.sync()
+
+    @staticmethod
+    def _project_fingerprint(settings):
+        return json.dumps(settings or {}, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _snapshot_project_settings(self):
+        """Read project keys already in QSettings (no flush / no UI write-back)."""
+        personal = {"theme", "language", "auto_update_check"}
+        return {
+            k: self.settings.value(k, None)
+            for k in self._CFG_KEYS
+            if k not in personal and self.settings.value(k, None) is not None
+        }
+
+    def _refresh_project_dirty_label(self):
+        if not (self._project_name or self._project_path):
+            return
+        if self._project_baseline is None:
+            self._update_project_label(True)
+            return
+        dirty = (self._project_fingerprint(self._snapshot_project_settings())
+                 != self._project_baseline)
+        self._update_project_label(dirty)
+
+    def _project_is_dirty(self):
+        if not (self._project_name or self._project_path):
+            return False
+        if self._project_baseline is None:
+            return True
+        current = self._collect_project_settings()
+        return self._project_fingerprint(current) != self._project_baseline
+
+    def _confirm_project_reset(self):
+        """Warn that new-project template replaces the whole workspace config."""
+        return self._confirm_dlg(
+            self._t("project_reset_title"),
+            self._t("project_reset_body"),
+            ok_text=self._t("project_reset_ok"),
+            danger=False)
+
+    def _confirm_project_switch(self):
+        try:
+            dirty = self._project_is_dirty()
+        except Exception as e:
+            self._info_dlg(
+                self._t("project_save"),
+                self._t("project_save_fail", err=str(e)),
+                is_error=True)
+            return False
+        if not dirty:
+            return True
+        dlg = InfoDialog(
+            self._t("project_unsaved_title"),
+            self._t("project_unsaved_body",
+                    name=self._project_name or self._t("project_untitled")),
+            ok_text=self._t("project_save"),
+            is_error=True,
+            theme_id=self._theme_id(),
+            parent=None,
+            confirm=True,
+            cancel_text=self._t("cancel"),
+            danger=False,
+            third_text=self._t("project_discard"),
+        )
+        result = dlg.exec_()
+        if result == QDialog.Rejected:
+            return False
+        if result == QDialog.Accepted:
+            return self.save_project()
+        return result == InfoDialog.ThirdAction
+
+    def _project_wizard_texts(self):
+        keys = (
+            "title", "default_name", "name", "device", "connection", "protocol",
+            "step_device", "step_device_tip", "step_connection", "step_connection_tip",
+            "step_protocol", "step_protocol_tip", "step_display", "step_display_tip",
+            "step_save", "step_save_tip", "view_terminal", "view_hex", "view_timestamp",
+            "view_plot", "view_dashboard", "summary", "back", "next", "finish",
+        )
+        out = {k: self._t("project_wizard_" + k) for k in keys}
+        out["cancel"] = self._t("cancel")
+        out["device_types"] = [
+            self._t("project_device_generic"), self._t("project_device_modbus"),
+            self._t("project_device_at"), self._t("project_device_sensor"),
+            self._t("project_device_network"), self._t("project_device_custom"),
+        ]
+        out["protocol_types"] = [
+            self._t("project_proto_raw"), self._t("project_proto_modbus_rtu"),
+            self._t("project_proto_modbus_tcp"), self._t("project_proto_nmea"),
+            self._t("project_proto_at"), self._t("project_proto_header"),
+            self._t("project_proto_delimiter"), self._t("project_proto_custom"),
+        ]
+        return out
+
+    def _collect_project_settings(self):
+        self._save_settings(strict=True)
+        return self._snapshot_project_settings()
+
+    def _apply_project_settings(self, data, gate_scripts=True):
+        """Replace QSettings/UI with project settings; restore previous on failure."""
+        data = dict(data or {})
+        if gate_scripts:
+            data = self._ar_gate_imported_scripts(data)
+            data = self._gate_imported_script_lib(data)
+        converted = {}
+        for key, value in data.items():
+            if key not in self._CFG_KEYS:
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            converted[key] = value
+
+        old = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
+        from project_model import prepare_project_settings
+        incoming = prepare_project_settings(converted, old, self._CFG_KEYS)
+
+        def replace(values):
+            for cfg_key in self._CFG_KEYS:
+                self.settings.remove(cfg_key)
+            for cfg_key, cfg_value in values.items():
+                if cfg_value is not None:
+                    self.settings.setValue(cfg_key, cfg_value)
+            self.settings.sync()
+            if self.settings.status() != QSettings.NoError:
+                raise OSError(
+                    "QSettings sync failed (status=%s)" % int(self.settings.status()))
+            self._restore_field_defaults()
+            self._apply_loaded_settings()
+
+        try:
+            replace(incoming)
+        except Exception:
+            # Roll back QSettings + UI so a partial apply cannot leave a mixed state.
+            try:
+                replace(old)
+            except Exception:
+                pass
+            raise
+        return len(incoming)
+
+    def _prepare_project_switch(self):
+        """Disconnect (or cancel reconnect) before switching projects."""
+        if self.conn is None:
+            # Clear a queued auto-reconnect so it cannot reopen against the new project.
+            self._cancel_reconnect()
+            self._serial_reconnect_cfg = None
+            return True
+        if not self._confirm_dlg(
+                self._t("project_disconnect_title"),
+                self._t("project_disconnect_body"),
+                ok_text=self._t("project_disconnect"),
+                danger=False):
+            return False
+        self.toggle_conn()
+        return self.conn is None
+
+    def new_project(self):
+        from project_wizard import ProjectWizard
+        wizard = ProjectWizard(
+            self._project_wizard_texts(), CONN_TYPES, self,
+            theme_id=self._theme_id())
+        if wizard.exec_() != QDialog.Accepted:
+            return
+        data = wizard.result_data()
+        if not self._confirm_project_switch():
+            return
+        # Template replace clears multi-send / scripts / keywords / etc.
+        if not self._confirm_project_reset():
+            return
+        # Choose save path BEFORE wiping workspace so Cancel keeps current config.
+        default_name = (data["name"] or "CommTool_project") + ".ctproj"
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._t("project_save"), default_name, self._t("project_filter"))
+        if not path:
+            return
+        if not path.lower().endswith(".ctproj"):
+            path += ".ctproj"
+        if not self._prepare_project_switch():
+            return
+        views = data["views"]
+        from project_templates import protocol_template_settings
+        template_cfg = protocol_template_settings(
+            data["protocol_template"], data["connection_type"])
+        # Display choices from the wizard override template recommendations.
+        template_cfg["rx_hex"] = views["hex"]
+        template_cfg["show_timestamp"] = views["timestamp"]
+        # Keep the connection the user confirmed in step 2.
+        template_cfg["net_proto"] = data["connection_type"]
+
+        # Snapshot so a later save failure can restore the previous workspace.
+        old_cfg = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
+        old_path = self._project_path
+        old_name = self._project_name
+        old_meta = dict(self._project_meta)
+        old_baseline = self._project_baseline
+        try:
+            self._apply_project_settings(template_cfg, gate_scripts=False)
+        except Exception as e:
+            self._info_dlg(self._t("project_new"),
+                           self._t("project_apply_fail", err=str(e)), is_error=True)
+            return
+
+        self._project_path = os.path.abspath(path)
+        self._project_name = data["name"]
+        self._project_meta = {
+            "device_type": data["device_type"],
+            "device_label": data["device_label"],
+            "connection_type": template_cfg["net_proto"],
+            "protocol_template": data["protocol_template"],
+            "protocol_label": data["protocol_label"],
+            "views": views,
+        }
+        self._project_baseline = None
+        self._update_project_label(True)
+        if not self.save_project():
+            # Disk/save failed after apply: put back previous QSettings + project state.
+            try:
+                for cfg_key in self._CFG_KEYS:
+                    self.settings.remove(cfg_key)
+                for cfg_key, cfg_value in old_cfg.items():
+                    if cfg_value is not None:
+                        self.settings.setValue(cfg_key, cfg_value)
+                self.settings.sync()
+                self._restore_field_defaults()
+                self._apply_loaded_settings()
+            except Exception:
+                traceback.print_exc()
+                self._info_dlg(
+                    self._t("project_new"),
+                    self._t("project_restore_fail"),
+                    is_error=True)
+            self._project_path = old_path
+            self._project_name = old_name
+            self._project_meta = old_meta
+            self._project_baseline = old_baseline
+            self._refresh_project_dirty_label()
+            if not (self._project_name or self._project_path):
+                self._update_project_label()
+            return
+        # Open optional views only after save finishes.
+        if views["plot"]:
+            QTimer.singleShot(0, self.open_plot)
+        if views["dashboard"]:
+            QTimer.singleShot(0, self.open_dashboard)
+
+    def open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._t("project_open"), "", self._t("project_filter"))
+        if not path:
+            return
+        self._open_project_path(path)
+
+    def _open_project_path(self, path, confirm=True, notify=True, notify_errors=True):
+        try:
+            from project_model import load_project
+            payload = load_project(path)
+        except Exception as e:
+            if notify_errors:
+                self._info_dlg(self._t("project_open"),
+                               self._t("project_open_fail", err=str(e)), is_error=True)
+            return False
+        if confirm and not self._confirm_project_switch():
+            return False
+        if not self._prepare_project_switch():
+            return False
+        try:
+            from project_model import merge_project_resources
+            project_settings = merge_project_resources(
+                payload["settings"], payload.get("resources", {}))
+            self._apply_project_settings(project_settings)
+        except Exception as e:
+            if notify_errors:
+                self._info_dlg(self._t("project_open"),
+                               self._t("project_open_fail", err=str(e)), is_error=True)
+            return False
+        self._project_path = os.path.abspath(path)
+        self._project_name = str(payload.get("name") or "")
+        self._project_meta = dict(payload.get("metadata") or {})
+        self._project_baseline = self._project_fingerprint(
+            self._collect_project_settings())
+        self.settings.setValue("last_project_path", self._project_path)
+        self._add_recent_project(self._project_path)
+        self._update_project_label()
+        if notify:
+            self._info_dlg(self._t("project_open"),
+                           self._t("project_opened", path=self._project_path))
+        return True
+
+    def save_project(self, save_as=False):
+        path = None if save_as else self._project_path
+        if not path:
+            default_name = (self._project_name or "CommTool_project") + ".ctproj"
+            path, _ = QFileDialog.getSaveFileName(
+                self, self._t("project_save"), default_name, self._t("project_filter"))
+            if not path:
+                return False
+            if not path.lower().endswith(".ctproj"):
+                path += ".ctproj"
+        try:
+            from project_model import collect_project_resources, make_project, save_project
+            settings = self._collect_project_settings()
+            metadata = dict(self._project_meta)
+            metadata["connection_type"] = settings.get(
+                "net_proto", metadata.get("connection_type", "Serial"))
+            views = dict(metadata.get("views") or {})
+            views.update({
+                "terminal": True,
+                "hex": bool(self.sw_rx_hex.isChecked()),
+                "timestamp": bool(self.sw_show_timestamp.isChecked()),
+            })
+            metadata["views"] = views
+            payload = make_project(
+                self._project_name or self._t("project_untitled"),
+                metadata,
+                settings,
+                APP_VERSION,
+                resources=collect_project_resources(settings),
+            )
+            save_project(path, payload)
+        except Exception as e:
+            self._info_dlg(self._t("project_save"),
+                           self._t("project_save_fail", err=str(e)), is_error=True)
+            return False
+        self._project_path = os.path.abspath(path)
+        self._project_name = str(payload["name"])
+        self._project_meta = dict(payload["metadata"])
+        self._project_baseline = self._project_fingerprint(payload["settings"])
+        self.settings.setValue("last_project_path", self._project_path)
+        self._add_recent_project(self._project_path)
+        self._update_project_label()
+        self._info_dlg(self._t("project_save"),
+                       self._t("project_saved", path=self._project_path))
+        return True
+
+    def close_project(self):
+        if not self._confirm_project_switch():
+            return False
+        self._project_path = None
+        self._project_meta = {}
+        self._project_name = ""
+        self._project_baseline = None
+        self.settings.remove("last_project_path")
+        self.settings.sync()
+        self._update_project_label()
+        return True
 
     @staticmethod
     def _exec_transient_menu(menu, pos):
@@ -9247,6 +10742,11 @@ class CommTool(QMainWindow):
         profile = str(profile)
         if profile == self._profile:
             return
+        # A project is bound to the current profile's QSettings.  Keeping that
+        # binding after swapping self.settings would make a later Save overwrite
+        # the old .ctproj with the new profile's unrelated workspace.
+        if not self._confirm_project_switch():
+            return
         from PyQt5.QtCore import QLockFile
         # 1) 先抢目标槽位锁；被占（别的窗口正用该配置）→ 拒绝，避免两个窗口写同一文件
         new_lock = QLockFile(self._settings_file(profile) + ".mwlock")
@@ -9257,9 +10757,14 @@ class CommTool(QMainWindow):
         #    留着会在新配置下误发起连接：故无条件取消重连、并且只要 conn 非空就拆
         #    （TCP Client "连接中" 时 is_open=False，只判 is_open 会漏掉、旧连接稍后可能在新配置下连上）。
         try:
-            self._save_settings()
-        except Exception:
-            pass
+            self._save_settings(strict=True)
+        except Exception as e:
+            new_lock.unlock()
+            self._info_dlg(
+                self._t("profile_save_fail_title"),
+                self._t("profile_save_fail", err=str(e)),
+                is_error=True)
+            return
         self._cancel_reconnect()
         self._reconnect_attempts = 0
         if self.conn is not None:
@@ -9277,6 +10782,11 @@ class CommTool(QMainWindow):
         self._profile = profile
         self._title_suffix = "" if not profile else " (%s)" % profile
         self.settings = QSettings(self._settings_file(profile), QSettings.IniFormat)
+        self._project_path = None
+        self._project_meta = {}
+        self._project_name = ""
+        self._project_baseline = None
+        self._update_project_label()
         # 5) 保住当前窗口几何（下面 _load_settings 会按新配置的存档几何挪窗，切换时不希望窗口跳走）
         geo = self.saveGeometry()
         try:
@@ -9676,7 +11186,7 @@ class CommTool(QMainWindow):
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
                      "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
-                     "_snip_dlg", "_triggers_dlg"):
+                     "_snip_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:
@@ -9689,6 +11199,10 @@ class CommTool(QMainWindow):
 
     def closeEvent(self, e):
         if self._closing_real or not self._tray:
+            if not self._confirm_project_switch():
+                self._closing_real = False
+                e.ignore()
+                return
             self._shutdown()
             e.accept()
             return
@@ -9714,6 +11228,9 @@ class CommTool(QMainWindow):
                 2000
             )
         elif choice == CloseDialog.RESULT_QUIT:
+            if not self._confirm_project_switch():
+                e.ignore()
+                return
             self._closing_real = True
             self._shutdown()
             e.accept()

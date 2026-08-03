@@ -71,6 +71,8 @@ class PlotDialog(QDialog):
         self._hex_header_valid = True
         self._loading_cfg = False     # 恢复配置时屏蔽下拉框信号触发的回写
         self._channels = []          # [{name, xs(deque), ys(deque), curve, color, cb}]
+        self._pos_to_idx = {}        # 文本/帧解析：逻辑位置 → _channels 中的实际下标
+        self._name_to_idx = {}       # 寄存器联动：tag → 通道下标（按名而非位置定位）
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -290,10 +292,61 @@ class PlotDialog(QDialog):
         for i, v in enumerate(vals):
             if not isinstance(v, (int, float)):
                 continue
-            ch = self._ensure_channel(i, names[i] if names else None)
+            pos_to_idx = getattr(self, "_pos_to_idx", None)
+            if pos_to_idx is None:    # 兼容不经 __init__ 构造的测试/旧对象
+                pos_to_idx = self._pos_to_idx = {}
+            idx = pos_to_idx.get(i)
+            if idx is None:
+                idx = len(self._channels)
+                pos_to_idx[i] = idx
+                self._ensure_channel(idx, names[i] if names else None)
+                ch = self._channels[idx]
+            else:
+                ch = self._channels[idx]
             ch["xs"].append(x)
             ch["ys"].append(v)
         self._sample_idx += 1
+
+    def feed_named_samples(self, samples):
+        """寄存器表联动喂入：按 tag 名定位/创建通道（与文本位置通道解耦），每响应一个采样点。
+        samples = [{"tag":..,"value":..}, ...]；非数值跳过。同一批样本（同一次 Modbus 响应）
+        共享同一个 X 坐标——否则一次响应里的多个寄存器会落在不同的采样点，波形横向错位。"""
+        if self._paused or not samples:
+            return
+        if self._x_time:
+            if self._t0 is None:
+                self._t0 = time.monotonic()
+            x = time.monotonic() - self._t0
+        else:
+            x = self._sample_idx
+        appended = False
+        for s in samples:
+            if self._append_named(s.get("tag"), s.get("value"), x=x, bump=False):
+                appended = True
+        if appended:                     # 本响应实际画了点才推进采样序号
+            self._sample_idx += 1
+
+    def _append_named(self, name, value, x=None, bump=True):
+        if not name or not isinstance(value, (int, float)):
+            return False
+        if x is None:                    # 兼容单样本调用（缺省时按旧逻辑自算 x）
+            if self._x_time:
+                if self._t0 is None:
+                    self._t0 = time.monotonic()
+                x = time.monotonic() - self._t0
+            else:
+                x = self._sample_idx
+        idx = self._name_to_idx.get(name)
+        if idx is None:
+            idx = len(self._channels)
+            self._name_to_idx[name] = idx
+            self._ensure_channel(idx, str(name))
+        ch = self._channels[idx]
+        ch["xs"].append(x)
+        ch["ys"].append(value)
+        if bump:
+            self._sample_idx += 1
+        return True
 
     def _ensure_channel(self, i, name=None):
         while len(self._channels) <= i:
@@ -389,6 +442,8 @@ class PlotDialog(QDialog):
             ch["cb"].setParent(None)
             ch["cb"].deleteLater()
         self._channels = []
+        self._pos_to_idx = {}
+        self._name_to_idx = {}
         self._sample_idx = 0
         self._t0 = None
         self._decode_buf = ""
@@ -449,7 +504,7 @@ class PlotDialog(QDialog):
         scroll.setFrameShape(QFrame.NoFrame)
         v.addWidget(scroll, 1)
         btn_close = QPushButton(
-            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(getattr(self.app, "_lang", "en"), "Close"))
         btn_close.setObjectName("PlotGhostBtn")
         btn_close.clicked.connect(dlg.accept)
         row = QHBoxLayout()

@@ -1,0 +1,78 @@
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from search_helper import find_spans, parse_hex_term  # noqa: E402
+
+
+class FindSpansTests(unittest.TestCase):
+    def test_plain_substring_and_case(self):
+        self.assertEqual(find_spans("Hello hello", "hel"), [(0, 3), (6, 9)])
+        # 默认大小写不敏感；显式 case_sensitive=True 只匹配小写
+        self.assertEqual(find_spans("Hello hello", "hel", case_sensitive=True), [(6, 9)])
+        self.assertEqual(find_spans("abc", ""), [])
+
+    def test_regex_mode(self):
+        self.assertEqual(find_spans("a1 b2 c3", r"[a-z]\d", mode="regex"),
+                         [(0, 2), (3, 5), (6, 8)])
+        # IGNORECASE 默认开：[a-z] 也匹配大写 A
+        self.assertEqual(find_spans("A1 b2", r"[a-z]\d", mode="regex"),
+                         [(0, 2), (3, 5)])
+        self.assertEqual(find_spans("A1 b2", r"[a-z]\d", mode="regex", case_sensitive=True),
+                         [(3, 5)])
+
+    def test_regex_catastrophic_backtracking_rejected(self):
+        self.assertEqual(find_spans("a" * 30, r"(a+)+$"), [])
+
+    def test_hex_mode_matches_spaced_or_compact(self):
+        # 渲染文本 'AA BB CC DD' 里找 b'\xBB\xCC' → 'BB CC' 一段（跨空格）
+        self.assertEqual(find_spans("AA BB CC DD", "BBCC", mode="hex"), [(3, 8)])
+        self.assertEqual(find_spans("AABBCC", "BBCC", mode="hex"), [(2, 6)])
+        # 字节间多空格也兼容（"AA  BB" 共 6 字符）
+        self.assertEqual(find_spans("AA  BB  CC", "AABB", mode="hex"), [(0, 6)])
+
+    def test_hex_invalid_term_returns_empty(self):
+        self.assertIsNone(parse_hex_term("xyz"))
+        self.assertEqual(find_spans("AA BB", "GG", mode="hex"), [])     # 非法字节
+        self.assertEqual(find_spans("AA BB", "010", mode="hex"), [])    # 奇数位
+
+    def test_spans_are_non_overlapping_and_ordered(self):
+        spans = find_spans("aaaa", "aa")
+        self.assertEqual(spans, [(0, 2), (2, 4)])
+
+    def test_hexdump_mode_skips_offset_and_ascii_columns(self):
+        # hexdump 三列格式：偏移(8hex)+两空格 | hex列 | ASCII列。
+        # 搜 '00' 会命中偏移列（00000000）和 ASCII 列，但 hex 模式 hexdump=True 必须只搜 hex 列。
+        # 纯 hex 列 '11 22' / '33 44' 不含 00 → 全不命中。
+        text = "00000000  11 22 |..|\n00000010  33 44 |..|"
+        self.assertEqual(find_spans(text, "00", mode="hex", hexdump=True), [])
+
+        # ASCII 列恰好是字面 '00'（两个 0x30 字节），hex 列是 30 30 → hex 模式不该命中
+        self.assertEqual(find_spans("00000000  30 30 |00|", "00", mode="hex", hexdump=True), [])
+
+        # 偏移列本身就是 00000000：非 hexdump 模式会命中，hexdump 模式排除
+        self.assertEqual(find_spans("00000000  30 30 |..|", "000000", mode="hex"), [(0, 6)])
+        self.assertEqual(find_spans("00000000  30 30 |..|", "000000", mode="hex", hexdump=True), [])
+
+    def test_hexdump_mode_still_matches_hex_bytes(self):
+        # 真字节仍命中，且 span 落在 hex 列（偏移列 10 字符之后）
+        text = "00000000  00 01 |..|"
+        spans = find_spans(text, "0001", mode="hex", hexdump=True)
+        self.assertEqual(len(spans), 1)
+        start, end = spans[0]
+        self.assertGreaterEqual(start, 10)
+        # 命中区间对应 '00 01'（含中间空格）
+        self.assertEqual(text[start:end], "00 01")
+        # 非 hexdump 模式对同文本行为不变（仍命中，但会连带偏移列）
+        self.assertGreaterEqual(len(find_spans(text, "0001", mode="hex")), 1)
+
+    def test_hexdump_mode_ignores_timestamp_lines(self):
+        # 时间戳/箭头行不以 8hex+双空格 开头 → 自动跳过，不被 hex 搜索误命中
+        text = "[2026/08/02 12:00:00.000] ← \n00000000  11 22 |..|"
+        self.assertEqual(find_spans(text, "000000", mode="hex", hexdump=True), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -152,7 +152,7 @@ def main():
     # 1. 按 tag 精确找已有 release（列表接口有分页，版本多后只扫首页会误判不存在）
     tag_path = urllib.parse.quote(tag, safe="")
     st, rel = api("GET", f"/releases/tags/{tag_path}", {"access_token": token})
-    if st == 404:
+    if st == 404 or (st == 200 and rel is None):
         rel = None
     elif st != 200 or not isinstance(rel, dict):
         die(f"按 tag 查询 release 失败：HTTP {st} {rel}")

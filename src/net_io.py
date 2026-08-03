@@ -76,6 +76,12 @@ def is_valid_ip(ip):
     return bool(ip) and not QHostAddress(str(ip).strip()).isNull()
 
 
+def is_local_ipv4(ip):
+    """是否可作为本地绑定地址；0.0.0.0 表示所有网卡。"""
+    value = str(ip or "").strip()
+    return value == "0.0.0.0" or value in local_ipv4_list()
+
+
 def _find_interface(ip):
     """按 IP 找对应网卡 QNetworkInterface（指定组播网卡用）；空/0.0.0.0 → None=默认路由。"""
     if not ip or ip == "0.0.0.0":

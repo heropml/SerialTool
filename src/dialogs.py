@@ -445,9 +445,12 @@ class InfoDialog(_DragFramelessMixin, QDialog):
     """themed info/error popup —— 替代 QMessageBox，与 CloseDialog/AboutDialog 风格统一。
     icon=✓(accent) 信息 / icon=✕(danger) 错误；标题 + 正文 + 单 OK 按钮，点击或 Esc 关闭。"""
 
+    ThirdAction = 2
+
     def __init__(self, title_text: str, body_text: str, ok_text: str = "OK",
                  is_error: bool = False, theme_id: str = THEME_DEFAULT, parent=None,
-                 confirm: bool = False, cancel_text: str = "Cancel", danger: bool = False):
+                 confirm: bool = False, cancel_text: str = "Cancel", danger: bool = False,
+                 third_text: str = None):
         super().__init__(parent)
         _flags = Qt.Dialog | Qt.FramelessWindowHint
         if sys.platform == "darwin":
@@ -517,6 +520,14 @@ class InfoDialog(_DragFramelessMixin, QDialog):
             self.btn_cancel.setMinimumWidth(120)
             self.btn_cancel.clicked.connect(self.reject)
             btn_row.addWidget(self.btn_cancel)
+        if third_text:
+            self.btn_third = QPushButton(third_text)
+            # Discard / tertiary action is not a destructive confirm; keep it neutral.
+            self.btn_third.setObjectName("DialogGhostBtn")
+            self.btn_third.setMinimumHeight(36)
+            self.btn_third.setMinimumWidth(120)
+            self.btn_third.clicked.connect(lambda: self.done(self.ThirdAction))
+            btn_row.addWidget(self.btn_third)
         btn_row.addWidget(self.btn_ok)
         btn_row.addStretch(1)
         # 默认按钮 / Enter 目标：危险确认（如删除）给「取消」并令其获焦，避免弹框后一按 Enter
@@ -534,7 +545,7 @@ class InfoDialog(_DragFramelessMixin, QDialog):
         outer.addWidget(self._card)
         self.setStyleSheet(localize_qss(self._build_qss()))
         self.setMinimumWidth(360)
-        self.setMaximumWidth(520)
+        self.setMaximumWidth(620 if third_text else 520)
 
     def _build_qss(self):
         c = chrome_for(self._theme_id)
@@ -1098,6 +1109,11 @@ class MultiSendDialog(QDialog):
             self._groups[self._edit_idx]["items"] = [self._row_dict(r) for r in self._rows]
         self.app._ms_groups_changed()
 
+    def flush_pending(self):
+        """工程/配置保存前提交仍处于防抖窗口内的编辑。"""
+        if self._save_timer.isActive():
+            self._commit_now()
+
     def _reload_rows(self):
         for r in self._rows:
             r["frame"].setParent(None)
@@ -1436,6 +1452,11 @@ class KeywordHighlightDialog(QDialog):
         if 0 <= self._edit_idx < len(self.app._keyword_groups):
             self.app._keyword_groups[self._edit_idx]["rules"] = rules
         self.app._apply_keyword_rules()   # 存盘 + 刷新(若编辑的是生效分组即时见效)
+
+    def flush_pending(self):
+        """工程/配置保存前提交仍处于防抖窗口内的编辑。"""
+        if self._commit_timer.isActive():
+            self._commit_now()
 
     def _reload_rows(self):
         """清掉现有行，载入当前编辑分组的规则。"""
@@ -1943,6 +1964,22 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.app._seq_rules = steps
         self.app.settings.setValue("sequence_rules", json.dumps(steps, ensure_ascii=False))
         self.app.settings.sync()
+
+    def flush_pending(self):
+        """Flush debounced step edits before project/config save.
+
+        Loop count is synced silently only when valid; invalid/empty values are
+        left for editingFinished / run paths so opening the project menu alone
+        does not toast a validation error.
+        """
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._commit()
+        loops = self._to_int(self.ed_loops.text(), 0)
+        if loops < 1:
+            return
+        self.app.settings.setValue("sequence_loops", loops)
+        self.app.settings.setValue("sequence_stop_on_fail", self.cb_stopfail.isChecked())
 
     def reload_rows(self):
         self._loading = True

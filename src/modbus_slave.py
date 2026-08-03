@@ -43,6 +43,56 @@ def _u16(data: bytes, off: int) -> int:
     return (data[off] << 8) | data[off + 1]
 
 
+def lrc8(data: bytes) -> int:
+    """Modbus ASCII 纵向冗余校验：8 位二进制补码和（覆盖 addr+PDU），返回 0..255。"""
+    return (-sum(data)) & 0xFF
+
+
+def ascii_wrap(body: bytes) -> bytes:
+    """addr+PDU → 完整 ASCII 帧 ``:`` + hex(addr+pdu+lrc).upper() + ``\\r\\n``。"""
+    chunk = body + bytes([lrc8(body)])
+    return b":" + chunk.hex().upper().encode("ascii") + b"\r\n"
+
+
+def parse_ascii_frame(frame: bytes):
+    """完整 ASCII 帧 → (addr, func, data) 或 None（非 ASCII / LRC 错 / 畸形）。
+    data = func 之后、LRC 之前的 payload。frame 含 ``:`` 与 CRLF；末尾 CRLF 容错缺失。"""
+    if len(frame) < 4 or frame[0:1] != b":":
+        return None
+    body = frame[1:].rstrip(b"\r\n")
+    # ASCII 内容只能是偶数个十六进制字符，最少 addr+func+lrc = 3 字节 = 6 hex
+    if len(body) % 2 != 0 or len(body) < 6:
+        return None
+    try:
+        raw = bytes.fromhex(body.decode("ascii"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    payload, lrc = raw[:-1], raw[-1]
+    if lrc8(payload) != lrc:
+        return None
+    return payload[0], payload[1], payload[2:]
+
+
+def iter_ascii_frames(buf: bytes):
+    """从字节流切出完整 ASCII 帧（``:`` 起、``\\n`` 止）。返回 (frames, remainder)。
+
+    ``:`` 不可能出现在 hex 内容里，故每个 ``:`` 必为帧首；未见到 ``\\n`` 的尾部原样保留等更多字节。
+    LRC 在切帧阶段不校验（坏帧交给 parse_ascii_frame → handle 返回 None 静默丢弃，与 RTU CRC 失败一致）。
+    """
+    frames = []
+    data = bytes(buf)
+    i = 0
+    while True:
+        start = data.find(b":", i)
+        if start < 0:
+            return frames, b""          # 无帧首：前导垃圾整体丢弃
+        end = data.find(b"\n", start)
+        if end < 0:
+            return frames, data[start:]  # 帧未完：保留从 ':' 起的尾部
+        frames.append(data[start:end + 1])
+        i = end + 1
+
+
 def expected_len(buf: bytes):
     """据功能码算「一个完整请求帧」的字节长度。
     返回 int=该帧长度；None=还需更多字节才能判断；-1=功能码无法识别（调用方改用 CRC 探测）。"""
@@ -151,17 +201,9 @@ class ModbusSlave:
         self.input = dict(input_regs or {})   # {int addr: int 0..65535}
 
     # ---- 解析一帧 → 响应字节（或 None=不响应）----
-    def handle(self, frame: bytes):
-        """frame=一个完整 RTU 帧。返回响应 bytes；CRC 错 / 非本机 / 广播(addr 0) 时返回 None。
-        广播帧仍会执行写（无响应）。"""
-        if len(frame) < 4:
-            return None
-        if crc16(frame[:-2]) != frame[-2:]:
-            return None                # CRC 不符 → 真实从机静默丢弃
-        addr, func = frame[0], frame[1]
-        if addr != 0 and addr != self.addr:
-            return None                # 不是发给本机
-        data = frame[2:-2]             # func 之后、crc 之前
+    def _respond(self, addr, func, data):
+        """按功能码执行，返回 ``addr+pdu`` 响应 body（不含校验/帧界）；广播或不应答返回 None。
+        RTU/ASCII 两种封装共用本核心：校验/帧界由各自 handle* 处理。"""
         try:
             pdu = self._exec(func, data)
         except ModbusException as e:
@@ -169,11 +211,33 @@ class ModbusSlave:
                 return None            # 广播不响应（异常也不回）
             pdu = bytes([func | 0x80, e.code])
         except (IndexError, ValueError):
-            return None                # 帧畸形（够 CRC 但字段不全）→ 不响应
+            return None                # 帧畸形（够校验但字段不全）→ 不响应
         if addr == 0:
             return None                # 广播：上面已执行写，但不回响应
-        body = bytes([self.addr]) + pdu
-        return body + crc16(body)
+        return bytes([self.addr]) + pdu
+
+    def handle(self, frame: bytes):
+        """frame=一个完整 RTU 帧。返回响应 bytes；CRC 错 / 非本机 / 广播(addr 0) 时返回 None。
+        广播帧仍会执行写（无响应）。"""
+        if len(frame) < 4 or crc16(frame[:-2]) != frame[-2:]:
+            return None                # CRC 不符 → 真实从机静默丢弃
+        addr, func = frame[0], frame[1]
+        if addr != 0 and addr != self.addr:
+            return None                # 不是发给本机
+        body = self._respond(addr, func, frame[2:-2])
+        return None if body is None else body + crc16(body)
+
+    def handle_ascii(self, frame: bytes):
+        """frame=一个完整 ASCII 帧（``:``..CRLF）。返回 ASCII 响应 bytes 或 None。
+        LRC 错 / 非本机 / 广播 时返回 None；广播仍执行写。"""
+        parsed = parse_ascii_frame(frame)
+        if parsed is None:
+            return None                # 非 ASCII 帧 / LRC 错 → 静默丢弃
+        addr, func, data = parsed
+        if addr != 0 and addr != self.addr:
+            return None
+        body = self._respond(addr, func, data)
+        return None if body is None else ascii_wrap(body)
 
     # ---- 按功能码执行，返回响应 PDU（func + data），异常抛 ModbusException ----
     def _exec(self, func, data):

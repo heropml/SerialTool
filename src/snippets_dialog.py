@@ -226,6 +226,12 @@ class SnippetsDialog(QDialog):
             self._save_timer.stop()
             self._commit_edit(reload=False)
 
+    def reload_cfg(self):
+        """工程/配置切换后按主窗口的新模板库重建列表，丢弃旧工程选中索引。"""
+        self._save_timer.stop()
+        self._cur = -1
+        self._reload_list()
+
     def _commit_edit(self, reload=True):
         if not (0 <= self._cur < len(self._items)):
             return

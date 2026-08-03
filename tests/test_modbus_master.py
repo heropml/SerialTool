@@ -420,5 +420,62 @@ class NormalizePollTests(unittest.TestCase):
         self.assertEqual(mm.normalize_poll({"period": 20})["period"], 20)
 
 
+class AsciiRequestTests(unittest.TestCase):
+    def test_ascii_read_holding_known_frame(self):
+        # 读 slave1 addr0 qty2：01 03 00 00 00 02，sum=06，LRC=FA
+        f = mm.build_ascii_request(1, 0x03, 0, 2)
+        self.assertEqual(f, b":010300000002FA\r\n")
+
+    def test_ascii_unit_range_matches_rtu(self):
+        for unit in (248, -1, 999):
+            with self.subTest(unit=unit), self.assertRaises(ValueError):
+                mm.build_ascii_request(unit, 0x03, 0, 1)
+
+    def test_ascii_round_trip_via_slave(self):
+        slave = ModbusSlave(addr=1, holding={0: 0x1234, 1: 0x5678})
+        resp = slave.handle_ascii(mm.build_ascii_request(1, 0x03, 0, 2))
+        self.assertEqual(resp, b":01030412345678E4\r\n")
+        result, consumed = mm.take_ascii_response(resp, 1, 0x03)
+        self.assertEqual(result, {"regs": [0x1234, 0x5678]})
+        self.assertEqual(consumed, len(resp))
+
+    def test_ascii_write_echo_round_trip(self):
+        slave = ModbusSlave(addr=2)
+        resp = slave.handle_ascii(mm.build_ascii_request(2, 0x06, 0x10, 0x1234))
+        result, _ = mm.take_ascii_response(resp, 2, 0x06)
+        self.assertEqual(result, {"echo": (0x10, 0x1234)})
+
+    def test_ascii_exception_response_raises(self):
+        # 非法功能码 0x41 → 异常 func 0xC1 code 01
+        from modbus_slave import ascii_wrap
+        bad = ascii_wrap(bytes([1, 0x41, 0, 0, 0, 1]))
+        resp = ModbusSlave(addr=1).handle_ascii(bad)
+        self.assertIsNotNone(resp)
+        with self.assertRaises(ModbusException) as ctx:
+            mm.take_ascii_response(resp, 1, 0x41)
+        self.assertEqual(ctx.exception.code, 0x01)
+
+    def test_ascii_lrc_error_raises_value_error(self):
+        # 改坏 LRC 末位 → take 抛 ValueError（坏帧）
+        bad = b":010300000002FB\r\n"
+        with self.assertRaises(ValueError):
+            mm.take_ascii_response(bad, 1, 0x03)
+
+    def test_ascii_unit_mismatch_raises(self):
+        resp = ModbusSlave(addr=2, holding={0: 1}).handle_ascii(mm.build_ascii_request(2, 0x03, 0, 1))
+        with self.assertRaises(ValueError):
+            mm.take_ascii_response(resp, 1, 0x03)   # 请求 unit=1 但响应来自 unit=2
+
+    def test_ascii_partial_returns_none(self):
+        self.assertIsNone(mm.take_ascii_response(b":0103", 1, 0x03))
+        self.assertIsNone(mm.take_ascii_response(b"garbage_no_colon", 1, 0x03))
+
+    def test_ascii_consumes_leading_garbage(self):
+        resp = ModbusSlave(addr=1, holding={0: 0x000A}).handle_ascii(mm.build_ascii_request(1, 0x03, 0, 1))
+        result, consumed = mm.take_ascii_response(b"XX\r\n" + resp, 1, 0x03)
+        self.assertEqual(result, {"regs": [0x000A]})
+        self.assertEqual(consumed, len(b"XX\r\n" + resp))
+
+
 if __name__ == "__main__":
     unittest.main()

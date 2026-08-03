@@ -256,6 +256,26 @@ class DashboardDialog(QDialog):
         中间数据不会继续喂入解析器的场景，避免恢复后把断点两侧残段误拼成一行。"""
         self._parser.reset()
 
+    def feed_named_samples(self, samples):
+        """寄存器表联动喂入：直接按 (tag, value[, unit]) 更新卡片，绕过文本解析。
+        与 feed() 共用 _values/_tiles；单位优先用阈值配置的，否则用样本带的。"""
+        if self._paused:
+            return
+        for s in samples:
+            name = s.get("tag")
+            val = s.get("value")
+            if not name or not isinstance(val, (int, float)):
+                continue
+            name = str(name)
+            if name not in self._tiles:
+                if len(self._tiles) >= _MAX_TILES:
+                    continue
+                self._ensure_tile(name)
+            self._values[name] = val
+            unit = s.get("unit") or ""
+            if unit:
+                self._tiles[name]["unit"] = str(unit)
+
     # ---------------- 卡片 ----------------
     def _ensure_tile(self, name):
         frame = QFrame()
@@ -291,7 +311,7 @@ class DashboardDialog(QDialog):
                 continue
             lo, hi, unit = self._thresholds.get(name, (None, None, ""))
             tile["lbl_val"].setText(_fmt(val))
-            tile["lbl_unit"].setText(unit or "")
+            tile["lbl_unit"].setText(unit or tile.get("unit", ""))
             tile["alert"] = ((lo is not None and val < lo)
                              or (hi is not None and val > hi))
             self._apply_tile_style(tile)
@@ -428,7 +448,7 @@ class DashboardDialog(QDialog):
         scroll.setFrameShape(QFrame.NoFrame)
         v.addWidget(scroll, 1)
         btn_close = QPushButton(
-            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(self.app._lang, "Close"))
+            {"zh": "关闭", "en": "Close", "zh_tw": "關閉"}.get(getattr(self.app, "_lang", "en"), "Close"))
         btn_close.setObjectName("PlotGhostBtn")
         btn_close.clicked.connect(dlg.accept)
         row = QHBoxLayout()

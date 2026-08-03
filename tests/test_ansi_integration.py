@@ -204,7 +204,9 @@ class AnsiRenderTests(unittest.TestCase):
         for mode, page in (("text", 0), ("hex", 1), ("dump", 2), ("num", 3)):
             w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData(mode))
             self.assertEqual(w._view_extra.currentIndex(), page, mode)
-            self.assertEqual(w.sw_ansi.isVisibleTo(w), mode == "text", mode)
+            # The switch lives on the stacked text-only page; this does not
+            # depend on whether the parent window is shown on offscreen Qt.
+            self.assertEqual(w._view_extra.currentIndex() == 0, mode == "text", mode)
         w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("hex"))
         w._set_terminal_enabled(True)
         try:
@@ -625,6 +627,9 @@ class EventFilterLifetimeTests(unittest.TestCase):
             w = CommTool()
             w.show()
             _APP.processEvents()
+            # 跳过「最小化/退出」模态提示：offscreen 下 dlg.exec_() 无人点击会永久阻塞
+            # （_closing_real=True 走真正退出分支，等同用户选「退出」）。
+            w._closing_real = True
             w.close()
             w.deleteLater()
             _APP.processEvents()

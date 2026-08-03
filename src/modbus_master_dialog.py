@@ -348,7 +348,15 @@ class ModbusMasterDialog(QDialog):
         self._dirty = True
         self.btn_apply.setEnabled(True)
 
+    def _scan_locked(self):
+        if getattr(self.app, "_device_scan_state", None) is None:
+            return False
+        self.app.toast(self.app._t("io_exclusive_busy"), error=True)
+        return True
+
     def _commit(self):
+        if self._scan_locked():
+            return
         import modbus_master
         self.app._mbm_rules = [modbus_master.normalize_poll(r) for r in self._collect()]
         self.app._mbm_save_rules()
@@ -372,6 +380,12 @@ class ModbusMasterDialog(QDialog):
         return True
 
     def _on_enable(self, checked):
+        if self._scan_locked():
+            self.cb_enable.blockSignals(True)
+            self.cb_enable.setChecked(bool(
+                self.app._device_scan_state["old_on"]))
+            self.cb_enable.blockSignals(False)
+            return
         # 停止轮询始终允许；但草稿未应用时不得从停止态启动看不见的旧规则。
         if checked and self._warn_apply_first():
             self.cb_enable.blockSignals(True)
@@ -394,6 +408,12 @@ class ModbusMasterDialog(QDialog):
         self.app._set_mbm_enabled(checked)
 
     def _on_variant(self, _idx):
+        if self._scan_locked():
+            self.cb_variant.blockSignals(True)
+            idx = self.cb_variant.findData(self.app._mbm_variant)
+            self.cb_variant.setCurrentIndex(idx if idx >= 0 else 0)
+            self.cb_variant.blockSignals(False)
+            return
         if self._warn_apply_first():
             self.cb_variant.blockSignals(True)
             idx = self.cb_variant.findData(self.app._mbm_variant)
@@ -409,6 +429,11 @@ class ModbusMasterDialog(QDialog):
         self.app._mbm_restart()
 
     def _on_echo(self, checked):
+        if self._scan_locked():
+            self.cb_echo.blockSignals(True)
+            self.cb_echo.setChecked(bool(self.app._mbm_echo))
+            self.cb_echo.blockSignals(False)
+            return
         if self._warn_apply_first():
             self.cb_echo.blockSignals(True)
             self.cb_echo.setChecked(bool(self.app._mbm_echo))
@@ -493,7 +518,8 @@ class ModbusMasterDialog(QDialog):
         cur = self.cb_variant.currentData()
         self.cb_variant.blockSignals(True)
         self.cb_variant.clear()
-        for data, key in (("", "mbm_variant_auto"), ("rtu", "mbm_variant_rtu"), ("tcp", "mbm_variant_tcp")):
+        for data, key in (("", "mbm_variant_auto"), ("rtu", "mbm_variant_rtu"),
+                          ("tcp", "mbm_variant_tcp"), ("ascii", "mbm_variant_ascii")):
             self.cb_variant.addItem(t(key), data)
         sel = cur if cur is not None else (getattr(self.app, "_mbm_variant", "") or "")
         idx = self.cb_variant.findData(sel)
