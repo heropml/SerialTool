@@ -5,6 +5,7 @@
 
     一条命令完成：改版本号 → 改 latest.json(url 指 Gitee) → 打包(folder 安装包 + onefile) →
     git 提交 → push github + gitee → 建 GitHub Release(--latest) → 发 Gitee Release。
+    两个 Release 的正文同用 docs/RELEASE_NOTES.md 全文，标题：CommTool vX.Y.Z。
     app「关于 → 检查更新」随后即可检测到新版本（国内走 Gitee、海外回退 GitHub）。
     macOS .dmg 仍由协作者在 Mac 上跑 release_macos.sh 补到同一 Release。
 
@@ -12,7 +13,13 @@
     新版本号，格式 X.Y.Z（如 1.1.4）。
 
 .PARAMETER Notes
-    本次更新说明，会写进 latest.json 和两个 Release 的说明。
+    本次更新的一句话摘要，写进 latest.json（app 升级弹窗显示）与 git 提交说明。
+    注意：Release 正文不用它，而是用 docs/RELEASE_NOTES.md 全文（与 Gitee 同一真源）。
+
+.PARAMETER GithubProxy
+    访问 GitHub 用的代理，支持 http:// 与 socks5://（如 http://127.0.0.1:7897）。省略时按
+    环境变量 → git config → 本机常见代理端口的顺序自动探测；显式传 none 表示直连。
+    Gitee 始终直连，不走代理。
 
 .PARAMETER Local
     只本地打包 + 提交，跳过 push 和 Release（用于试打包）。
@@ -33,6 +40,7 @@
 param(
     [Parameter(Mandatory, Position = 0)][string]$Version,
     [Parameter(Mandatory, Position = 1)][string]$Notes,
+    [string]$GithubProxy,
     [switch]$Local
 )
 
@@ -68,6 +76,74 @@ if (-not (Test-Path $Iscc)) { throw "找不到 Inno Setup 的 ISCC.exe" }
 $Gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
 if (-not $Gh) { $Gh = "C:\Program Files\GitHub CLI\gh.exe" }
 if (-not (Test-Path $Gh)) { throw "找不到 GitHub CLI(gh)，请先安装并 gh auth login" }
+
+# ---- GitHub 代理（国内直连 github.com 常被阻断；改走本机代理。Gitee 不走代理）----
+function Test-LocalPort([int]$Port) {
+    $c = [Net.Sockets.TcpClient]::new()
+    try   { return $c.ConnectAsync('127.0.0.1', $Port).Wait(300) }
+    catch { return $false }
+    finally { $c.Dispose() }
+}
+
+# 端口连得上不等于协议对得上：10808/1080/7891 惯例是 SOCKS 口，套 http:// 只会握手失败。
+# 所以候选表按端口惯例给协议，再用一个真实 HTTPS 请求验一遍，验不过就换下一个候选。
+function Test-ProxyReachesGithub([string]$Url) {
+    $client = $null
+    try {
+        $handler = [Net.Http.HttpClientHandler]::new()
+        $handler.Proxy = [Net.WebProxy]::new($Url)
+        $handler.UseProxy = $true
+        $client = [Net.Http.HttpClient]::new($handler)
+        $client.Timeout = [TimeSpan]::FromSeconds(8)
+        $req = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Head, 'https://github.com/')
+        $req.Headers.Add('User-Agent', 'CommTool-release')   # 不带 UA 时 GitHub 一律回 403
+        return $client.SendAsync($req).GetAwaiter().GetResult().IsSuccessStatusCode
+    } catch { return $false }
+    finally { if ($client) { $client.Dispose() } }
+}
+
+function Resolve-GithubProxy([string]$Want) {
+    if ($Want -eq 'none') { return '' }
+    if ($Want) { return $Want }
+    foreach ($u in @($env:HTTPS_PROXY, $env:HTTP_PROXY,
+                     (git config --get https.proxy), (git config --get http.proxy))) {
+        if ($u -and $u.Trim()) { return $u.Trim() }
+    }
+    $candidates = @(
+        @{ Port = 7897;  Scheme = 'http'   }   # Clash Verge 混合口
+        @{ Port = 7890;  Scheme = 'http'   }   # Clash 旧混合口
+        @{ Port = 10809; Scheme = 'http'   }   # v2rayN HTTP 口
+        @{ Port = 10808; Scheme = 'socks5' }   # v2rayN SOCKS 口
+        @{ Port = 7891;  Scheme = 'socks5' }   # Clash SOCKS 口
+        @{ Port = 1080;  Scheme = 'socks5' }   # 通用 SOCKS 口
+    )
+    foreach ($c in $candidates) {
+        if (-not (Test-LocalPort $c.Port)) { continue }
+        $url = '{0}://127.0.0.1:{1}' -f $c.Scheme, $c.Port
+        if (Test-ProxyReachesGithub $url) { return $url }
+    }
+    return ''
+}
+
+$GhProxy = if ($Local) { '' } else { Resolve-GithubProxy $GithubProxy }
+if (-not $Local) {
+    if ($GhProxy) { Write-Host "   GitHub 走代理 $GhProxy（Gitee 直连）" }
+    else          { Write-Host "   GitHub 直连：未探测到可用代理，国内可能连不上" -ForegroundColor Yellow }
+}
+
+# 只有 gh 和 push github 套代理，跑完还原环境变量，别让 Gitee 上传绕代理。
+function Invoke-Gh([string[]]$GhArgs) {
+    $oldHttps = $env:HTTPS_PROXY
+    $oldHttp  = $env:HTTP_PROXY
+    try {
+        $env:HTTPS_PROXY = $GhProxy
+        $env:HTTP_PROXY  = $GhProxy
+        & $Gh @GhArgs
+    } finally {
+        $env:HTTPS_PROXY = $oldHttps
+        $env:HTTP_PROXY  = $oldHttp
+    }
+}
 
 # ---- 1. 写版本号 ----
 Write-Host "① 写入版本号 $Version → src/version.py"
@@ -135,29 +211,44 @@ if ($Local) {
     return
 }
 
-# ---- 7. push 双远程（github 清代理直连、gitee 走 SSH）----
+# ---- 7. push 双远程（github 走代理、gitee 走 SSH）----
 Write-Host "⑦ push 到 github + gitee 的 $Branch…"
-git -c http.proxy= -c https.proxy= push github $Branch
-if ($LASTEXITCODE -ne 0) { throw "git push github 失败" }
+git -c http.proxy=$GhProxy -c https.proxy=$GhProxy push github $Branch
+if ($LASTEXITCODE -ne 0) {
+    throw "git push github 失败（国内直连常被阻断，可显式指定 -GithubProxy http://127.0.0.1:7897 或 socks5://127.0.0.1:10808）"
+}
 git push gitee $Branch
 if ($LASTEXITCODE -ne 0) { throw "git push gitee 失败" }
 
 # ---- 8. GitHub Release（--latest，传 安装包 + onefile）----
+#      文案沿用 v1.3.5 / v1.3.6 已发布的约定：标题 CommTool vX.Y.Z，正文用 docs/RELEASE_NOTES.md
+#      全文（与 Gitee 同一真源），不是 $Notes 那句摘要，否则 Release 页上只剩一行字。
 Write-Host "⑧ 创建 / 更新 GitHub Release $Tag（含两个 exe）…"
-$env:HTTPS_PROXY = ''; $env:HTTP_PROXY = ''
-& $Gh release view $Tag --repo $Repo 2>$null | Out-Null
+$NotesFile = Join-Path $Root 'docs\RELEASE_NOTES.md'
+if (-not (Test-Path $NotesFile)) { throw "缺少 docs/RELEASE_NOTES.md，无法生成 Release 正文" }
+if ([IO.File]::ReadAllText($NotesFile) -notlike "*$Version*") {
+    throw "docs/RELEASE_NOTES.md 里没出现 $Version，像是上一版的旧文案，先更新再发"
+}
+$RelTitle = "CommTool v$Version"
+Invoke-Gh @('release', 'view', $Tag, '--repo', $Repo) 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "   （Release $Tag 已存在 → 覆盖资产）"
-    & $Gh release upload $Tag --repo $Repo --clobber $SetupPath $OnefilePath
+    Write-Host "   （Release $Tag 已存在 → 同步标题/正文 + 覆盖资产）"
+    Invoke-Gh @('release', 'edit', $Tag, '--repo', $Repo,
+                '--title', $RelTitle, '--notes-file', $NotesFile)
+    if ($LASTEXITCODE -ne 0) { throw "GitHub Release 文案更新失败" }
+    Invoke-Gh @('release', 'upload', $Tag, '--repo', $Repo, '--clobber',
+                $SetupPath, $OnefilePath)
 } else {
-    & $Gh release create $Tag --repo $Repo --target $Branch --title "CommTool $Tag" `
-        --notes $Notes --latest $SetupPath $OnefilePath
+    Invoke-Gh @('release', 'create', $Tag, '--repo', $Repo, '--target', $Branch,
+                '--title', $RelTitle, '--notes-file', $NotesFile, '--latest',
+                $SetupPath, $OnefilePath)
 }
 if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 
 # ---- 9. Gitee Release（国内下载源；走 release_gitee.py，令牌读 scripts/.gitee_token）----
 Write-Host "⑨ 发 Gitee Release $Tag（国内下载源 + 在线升级）…"
 $env:PYTHONIOENCODING = 'utf-8'
+$env:HTTPS_PROXY = ''; $env:HTTP_PROXY = ''; $env:ALL_PROXY = ''   # Gitee 直连，别绕代理
 & py -3 (Join-Path $Root 'scripts\release_gitee.py') $Version
 if ($LASTEXITCODE -ne 0) { throw "Gitee Release 失败（检查 scripts/.gitee_token 与网络）" }
 

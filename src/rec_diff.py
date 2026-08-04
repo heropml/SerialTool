@@ -246,3 +246,49 @@ def rows_to_csv(rows):
             _cell(r["bytes_b"].hex(" ").upper()),
         ]))
     return "\n".join(out)
+
+
+def filter_rows(rows, kinds=None, direction=None, min_dt=None):
+    """Filter compare rows by kind set, direction, and |dt| threshold."""
+    kinds = set(kinds) if kinds else None
+    out = []
+    for row in rows or []:
+        if kinds is not None and row.get("kind") not in kinds:
+            continue
+        if direction:
+            d = row.get("dir_a") or row.get("dir_b")
+            if d != direction:
+                continue
+        if min_dt is not None:
+            raw_dt = row.get("dt")
+            if raw_dt is not None:
+                try:
+                    dt = abs(float(raw_dt))
+                except (TypeError, ValueError):
+                    dt = None
+                if dt is not None and dt < float(min_dt):
+                    continue
+        out.append(row)
+    return out
+
+
+def rows_to_jsonl(rows):
+    import json
+    lines = []
+    for row in rows or []:
+        ba = row.get("bytes_a") or b""
+        bb = row.get("bytes_b") or b""
+        rec = {
+            "kind": row.get("kind"),
+            "ia": row.get("ia"),
+            "ib": row.get("ib"),
+            "dir_a": row.get("dir_a"),
+            "dir_b": row.get("dir_b"),
+            "t_a": row.get("t_a"),
+            "t_b": row.get("t_b"),
+            "dt": row.get("dt"),
+            "bytes_a": bytes(ba).hex(" ").upper() if ba else "",
+            "bytes_b": bytes(bb).hex(" ").upper() if bb else "",
+        }
+        lines.append(json.dumps(rec, ensure_ascii=False))
+    return "\n".join(lines) + ("\n" if lines else "")

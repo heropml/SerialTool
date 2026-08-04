@@ -9,7 +9,8 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QAbstractItemView, QCheckBox, QScrollArea, QFrame)
+                             QAbstractItemView, QCheckBox, QComboBox, QLineEdit,
+                             QScrollArea, QFrame)
 from PyQt5.QtGui import QColor
 
 import rec_diff
@@ -69,6 +70,15 @@ class RecDiffDialog(QDialog):
         self.btn_cmp.setObjectName("PlotPrimaryBtn")
         self.btn_cmp.clicked.connect(self._on_compare)
         self.chk_only_diff = QCheckBox()
+        self.cb_dir_filter = QComboBox()
+        self.cb_dir_filter.addItem("", "")
+        self.cb_dir_filter.addItem("RX", "rx")
+        self.cb_dir_filter.addItem("TX", "tx")
+        self.cb_dir_filter.currentIndexChanged.connect(self._fill_table)
+        self.ed_min_dt = QLineEdit("")
+        self.ed_min_dt.setFixedWidth(64)
+        self.ed_min_dt.setPlaceholderText("|dt|")
+        self.ed_min_dt.editingFinished.connect(self._fill_table)
         self.chk_only_diff.setChecked(True)
         self.chk_only_diff.toggled.connect(self._fill_table)
         self.lbl_stat = QLabel()
@@ -82,6 +92,8 @@ class RecDiffDialog(QDialog):
         self.btn_help.clicked.connect(self._show_help)
         ops.addWidget(self.btn_cmp)
         ops.addWidget(self.chk_only_diff)
+        ops.addWidget(self.cb_dir_filter)
+        ops.addWidget(self.ed_min_dt)
         ops.addWidget(self.lbl_stat, 1)
         ops.addWidget(self.btn_export)
         ops.addWidget(self.btn_help)
@@ -138,8 +150,9 @@ class RecDiffDialog(QDialog):
         # 也是合法输入——「设备这次一条都没回」正是要比出来的差异，用事件数判会把它锁死。
         ready = bool(self._path_a and self._path_b)
         self.btn_cmp.setEnabled(ready)
+        # 按筛选后的行判禁用：筛到一行不剩时导出只会得到一个只有表头的文件。
         self.btn_export.setEnabled(self._result is not None
-                                   and bool(self._result["rows"]))
+                                   and bool(self._filtered_rows()))
 
     # ---------------- 比较 ----------------
     def _on_compare(self):
@@ -149,14 +162,29 @@ class RecDiffDialog(QDialog):
         self._fill_table()
         self._sync_controls()
 
+    def _filtered_rows(self):
+        rows = list(self._result["rows"] if self._result else [])
+        if self.chk_only_diff.isChecked():
+            rows = [r for r in rows if r["kind"] != rec_diff.SAME]
+        direction = self.cb_dir_filter.currentData() if hasattr(self, "cb_dir_filter") else ""
+        min_dt = None
+        if hasattr(self, "ed_min_dt"):
+            raw = (self.ed_min_dt.text() or "").strip()
+            if raw:
+                try:
+                    min_dt = float(raw)
+                except ValueError:
+                    min_dt = None
+        if direction or min_dt is not None:
+            rows = rec_diff.filter_rows(rows, direction=direction or None, min_dt=min_dt)
+        return rows
+
     def _fill_table(self):
         t = self.app._t
         self.table.setRowCount(0)
         if self._result is None:
             return
-        rows = self._result["rows"]
-        if self.chk_only_diff.isChecked():
-            rows = [r for r in rows if r["kind"] != rec_diff.SAME]
+        rows = self._filtered_rows()
         shown = rows[:_MAX_ROWS]
         c = chrome_for(self.app._theme_id())
         # 差异配色跟随主题：改动用强调色、单边缺失用告警色，同 SAME 行不上色
@@ -191,8 +219,14 @@ class RecDiffDialog(QDialog):
                     item.setForeground(tint[r["kind"]])
                 self.table.setItem(i, col, item)
         st = self._result["stats"]
-        parts = [t("rd_stat", same=st["same"], diff=st["diff"],
-                   a=st["only_a"], b=st["only_b"])]
+        # 计数按当前筛选后的行统计：否则筛完表变短、汇总数字不变，两边矛盾。
+        seen = {rec_diff.SAME: 0, rec_diff.DIFF: 0,
+                rec_diff.ONLY_A: 0, rec_diff.ONLY_B: 0}
+        for r in rows:
+            if r["kind"] in seen:
+                seen[r["kind"]] += 1
+        parts = [t("rd_stat", same=seen[rec_diff.SAME], diff=seen[rec_diff.DIFF],
+                   a=seen[rec_diff.ONLY_A], b=seen[rec_diff.ONLY_B])]
         if st["identical"]:
             parts.append(t("rd_identical"))
         if abs(st["max_dt"]) > 0.0005:
@@ -202,6 +236,7 @@ class RecDiffDialog(QDialog):
         if len(rows) > _MAX_ROWS:
             parts.append(t("rd_truncated", n=_MAX_ROWS, total=len(rows)))
         self.lbl_stat.setText("  ·  ".join(parts))
+        self._sync_controls()          # 筛选变化会改写可导出行数
 
     @staticmethod
     def _hex_cell(data, direction):
@@ -218,13 +253,23 @@ class RecDiffDialog(QDialog):
         t = self.app._t
         if self._result is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, t("rd_export"), "session_diff.csv",
-                                              t("rd_csv_filter"))
+        path, selected = QFileDialog.getSaveFileName(
+            self, t("rd_export"), "session_diff.csv",
+            t("rd_csv_filter") + ";;" + t("rd_jsonl_filter"))
         if not path:
             return
         try:
+            rows = self._filtered_rows()
+            if path.lower().endswith(".csv") and "jsonl" in (selected or "").lower():
+                path = path[:-4] + ".jsonl"
+            elif not path.lower().endswith((".csv", ".jsonl")):
+                path += ".jsonl" if "jsonl" in (selected or "").lower() else ".csv"
+            as_jsonl = path.lower().endswith(".jsonl")
             with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
-                f.write(rec_diff.rows_to_csv(self._result["rows"]))
+                if as_jsonl:
+                    f.write(rec_diff.rows_to_jsonl(rows))
+                else:
+                    f.write(rec_diff.rows_to_csv(rows))
             self.app.toast(t("rd_exported", path=path))
         except Exception as e:
             self.app.toast(t("rd_export_failed", e=e), error=True)

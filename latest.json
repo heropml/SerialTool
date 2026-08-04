@@ -5,5 +5,5 @@
     "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.3.7/CommTool_v1.3.7.dmg",
     "https://github.com/heropml/SerialTool/releases/download/comm-v1.3.7/CommTool_v1.3.7.dmg"
   ],
-  "notes": "具名连接预设：串口/网络参数、备注与自动重连策略可存为预设，支持最近使用、复制、删除、JSON 导入导出并随工程打包。自动化序列支持 ${name} 变量与回包提取，可绑定 CSV 数据集按行批量跑；测试报告新增 JUnit XML 并补充软件版本、起止时间、测试参数与关键收发帧，中途停止也可导出；状态栏统计增加包速率、包大小分布、超时次数与吞吐曲线。"
+  "notes": "Modbus 多从机模拟 + 异常码注入 / 动态寄存器 + 功能码 08/11/17/23；图表持久化与结构化回放（暂停 / 单步 / 倍速 / 定位）；会话差异筛选与 CSV/JSONL 导出；具名连接预设、序列变量与 CSV 数据驱动、JUnit 测试报告、收发统计与诊断增强。"
 }

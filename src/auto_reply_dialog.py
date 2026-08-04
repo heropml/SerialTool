@@ -966,6 +966,27 @@ class AutoReplyDialog(QDialog):
             lambda *_: self._show_help_dlg(t("ar_modbus_help_title"), t("ar_modbus_help")))
         top.addWidget(btn_help)
         v.addLayout(top)
+        adv = QHBoxLayout()
+        adv.addWidget(QLabel(t("ar_modbus_exc_code")))
+        ed_exc_code = QLineEdit(str((cfg.get("exception") or {}).get("code", "")))
+        ed_exc_code.setFixedWidth(48)
+        adv.addWidget(ed_exc_code)
+        cb_exc_on = QCheckBox(t("ar_modbus_exc_on"))
+        cb_exc_on.setChecked(bool((cfg.get("exception") or {}).get("enabled")))
+        adv.addWidget(cb_exc_on)
+        adv.addStretch(1)
+        v.addLayout(adv)
+        slaves_hint = QLabel(t("ar_modbus_slaves_hint"))
+        slaves_hint.setWordWrap(True)
+        slaves_hint.setObjectName("ArCsHint")
+        v.addWidget(slaves_hint)
+        ed_slaves_json = QPlainTextEdit()
+        ed_slaves_json.setPlaceholderText('[{\"addr\":1,\"holding\":{\"0\":1}},{\"addr\":2}]')
+        ed_slaves_json.setFixedHeight(72)
+        if isinstance(cfg.get("slaves"), list) and cfg.get("slaves"):
+            import json as _json
+            ed_slaves_json.setPlainText(_json.dumps(cfg.get("slaves"), ensure_ascii=False))
+        v.addWidget(ed_slaves_json)
 
         # 表头
         hdr = QHBoxLayout()
@@ -1099,6 +1120,38 @@ class AutoReplyDialog(QDialog):
                 if val is None:
                     continue
                 out[space][str(start + off)] = bool(val) if is_bool else (val & 0xFFFF)
+        _exc_code = _parse_int(ed_exc_code.text(), None)
+        if _exc_code is None:
+            _exc_code = 4
+        _exc_prev = cfg.get("exception")
+        if not isinstance(_exc_prev, dict):
+            _exc_prev = {}
+        # mode/n/funcs/addrs have no widget here; carry them over untouched.
+        out["exception"] = {
+            "enabled": bool(cb_exc_on.isChecked()),
+            "code": int(_exc_code),
+            "mode": _exc_prev.get("mode", "always"),
+            "n": _exc_prev.get("n", 1),
+            "funcs": _exc_prev.get("funcs") or [],
+            "addrs": _exc_prev.get("addrs") or [],
+        }
+        out["dynamics"] = cfg.get("dynamics") if isinstance(cfg.get("dynamics"), list) else []
+        # server_id has no widget either; dropping it here would silently
+        # reset a project-file value back to the default.
+        if cfg.get("server_id"):
+            out["server_id"] = cfg["server_id"]
+        raw_slaves = (ed_slaves_json.toPlainText() or "").strip()
+        if raw_slaves:
+            import json as _json
+            try:
+                parsed = _json.loads(raw_slaves)
+            except Exception:
+                parsed = None
+            # 能解析但不是数组也算非法：否则会静默丢掉原有的多从机配置且无提示。
+            if not isinstance(parsed, list):
+                self.app.toast(t("ar_modbus_slaves_bad"), error=True)
+                return
+            out["slaves"] = parsed
         self.app._set_ar_modbus(out)
         self._update_modbus_btn()
 

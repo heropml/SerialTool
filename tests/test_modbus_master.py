@@ -6,7 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from modbus_slave import crc16, ModbusException, ModbusSlave  # noqa: E402
-import modbus_master as mm  # noqa: E402
+import modbus_master as mm
+import modbus_slave  # noqa: E402
 
 
 class BuildRequestTests(unittest.TestCase):
@@ -475,6 +476,31 @@ class AsciiRequestTests(unittest.TestCase):
         result, consumed = mm.take_ascii_response(b"XX\r\n" + resp, 1, 0x03)
         self.assertEqual(result, {"regs": [0x000A]})
         self.assertEqual(consumed, len(b"XX\r\n" + resp))
+
+
+class ModbusMasterP1Tests(unittest.TestCase):
+    def test_build_parse_fc08(self):
+        req = mm.build_rtu_request(1, 8, 0, 0xABCD)
+        self.assertEqual(req[1], 8)
+        pdu = bytes([8, 0, 0, 0xAB, 0xCD])
+        self.assertEqual(mm.parse_pdu(8, pdu)["diag"], (0, 0xABCD))
+
+    def test_build_parse_fc23(self):
+        req = mm.build_rtu_request(
+            1, 0x17, 0,
+            {"read_addr": 0, "read_qty": 2, "write_addr": 10, "write_vals": [1, 2]})
+        self.assertEqual(req[1], 0x17)
+        s = modbus_slave.ModbusSlave(addr=1, holding={0: 7, 1: 8})
+        resp = s.handle(req)
+        self.assertEqual(mm.parse_pdu(0x17, resp[1:-2])["regs"], [7, 8])
+        self.assertEqual(s.holding[10], 1)
+        self.assertEqual(s.holding[11], 2)
+
+    def test_normalize_poll_new_funcs(self):
+        p = mm.normalize_poll({"func": 8, "wval": 5})
+        self.assertEqual(p["func"], 8)
+        p = mm.normalize_poll({"func": 0x0B})
+        self.assertEqual(p["func"], 0x0B)
 
 
 if __name__ == "__main__":

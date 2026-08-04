@@ -17,7 +17,9 @@ from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popup
 # 功能码下拉项：(code, i18n_key)。读 01-04 / 写单 05-06 / 写多 0F-10。
 FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
               (0x04, "mbm_f4"), (0x05, "mbm_f5"), (0x06, "mbm_f6"),
-              (0x0F, "mbm_f7"), (0x10, "mbm_f8")]
+              (0x0F, "mbm_f7"), (0x10, "mbm_f8"),
+              (0x08, "mbm_f8d"), (0x0B, "mbm_f11"),
+              (0x11, "mbm_f17"), (0x17, "mbm_f23")]
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)
 WRITE_MULTI = (0x0F, 0x10)
 
@@ -244,6 +246,16 @@ class ModbusMasterDialog(QDialog):
             qty_val = "" if qty_val is None else qty_val
         elif func0 in WRITE_MULTI:
             qty_val = ", ".join(str(x) for x in (rule.get("wvals") or []))
+        elif func0 == 0x17:
+            rq = rule.get("qty", 1)
+            wa = rule.get("write_addr")
+            if wa is None:
+                rw = rule.get("rw") or {}
+                wa = rw.get("write_addr", rule.get("addr", 0))
+            vals = rule.get("wvals") or []
+            if isinstance(vals, (list, tuple)):
+                vals = " ".join(str(x) for x in vals)
+            qty_val = "%s @ %s : %s" % (rq, wa, vals)
         else:
             qty_val = rule.get("wval")
             qty_val = "" if qty_val is None else qty_val
@@ -280,7 +292,10 @@ class ModbusMasterDialog(QDialog):
         btn_x.setFixedSize(26, 26)
         rec = {"w": r, "enable": cb, "name": ed_name, "unit": ed_unit, "func": cb_func,
                "addr": ed_addr, "qty": ed_qty, "period": ed_period,
-               "val": lbl_val, "st": lbl_st, "split": split}
+               "val": lbl_val, "st": lbl_st, "split": split,
+               # 08 的子功能没有控件（只能由 JSON 配），存下来原样带回 _collect，
+               # 否则一次应用就把它重置成 0（=回环诊断）。
+               "diag_sub": rule.get("diag_sub")}
 
         def _del():
             r.setParent(None)
@@ -329,16 +344,38 @@ class ModbusMasterDialog(QDialog):
         for rec in self._rows:
             code = rec["func"].currentData()
             field = rec["qty"].text().strip()
+            qty_field = field
+            wval_field = field
+            wvals_field = field
+            write_addr = rec["addr"].text().strip()
+            if code == 0x17:
+                raw = field
+                at, colon = raw.find("@"), raw.find(":")
+                if 0 <= at < colon:
+                    left, right = raw.split(":", 1)
+                    qty_part, wa_part = left.split("@", 1)
+                    qty_field = qty_part.strip()
+                    write_addr = wa_part.strip()
+                    wvals_field = right.strip()
+                else:
+                    toks = raw.replace(",", " ").split()
+                    qty_field = toks[0] if toks else "1"
+                    wvals_field = " ".join(toks[1:])
+                wval_field = wvals_field
             out.append({
                 "enabled": rec["enable"].isChecked(),
                 "name": rec["name"].text(),
                 "unit": rec["unit"].text().strip(),
                 "func": code,
                 "addr": rec["addr"].text().strip(),
-                "qty": field,      # 读类按数量解析
-                "wval": field,     # 写类按写值解析（normalize 按 func 取其一）
+                "qty": qty_field,
+                "wval": wval_field,
+                "wvals": wvals_field,
+                "write_addr": write_addr,
                 "period": rec["period"].text().strip(),
             })
+            if rec.get("diag_sub") is not None:
+                out[-1]["diag_sub"] = rec["diag_sub"]
         return out
 
     def _schedule(self):

@@ -10,6 +10,11 @@ PROJECT_FORMAT = "commtool-project"
 PROJECT_VERSION = 2
 SUPPORTED_PROJECT_VERSIONS = (1, 2)
 
+_PLOT_KEYS = (
+    "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
+    "plot_hex_header", "plot_maxpts", "plot_xaxis",
+)
+
 _DASHBOARD_KEYS = (
     "dash_mode", "dash_sep", "dash_regex", "dash_fields",
     "dash_header", "dash_thresholds",
@@ -86,6 +91,9 @@ def collect_project_resources(settings):
         "dashboard": {
             key: settings[key] for key in _DASHBOARD_KEYS if key in settings
         },
+        "plot": {
+            key: settings[key] for key in _PLOT_KEYS if key in settings
+        },
     }
 
 
@@ -98,6 +106,7 @@ def merge_project_resources(settings, resources):
     connection = resources.get("connection", {})
     automation = resources.get("automation", {})
     dashboard = resources.get("dashboard", {})
+    plot = resources.get("plot", {})
     mappings = (
         (device, "registers", "device_registers"),
         (device, "plot_tags", "device_plot_tags"),
@@ -115,6 +124,10 @@ def merge_project_resources(settings, resources):
         for key in _DASHBOARD_KEYS:
             if key in dashboard:
                 merged[key] = dashboard[key]
+    if isinstance(plot, dict):
+        for key in _PLOT_KEYS:
+            if key in plot:
+                merged[key] = plot[key]
     return merged
 
 

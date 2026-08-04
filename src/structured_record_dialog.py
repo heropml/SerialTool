@@ -26,6 +26,9 @@ class StructuredRecordDialog(QDialog):
         self._replay_started = 0.0
         self._replay_base = 0.0
         self._timer = QTimer(self)
+        self._replay_speed = 1.0
+        self._replay_paused = False
+        self._replay_elapsed = 0.0
         self._timer.setInterval(20)
         self._timer.timeout.connect(self._replay_tick)
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
@@ -42,6 +45,14 @@ class StructuredRecordDialog(QDialog):
         self.btn_clear = self._button("structured_clear", self._clear)
         self.btn_open = self._button("structured_open", self._open_csv)
         self.btn_save = self._button("structured_save", self._save_csv)
+        self.cb_replay_speed = QComboBox()
+        for label, val in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("5x", 5.0)):
+            self.cb_replay_speed.addItem(label, val)
+        self.cb_replay_speed.setCurrentIndex(1)
+        self.cb_replay_speed.currentIndexChanged.connect(self._on_replay_speed)
+        self.btn_replay_pause = QPushButton()
+        self.btn_replay_pause.setObjectName("PlotGhostBtn")
+        self.btn_replay_pause.clicked.connect(self._toggle_replay_pause)
         self.btn_replay = self._button("structured_replay", self._toggle_replay)
         self.ed_search = QLineEdit()
         self.ed_search.textChanged.connect(self.refresh_rows)
@@ -51,7 +62,8 @@ class StructuredRecordDialog(QDialog):
         self.cb_source.addItem("Protocol", "protocol")
         self.cb_source.currentIndexChanged.connect(self.refresh_rows)
         for button in (self.btn_record, self.btn_clear, self.btn_open,
-                       self.btn_save, self.btn_replay):
+                       self.btn_save, self.cb_replay_speed,
+                       self.btn_replay_pause, self.btn_replay):
             top.addWidget(button)
         top.addStretch(1)
         top.addWidget(self.cb_source)
@@ -124,15 +136,44 @@ class StructuredRecordDialog(QDialog):
             return
         self.app.toast(self.app._t("structured_saved", count=count))
 
-    def _toggle_replay(self):
-        if self._timer.isActive():
+    def _on_replay_speed(self, *_):
+        import time
+        new_speed = float(self.cb_replay_speed.currentData() or 1.0)
+        new_speed = max(0.01, new_speed)
+        if self._timer.isActive() or self._replay_paused:
+            now = time.monotonic()
+            # Keep media elapsed stable across speed changes.
+            self._replay_started = now - (self._replay_elapsed / new_speed)
+        self._replay_speed = new_speed
+
+    def _toggle_replay_pause(self):
+        import time
+        if not self._timer.isActive() and not self._replay_paused:
+            return
+        if self._replay_paused:
+            self._replay_speed = max(0.01, float(self.cb_replay_speed.currentData() or 1.0))
+            self._replay_started = time.monotonic() - (self._replay_elapsed / self._replay_speed)
+            self._replay_paused = False
+            self._timer.start()
+        else:
+            self._replay_paused = True
             self._timer.stop()
+        self._sync_state()
+
+    def _toggle_replay(self):
+        # Active or paused: stop (do not restart from zero while paused).
+        if self._timer.isActive() or self._replay_paused:
+            self._timer.stop()
+            self._replay_paused = False
             self._sync_state()
             return
         if not self._replay_rows:
             return
         import time
         self._replay_index = 0
+        self._replay_paused = False
+        self._replay_elapsed = 0.0
+        self._replay_speed = float(self.cb_replay_speed.currentData() or 1.0)
         self._replay_started = time.monotonic()
         self._replay_base = self._replay_rows[0]["timestamp"]
         self._timer.start()
@@ -140,7 +181,10 @@ class StructuredRecordDialog(QDialog):
 
     def _replay_tick(self):
         import time
-        elapsed = time.monotonic() - self._replay_started
+        if self._replay_paused:
+            return
+        elapsed = (time.monotonic() - self._replay_started) * self._replay_speed
+        self._replay_elapsed = elapsed
         while self._replay_index < len(self._replay_rows):
             row = self._replay_rows[self._replay_index]
             if row["timestamp"] - self._replay_base > elapsed:
@@ -186,8 +230,11 @@ class StructuredRecordDialog(QDialog):
     def _sync_state(self):
         self.btn_record.setText(self.app._t(
             "structured_stop" if self.recorder.recording else "structured_start"))
+        self.btn_replay_pause.setText(self.app._t(
+            "structured_replay_resume" if self._replay_paused else "structured_replay_pause"))
+        replaying = self._timer.isActive() or self._replay_paused
         self.btn_replay.setText(self.app._t(
-            "structured_replay_stop" if self._timer.isActive() else "structured_replay"))
+            "structured_replay_stop" if replaying else "structured_replay"))
         self.lbl_status.setText(self.app._t(
             "structured_status", count=len(self.recorder.rows),
             shown=len(self._visible_rows)))
@@ -276,4 +323,8 @@ class StructuredRecordDialog(QDialog):
 
     def closeEvent(self, event):
         self._timer.stop()
+        # 对话框是单实例，关闭即结束回放会话；不清暂停标志的话，
+        # 重开后按钮会显示成「继续/停止回放」的假活动态。
+        self._replay_paused = False
+        self._replay_elapsed = 0.0
         super().closeEvent(event)

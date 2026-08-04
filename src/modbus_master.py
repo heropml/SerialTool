@@ -18,7 +18,7 @@ from modbus_slave import crc16, _u16, ModbusException, lrc8, ascii_wrap, parse_a
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)     # 01 线圈 / 02 离散输入 / 03 保持 / 04 输入寄存器
 WRITE_SINGLE = (0x05, 0x06)               # 05 写单线圈 / 06 写单寄存器
 WRITE_MULTI = (0x0F, 0x10)                # 0F 写多线圈 / 10 写多寄存器（写值为列表）
-SUPPORTED_FUNCS = READ_FUNCS + WRITE_SINGLE + WRITE_MULTI
+SUPPORTED_FUNCS = READ_FUNCS + WRITE_SINGLE + WRITE_MULTI + (0x08, 0x0B, 0x11, 0x17)
 MAX_TCP_MBAP_LENGTH = 254                  # Unit(1) + 最大 PDU(253)
 
 
@@ -123,6 +123,64 @@ def _build_pdu(func, addr, qty_or_val):
                 bits[i // 8] |= (1 << (i % 8))
         return bytes(bytearray([func, (addr >> 8) & 0xFF, addr & 0xFF,
                                 (qty >> 8) & 0xFF, qty & 0xFF, (qty + 7) // 8]) + bits)
+    if func == 0x08:
+        # Slave simulator only implements subfunction 0 (Return Query Data).
+        # Non-zero sub is still buildable so hosts can test Illegal Value.
+        if isinstance(qty_or_val, (list, tuple)) and len(qty_or_val) >= 2:
+            sub = _exact_int(qty_or_val[0], "diag subfunction must be an integer")
+            data = _exact_int(qty_or_val[1], "diag data must be an integer")
+        else:
+            sub = 0
+            data = _exact_int(
+                qty_or_val if qty_or_val is not None else 0,
+                "diag data must be an integer")
+        if not 0 <= sub <= 0xFFFF or not 0 <= data <= 0xFFFF:
+            raise ValueError("diag fields must be 0..65535")
+        return bytes([func, (sub >> 8) & 0xFF, sub & 0xFF,
+                      (data >> 8) & 0xFF, data & 0xFF])
+    if func in (0x0B, 0x11):
+        return bytes([func])
+    if func == 0x17:
+        if isinstance(qty_or_val, dict):
+            ra = _exact_int(qty_or_val.get("read_addr", addr),
+                            "read address must be an integer")
+            rq = _exact_int(qty_or_val.get("read_qty", 1),
+                            "read quantity must be an integer")
+            wa = _exact_int(qty_or_val.get("write_addr", addr),
+                            "write address must be an integer")
+            seq = qty_or_val.get("write_vals") or qty_or_val.get("wvals") or []
+        elif isinstance(qty_or_val, (list, tuple)) and len(qty_or_val) >= 4:
+            ra = _exact_int(qty_or_val[0], "read address must be an integer")
+            rq = _exact_int(qty_or_val[1], "read quantity must be an integer")
+            wa = _exact_int(qty_or_val[2], "write address must be an integer")
+            seq = qty_or_val[3]
+        else:
+            raise ValueError("FC23 requires read/write fields")
+        if not isinstance(seq, (list, tuple)):
+            seq = [seq]
+        vals = [_exact_int(x, "register values must be integers") for x in seq]
+        if not 1 <= rq <= 125:
+            raise ValueError("FC23 read quantity must be 1..125")
+        if not 1 <= len(vals) <= 121:
+            raise ValueError("FC23 write quantity must be 1..121")
+        if any(v < 0 or v > 0xFFFF for v in vals):
+            raise ValueError("register values must be 0..65535")
+        if not 0 <= ra <= 0xFFFF or not 0 <= wa <= 0xFFFF:
+            raise ValueError("address must be 0..65535")
+        _check_address_span(ra, rq)
+        _check_address_span(wa, len(vals))
+        wq = len(vals)
+        body = bytearray([
+            func,
+            (ra >> 8) & 0xFF, ra & 0xFF,
+            (rq >> 8) & 0xFF, rq & 0xFF,
+            (wa >> 8) & 0xFF, wa & 0xFF,
+            (wq >> 8) & 0xFF, wq & 0xFF,
+            wq * 2,
+        ])
+        for v in vals:
+            body += bytes([(v >> 8) & 0xFF, v & 0xFF])
+        return bytes(body)
     raise ValueError("unsupported function 0x%02X" % func)
 
 
@@ -193,6 +251,31 @@ def parse_pdu(req_func, pdu):
         if len(pdu) != 5:
             raise ValueError("bad write echo length")
         return {"echo": (_u16(pdu, 1), _u16(pdu, 3))}
+    if func == 0x08:
+        if len(pdu) != 5:
+            raise ValueError("bad diagnostics response length")
+        return {"diag": (_u16(pdu, 1), _u16(pdu, 3))}
+    if func == 0x0B:
+        if len(pdu) != 5:
+            raise ValueError("bad event-counter response length")
+        return {"status": _u16(pdu, 1), "event_count": _u16(pdu, 3)}
+    if func == 0x11:
+        if len(pdu) < 2:
+            raise ValueError("short server-id response")
+        bc = pdu[1]
+        if len(pdu) != 2 + bc or bc < 2:
+            raise ValueError("bad server-id byte count")
+        payload = pdu[2:]
+        run = bool(payload[-1] == 0xFF) if payload else False
+        server_id = bytes(payload[:-1]) if len(payload) > 1 else b""
+        return {"server_id": server_id, "run": run, "additional": b""}
+    if func == 0x17:
+        if len(pdu) < 2:
+            raise ValueError("short FC23 response")
+        bc = pdu[1]
+        if bc % 2 or len(pdu) != 2 + bc:
+            raise ValueError("bad FC23 byte count")
+        return {"regs": [_u16(pdu, 2 + i * 2) for i in range(bc // 2)]}
     raise ValueError("unsupported response function 0x%02X" % func)
 
 
@@ -203,7 +286,14 @@ def rtu_normal_len(req_func, qty):
     if req_func in (0x01, 0x02):
         return 5 + (_read_qty(req_func, qty) + 7) // 8         # unit+func+bc + ceil(qty/8) + crc2
     if req_func in WRITE_SINGLE or req_func in WRITE_MULTI:
-        return 8                                               # unit+func+addr2+(值/数量)2 + crc2
+        return 8
+    if req_func in (0x08, 0x0B):
+        return 8
+    if req_func == 0x11:
+        # Variable Server ID; use RTU ADU upper bound for timeout budgeting.
+        return 256
+    if req_func == 0x17:
+        return 5 + _read_qty(0x03, qty) * 2
     return None
 
 
@@ -225,6 +315,17 @@ def take_rtu_response(buf, req_unit, req_func, qty):
             raise ValueError("crc error")
         parse_pdu(req_func, frame[1:-2])              # 必抛 ModbusException
         raise ValueError("unreachable")
+    if req_func == 0x11:
+        if len(buf) < 3:
+            return None
+        bc = buf[2]
+        ln = 3 + bc + 2
+        if len(buf) < ln:
+            return None
+        frame = bytes(buf[:ln])
+        if crc16(frame[:-2]) != frame[-2:]:
+            raise ValueError("crc error")
+        return parse_pdu(req_func, frame[1:-2]), ln
     ln = rtu_normal_len(req_func, qty)
     if ln is None:
         raise ValueError("unsupported function 0x%02X" % req_func)
@@ -362,6 +463,9 @@ def normalize_poll(rec):
     addr = _bounded(rec.get("addr", 0), 0, 0xFFFF)
     period = _bounded(rec.get("period", 1000), 20, 0x7FFFFFFF)  # QTimer interval 是有符号 int
     wval, wvals = 0, []
+    diag_sub, diag_data = 0, 0
+    rw = None
+    write_addr = None
     if func in READ_FUNCS:
         try:
             qty = _read_qty(func, rec.get("qty", 1))
@@ -370,7 +474,57 @@ def normalize_poll(rec):
     elif func in WRITE_SINGLE:
         qty = 1
         wval = _write_value(rec.get("wval"), func)
-    else:                                          # WRITE_MULTI：写值列表，qty=列表长度
+    elif func == 0x08:
+        qty = 1
+        # Missing -> 0; present-but-invalid -> None (caller must reject).
+        if "diag_sub" not in rec or rec.get("diag_sub") == "":
+            diag_sub = 0                # 没配 → 子功能 0（回环诊断）
+        else:
+            # 配了就必须合法。None 是上一轮规范化留下的“非法”标记，
+            # 不能在下一轮静默变回 0：那会把被拒的规则变成一条能发的别的规则。
+            diag_sub = _bounded(rec.get("diag_sub"), 0, 0xFFFF)
+        has_data = ("wval" in rec) or ("diag_data" in rec)
+        raw_data = rec.get("wval", rec.get("diag_data", 0))
+        if not has_data:
+            diag_data = 0
+        elif raw_data in (None, ""):
+            diag_data = None
+        else:
+            diag_data = _bounded(raw_data, 0, 0xFFFF)
+        wval = diag_data
+    elif func in (0x0B, 0x11):
+        qty = 1
+    elif func == 0x17:
+        try:
+            rq = _read_qty(0x03, rec.get("qty", 1))
+        except ValueError:
+            rq = None
+        raw = rec.get("wvals")
+        if raw in (None, "", []):
+            raw = rec.get("wval", "")
+        vals = _vals(raw)
+        vals = vals if len(vals) <= 121 and all(0 <= x <= 0xFFFF for x in vals) else []
+        wvals = vals
+        # “没配过”才能回退到读地址（兼容无write_addr 的旧配置）；
+        # “配了但不合法”必须保持 None 让上层报错——否则重新规范化一次
+        # （存盘/重载）就会把它静默变成往读地址写，且 normalize 不幂等。
+        has_wa = "write_addr" in rec or (
+            isinstance(rec.get("rw"), dict) and "write_addr" in rec["rw"])
+        raw_wa = rec.get("write_addr")
+        if raw_wa is None and isinstance(rec.get("rw"), dict):
+            raw_wa = rec["rw"].get("write_addr")
+        if raw_wa is None and not has_wa:
+            raw_wa = addr if addr is not None else 0
+        wa = _bounded(raw_wa, 0, 0xFFFF) if raw_wa is not None else None
+        write_addr = wa
+        qty = rq
+        rw = {
+            "read_addr": addr,
+            "read_qty": rq,
+            "write_addr": wa,
+            "write_vals": wvals,
+        }
+    else:
         raw = rec.get("wvals")
         if raw in (None, "", []):
             raw = rec.get("wval", "")
@@ -391,4 +545,8 @@ def normalize_poll(rec):
         "enabled": _as_bool(rec.get("enabled", True)),
         "wval": wval,
         "wvals": wvals,
+        "diag_sub": diag_sub,
+        "diag_data": diag_data,
+        "write_addr": write_addr,
+        "rw": rw,
     }

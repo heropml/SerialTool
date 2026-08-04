@@ -483,7 +483,7 @@ class CommTool(QMainWindow):
         self._ar_sm_queue = deque() # C8：pending 期间收到的完整帧 FIFO（有界，保持收帧顺序）
         self._ar_sm_draining = False # C8：FIFO 同步排空重入保护
         self._ar_modbus = self._load_ar_modbus()     # B4 Modbus RTU 从机配置（全局；on/addr/寄存器表）
-        self._modbus = modbus_slave.slave_from_config(self._ar_modbus)  # 运行态从机模型（主机写会改它）
+        self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)  # 运行态从机模型（主机写会改它）
         self._modbus_buffers = {}                    # TCP Server 每客户端独立半包，防止并发连接串流
         # Modbus 主机轮询（master/poll）：规则 + 总开关 + 变体；运行态半双工调度
         self._mbm_rules = self._load_mbm_rules()
@@ -6626,23 +6626,51 @@ class CommTool(QMainWindow):
         variant = str(cfg.get("variant", "rtu") or "rtu").lower()
         if variant not in ("rtu", "ascii"):
             variant = "rtu"
-        return {
+        slaves_in = cfg.get("slaves")
+        slaves_out = []
+        if isinstance(slaves_in, list) and slaves_in:
+            for item in slaves_in:
+                if not isinstance(item, dict):
+                    continue
+                entry = {
+                    "addr": max(1, min(247, self._ar_to_int(item.get("addr", 1)) or 1)),
+                    "coils": _regmap(item.get("coils"), True),
+                    "discrete": _regmap(item.get("discrete"), True),
+                    "holding": _regmap(item.get("holding"), False),
+                    "input": _regmap(item.get("input"), False),
+                    # 与顶层同标准校类型：exception 传 list 会在 normalize_exception_policy 里抛
+                    # AttributeError，dynamics 传 dict 会静默变成 0 条规则。
+                    "dynamics": (item.get("dynamics")
+                                 if isinstance(item.get("dynamics"), list) else []),
+                    "exception": (item.get("exception")
+                                  if isinstance(item.get("exception"), dict) else {}),
+                }
+                # Omit server_id entirely so the slave inherits the top-level one.
+                if item.get("server_id"):
+                    entry["server_id"] = item["server_id"]
+                slaves_out.append(entry)
+        base = {
             "on": bool(cfg.get("on", False)),
-            # 从机地址限制为 1..247（0=广播、248-255 保留，都不是有效从机地址；坏值回落到 1，避免哑机）
             "addr": max(1, min(247, self._ar_to_int(cfg.get("addr", 1)) or 1)),
             "variant": variant,
             "coils": _regmap(cfg.get("coils"), True),
             "discrete": _regmap(cfg.get("discrete"), True),
             "holding": _regmap(cfg.get("holding"), False),
             "input": _regmap(cfg.get("input"), False),
+            "dynamics": cfg.get("dynamics") if isinstance(cfg.get("dynamics"), list) else [],
+            "exception": cfg.get("exception") if isinstance(cfg.get("exception"), dict) else {},
+            "server_id": cfg.get("server_id", "CommTool"),
         }
+        if slaves_out:
+            base["slaves"] = slaves_out
+        return base
 
     def _set_ar_modbus(self, cfg):
         """对话框编辑「Modbus 从机」后回调：更新内存配置 + 重建运行态从机(回初值) + 落盘。
         Modbus 开关/配置变 = 改变了分帧语义 → 必须清跨模式共用的 _ar_buf 半包缓冲并停 gap timer
         （与 _set_ar_frame / _set_ar_rules 一致），否则切模式时旧字节会被新框架误解析。"""
         self._ar_modbus = self._norm_ar_modbus(cfg)
-        self._modbus = modbus_slave.slave_from_config(self._ar_modbus)
+        self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)
         self._ar_reset_buf()
         self.settings.setValue("autoreply_modbus", json.dumps(self._ar_modbus, ensure_ascii=False))
         self.settings.sync()
@@ -6728,7 +6756,7 @@ class CommTool(QMainWindow):
         self._ar_generation = getattr(self, "_ar_generation", 0) + 1
         # B4：会话级复位 → Modbus 从机运行态寄存器回到配置初值（清掉主机本次会话的写入）
         if hasattr(self, "_ar_modbus"):
-            self._modbus = modbus_slave.slave_from_config(self._ar_modbus)
+            self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)
 
     @staticmethod
     def _ar_to_int(v, default=0):
@@ -8206,7 +8234,10 @@ class CommTool(QMainWindow):
         if proto != PROTO_SERIAL:
             return base
         baud = self._mbm_serial_baud()
-        resp_rtu = modbus_master.rtu_normal_len(r["func"], r["qty"]) or 8
+        resp_rtu = modbus_master.rtu_normal_len(r["func"], r["qty"])
+        if resp_rtu is None:
+            # Unknown / variable: budget a full RTU ADU.
+            resp_rtu = 256 if r["func"] == 0x11 else 8
         if self._mbm_variant_eff() == "ascii":
             # ASCII 响应是 hex 编码（每字节 2 字符 + ':' + CRLF + LRC），比 RTU 长约 2 倍；
             # 用 RTU 字节数会低估传输时间，低波特率大包下超时偏短而误判。
@@ -8219,36 +8250,84 @@ class CommTool(QMainWindow):
                  * 1000.0 / baud)
         return int(base + tx_ms)
 
+    @staticmethod
+    def _mbm_span_bad(r):
+        """连续读/写范围是否跨出 0xFFFF（与 modbus_master._check_address_span 保持一致）。"""
+        def over(start, count):
+            return (start is not None and count
+                    and start + int(count) - 1 > 0xFFFF)
+
+        func = r["func"]
+        if func in modbus_master.READ_FUNCS:
+            return bool(over(r["addr"], r["qty"]))
+        if func in modbus_master.WRITE_MULTI:
+            return bool(over(r["addr"], len(r["wvals"] or [])))
+        if func == 0x17:
+            rw = r.get("rw") or {}
+            return bool(over(r["addr"], r["qty"])
+                        or over(r.get("write_addr"), len(rw.get("write_vals") or [])))
+        return False
+
     def _mbm_poll(self, i):
         """构造并发出第 i 行的请求帧，登记在途请求 + 启动响应超时。"""
         r = modbus_master.normalize_poll(self._mbm_rules[i])
         variant = self._mbm_variant_eff()
         if (r["unit"] is None or r["addr"] is None or r["period"] is None
-                or (r["func"] in modbus_master.READ_FUNCS and r["qty"] is None)
+                or (r["func"] in modbus_master.READ_FUNCS + (0x17,) and r["qty"] is None)
+                or (r["func"] == 0x17 and r.get("write_addr") is None)
                 or (variant in ("rtu", "ascii") and r["unit"] > 247)):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
             self._mbm_due[i] = time.monotonic() + 1.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
         # 写值守卫：输入空白/非法/越界 → 报错、不发送（绝不静默截断或写 0）
+        if self._mbm_span_bad(r):
+            # 连续读写范围不能跨出 16 位地址空间。构帧层 _check_address_span 也会拦，
+            # 但那条是未本地化的异常文本，这里统一成「参数非法」。
+            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)
+            return
+        if r["func"] == 0x08 and (r.get("diag_sub") is None or r.get("diag_data") is None):
+            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)
+            return
         if ((r["func"] in modbus_master.WRITE_SINGLE and r["wval"] is None)
                 or (r["func"] in modbus_master.WRITE_MULTI and not r["wvals"])):
             self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
-        # RTU/ASCII 地址 0 是广播：只允许写，且从机按规范不返回响应。读广播直接拒绝。
-        if variant in ("rtu", "ascii") and r["unit"] == 0 and r["func"] in modbus_master.READ_FUNCS:
-            self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_read"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
-            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
-            return
+        # RTU/ASCII unit 0 = broadcast: only single/multi write allowed (no response).
+        # Reject reads and non-broadcastable FCs (08/0B/11/17, etc.).
+        if variant in ("rtu", "ascii") and r["unit"] == 0:
+            if r["func"] not in (modbus_master.WRITE_SINGLE + modbus_master.WRITE_MULTI):
+                self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_nowrite"))
+                self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+                self._mbm_sched.start(0)
+                return
         if r["func"] in modbus_master.READ_FUNCS:
             arg = r["qty"]
         elif r["func"] in modbus_master.WRITE_MULTI:
-            arg = r["wvals"]                  # 0F/10：写值列表
+            arg = r["wvals"]
+        elif r["func"] == 0x08:
+            arg = (int(r.get("diag_sub") or 0), int(r.get("diag_data")))
+        elif r["func"] in (0x0B, 0x11):
+            arg = 0
+        elif r["func"] == 0x17:
+            arg = r.get("rw") or {
+                "read_addr": r["addr"], "read_qty": r["qty"],
+                "write_addr": r.get("write_addr", r["addr"]),
+                "write_vals": r.get("wvals") or [],
+            }
+            if not arg.get("write_vals"):
+                self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
+                self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+                self._mbm_sched.start(0)
+                return
         else:
-            arg = r["wval"]                   # 05/06：单写值
+            arg = r["wval"]
         try:
             if variant == "tcp":
                 self._mbm_tid = (self._mbm_tid + 1) & 0xFFFF
@@ -8286,12 +8365,17 @@ class CommTool(QMainWindow):
             exp_write = (r["addr"], ev)
         elif r["func"] in modbus_master.WRITE_MULTI:
             exp_write = (r["addr"], r["qty"])
+        # 08 回环诊断：子功能必须回显；子功能 0 还要求数据原样返回。
+        exp_diag = None
+        if r["func"] == 0x08:
+            exp_diag = (int(r.get("diag_sub") or 0), int(r.get("diag_data")))
         # 先登记在途请求再发送：避免响应在 send() 内被同步投递时（罕见但可能）因 inflight
         # 尚未就绪而被 _mbm_feed 丢弃；发送失败再回滚。echo=刚发出的 RTU/ASCII 帧，用于剥串口本地回显。
         self._mbm_buf = b""
         self._mbm_inflight = {"i": i, "unit": r["unit"], "func": r["func"],
                               "qty": r["qty"], "tid": tid, "variant": variant,
                               "addr": r["addr"], "exp_write": exp_write,
+                              "exp_diag": exp_diag,
                               "echo": frame if variant in ("rtu", "ascii") else None}
         self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
         timeout_ms = self._mbm_timeout_ms(frame, r)
@@ -8464,6 +8548,13 @@ class CommTool(QMainWindow):
             exp = info.get("exp_write")
             if exp is not None and tuple(result["echo"]) != tuple(exp):
                 return self._t("mbm_st_badresp")
+        elif "diag" in result:
+            exp = info.get("exp_diag")
+            if exp is not None:
+                sub, data = result["diag"]
+                # 非 0 子功能的数据字段按规范是计数值等，不能按请求数据核对。
+                if sub != exp[0] or (exp[0] == 0 and data != exp[1]):
+                    return self._t("mbm_st_badresp")
         return None
 
     def _mbm_finish_inflight(self):
@@ -8529,8 +8620,27 @@ class CommTool(QMainWindow):
         if "echo" in result:
             a, v = result["echo"]
             if info["func"] in modbus_master.WRITE_MULTI:
-                return self._t("mbm_st_written_multi", addr=a, n=v)   # v=数量
+                return self._t("mbm_st_written_multi", addr=a, n=v)
             return self._t("mbm_st_written", addr=a, val=v)
+        if "diag" in result:
+            sub, data = result["diag"]
+            # 与读寄存器一致地同时给十进制和十六进制：回环诊断要和发出的值逐位对照，
+            # 而请求里的数据通常是按 0x 十六进制填的。
+            return self._t("mbm_st_diag", sub=sub, val="%d (0x%04X)" % (data, data))
+        if "event_count" in result:
+            return self._t("mbm_st_events", status=result.get("status", 0),
+                           n=result["event_count"])
+        if "server_id" in result:
+            sid = result.get("server_id") or b""
+            if isinstance(sid, str):
+                sid_txt = sid
+            else:
+                try:
+                    sid_txt = bytes(sid).decode("ascii", "replace")
+                except Exception:
+                    sid_txt = bytes(sid).hex(" ")
+            run_key = "mbm_st_run_on" if result.get("run") else "mbm_st_run_off"
+            return self._t("mbm_st_serverid", sid=sid_txt, run=self._t(run_key))
         return ""
 
     def _mbm_set_result(self, i, status, text):
@@ -8687,8 +8797,11 @@ class CommTool(QMainWindow):
             if not want_record and not plot_tags and not dash_tags:
                 return
             from device_resources import decode_modbus_samples
+            # 17 的读段读的就是保持寄存器，与 03 同语义；寄存器定义只允许 3/4，
+            # 不映射的话 FC23 轮询结果永远匹配不上任何标签。
+            dec_func = 0x03 if info["func"] == 0x17 else info["func"]
             samples = decode_modbus_samples(
-                self._device_registers, info["unit"], info["func"],
+                self._device_registers, info["unit"], dec_func,
                 info["addr"], result["regs"])
             if not samples:
                 return
@@ -8739,10 +8852,63 @@ class CommTool(QMainWindow):
             })
         self._structured_add(samples)
 
+    def jump_to_session_time(self, wall_t):
+        dlg = getattr(self, "_structured_dlg", None)
+        if dlg is None:
+            self._open_structured_record()
+            dlg = getattr(self, "_structured_dlg", None)
+        if dlg is None:
+            return
+        # 隐藏期间 on_samples 不会刷表，先刷新再定位，否则是在过期行列表上找最近一行。
+        dlg.refresh_rows()
+        # Table shows only the last 5000 visible rows.
+        shown = getattr(dlg, "_replay_rows", None) or []
+        if not shown:
+            rows = getattr(dlg, "_visible_rows", None) or []
+            shown = rows[-5000:]
+        best_i, best_dt = None, None
+        for i, row in enumerate(shown):
+            dt = abs(float(row.get("timestamp", 0)) - float(wall_t))
+            if best_dt is None or dt < best_dt:
+                best_dt, best_i = dt, i
+        if best_i is None:
+            return
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        if best_i < dlg.table.rowCount():
+            dlg.table.selectRow(best_i)
+            item = dlg.table.item(best_i, 0)
+            if item is not None:
+                dlg.table.scrollToItem(item)
+
     def _structured_replay_sample(self, sample):
+        if not isinstance(sample, dict):
+            return
         self.status_bar.showMessage(
             "%s = %s %s" % (sample.get("tag", ""), sample.get("value", ""),
                              sample.get("unit", "")), 800)
+        samples = [sample]
+        plot_tags = getattr(self, "_device_plot_tags", None) or []
+        dash_tags = getattr(self, "_device_dash_tags", None) or []
+        if plot_tags:
+            self._feed_named_view("_plot_dlg", plot_tags, samples)
+        if dash_tags:
+            self._feed_named_view("_dash_dlg", dash_tags, samples)
+        if not plot_tags:
+            dlg = getattr(self, "_plot_dlg", None)
+            if dlg is not None and dlg.isVisible():
+                try:
+                    dlg.feed_named_samples(samples)
+                except Exception:
+                    pass
+        if not dash_tags:
+            dlg = getattr(self, "_dash_dlg", None)
+            if dlg is not None and dlg.isVisible():
+                try:
+                    dlg.feed_named_samples(samples)
+                except Exception:
+                    pass
 
     def _open_device_center(self):
         if self._device_center_dlg is None:

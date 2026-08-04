@@ -178,7 +178,6 @@ class Player:
     """
 
     def __init__(self, events, inject, speed=1.0, include_tx=False, loop=False):
-        # 只回放 rx（设备发来的）；tx 是我方发的，回放它会造成自问自答，默认不放
         self.events = [e for e in events if include_tx or e[1] == "rx"]
         self.inject = inject
         self.speed = max(0.01, float(speed))
@@ -187,6 +186,8 @@ class Player:
         self.started_at = None
         self.finished = False
         self.loops_done = 0
+        self.paused = False
+        self._pause_elapsed = 0.0
 
     def __len__(self):
         return len(self.events)
@@ -200,33 +201,110 @@ class Player:
         self.finished = False
         self.loops_done = 0
         self.started_at = now
+        self.paused = False
+        self._pause_elapsed = 0.0
+
+    def pause(self, now):
+        """暂停并记下已播进度。now 必须与 start()/tick() 同一时钟（调用方显式传），
+        不在这里自己取 monotonic：合成时钟（如 start(0.0)）与真实开机时长无法区分。"""
+        if self.started_at is None or self.finished:
+            self.paused = True
+            return
+        if not self.paused:
+            self._pause_elapsed = max(0.0, (now - self.started_at) * self.speed)
+        self.paused = True
+
+    def resume(self, now):
+        if self.started_at is not None and self.paused and not self.finished:
+            self.started_at = now - (self._pause_elapsed / self.speed)
+            self.paused = False
+
+    def _emit_one(self):
+        if self.idx >= len(self.events):
+            return 0
+        _t, _d, b = self.events[self.idx]
+        self.idx += 1
+        try:
+            self.inject(b)
+        except Exception:
+            pass
+        if self.idx >= len(self.events):
+            self.loops_done += 1
+            if self.loop:
+                self.idx = 0
+                self.finished = False
+            else:
+                self.finished = True
+        return 1
+
+    def step(self, now):
+        if self.finished or not self.events or self.started_at is None:
+            if not self.events:
+                self.finished = True
+            return 0
+        if self.idx >= len(self.events):
+            self.finished = True
+            return 0
+        t_ev = self.events[self.idx][0]
+        looped = False
+        n = self._emit_one()
+        if self.loop and self.idx == 0 and self.loops_done:
+            self.started_at = now
+            self._pause_elapsed = 0.0
+            looped = True
+        if not looped and not self.finished:
+            self._pause_elapsed = t_ev + 1e-9
+            self.started_at = now - (self._pause_elapsed / self.speed)
+        return n
+
+    def seek(self, t_rel, now):
+        was_paused = self.paused
+        t_rel = max(0.0, float(t_rel))
+        if not self.events:
+            self.finished = True
+            return 0.0
+        self.idx = 0
+        while self.idx < len(self.events) and self.events[self.idx][0] < t_rel:
+            self.idx += 1
+        self.finished = self.idx >= len(self.events)
+        self._pause_elapsed = t_rel if not self.finished else self.duration
+        self.started_at = now - (self._pause_elapsed / self.speed)
+        self.paused = was_paused and not self.finished
+        return self.position
 
     def tick(self, now):
-        """派发所有已到期事件，返回本次派发的条数。"""
         if self.finished or self.started_at is None or not self.events:
             if not self.events:
                 self.finished = True
             return 0
+        if self.paused:
+            return 0
         elapsed = (now - self.started_at) * self.speed
+        self._pause_elapsed = elapsed
         n = 0
         while (self.idx < len(self.events) and n < _MAX_TICK_EVENTS
                and self.events[self.idx][0] <= elapsed):
-            _t, _d, b = self.events[self.idx]
-            self.idx += 1
-            n += 1
-            try:
-                self.inject(b)
-            except Exception:
-                pass                      # 注入失败（连接已关）不该打断回放收尾
-        if self.idx >= len(self.events):
-            self.loops_done += 1
-            if self.loop:
-                self.started_at = now     # 下一轮从当前时刻重新计时
-                self.idx = 0
-            else:
-                self.finished = True
+            just = self._emit_one()
+            n += just
+            if self.finished:
+                break
+            if just and self.loop and self.idx == 0 and self.loops_done:
+                self.started_at = now
+                self._pause_elapsed = 0.0
+                break
         return n
 
     @property
+    def position(self):
+        if not self.events:
+            return 0.0
+        if self.finished:
+            return self.duration
+        if self.idx < len(self.events):
+            return float(self.events[self.idx][0])
+        return self.duration
+
+    @property
     def progress(self):
-        return 1.0 if self.finished else (self.idx / len(self.events) if self.events else 1.0)
+        return (1.0 if self.finished
+                else (self.idx / len(self.events) if self.events else 1.0))

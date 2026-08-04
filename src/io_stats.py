@@ -46,6 +46,8 @@ class IoStatsAccumulator(object):
         self._rx_pkts_mark = 0
         self._tx_pkts_mark = 0
         self._time_mark = time.monotonic()
+        self.session_t0_mono = self._time_mark
+        self.session_t0_wall = time.time()
         self.rx_size_min = None
         self.rx_size_max = 0
         self.rx_size_sum = 0
@@ -55,7 +57,7 @@ class IoStatsAccumulator(object):
         self.rx_hist = [0] * (len(SIZE_BINS) + 1)
         self.tx_hist = [0] * (len(SIZE_BINS) + 1)
         self.timeouts = {"seq": 0, "mbm": 0, "conn": 0}
-        self.history = []  # [{t, rx_bps, tx_bps, rx_pps, tx_pps}, ...]
+        self.history = []  # [{t, wall_t, rx_bps, tx_bps, rx_pps, tx_pps}, ...]
 
     def note_rx(self, n):
         n = int(n or 0)
@@ -137,12 +139,14 @@ class IoStatsAccumulator(object):
             self.rx_peak_pps = self.rx_pps
         if self.tx_pps > self.tx_peak_pps:
             self.tx_peak_pps = self.tx_pps
+        wall_t = self.session_t0_wall + (now - self.session_t0_mono)
         self.history.append({
             "t": now,
             "rx_bps": self.rx_rate,
             "tx_bps": self.tx_rate,
             "rx_pps": self.rx_pps,
             "tx_pps": self.tx_pps,
+            "wall_t": wall_t,
         })
         if len(self.history) > self.history_len:
             self.history = self.history[-self.history_len:]

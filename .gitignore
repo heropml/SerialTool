@@ -54,3 +54,7 @@ build_local.log
 # 调研文档，不入库
 需求说明.txt
 latest.json.keep
+
+# 代理/审查工具的本地残留（计划文件、临时审查报告）
+.zcode/
+/test.txt

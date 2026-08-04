@@ -10,7 +10,7 @@
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QComboBox, QCheckBox, QFileDialog, QProgressBar,
-                             QPlainTextEdit, QScrollArea, QFrame)
+                             QPlainTextEdit, QLineEdit, QScrollArea, QFrame)
 
 import rec_replay
 from theme import chrome_for
@@ -75,6 +75,20 @@ class RecReplayDialog(QDialog):
             self.cb_speed.addItem(name)
         self.cb_speed.setCurrentIndex(1)          # 默认 1x
         self.chk_loop = QCheckBox()
+        self.btn_pause = QPushButton()
+        self.btn_pause.setObjectName("PlotGhostBtn")
+        self.btn_pause.setFixedHeight(28)
+        self.btn_pause.clicked.connect(self._on_pause)
+        self.btn_step = QPushButton()
+        self.btn_step.setObjectName("PlotGhostBtn")
+        self.btn_step.setFixedHeight(28)
+        self.btn_step.clicked.connect(self._on_step)
+        self.ed_seek = QLineEdit("0")
+        self.ed_seek.setFixedWidth(64)
+        self.btn_seek = QPushButton()
+        self.btn_seek.setObjectName("PlotGhostBtn")
+        self.btn_seek.setFixedHeight(28)
+        self.btn_seek.clicked.connect(self._on_seek)
         self.chk_tx = QCheckBox()
         self.btn_play = QPushButton()
         self.btn_play.setObjectName("PlotPrimaryBtn")
@@ -95,6 +109,10 @@ class RecReplayDialog(QDialog):
         rep.addWidget(self.lbl_speed)
         rep.addWidget(self.cb_speed)
         rep.addWidget(self.chk_loop)
+        rep.addWidget(self.btn_pause)
+        rep.addWidget(self.btn_step)
+        rep.addWidget(self.ed_seek)
+        rep.addWidget(self.btn_seek)
         rep.addWidget(self.chk_tx)
         rep.addStretch(1)
         rep.addWidget(self.btn_play)
@@ -263,6 +281,58 @@ class RecReplayDialog(QDialog):
             self._set_playing_ui(False)
             self._log(self.app._t("rr_play_done", n=n))
 
+    def _on_pause(self):
+        import time
+        p = self._player
+        if p is None:
+            return
+        now = time.monotonic()
+        if p.paused:
+            p.resume(now)
+            self._timer.start()
+        else:
+            p.pause(now)
+            self._timer.stop()
+        self.retranslate()
+
+    def _on_step(self):
+        import time
+        p = self._player
+        if p is None:
+            return
+        now = time.monotonic()
+        # 先暂停再走一格：否则 step 会在事件到点前就把它注入，并把媒体时钟
+        # 前推到该事件时刻——那是「跳到下一事件」而不是单步。
+        if not p.paused:
+            p.pause(now)
+            self._timer.stop()
+        p.step(now)
+        self.bar.setValue(int(p.progress * 100))
+        if p.finished:
+            self._timer.stop()
+            self._player = None
+            self.app._replay_end()
+            self._set_playing_ui(False)
+        else:
+            self.retranslate()          # 暂停按钮改显「继续」
+
+    def _on_seek(self):
+        import time
+        p = self._player
+        if p is None:
+            return
+        try:
+            t_rel = float(self.ed_seek.text().strip() or "0")
+        except ValueError:
+            return
+        p.seek(t_rel, time.monotonic())
+        self.bar.setValue(int(p.progress * 100))
+        if p.finished:
+            self._timer.stop()
+            self._player = None
+            self.app._replay_end()
+            self._set_playing_ui(False)
+
     def _set_playing_ui(self, playing):
         self.btn_play.setVisible(not playing)
         self.btn_stop.setVisible(playing)
@@ -278,6 +348,9 @@ class RecReplayDialog(QDialog):
         for w in (self.btn_load, self.btn_save, self.cb_speed, self.chk_loop, self.chk_tx):
             w.setEnabled(not recording and not playing)
         self.btn_play.setEnabled(not recording and not playing)
+        # 暂停/单步/定位 只在回放中有意义（无 player 时点了也不会有反应）。
+        for w in (self.btn_pause, self.btn_step, self.ed_seek, self.btn_seek):
+            w.setEnabled(playing)
 
     # ---------------- 显示 ----------------
     def _refresh_stat(self):
@@ -409,6 +482,11 @@ class RecReplayDialog(QDialog):
         self.btn_load.setText(t("rr_load"))
         self.lbl_speed.setText(t("rr_speed"))
         self.chk_loop.setText(t("rr_loop"))
+        paused = bool(self._player and getattr(self._player, "paused", False))
+        self.btn_pause.setText(t("rr_resume" if paused else "rr_pause"))
+        self.btn_step.setText(t("rr_step"))
+        self.btn_seek.setText(t("rr_seek"))
+        self.ed_seek.setPlaceholderText(t("rr_seek_ph"))
         self.chk_tx.setText(t("rr_include_tx"))
         self.btn_play.setText(t("rr_play"))
         self.btn_stop.setText(t("rr_stop"))
