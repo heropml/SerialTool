@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """Regressions for the gateway / multi-view / trigger-action review fixes."""
 import os
+import signal
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -153,6 +156,36 @@ def test_device_register_blank_thresholds_stay_unset():
     assert rec["warn_lo"] is None and rec["warn_hi"] is None
     assert rec["alarm_lo"] is None and rec["alarm_hi"] is None
     assert rec["bitfields"] == "" and rec["addr_base"] == 0
+    dlg.table.deleteLater()
+
+
+def test_structured_record_table_shows_threshold_level():
+    """记录表要显示阈值级别，否则寄存器表里配的 warn/alarm 在界面上仍然无感。"""
+    import types
+    from structured_record_dialog import StructuredRecordDialog
+
+    texts = {"structured_level_warn": "预警", "structured_level_alarm": "报警"}
+    dlg = StructuredRecordDialog.__new__(StructuredRecordDialog)
+    dlg.app = types.SimpleNamespace(_t=texts.__getitem__)
+    assert dlg._level_text("alarm") == "报警"
+    assert dlg._level_text("warn") == "预警"
+    assert dlg._level_text("") == ""        # 未配阈值的行保持空白
+    assert dlg._level_text(None) == ""
+
+
+def test_device_center_address_column_uses_the_selected_base():
+    """地址列必须按地址基显示，否则切到 1 基后界面上看不出任何变化。"""
+    from PyQt5.QtWidgets import QTableWidget
+    from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
+
+    dlg = DeviceCenterDialog.__new__(DeviceCenterDialog)
+    dlg.table = QTableWidget(0, len(_REGISTER_COLUMNS))
+    DeviceCenterDialog._append_register(dlg, {"name": "v", "address": 40000,
+                                              "addr_base": 1})
+    assert dlg.table.item(0, 4).text() == "40001"      # 显示按 1 基
+    rec = DeviceCenterDialog._collect_registers(dlg)[0]
+    assert rec["address"] == 40000                     # 存回去仍是协议 0 基
+    assert rec["display_address"] == 40001
     dlg.table.deleteLater()
 
 
@@ -387,3 +420,202 @@ def test_run_cmd_holds_its_slot_until_the_child_exits(tmp_path, monkeypatch):
     finally:
         window.deleteLater()
         _APP.processEvents()
+
+
+def test_run_cmd_children_are_tracked_and_reaped(tmp_path, monkeypatch):
+    """退出必须收掉外部程序拉起的子进程。
+
+    动作 worker 是 daemon 线程，解释器退出时会被直接掐掉，但它启动的是独立的
+    OS 进程：不主动回收的话，命令跑得久或卡死时 CommTool 关了它们还在。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "reap.ini")
+    window = CommTool("trg-reap")
+    try:
+        rule = {"run_cmd_on": True,
+                "run_cmd": '"%s" -c "import time;time.sleep(30)"' % sys.executable}
+        window._trg_run_cmd(rule, "t", 0, 1)
+        procs = []
+        for _ in range(100):
+            with window._trg_action_lock:
+                procs = list(window._trg_procs)
+            if procs:
+                break
+            time.sleep(0.02)
+        assert procs, "子进程句柄没有登记到 _trg_procs"
+        proc = procs[0]
+        assert proc.poll() is None
+
+        window._trg_stop_procs()
+        for _ in range(100):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        assert proc.poll() is not None      # 已终止
+        assert not window._trg_procs        # 表也清空
+    finally:
+        window._trg_stop_procs()
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_shutdown_reaps_run_cmd_children(tmp_path, monkeypatch):
+    """回收动作要挂在退出流程上，不能只是有个能用的方法。"""
+    _patch_window_runtime(monkeypatch, tmp_path / "reap2.ini")
+    window = CommTool("trg-reap2")
+    called = []
+    try:
+        window._trg_stop_procs = lambda: called.append(True)
+        window._shutdown()
+        assert called == [True]
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+class _FakeProc:
+    """Popen 替身：模拟一个长跑的子进程，被终止后 wait() 才返回。
+
+    若 wait() 立即返回，等于命令瞬时自己跑完了，回收逻辑根本无从验证。
+    """
+
+    def __init__(self, pid=4242):
+        self.pid = pid
+        self._done = threading.Event()
+
+    @property
+    def dead(self):
+        return self._done.is_set()
+
+    def poll(self):
+        return 0 if self._done.is_set() else None
+
+    def wait(self, timeout=None):
+        if not self._done.wait(5 if timeout is None else timeout):
+            raise subprocess.TimeoutExpired("fake", timeout)
+        return 0
+
+    def terminate(self):
+        self._done.set()
+
+    def kill(self):
+        self._done.set()
+
+
+def _fake_launch(monkeypatch, on_call=None, proc=None):
+    """把 run_cmd 里的 Popen 换成替身，返回它收到的 kwargs。"""
+    import subprocess
+    seen = {}
+    proc = proc or _FakeProc()
+
+    def fake_popen(cmd, **kwargs):
+        seen.update(kwargs)
+        if on_call is not None:
+            on_call()
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    return seen, proc
+
+
+def test_shutdown_waits_for_a_launch_in_flight(tmp_path, monkeypatch):
+    """Popen 返回与句柄登记之间有窗口，退出必须等这段收尾。
+
+    只扫一遍 _trg_procs 的话，正好落在窗口里的进程谁都不管，CommTool 关掉后
+    它会留在系统里。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "race.ini")
+    window = CommTool("trg-race")
+    killed = []
+    started = threading.Event()
+    release = threading.Event()
+    try:
+        _, proc = _fake_launch(monkeypatch, on_call=lambda: (started.set(),
+                                                             release.wait(5)))
+        monkeypatch.setattr(
+            type(window), "_trg_kill_proc",
+            staticmethod(lambda p: (killed.append(p), p.terminate())))
+
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        assert started.wait(3), "worker 没进到 Popen"
+        # 此刻进程「已启动、未登记」——正是竞态窗口
+        with window._trg_action_lock:
+            assert window._trg_launching == 1
+            assert not window._trg_procs
+
+        threading.Timer(0.15, release.set).start()
+        t0 = time.time()
+        window._trg_stop_procs()
+        assert time.time() - t0 >= 0.1      # 确实等了在途启动
+        assert killed == [proc]             # 没漏掉
+    finally:
+        release.set()
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_no_new_actions_once_shutdown_started(tmp_path, monkeypatch):
+    """闸门竖起后不再拉新进程，否则边收边起永远收不干净。"""
+    _patch_window_runtime(monkeypatch, tmp_path / "race2.ini")
+    window = CommTool("trg-race2")
+    try:
+        calls = []
+        _fake_launch(monkeypatch, on_call=lambda: calls.append(1))
+        window._trg_stop_procs()
+
+        assert window._trg_spawn_action(lambda: None) is False
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        time.sleep(0.1)
+        assert calls == []                  # 一个都没起
+        assert window._trg_action_dropped == 0   # 这不算「因上限丢弃」
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_run_cmd_starts_a_new_session_off_windows(tmp_path, monkeypatch):
+    """POSIX 上 shell=True 只杀 shell 会漏掉孙进程，所以要自成进程组。"""
+    _patch_window_runtime(monkeypatch, tmp_path / "race3.ini")
+    window = CommTool("trg-race3")
+    try:
+        monkeypatch.setattr(sys, "platform", "linux")
+        seen, _ = _fake_launch(monkeypatch)
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        for _ in range(100):
+            if seen:
+                break
+            time.sleep(0.02)
+        assert seen.get("start_new_session") is True
+        assert "creationflags" not in seen
+    finally:
+        window._trg_stop_procs()
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_kill_proc_uses_the_process_group_off_windows(monkeypatch):
+    """回收走 killpg：按组号杀，组长退出后后代仍用它的 PID 当 PGID。"""
+    import os as _os
+    signals = []
+    proc = _FakeProc(pid=777)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(_os, "killpg",
+                        lambda pgid, sig: (signals.append((pgid, sig)),
+                                           proc.terminate()),
+                        raising=False)          # Windows 的 os 没有 killpg
+    CommTool._trg_kill_proc(proc)
+    assert signals == [(777, signal.SIGTERM)]    # 用 pid 当组号，SIGTERM 就收住了
+    assert proc.dead
+
+
+def test_kill_proc_falls_back_when_not_a_group(monkeypatch):
+    """没成组（killpg 失败）时退回 terminate，不能就此放过进程。"""
+    import os as _os
+
+    def boom(pgid, sig):
+        raise ProcessLookupError
+
+    proc = _FakeProc(pid=778)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(_os, "killpg", boom, raising=False)
+    CommTool._trg_kill_proc(proc)
+    assert proc.dead

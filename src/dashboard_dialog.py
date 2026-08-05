@@ -17,6 +17,7 @@ from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popup
 from ui_tips import set_tooltip
 
 _TILE_W, _TILE_H = 160, 90
+_WARN_RGB = "#E6A23C"   # 主题里没有预警色，固定琥珀色与 danger 区分
 _MAX_TILES = 64        # 通道卡片上限：防分隔符模式下畸形长行（上千列）建出海量卡片卡死 UI
 
 
@@ -113,7 +114,8 @@ class DashboardDialog(QDialog):
         self._paused = False
         self._parser = stream_parse.NumericStreamParser()
         self._values = {}          # name -> 最新 float
-        self._tiles = {}           # name -> {frame, lbl_name, lbl_val, lbl_unit, alert, state}
+        self._levels = {}          # name -> 寄存器表给的 '' / warn / alarm
+        self._tiles = {}           # name -> {frame, lbl_name, lbl_val, lbl_unit, level, state}
         self._order = []           # 通道出现顺序
         self._thresholds = {}      # name -> (lo, hi, unit)
         self._loading_cfg = False
@@ -273,6 +275,7 @@ class DashboardDialog(QDialog):
                     continue
                 self._ensure_tile(name)
             self._values[name] = val
+            self._levels[name] = str(s.get("level") or "")
             unit = s.get("unit") or ""
             if unit:
                 self._tiles[name]["unit"] = str(unit)
@@ -301,7 +304,7 @@ class DashboardDialog(QDialog):
         v.addLayout(row)
         self._flow.addWidget(frame)
         self._tiles[name] = {"frame": frame, "lbl_name": lbl_name, "lbl_val": lbl_val,
-                             "lbl_unit": lbl_unit, "alert": False, "state": None}
+                             "lbl_unit": lbl_unit, "level": "", "state": None}
         self._order.append(name)
 
     def _refresh_tiles(self):
@@ -313,14 +316,20 @@ class DashboardDialog(QDialog):
             lo, hi, unit = self._thresholds.get(name, (None, None, ""))
             tile["lbl_val"].setText(_fmt(val))
             tile["lbl_unit"].setText(unit or tile.get("unit", ""))
-            tile["alert"] = ((lo is not None and val < lo)
-                             or (hi is not None and val > hi))
+            out_of_range = ((lo is not None and val < lo)
+                            or (hi is not None and val > hi))
+            # 面板自己的阈值行和寄存器表的 warn/alarm 都可能命中，取更严重的
+            level = self._levels.get(name, "")
+            tile["level"] = "alarm" if (out_of_range or level == "alarm") else level
             self._apply_tile_style(tile)
 
     def _apply_tile_style(self, tile):
-        """按告警态 + 闪烁相位置 state 属性（"" / alert / alert2），变化才 repolish。"""
-        if tile["alert"]:
+        """按告警级别 + 闪烁相位置 state 属性（"" / warn / alert / alert2），变化才 repolish。"""
+        level = tile["level"]
+        if level == "alarm":
             st = "alert2" if self._blink_on else "alert"
+        elif level == "warn":
+            st = "warn"           # 预警用稳定色，不闪，与报警区分开
         else:
             st = ""
         if tile["state"] != st:
@@ -334,7 +343,7 @@ class DashboardDialog(QDialog):
         self._blink_on = not self._blink_on
         for name in self._order:
             tile = self._tiles[name]
-            if tile["alert"]:
+            if tile["level"] == "alarm":
                 self._apply_tile_style(tile)
 
     # ---------------- 工具条回调 ----------------
@@ -425,6 +434,7 @@ class DashboardDialog(QDialog):
         self._tiles.clear()
         self._order = []
         self._values.clear()
+        self._levels.clear()
         self._parser.reset()
 
     # ---------------- 主题 / 语言 ----------------
@@ -478,6 +488,7 @@ class DashboardDialog(QDialog):
         c = chrome_for(self.app._theme_id())
         alert_bg = _mix(c["card_bg"], c["danger"], 0.20)
         alert2_bg = _mix(c["card_bg"], c["danger"], 0.42)
+        warn_bg = _mix(c["card_bg"], _WARN_RGB, 0.20)
         self.setStyleSheet(localize_qss(_dialog_list_qss(c) + f"""
         QPushButton#PlotGhostBtn {{
             background-color: {c['input_bg']}; color: {c['text']};
@@ -497,11 +508,13 @@ class DashboardDialog(QDialog):
             background-color: {c['card_bg']}; border: 1px solid {c['separator']};
             border-radius: 10px;
         }}
+        QFrame#DashTile[state="warn"] {{ background-color: {warn_bg}; border: 1px solid {_WARN_RGB}; }}
         QFrame#DashTile[state="alert"] {{ background-color: {alert_bg}; border: 1px solid {c['danger']}; }}
         QFrame#DashTile[state="alert2"] {{ background-color: {alert2_bg}; border: 1px solid {c['danger']}; }}
         QLabel#DashName {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 12px; }}
         QLabel#DashVal {{ color: {c['text']}; font-family: 'Segoe UI'; font-size: 26px; font-weight: 600; }}
         QLabel#DashUnit {{ color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 12px; padding-bottom: 4px; }}
+        QFrame#DashTile[state="warn"] QLabel#DashVal {{ color: {_WARN_RGB}; }}
         QFrame#DashTile[state="alert"] QLabel#DashVal, QFrame#DashTile[state="alert2"] QLabel#DashVal {{ color: {c['danger']}; }}
         """))
         _style_combo_popups(self, c)

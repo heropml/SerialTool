@@ -397,6 +397,33 @@ class GatewayRoutingTests(unittest.TestCase):
         finally:
             eng.stop()
 
+    def test_tick_failure_is_reported_not_silent(self):
+        """tick 出错必须上报：静默吞会让网关卡住而界面毫无提示。"""
+        eng, a, b, mm, ms = self._setup()
+        try:
+            errs = []
+            eng.error_occurred.connect(lambda side, msg: errs.append((side, msg)))
+
+            def _boom(*_a, **_k):
+                raise RuntimeError("boom")
+
+            eng._gateway.tick = _boom
+            eng._tick_gateway()
+            self.assertEqual(len(errs), 1)
+            self.assertIn("boom", errs[0][1])
+
+            eng._tick_gateway()
+            self.assertEqual(len(errs), 1)      # 持续故障只报一次，不刷屏
+
+            eng._gateway.tick = lambda *_a, **_k: ([], [])
+            eng._tick_gateway()                 # 恢复
+            eng._gateway.tick = _boom
+            eng._tick_gateway()
+            self.assertEqual(len(errs), 2)      # 恢复后再故障会再报
+        finally:
+            eng._gateway = None
+            eng.stop()
+
     def test_disconnected_client_reply_is_dropped(self):
         eng, a, b, mm, ms = self._setup()
         try:

@@ -7,8 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from device_resources import (
-    StructuredRecorder, decode_modbus_samples, decode_register_value,
-    normalize_registers,
+    STRUCTURED_COLUMNS, StructuredRecorder, decode_modbus_samples,
+    decode_register_value, normalize_registers, normalize_sample,
 )
 
 
@@ -97,3 +97,41 @@ def test_value_level_thresholds():
     assert value_level(50, rec) == ""
     assert value_level(85, rec) == "warn"
     assert value_level(120, rec) == "alarm"
+
+
+def test_display_address_round_trips_through_addr_base():
+    """界面按地址基显示，存回去必须换算成协议用的 0 基地址。"""
+    rec = normalize_registers([{"display_address": "40001", "addr_base": 1}])[0]
+    assert rec["address"] == 40000          # 协议地址
+    assert rec["display_address"] == 40001  # 显示地址
+    # 0 基时两者相同
+    rec0 = normalize_registers([{"display_address": "40000", "addr_base": 0}])[0]
+    assert rec0["address"] == rec0["display_address"] == 40000
+    # 显式给 address 时不做换算（扫描结果、合并逻辑走这条路）
+    raw = normalize_registers([{"address": 100, "addr_base": 1}])[0]
+    assert raw["address"] == 100 and raw["display_address"] == 101
+
+
+def test_structured_sample_keeps_level_and_display_address():
+    """阈值结果和显示地址要能进结构化记录，否则寄存器表里配了也看不到。"""
+    assert "level" in STRUCTURED_COLUMNS
+    assert "display_address" in STRUCTURED_COLUMNS
+    row = normalize_sample({"tag": "t", "value": 5, "address": 10,
+                            "display_address": 11, "level": "alarm"})
+    assert row["level"] == "alarm"
+    assert row["display_address"] == 11
+    # 没给显示地址时退回协议地址，老数据不至于空掉
+    assert normalize_sample({"tag": "t", "address": 7})["display_address"] == 7
+
+
+def test_decoded_samples_carry_alarm_level():
+    """整条链路：寄存器阈值 -> 解码样本 -> 结构化记录。"""
+    rec = normalize_registers([{"name": "T", "address": 0, "slave": 1,
+                                "alarm_hi": 100, "warn_hi": 50}])[0]
+    hot = decode_modbus_samples([rec], 1, 3, 0, [150])
+    assert hot and hot[0]["level"] == "alarm"
+    mid = decode_modbus_samples([rec], 1, 3, 0, [60])
+    assert mid[0]["level"] == "warn"
+    cool = decode_modbus_samples([rec], 1, 3, 0, [10])
+    assert cool[0]["level"] == ""
+    assert normalize_sample(hot[0])["level"] == "alarm"

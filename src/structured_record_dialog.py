@@ -77,7 +77,7 @@ class StructuredRecordDialog(QDialog):
         top.addWidget(self.btn_help)
         root.addLayout(top)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -218,11 +218,18 @@ class StructuredRecordDialog(QDialog):
             dt = datetime.datetime.fromtimestamp(row["timestamp"])
             values = (
                 dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], row["source"], row["tag"],
-                self._format_value(row["value"]), row["unit"], row["raw"],
+                self._format_value(row["value"]), row["unit"],
+                self._level_text(row.get("level", "")), row["raw"],
             )
             for column, value in enumerate(values):
                 self.table.setItem(row_index, column, QTableWidgetItem(str(value)))
         self._sync_state()
+
+    def _level_text(self, level):
+        """寄存器阈值命中的结果；未配阈值的行为空。"""
+        key = {"warn": "structured_level_warn",
+               "alarm": "structured_level_alarm"}.get(str(level or ""))
+        return self.app._t(key) if key else ""
 
     def on_samples(self, count):
         if count and self.isVisible() and not self._timer.isActive():
@@ -318,7 +325,8 @@ class StructuredRecordDialog(QDialog):
         self.table.setHorizontalHeaderLabels([
             t("structured_col_time"), t("structured_col_source"),
             t("structured_col_tag"), t("structured_col_value"),
-            t("structured_col_unit"), t("structured_col_raw"),
+            t("structured_col_unit"), t("structured_col_level"),
+            t("structured_col_raw"),
         ])
         self._sync_state()
 

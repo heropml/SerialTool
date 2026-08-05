@@ -16,7 +16,7 @@ REGISTER_ORDERS = (
 )
 STRUCTURED_COLUMNS = (
     "timestamp", "source", "tag", "value", "unit", "raw",
-    "slave", "function", "address",
+    "slave", "function", "address", "display_address", "level",
 )
 _MAX_ROWS = 200000
 _MAX_CSV_BYTES = 64 << 20
@@ -82,9 +82,16 @@ def normalize_register(record):
         order = default_order
     if width == 4 and len(order) != 8:
         order = default_order
-    address = _int(record.get("address", 0), 0, 0, 0xFFFF)
-    bit = _int(record.get("bit", 0), 0, 0, 15)
     addr_base = _int(record.get("addr_base", 0), 0, 0, 1)
+    if record.get("display_address") not in (None, "") and \
+            record.get("address") in (None, ""):
+        # 界面上填的是按所选地址基显示的地址，这里换回协议用的 0 基地址。
+        # 解码和匹配一律用 0 基，addr_base 只影响显示。
+        address = _int(record["display_address"], addr_base,
+                       addr_base, 0xFFFF + addr_base) - addr_base
+    else:
+        address = _int(record.get("address", 0), 0, 0, 0xFFFF)
+    bit = _int(record.get("bit", 0), 0, 0, 15)
 
     def _opt_float(key):
         if key not in record or record.get(key) in (None, ""):
@@ -291,6 +298,11 @@ def normalize_sample(sample):
         "slave": sample.get("slave", ""),
         "function": sample.get("function", ""),
         "address": sample.get("address", ""),
+        # 按地址基显示的地址和阈值结果一并入库，否则寄存器里配的
+        # addr_base / warn / alarm 到了结构化记录就丢了。
+        "display_address": sample.get("display_address",
+                                      sample.get("address", "")),
+        "level": str(sample.get("level", "") or "")[:8],
     }
 
 

@@ -204,7 +204,9 @@ class DeviceCenterDialog(QDialog):
         enabled.setFlags(enabled.flags() | Qt.ItemIsUserCheckable)
         enabled.setCheckState(Qt.Checked if rec["enabled"] else Qt.Unchecked)
         self.table.setItem(row, 0, enabled)
-        values = (rec["name"], rec["slave"], None, rec["address"], None,
+        # 地址列按所选地址基显示（切到 1 基就看到 40001 风格的地址），
+        # 存回去时在 _collect_registers 里换算回 0 基。
+        values = (rec["name"], rec["slave"], None, rec["display_address"], None,
                   None, rec["bit"], rec["scale"], rec["offset"], rec["unit"])
         for column, value in enumerate(values, 1):
             if value is None:
@@ -242,7 +244,7 @@ class DeviceCenterDialog(QDialog):
             records.append({
                 "enabled": self.table.item(row, 0).checkState() == Qt.Checked,
                 "name": text(1), "slave": text(2, "1"), "function": combo_value(3, 3),
-                "address": text(4, "0"), "type": combo_value(5, "u16"),
+                "display_address": text(4, "0"), "type": combo_value(5, "u16"),
                 "order": combo_value(6, "AB"), "bit": text(7, "0"),
                 "scale": text(8, "1"), "offset": text(9, "0"), "unit": text(10),
                 "addr_base": combo_value(11, 0), "bitfields": text(12),

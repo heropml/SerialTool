@@ -115,9 +115,9 @@
 
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
-| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 全量 232 处宽泛 `except`、其中 98 处静默 `pass` 逐模块收敛；清理型代码改分步兜底，前一步失败不跳过后续步骤。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`）；`main_window.py`（138/72）、`serial_io.py`（12/6）待做 |
+| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **233 处宽泛 `except`、其中 88 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算，别手数）。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`），`bridge.py` 的网关 tick 同步改为记日志 + 一次性 `error_occurred`；`main_window.py`（144/72）、`serial_io.py`（12/6）待做 |
 | S-2 | **拆分 `main_window.py`** | 12198 行、占 src 40672 行 30% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 932 个用例全是短平快功能验证，无一条长跑 |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 951 个用例全是短平快功能验证，无一条长跑 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | `log_naming.py` 现只有按日轮转（`should_roll_date`），补按大小切分及两者组合 |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 错误提示给出可操作建议而非原始 `errorString`；常用 Modbus 读写收敛成简化表单；补发送历史全文搜索 |
 
@@ -205,5 +205,16 @@
 - **I（v1.4 S-1 首块）** `net_io.py` 异常收敛：9 处静默 `except Exception: pass` 归零。清理动作改为分步兜底（`_safe`）——
   退组或 abort 失败不再连带跳过 `close`/`deleteLater`（原会泄漏 socket 且没退组），半帧污染的客户端先摘表再释放
   （原 abort 抛异常会把它留在客户端表里继续接收后续写入）；回归见 `tests/test_net_io_cleanup.py`
+- **J** 发布前收尾三项：
+  - 地址基与阈值接通到界面。设备中心地址列按 `display_address` 显示、存回时换算回 0 基（解码与匹配始终用协议地址）；
+    `level` / `display_address` 进结构化记录与 CSV，记录表新增「级别」列；仪表盘按 `level` 着色（报警闪红、预警稳定琥珀色）
+  - 退出回收外部程序子进程。`_trg_procs` 记住活动句柄，`_shutdown()` 统一终止；
+    `run_cmd` 用 `shell=True`，句柄指向 shell 本身，只 terminate() 会漏掉孙进程，所以
+    Windows 走 `taskkill /T`、POSIX 用 `start_new_session` 成组后 `killpg`
+  - 关掉 Popen 与句柄登记之间的竞态。`_trg_stopping` 竖起后不再放行新动作，
+    `_trg_launching` 记住在途的启动；登记排在释放占位之前，`_trg_stop_procs()`
+    等到占位归零再返回（只等 Popen、不等命令执行，上限 2s），因此不会漏掉
+    恰好落在窗口里的进程
+  - 网关 tick 不再静默吞异常：记 debug 日志并发一次 `error_occurred`（tick 100ms 一次，用门閙避免刷屏，恢复后再故障会再报）
 
-测试基线：**932 passed, 4 skipped, 291 subtests**（4 个 skip 全是平台门控：3 个 POSIX-only 进程组用例 + 1 个 offscreen Qt 排版用例；带界面跑法下少 1 个 skip、多 1 个 pass）。
+测试基线：**956 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。

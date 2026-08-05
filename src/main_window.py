@@ -2,6 +2,7 @@
 """主窗口 CommTool（统一串口/网络调试工具）。"""
 import codecs
 import json
+import logging
 import os
 import random
 import re
@@ -33,6 +34,8 @@ from app_icon import get_app_icon
 from fonts import ui_font, mono_font, localize_qss
 from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
                      SuffixLineEdit)
+
+_log = logging.getLogger(__name__)
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
@@ -585,6 +588,9 @@ class CommTool(QMainWindow):
         self._trg_action_lock = threading.Lock()   # webhook / 运行程序动作的并发闸门
         self._trg_action_busy = 0
         self._trg_action_dropped = 0
+        self._trg_procs = set()     # 外部程序动作的活动子进程，退出时靠它回收
+        self._trg_launching = 0     # 已开始、还没登记句柄的 Popen 数
+        self._trg_stopping = False  # 竖起后不再放行新动作（单向，只由退出流程置位）
         self._trg_dec_buf = {}      # 触发引擎的增量解码状态，按方向/来源流隔离
         self._trg_dec = {}
         self._trg_dec_codec = None
@@ -5601,13 +5607,30 @@ class CommTool(QMainWindow):
                   .replace("{pattern}", str(rule.get("pattern") or "")))
 
         def _worker():
+            with self._trg_action_lock:
+                if self._trg_stopping:
+                    return              # 正在退出，不再拉新进程
+                self._trg_launching += 1
+            proc = None
             try:
                 import subprocess
                 kwargs = {"shell": True}
                 if sys.platform == "win32":
                     kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                else:
+                    # 自成进程组：shell=True 下真正干活的是孙进程，按组才收得干净
+                    kwargs["start_new_session"] = True
                 proc = subprocess.Popen(cmd, **kwargs)
             except Exception:
+                pass
+            finally:
+                with self._trg_action_lock:
+                    # 登记必须排在放开占位之前：_trg_stop_procs 等的就是这个次序，
+                    # 否则它可能在句柄入表前就扫完走人，把进程漏在系统里。
+                    if proc is not None:
+                        self._trg_procs.add(proc)
+                    self._trg_launching -= 1
+            if proc is None:
                 return
             try:
                 # 必须等子进程退出：Popen 启动即返回，不等的话这个线程几微秒就结束并
@@ -5615,9 +5638,78 @@ class CommTool(QMainWindow):
                 # 冷却设 0 时子进程仍可无限堆积。顺带回收 POSIX 上的僵尸进程。
                 proc.wait()
             except Exception:
-                pass
+                _log.debug("run_cmd wait failed", exc_info=True)
+            finally:
+                with self._trg_action_lock:
+                    self._trg_procs.discard(proc)
 
         self._trg_spawn_action(_worker)
+
+    @staticmethod
+    def _trg_kill_proc(proc):
+        """结束一个外部程序动作。
+
+        run_cmd 用 shell=True 启动，句柄指向的是 shell 本身，只 terminate()
+        会把真正干活的孙进程留下，所以两边都按整组（树）收：Windows
+        走 taskkill /T，POSIX 走 killpg（worker 用 start_new_session 让 shell 成组长）。
+        """
+        import subprocess
+        if sys.platform == "win32":
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True, timeout=5)
+                return
+            except Exception:             # taskkill 不可用时退回通用路径
+                _log.debug("taskkill failed for pid %s", proc.pid, exc_info=True)
+        else:
+            import signal
+            # Windows 的 signal 没有 SIGKILL，这段平时不走但不能因此招 AttributeError
+            for sig in (getattr(signal, "SIGTERM", 15), getattr(signal, "SIGKILL", 9)):
+                try:
+                    # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
+                    # 所以直接拿 proc.pid 当组号用。
+                    os.killpg(proc.pid, sig)
+                except Exception:
+                    break                 # 没成组（如 start_new_session 未生效）→ 走通用路径
+                try:
+                    proc.wait(timeout=2)
+                    return
+                except Exception:
+                    continue              # SIGTERM 没收住 → 接着 SIGKILL
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                _log.debug("cannot kill pid %s", proc.pid, exc_info=True)
+
+    _TRG_STOP_WAIT = 2.0          # 等在途启动收尾的上限
+
+    def _trg_stop_procs(self):
+        """退出前终止仍在跑的外部程序动作；一旦调用就不再放行新动作。
+
+        动作 worker 是 daemon 线程，解释器退出时会被直接掉掉，但它拉起的
+        是独立的 OS 进程：不主动收的话，命令跑得久或卡死时，CommTool 关了
+        它们还在系统里。
+
+        Popen 返回到句柄登记之间有个窗口，只扫一遍 _trg_procs 会漏掉正好落在
+        窗口里的进程。所以先竖 _trg_stopping 挡住后续动作，再等已在途的启动
+        登记完毕。等的只是 Popen 本身，不是命令的执行，所以是有界的。
+        """
+        deadline = time.time() + self._TRG_STOP_WAIT
+        while True:
+            with self._trg_action_lock:
+                self._trg_stopping = True
+                launching = self._trg_launching
+                procs, self._trg_procs = list(self._trg_procs), set()
+            for proc in procs:
+                if proc.poll() is None:
+                    self._trg_kill_proc(proc)
+            if not launching or time.time() >= deadline:
+                return
+            time.sleep(0.01)
 
     def _trg_spawn_action(self, worker):
         """Run a trigger action off the GUI thread, capped in flight.
@@ -5630,6 +5722,8 @@ class CommTool(QMainWindow):
         cap bounds live processes rather than just launch calls.
         """
         with self._trg_action_lock:
+            if self._trg_stopping:
+                return False      # 退出中：不算丢弃，就是不再开新工
             if self._trg_action_busy >= self._TRG_MAX_ACTIONS:
                 self._trg_action_dropped += 1
                 return False
@@ -12138,6 +12232,7 @@ class CommTool(QMainWindow):
         if hasattr(self, "_rate_timer"):
             self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
         self._ar_stop_script_worker()      # B5：回收常驻脚本子进程
+        self._trg_stop_procs()             # 同收触发器外部程序动作的子进程
         self._save_settings()
         self.close_conn()
         self._close_log_file()

@@ -5,6 +5,7 @@ BridgeEngine — 纯信号驱动，无独立线程，不依赖 Qt Widget。
 持有两个连接对象（Side A / Side B），连接双方的 data_received
 信号实现双向转发，监听 state_changed / error_occurred 自动停止。
 """
+import logging
 import time
 from collections import deque
 
@@ -14,6 +15,8 @@ try:
     from modbus_gateway import ModbusGatewayEngine
 except ImportError:  # pragma: no cover
     ModbusGatewayEngine = None
+
+_log = logging.getLogger(__name__)
 
 
 class BridgeEngine(QObject):
@@ -221,8 +224,15 @@ class BridgeEngine(QObject):
             return
         try:
             self._gw_dispatch(self._gateway.tick())
-        except Exception:
-            pass
+        except Exception as e:
+            # 静默吞会让网关卡住而界面没任何提示。tick 每 100ms 一次，
+            # 持续故障不能每次都报，所以同发送失败一样用一次性门閙。
+            _log.debug("gateway tick failed", exc_info=True)
+            if self._gw_ok:
+                self._gw_ok = False
+                self.error_occurred.emit(1, "gateway tick failed: %s" % e)
+        else:
+            self._gw_ok = True
 
     def _on_data_a(self, data: bytes):
         self._a_rx += len(data)
@@ -331,6 +341,7 @@ class BridgeEngine(QObject):
         self._a_hist.clear()
         self._b_hist.clear()
         self._send_ok_a = self._send_ok_b = True
+        self._gw_ok = True
 
     def _record_rate(self, side: int, n: int):
         t = time.monotonic()

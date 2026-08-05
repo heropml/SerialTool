@@ -3838,13 +3838,46 @@ class DashboardTests(unittest.TestCase):
         try:
             dlg.feed(b"36.5,20\n")            # CH1=36.5 > 30 → 告警；CH2 无阈值
             dlg._refresh_tiles()
-            self.assertTrue(dlg._tiles["CH1"]["alert"])
-            self.assertFalse(dlg._tiles["CH2"]["alert"])
+            self.assertEqual(dlg._tiles["CH1"]["level"], "alarm")
+            self.assertEqual(dlg._tiles["CH2"]["level"], "")
             self.assertEqual(dlg._tiles["CH1"]["lbl_unit"].text(), "℃")
             # 回到范围内 → 解除告警
             dlg.feed(b"25,20\n")
             dlg._refresh_tiles()
-            self.assertFalse(dlg._tiles["CH1"]["alert"])
+            self.assertEqual(dlg._tiles["CH1"]["level"], "")
+        finally:
+            dlg.deleteLater()
+
+    def test_register_level_colors_tile(self):
+        """寄存器表的 warn/alarm 要能驱动卡片着色：报警闪红，预警稳定色不闪。"""
+        w, dlg = self._dlg()
+        try:
+            dlg.feed_named_samples([{"tag": "T", "value": 80, "level": "warn"}])
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["T"]["level"], "warn")
+            self.assertEqual(dlg._tiles["T"]["state"], "warn")
+            dlg._blink()
+            self.assertEqual(dlg._tiles["T"]["state"], "warn")   # 预警不参与闪烁
+
+            dlg.feed_named_samples([{"tag": "T", "value": 120, "level": "alarm"}])
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["T"]["level"], "alarm")
+            self.assertIn(dlg._tiles["T"]["state"], ("alert", "alert2"))
+
+            dlg.feed_named_samples([{"tag": "T", "value": 10, "level": ""}])
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["T"]["level"], "")
+            self.assertEqual(dlg._tiles["T"]["state"], "")
+        finally:
+            dlg.deleteLater()
+
+    def test_panel_threshold_still_wins_without_register_level(self):
+        """面板自己的阈值行不受影响：没有寄存器级别时照样告警。"""
+        w, dlg = self._dlg(thresh="T:0~30:C")
+        try:
+            dlg.feed_named_samples([{"tag": "T", "value": 55}])
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["T"]["level"], "alarm")
         finally:
             dlg.deleteLater()
 
@@ -3853,10 +3886,10 @@ class DashboardTests(unittest.TestCase):
         try:
             dlg.feed(b"5\n")                       # < 10 → 告警
             dlg._refresh_tiles()
-            self.assertTrue(dlg._tiles["CH1"]["alert"])
+            self.assertEqual(dlg._tiles["CH1"]["level"], "alarm")
             dlg.feed(b"9999\n")                    # 上限留空 → 不告警
             dlg._refresh_tiles()
-            self.assertFalse(dlg._tiles["CH1"]["alert"])
+            self.assertEqual(dlg._tiles["CH1"]["level"], "")
         finally:
             dlg.deleteLater()
 
