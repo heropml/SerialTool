@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.9
+
+This release finishes the remaining P1 polish:
+
+- **Multi-slave row table** -- the Modbus slave dialog replaces the JSON textarea with Addr / Server ID / Extra JSON rows (add/remove). Duplicate addresses are rejected with a toast; hand-edited project JSON still keeps the first address at runtime.
+- **Jump to session time** -- click the status-bar RX/TX stats to jump to the latest sample wall time; double-click a session-compare row to jump via `.ctrec` `wall_t0` (older recordings without the anchor show a toast). New recordings store `wall_t0`.
+- **Data-area bookmarks** -- `Ctrl+F2` toggles a bookmark on the current line; `F2` / `Shift+F2` move next/prev (wrapping). Clearing the data area or an ANSI full clear (`ESC[2J`) drops bookmarks.
+- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next up is P2 (CLI / API / plugins / PCAP).
+
+---
+
 ## What's New in v1.3.8
 
 This release wraps up the post-1.3.7 polish items:
@@ -57,7 +68,7 @@ This release closes the loop from reusable connections to CI-ready test artifact
 - **CSV data-driven sequences** — bind a CSV dataset to run one round per row, with the header row seeding `${var}` and the loop count taken from the row count; reports carry the CSV row number and a device label (taken from a `device_id` / `sn` / `name` column). Decoding falls back utf-8 → GBK (Excel "Save as CSV") → latin-1.
 - **Test report export now includes JUnit XML** — **Export Report** offers HTML / CSV / **JUnit XML**, the last of which drops straight into Jenkins or GitLab CI. All three formats now record the app version, start and end time, run parameters (loops, step count, stop-on-fail) and the CSV path, plus per step the elapsed time, failure reason and key frames (TX / RX hex). **Behaviour change: a mid-run stop or disconnect now still produces a summary and can be exported** (flagged as stopped) instead of being discarded, and multi-round runs expand every step of every round.
 - **I/O statistics and diagnostics** — the status bar adds packet rate (pkt/s, where a "packet" is a transport-level read/write chunk, not a protocol frame); tooltips add peak packet rate, packet size min/avg/max, a size histogram, timeout counters split by sequence / Modbus master / connection, and the average rate over the last minute. The plot dialog can subscribe to `rx_Bps`, `tx_Bps`, `rx_pps` and `tx_pps`. Resetting statistics leaves recordings and the data area untouched. No new dependencies.
-- **Multi-slave simulation** — the Modbus auto-reply slave can emulate several slaves on one bus: the **multi-slave JSON list** takes one entry per slave, each with its own register maps and server ID, and anything left out is inherited from the single-slave configuration above. **Filling this box overrides the single-address table.** Under TCP Server every client still keeps its own partial-frame buffer, so frames never bleed between clients. Broadcast address 0 accepts write function codes only; reads and FC08 / FC11 / FC17 / FC23 are refused with "Broadcast address only allows write functions" in the result column.
+- **Multi-slave simulation** — the Modbus auto-reply slave can emulate several slaves on one bus: the **multi-slave row table** (Addr / Server ID / Extra JSON) takes one row per slave, each with its own register maps and server ID, and anything left out is inherited from the single-slave configuration above. **Filling the table overrides the single-address table.** Under TCP Server every client still keeps its own partial-frame buffer, so frames never bleed between clients. Broadcast address 0 accepts write function codes only; reads and FC08 / FC11 / FC17 / FC23 are refused with "Broadcast address only allows write functions" in the result column.
 - **Exception injection and dynamic registers** — the slave can return exception codes on a policy, so you can exercise the master's error paths, and register values can move on their own by increment, decrement, random, sine or ramp to mimic a live device; a value written by the master overrides the dynamic one until the session is reset. The dialog exposes only the exception code and the **Inject exception** switch — **the injection mode, the function-code and address filters, and the dynamic register rules have no UI yet and must be written into the project file**: `{"exception": {"enabled": true, "code": 4, "mode": "n", "n": 3, "funcs": [3, 6], "addrs": [10, 11]}, "dynamics": [{"space": "holding", "addr": 0, "mode": "sine", "min": 0, "max": 100, "period_ms": 2000}]}`. The exception `mode` is `always` / `once` / `n` (every Nth request), and empty `funcs` / `addrs` mean "any". For dynamics, `space` is `holding` / `input` / `coils` / `discrete` and `mode` is `inc` / `dec` / `random` / `sine` / `ramp` (with optional `step` / `phase` / `seed`); `min` equal to `max` degenerates to a constant. Give `random` a `seed` to make the sequence reproducible; resetting the session returns it to the start.
 - **More function codes** — the function dropdown adds **08 Diagnostics (echo)**, **11 Get Comm Event Count**, **17 Report Server ID** and **23 Read/Write Multiple Regs**, implemented on both the master and the slave side. For FC23 the quantity column takes `read_qty @ write_addr : write_values` (values space-separated, e.g. `2 @ 100 : 10 20`); FC08's diagnostic data goes in the same column and the result shows both decimal and hex so you can check the echo against what you sent, but **the sub-function has no UI yet** and must be set as `diag_sub` in the project file's poll rule (default 0 = loopback). FC17's server ID has no standardized length, so its response is variable: RTU sizes the frame from its byte-count field, Modbus-TCP from the MBAP length field and ASCII from the frame terminator, and all three variants receive it in full.
 - **Persistent plots and structured playback** — plot and dashboard data sources, units and layout are saved inside `.ctproj` and restored when the project is reopened. A structured recording can be replayed on its original timeline to drive the same plots, with pause, single step, speed and seek; byte-level `.ctrec` playback also supports pause, single step and seek by seconds, and stepping pauses first so each click advances exactly one event.
@@ -733,7 +744,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.8`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.9`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

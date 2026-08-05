@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 """自动应答对话框 AutoReplyDialog。
 
 规则列表：每行 [启用] 收到[匹配] [HEX] [模式] → 回[应答] [HEX] [校验] 冷却[ms] [✕]。
@@ -1013,15 +1014,78 @@ class AutoReplyDialog(QDialog):
         slaves_hint.setWordWrap(True)
         slaves_hint.setObjectName("ArCsHint")
         v.addWidget(slaves_hint)
-        ed_slaves_json = QPlainTextEdit()
-        ed_slaves_json.setPlaceholderText('[{\"addr\":1,\"holding\":{\"0\":1}},{\"addr\":2}]')
-        ed_slaves_json.setFixedHeight(72)
-        if isinstance(cfg.get("slaves"), list) and cfg.get("slaves"):
-            import json as _json
-            ed_slaves_json.setPlainText(_json.dumps(cfg.get("slaves"), ensure_ascii=False))
-        v.addWidget(ed_slaves_json)
+        slave_hdr = QHBoxLayout()
+        slave_hdr.setSpacing(6)
+        for lk, w in (("ar_modbus_addr", 56), ("ar_modbus_server_id", 100),
+                      ("ar_modbus_slaves_extra", 0)):
+            lb = QLabel(t(lk))
+            if w:
+                lb.setFixedWidth(w)
+            slave_hdr.addWidget(lb, 1 if not w else 0)
+        slave_hdr.addSpacing(28)
+        v.addLayout(slave_hdr)
+        slave_host = QWidget()
+        slave_v = QVBoxLayout(slave_host)
+        slave_v.setContentsMargins(0, 0, 0, 0)
+        slave_v.setSpacing(4)
+        slave_v.addStretch(1)
+        slave_scroll = QScrollArea()
+        slave_scroll.setObjectName("ArScroll")
+        slave_scroll.setWidget(slave_host)
+        slave_scroll.setWidgetResizable(True)
+        slave_scroll.setFrameShape(QFrame.NoFrame)
+        slave_scroll.setFixedHeight(96)
+        v.addWidget(slave_scroll)
+        slave_rows = []
 
-        # 表头
+        def add_slave_row(addr=1, server_id="", extra=None):
+            r = QWidget()
+            rh = QHBoxLayout(r)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.setSpacing(6)
+            ed_addr = QLineEdit(str(addr))
+            ed_addr.setFixedWidth(56)
+            ed_sid = QLineEdit(str(server_id or ""))
+            ed_sid.setFixedWidth(100)
+            if extra is None:
+                extra = {}
+            elif not isinstance(extra, dict):
+                extra = {}
+            # Show maps / dyn / exception as compact JSON (no addr/server_id).
+            payload = {k: val for k, val in extra.items()
+                       if k not in ("addr", "server_id") and val not in (None, "", [], {})}
+            ed_extra = QLineEdit(
+                json.dumps(payload, ensure_ascii=False) if payload else "")
+            ed_extra.setPlaceholderText(t("ar_modbus_slaves_extra_ph"))
+            btn_x = QPushButton("x")
+            btn_x.setObjectName("ArDelBtn")
+            btn_x.setFixedSize(26, 26)
+            rrec = {"w": r, "addr": ed_addr, "sid": ed_sid, "extra": ed_extra}
+
+            def _del(rec=rrec):
+                rec["w"].setParent(None)
+                rec["w"].deleteLater()
+                if rec in slave_rows:
+                    slave_rows.remove(rec)
+
+            btn_x.clicked.connect(lambda *_: _del())
+            rh.addWidget(ed_addr)
+            rh.addWidget(ed_sid)
+            rh.addWidget(ed_extra, 1)
+            rh.addWidget(btn_x)
+            slave_v.insertWidget(slave_v.count() - 1, r)
+            slave_rows.append(rrec)
+
+        _slaves_cfg = cfg.get("slaves") if isinstance(cfg.get("slaves"), list) else []
+        for _sl in _slaves_cfg:
+            if not isinstance(_sl, dict):
+                continue
+            add_slave_row(_sl.get("addr", 1), _sl.get("server_id") or "", _sl)
+        btn_add_slave = QPushButton(t("ar_modbus_slaves_add"))
+        btn_add_slave.setObjectName("PlotGhostBtn")
+        btn_add_slave.clicked.connect(lambda *_: add_slave_row())
+        v.addWidget(btn_add_slave)
+
         hdr = QHBoxLayout()
         hdr.setSpacing(6)
         lb_sp = QLabel(t("ar_modbus_space")); lb_sp.setFixedWidth(130); hdr.addWidget(lb_sp)
@@ -1268,18 +1332,42 @@ class AutoReplyDialog(QDialog):
         sid = (ed_server_id.text() or "").strip()
         if sid:
             out["server_id"] = sid
-        raw_slaves = (ed_slaves_json.toPlainText() or "").strip()
-        if raw_slaves:
-            import json as _json
+        slaves_out = []
+        seen_slave_addrs = set()
+        for sr in slave_rows:
             try:
-                parsed = _json.loads(raw_slaves)
-            except Exception:
-                parsed = None
-            # 能解析但不是数组也算非法：否则会静默丢掉原有的多从机配置且无提示。
-            if not isinstance(parsed, list):
+                addr = int((sr["addr"].text() or "0").strip() or "0")
+            except ValueError:
                 self.app.toast(t("ar_modbus_slaves_bad"), error=True)
                 return
-            out["slaves"] = parsed
+            if addr < 1 or addr > 247:
+                self.app.toast(t("ar_modbus_slaves_bad"), error=True)
+                return
+            if addr in seen_slave_addrs:
+                self.app.toast(t("ar_modbus_slaves_bad"), error=True)
+                return
+            seen_slave_addrs.add(addr)
+            entry = {"addr": addr}
+            sid = (sr["sid"].text() or "").strip()
+            if sid:
+                entry["server_id"] = sid
+            raw_extra = (sr["extra"].text() or "").strip()
+            if raw_extra:
+                try:
+                    extra = json.loads(raw_extra)
+                except Exception:
+                    self.app.toast(t("ar_modbus_slaves_bad"), error=True)
+                    return
+                if not isinstance(extra, dict):
+                    self.app.toast(t("ar_modbus_slaves_bad"), error=True)
+                    return
+                for k, val in extra.items():
+                    if k in ("addr", "server_id"):
+                        continue
+                    entry[k] = val
+            slaves_out.append(entry)
+        if slaves_out:
+            out["slaves"] = slaves_out
         self.app._set_ar_modbus(out)
         self._update_modbus_btn()
 

@@ -677,6 +677,9 @@ class CommTool(QMainWindow):
         self._setup_tray()
         # Ctrl+F 全局快捷键：从任何控件按下都打开搜索栏（_open_search 内会自动聚焦输入框）
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._open_search)
+        QShortcut(QKeySequence("Ctrl+F2"), self, activated=self._bookmark_toggle)
+        QShortcut(QKeySequence("F2"), self, activated=self._bookmark_next)
+        QShortcut(QKeySequence("Shift+F2"), self, activated=self._bookmark_prev)
         # 配置导入/导出快捷键（避开 Ctrl+S=保存数据区、Ctrl+O 占用）
         QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=self.export_config)
         QShortcut(QKeySequence("Ctrl+Shift+O"), self, activated=self.import_config)
@@ -846,6 +849,10 @@ class CommTool(QMainWindow):
         self._set_state_color(opened=False)
         for lbl in (self.lbl_state, self.lbl_rx_stat, self.lbl_tx_stat):
             lbl.setFont(ui_font(10))
+        for lbl in (self.lbl_rx_stat, self.lbl_tx_stat):
+            lbl.installEventFilter(self)
+            lbl.setCursor(Qt.PointingHandCursor)
+            lbl.setProperty("tr_tooltip", "stat_jump_tip")
 
         def _sep():
             """竖线分隔符（无自带色 → 跟随状态栏 text_sec，主题自适应）"""
@@ -1744,7 +1751,9 @@ class CommTool(QMainWindow):
         self._build_search_bar()
 
         # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
-        self._recv_highlight_line = -1          # 当前高亮的块号，-1 表示无
+        self._recv_highlight_line = -1
+        self._bookmarks = []  # QTextCursor list (session-scoped)
+        self._bookmark_idx = -1          # bookmark nav index, -1 = none yet
         # 关键字高亮分组: [{name, rules:[{pattern,mode,scope,color,enabled}]}]，_keyword_active=生效分组(-1关闭)
         self._keyword_groups, self._keyword_active, _kw_ok = self._load_keyword_groups()
         if not _kw_ok:      # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
@@ -1849,6 +1858,12 @@ class CommTool(QMainWindow):
         if obj is getattr(self, "lbl_version", None) and event.type() == QEvent.MouseButtonPress:
             if self._update_badge_version:
                 self.open_about()
+            return False
+        if obj in (getattr(self, "lbl_rx_stat", None), getattr(self, "lbl_tx_stat", None)) \
+                and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                self._jump_from_io_stats()
+                return True
             return False
         # 自动应答按钮：双击 → 翻转总开关（吃掉事件，不让 QPushButton 默认处理再发 clicked）
         if obj is getattr(self, "btn_autoreply", None) and event.type() == QEvent.MouseButtonDblClick:
@@ -2098,6 +2113,67 @@ class CommTool(QMainWindow):
             QPushButton:hover {{ background-color: {c['ghost_hover']}; }}
         """)
 
+
+    def _bookmark_toggle(self):
+        """Ctrl+F2: toggle a bookmark on the current data-area line."""
+        if not hasattr(self, "txt_recv"):
+            return
+        cur = self.txt_recv.textCursor()
+        block = cur.block()
+        if not block.isValid():
+            return
+        bn = block.blockNumber()
+        kept = []
+        removed = False
+        for c in list(self._bookmarks):
+            if c.isNull() or not c.block().isValid():
+                continue
+            if c.block().blockNumber() == bn:
+                removed = True
+                continue
+            kept.append(c)
+        if not removed:
+            mark = QTextCursor(block)
+            mark.setKeepPositionOnInsert(True)
+            kept.append(mark)
+            kept.sort(key=lambda c: c.block().blockNumber())
+        self._bookmarks = kept
+        self._bookmark_idx = -1
+        self._refresh_extra_selections(rebuild_search=False)
+
+    def _bookmark_goto(self, delta):
+        marks = [c for c in self._bookmarks
+                 if not c.isNull() and c.block().isValid()]
+        self._bookmarks = marks
+        if not marks:
+            self.toast(self._t("bm_empty"))
+            return
+        idx = getattr(self, "_bookmark_idx", -1)
+        if idx < 0:
+            # Start from nearest mark at/after caret when first navigating.
+            bn = self.txt_recv.textCursor().block().blockNumber()
+            idx = 0
+            for i, c in enumerate(marks):
+                if c.block().blockNumber() >= bn:
+                    idx = i
+                    break
+            if delta < 0 and marks[idx].block().blockNumber() > bn:
+                idx = (idx - 1) % len(marks)
+        else:
+            idx = (idx + delta) % len(marks)
+        self._bookmark_idx = idx
+        mark = marks[idx]
+        self.txt_recv.setTextCursor(mark)
+        self.txt_recv.ensureCursorVisible()
+        self._recv_highlight_line = mark.block().blockNumber()
+        self._refresh_extra_selections(rebuild_search=False)
+
+    def _bookmark_next(self):
+        self._bookmark_goto(1)
+
+    def _bookmark_prev(self):
+        self._bookmark_goto(-1)
+
     def _open_search(self):
         """打开查找栏：定位 + 聚焦，若数据区有选中文本则填入。"""
         if not hasattr(self, "_search_bar"):
@@ -2324,10 +2400,10 @@ class CommTool(QMainWindow):
                 if len(sels) >= self._KW_MAX_SELECTIONS:
                     break
         # 2. 单击行高亮（放最后 → 画在最上层），中性半透明，不跟文字撞色
+        is_dark = self._theme().get("mode") == "dark"
         if self._recv_highlight_line >= 0:
             block = doc.findBlockByNumber(self._recv_highlight_line)
             if block.isValid():
-                is_dark = self._theme().get("mode") == "dark"
                 hl = QColor(255, 255, 255, 46) if is_dark else QColor(0, 0, 0, 38)
                 sel = QTextEdit.ExtraSelection()
                 sel.format.setBackground(hl)
@@ -2336,6 +2412,25 @@ class CommTool(QMainWindow):
                 sels.append(sel)
             else:
                 self._recv_highlight_line = -1
+        # 2.5 Bookmarks (session-scoped; appended before search so search paints on top)
+        alive = []
+        for cur in self._bookmarks:
+            if cur.isNull():
+                continue
+            block = cur.block()
+            if not block.isValid():
+                continue
+            alive.append(cur)
+            sel = QTextEdit.ExtraSelection()
+            sel.format.setBackground(
+                QColor(255, 149, 0, 90) if is_dark else QColor(255, 149, 0, 70))
+            sel.format.setProperty(QTextFormat.FullWidthSelection, True)
+            sel.cursor = QTextCursor(block)
+            sels.append(sel)
+        self._bookmarks = alive
+        if not (0 <= getattr(self, "_bookmark_idx", -1) < len(self._bookmarks)):
+            self._bookmark_idx = -1 if not self._bookmarks else min(
+                max(0, self._bookmark_idx), len(self._bookmarks) - 1)
         # 3. 搜索高亮（叠加在最上层）：所有匹配淡黄，当前匹配橙色
         if getattr(self, "_search_term", ""):
             if rebuild_search:
@@ -8853,6 +8948,18 @@ class CommTool(QMainWindow):
             })
         self._structured_add(samples)
 
+    def _jump_from_io_stats(self):
+        """Status-bar RX/TX click: jump to latest stats sample wall time."""
+        hist = getattr(getattr(self, "_io_stats", None), "history", None) or []
+        if hist:
+            wall = hist[-1].get("wall_t")
+        else:
+            wall = getattr(getattr(self, "_io_stats", None), "session_t0_wall", None)
+        if wall is None:
+            self.toast(self._t("stat_jump_empty"), error=True)
+            return
+        self.jump_to_session_time(wall)
+
     def jump_to_session_time(self, wall_t):
         dlg = getattr(self, "_structured_dlg", None)
         if dlg is None:
@@ -9385,6 +9492,9 @@ class CommTool(QMainWindow):
                 c2.removeSelectedText()
             elif params == "2":
                 self.txt_recv.clear()
+                self._bookmarks = []
+                self._bookmark_idx = -1
+                self._recv_highlight_line = -1
                 cur.movePosition(QTextCursor.End)
         elif final == "K":            # 擦除行：0/缺省=光标到行尾
             if params in ("", "0"):
@@ -9722,6 +9832,8 @@ class CommTool(QMainWindow):
     def clear_recv(self):
         self.txt_recv.clear()
         self._recv_highlight_line = -1
+        self._bookmarks = []
+        self._bookmark_idx = -1
         self.txt_recv.setExtraSelections([])
         self.btn_to_bottom.hide()
         self._reset_stats()
@@ -9813,8 +9925,10 @@ class CommTool(QMainWindow):
         self.lbl_rx_stat.setText(rx)
         self.lbl_tx_stat.setText(tx)
         if with_tooltip:
-            set_tooltip(self.lbl_rx_stat, self._stat_tooltip("rx"))
-            set_tooltip(self.lbl_tx_stat, self._stat_tooltip("tx"))
+            tip_rx = self._stat_tooltip("rx") + "\n" + self._t("stat_jump_tip")
+            tip_tx = self._stat_tooltip("tx") + "\n" + self._t("stat_jump_tip")
+            set_tooltip(self.lbl_rx_stat, tip_rx)
+            set_tooltip(self.lbl_tx_stat, tip_tx)
 
     def _stat_tooltip(self, direction):
         acc = self._io_stats

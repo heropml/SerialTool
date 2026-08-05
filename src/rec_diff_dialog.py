@@ -37,6 +37,8 @@ class RecDiffDialog(QDialog):
         self.resize(980, 600)
 
         self._path_a = ""
+        self._wall_t0_a = None
+        self._wall_t0_b = None
         self._path_b = ""
         self._events_a = []
         self._events_b = []
@@ -113,6 +115,7 @@ class RecDiffDialog(QDialog):
         hh.setSectionResizeMode(4, QHeaderView.Stretch)
         hh.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.table, 1)
+        self.table.cellDoubleClicked.connect(self._on_row_jump)
 
         self.lbl_hint = QLabel()
         self.lbl_hint.setObjectName("MsHint")
@@ -138,6 +141,12 @@ class RecDiffDialog(QDialog):
             return
         setattr(self, "_path_%s" % side, path)
         setattr(self, "_events_%s" % side, events)
+        wall = header.get("wall_t0")
+        try:
+            wall = float(wall) if wall is not None else None
+        except (TypeError, ValueError):
+            wall = None
+        setattr(self, "_wall_t0_%s" % side, wall)
         getattr(self, "name_%s" % side).setText(
             t("rd_loaded", f=os.path.basename(path), n=len(events)))
         set_tooltip(getattr(self, "name_%s" % side), path)
@@ -218,6 +227,8 @@ class RecDiffDialog(QDialog):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if r["kind"] in tint:
                     item.setForeground(tint[r["kind"]])
+                if col == 0:
+                    item.setData(Qt.UserRole, r)
                 self.table.setItem(i, col, item)
         st = self._result["stats"]
         # 计数按当前筛选后的行统计：否则筛完表变短、汇总数字不变，两边矛盾。
@@ -238,6 +249,30 @@ class RecDiffDialog(QDialog):
             parts.append(t("rd_truncated", n=_MAX_ROWS, total=len(rows)))
         self.lbl_stat.setText("  ·  ".join(parts))
         self._sync_controls()          # 筛选变化会改写可导出行数
+
+
+    def _on_row_jump(self, row, _col):
+        """Map .ctrec relative time to wall via header wall_t0, then jump."""
+        t = self.app._t
+        item = self.table.item(row, 0)
+        r = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(r, dict):
+            rows = self._filtered_rows()
+            if not (0 <= row < len(rows)):
+                return
+            r = rows[row]
+        # Prefer side A, then B; need wall_t0 + relative t.
+        for side, key in (("a", "t_a"), ("b", "t_b")):
+            rel = r.get(key)
+            wall0 = getattr(self, "_wall_t0_%s" % side, None)
+            if rel is None or wall0 is None:
+                continue
+            try:
+                self.app.jump_to_session_time(float(wall0) + float(rel))
+                return
+            except Exception:
+                continue
+        self.app.toast(t("rd_jump_no_wall"), error=True)
 
     @staticmethod
     def _hex_cell(data, direction):

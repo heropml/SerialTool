@@ -20,7 +20,7 @@
 
 ## 二、落地 C（数据区体验包）遗留
 
-- **书签 / 标记行跳转**（`Ctrl+F2` 加/清、`F2/Shift+F2` 跳转）
+- DONE **书签 / 标记行跳转**（`Ctrl+F2` 加/清、`F2/Shift+F2` 跳转）
   - 当初因 QTextEdit 无原生 gutter、需自建侧栏标记基建而**暂缓**
   - 轻量实现：维护 `self._bookmarks = []`（QTextCursor 列表）+ extra-selection 高亮 + 快捷键，不持久化（会话级标记）
   - 关键文件：`main_window.py` 搜索栏区 (`_build_search_bar` / `_do_search`)、`_refresh_extra_selections`
@@ -51,7 +51,7 @@
 | | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | 仅针对 TCP/UDP；串口继续使用 `.ctrec`，不强行套 PCAP |
 | | Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | 现 CSV 已防注入，加 openpyxl |
 | | 吞吐量随时间曲线（I/O Graph） | Wireshark | 带宽抖动可视化 | 中 | 扩 plot，按 `_rx_rate/_tx_rate` 历史 |
-| ⭐ | **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典 (当前单从机 `_ar_modbus.addr`) |
+| ⭐ | **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机已做；真·TCP↔RTU 网关路由仍待做） |
 | ⭐ | **更多 Modbus 功能码（FC08诊断/FC11/FC17/FC23读写多）** | ModbusSimulator(14码) | 覆盖诊断与一次读写 | 中 | `modbus_master/slave._exec` / `SUPPORTED_FUNCS` |
 | | 位域(bitfield)解析 | 嵌入式协议工具 | 寄存器内部按位拆 | 中 | `binproto.py` + `device_resources` 的 bit 扩展 |
 | | 回放驱动真实 TX（不只注入虚拟连接） | IO Ninja | 录的帧从真实串口/网络发出去 | 中 | `rec_replay.Player` 注入路径加一条 TX 侧 |
@@ -98,11 +98,10 @@
 | P1-2 | DONE **Modbus 异常与动态数据模型** | 测试异常处理和设备状态变化 | 支持异常码注入；寄存器按递增、随机、正弦、上下限循环等方式变化；异常策略可保存到工程 | 从机 `_exec`、设备资源、工程模型 |
 | P1-3 | DONE **补齐常用 Modbus 功能码** | 覆盖诊断和组合读写场景 | 优先 FC08、FC11、FC17、FC23；主机和从机行为、异常响应、超时均有单测 | `modbus_master/slave._exec`、`SUPPORTED_FUNCS` |
 | P1-4 | DONE **仪表盘/图表持久化与 CSV 回放** | 关闭程序后可继续分析历史数据 | 工程保存图表布局、数据源和单位；CSV/结构化记录回放可驱动同一套图表；支持暂停、倍速、单步和进度定位 | `plot_dialog.py`、`dashboard_dialog.py`、`StructuredRecorder` |
-| P1-5 | DONE **会话诊断与差异定位** | 从统计异常快速跳到原始帧 | 会话比较的方向 / 时间差绝对值筛选与 CSV/JSONL 导出已完成；`jump_to_session_time` 已接到波形图：双击曲线点按采样 wall 时间定位结构化记录（有回归测试）。状态栏统计仍是聚合值、无时间轴；会话比较行时间与结构化记录不同源，不作为跳转入口 | `rec_replay.py`、`rec_diff.py`、结构化记录 |
+| P1-5 | DONE **会话诊断与差异定位** | 从统计异常快速跳到原始帧 | 会话比较的方向 / 时间差绝对值筛选与 CSV/JSONL 导出已完成；`jump_to_session_time` 已接到波形图：双击曲线点按采样 wall 时间定位结构化记录（有回归测试）。状态栏 RX/TX 点击可跳到最近统计样本 wall 时间；会话比较双击行经 `wall_t0` 映射后 `jump_to_session_time`（旧 .ctrec 无锚点则 toast） | `rec_replay.py`、`rec_diff.py`、结构化记录 |
 
-> 待补（v1.3.7 已知缺口）：动态寄存器 / 异常注入模式·过滤 / 从机 ID 已在从机对话框提供界面；主机 FC08 数量列支持「子功能:数据」写法；多从机列表仍用 JSON。对话框的 Modbus 帮助文本与数量列 tooltip（`ar_modbus_help` / `mbm_qty_tip`）已补齐 FC08/11/17/23、多从机、异常注入与动态寄存器的说明并给出 JSON 例子，（多从机列表仍注明可写工程 JSON）；顶层 `server_id` 过去会被从机对话框的保存丢回默认值，已修复并加回归测试。另：FC08 的变长回环（子功能 0 回显 N×2 字节数据）已修好——切帧先按 8 字节试，CRC 不符再按偶数长度探测真实帧长，半包会等齐而不是退字节丢帧；回显也改成原样返回整个数据段（规范 6.8 要求响应与请求逐字节相同）。另外容错接收「只带子功能码、无数据段」的 6 字节请求：这不是规范形式（规范 6.8 给每个子功能都定了 2 字节请求数据段，0x0A–0x12 与 0x14 都是 `00 00`，合规帧就是 8 字节），但收到后回「非法值」异常总比静默丢弃好，单独到达、后面跟别的帧、以及乱码前缀后重同步三种情形都覆盖了。子功能 0 不走这条 6 字节兜底，否则可能把还在到达的长回环帧切成两半——有一条故意让前 6 字节 CRC 自洽的对抗性测试盯着。别把 `expected_len` 对 08 的返回值直接改成 6：那会让合规的 8 字节帧切错被吞、从机不再回异常，测试会红。还有一处是协议本身的二义性、不是缺陷：像 `01 08 00 00 00 01 21 CB CC DD 95 59` 这样第一个数据字恰好等于前 6 字节 CRC 的长回环帧，按 8 字节读和按 12 字节读都 CRC 自洽，RTU 没有 T3.5 静默就无从分辨。读法统一取较短的那个（与其余功能码一致）：反过来优先取长帧的话，一个 1/65536 的 CRC 巧合就会让普通 8 字节回环把后面那帧一起吞掉——丢一整条请求比回一个短回显严重得多。`test_crc_collision_prefix_reads_as_the_shorter_frame` 钉住了这个取舍。
+> **P1 收尾（v1.3.8–v1.3.9）已完成**：异常注入/动态寄存器/`server_id` 界面、主机 FC08、多从机行表 UI、tooltip 自动换行、波形/状态栏/会话比较 `jump_to_session_time`、数据区书签、ANSI 清屏清书签、重复从机地址拒绝。FC08 变长回环/切帧取舍仍见 `tests/test_modbus_slave.py` 中的对抗性测试备注。后续能力见 **P2**。
 
-> 待补（tooltip 换行）：Qt 只对「看起来像富文本」的 tooltip 自动换行，纯文本长串会渲染成超出屏幕的单行。全项目另有 16 条零换行的 `setToolTip` 长文案（最宽 `seq_extract_tip` 约 6273 px，其次 `mbm_echo_tip` 约 5321 px、`ar_gap_tip` 约 4199 px）；已加统一 `ui_tips.set_tooltip` 包装（转 HTML 让 Qt 自动换行），全项目 `setToolTip` 调用点与 `tr_tooltip` 刷新路径均已接入；`mbm_qty_tip` 仍自带换行。原建议（把 `\n` 转 `<br>` 并套 `<html>` 交给 Qt 自动换行），而不是逐条改三语译文。注意 `ar_modbus_hint` / `ar_test_hint` / `ms_hint` 虽然更长，但走的是带 `setWordWrap(True)` 的 QLabel，不受此影响。
 
 ### P2：平台化能力（单独立项）
 

@@ -49,11 +49,13 @@ class StreamRecorder:
         self.recording = False
         self.truncated = False
         self._t0 = None
+        self._wall_t0 = None
 
     def start(self):
         self.events = []
         self.truncated = False
         self._t0 = None
+        self._wall_t0 = None
         self.recording = True
 
     def stop(self):
@@ -63,6 +65,7 @@ class StreamRecorder:
         self.events = []
         self.truncated = False
         self._t0 = None
+        self._wall_t0 = None
 
     def __len__(self):
         return len(self.events)
@@ -89,6 +92,9 @@ class StreamRecorder:
         now = time.monotonic() if t is None else t
         if self._t0 is None:
             self._t0 = now
+            # Wall-clock anchor so session-diff / tools can map relative t
+            # back to absolute time for jump_to_session_time.
+            self._wall_t0 = time.time()
         rel = max(0.0, now - self._t0)
         payload = bytes(data)
         # 大块按同一时间戳拆事件，不能直接截掉尾部；录制的是原始流，静默丢字节会让复现失真。
@@ -108,6 +114,8 @@ class StreamRecorder:
     def save(self, path, note=""):
         header = {"_": _MAGIC, "v": _VERSION, "note": str(note or ""),
                   "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if self._wall_t0 is not None:
+            header["wall_t0"] = float(self._wall_t0)
         with io.open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(header, ensure_ascii=False) + "\n")
             for t, d, b in self.events:
