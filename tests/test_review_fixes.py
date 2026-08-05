@@ -324,6 +324,44 @@ def test_view_tab_order_is_stable(tmp_path, monkeypatch):
         _APP.processEvents()
 
 
+
+def test_deleting_a_view_asks_first(tmp_path, monkeypatch):
+    """删视图会当场清空那些规则的分组并落盘，没有 undo，必须先问。
+
+    + / - 两个按钮相邻且只有 28×28，按错很容易。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "delview.ini")
+    window = CommTool("mbm-del-view")
+    try:
+        window._mbm_rules = [_rule("a0", "A", 0), _rule("a1", "A", 1),
+                             _rule("b0", "B", 2)]
+        window._mbm_views = ["A", "B"]
+        monkeypatch.setattr(CommTool, "_mbm_restart", lambda self: None)
+        asked = []
+        monkeypatch.setattr(window, "_confirm_dlg",
+                            lambda title, body, **kw: (asked.append(body), False)[1])
+        dlg = ModbusMasterDialog(window)
+        try:
+            dlg.tabs.setCurrentIndex(1)
+            assert dlg._view_name == "A"
+            dlg._del_view()
+            assert len(asked) == 1
+            assert "A" in asked[0] and "2" in asked[0]   # 告知名字与受影响条数
+            assert window._mbm_views == ["A", "B"]       # 取消 → 一点都没动
+            assert [r["group"] for r in window._mbm_rules] == ["A", "A", "B"]
+
+            monkeypatch.setattr(window, "_confirm_dlg", lambda *a, **k: True)
+            dlg._del_view()
+            assert window._mbm_views == ["B"]            # 确认 → 才真删
+            assert [r["group"] for r in window._mbm_rules] == ["", "", "B"]
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
 # --------------------------------------------------------- trigger actions ---
 
 def test_trigger_action_import_gate_strips_external_actions(tmp_path, monkeypatch):
@@ -801,5 +839,94 @@ def test_run_cmd_placeholders_cannot_inject_a_second_command(tmp_path, monkeypat
         assert "zzz" in out.read_text(errors="replace")   # 值仍作为文本传了进去
     finally:
         window._trg_stop_procs()
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_run_cmd_gives_up_a_hung_child(tmp_path, monkeypatch):
+    """挂死的命令不能永久占着并发名额。
+
+    _TRG_MAX_ACTIONS 个名额全被卡住就等于这个功能废了；到点按整组收掉。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "hang.ini")
+    window = CommTool("trg-hang")
+    try:
+        monkeypatch.setattr(type(window), "_TRG_CMD_TIMEOUT", 0.05)
+        killed = []
+        _, proc = _fake_launch(monkeypatch)          # _FakeProc.wait 会超时
+        monkeypatch.setattr(
+            type(window), "_trg_kill_proc",
+            staticmethod(lambda p: (killed.append(p), p.terminate())))
+
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        for _ in range(300):
+            if killed:
+                break
+            time.sleep(0.01)
+        assert killed == [proc]                     # 超时后被收掉
+        for _ in range(300):
+            if window._trg_action_busy == 0:
+                break
+            time.sleep(0.01)
+        assert window._trg_action_busy == 0         # 名额也还回来了
+        with window._trg_action_lock:
+            assert not window._trg_procs
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_a_child_that_exits_in_time_is_not_killed(tmp_path, monkeypatch):
+    """正常退出的命令不能被超时逻辑误杀。"""
+    _patch_window_runtime(monkeypatch, tmp_path / "quick.ini")
+    window = CommTool("trg-quick")
+    try:
+        killed = []
+        proc = _FakeProc()
+        proc.terminate()                            # 开场就已退出：wait 立即返回
+        _fake_launch(monkeypatch, proc=proc)
+        monkeypatch.setattr(type(window), "_trg_kill_proc",
+                            staticmethod(lambda p: killed.append(p)))
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        for _ in range(300):
+            if window._trg_action_busy == 0:
+                break
+            time.sleep(0.01)
+        assert window._trg_action_busy == 0
+        assert killed == []
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_atexit_backs_up_a_missed_close_event(tmp_path, monkeypatch):
+    """崩溃 / sys.exit 跑不到 closeEvent，子进程不能就此残留。"""
+    import atexit as _atexit
+    registered = []
+    monkeypatch.setattr(_atexit, "register",
+                        lambda fn, *a, **k: (registered.append(fn), fn)[1])
+    _patch_window_runtime(monkeypatch, tmp_path / "atexit.ini")
+    window = CommTool("trg-atexit")
+    try:
+        assert window._trg_stop_procs in registered
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_normal_shutdown_unregisters_the_atexit_hook(tmp_path, monkeypatch):
+    """正常退出已经收完，兵底要注销：否则每开一个窗口就多拉着一个已销毁的窗口。"""
+    import atexit as _atexit
+    live = []
+    monkeypatch.setattr(_atexit, "register", lambda fn, *a, **k: (live.append(fn), fn)[1])
+    monkeypatch.setattr(_atexit, "unregister",
+                        lambda fn: live.remove(fn) if fn in live else None)
+    _patch_window_runtime(monkeypatch, tmp_path / "atexit2.ini")
+    window = CommTool("trg-atexit2")
+    try:
+        assert window._trg_stop_procs in live
+        window._shutdown()
+        assert window._trg_stop_procs not in live
+    finally:
         window.deleteLater()
         _APP.processEvents()

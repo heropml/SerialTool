@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """主窗口 CommTool（统一串口/网络调试工具）。"""
+import atexit
 import codecs
 import json
 import logging
@@ -589,6 +590,10 @@ class CommTool(QMainWindow):
         self._trg_action_busy = 0
         self._trg_action_dropped = 0
         self._trg_procs = set()     # 外部程序动作的活动子进程，退出时靠它回收
+        # closeEvent 跑不到的路径（未捕获异常、sys.exit、脚本里直接退）也要把
+        # 子进程收掉，否则 POSIX 上成孤儿、Windows 上同样残留。_trg_stop_procs
+        # 只碰纯 Python 属性与 subprocess，不碰 Qt，在解释器退出阶段跑是安全的。
+        atexit.register(self._trg_stop_procs)
         self._trg_launching = 0     # 已开始、还没登记句柄的 Popen 数
         self._trg_stopping = False  # 竖起后不再放行新动作（单向，只由退出流程置位）
         self._trg_dec_buf = {}      # 触发引擎的增量解码状态，按方向/来源流隔离
@@ -5630,8 +5635,8 @@ class CommTool(QMainWindow):
                     return              # 正在退出，不再拉新进程
                 self._trg_launching += 1
             proc = None
+            import subprocess
             try:
-                import subprocess
                 kwargs = {"shell": True}
                 if sys.platform == "win32":
                     kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -5663,7 +5668,14 @@ class CommTool(QMainWindow):
                 # 必须等子进程退出：Popen 启动即返回，不等的话这个线程几微秒就结束并
                 # 把名额还回去，_TRG_MAX_ACTIONS 就只限制「同时在启动中的动作数」，
                 # 冷却设 0 时子进程仍可无限堆积。顺带回收 POSIX 上的僵尸进程。
-                proc.wait()
+                proc.wait(timeout=self._TRG_CMD_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                # 挂死的命令会永久占着一个并发名额，_TRG_MAX_ACTIONS 个全卡住就等于
+                # 这个功能废了。到点按整组收掉：宁可打断也不留死槽——反正退出时
+                # 这些子进程也一律被回收，本来就不能活得比 CommTool 长。
+                _log.debug("run_cmd exceeded %ss, killing pid %s",
+                           self._TRG_CMD_TIMEOUT, proc.pid)
+                self._trg_kill_proc(proc)
             except Exception:
                 _log.debug("run_cmd wait failed", exc_info=True)
             finally:
@@ -5733,6 +5745,7 @@ class CommTool(QMainWindow):
             except Exception:
                 _log.debug("cannot kill pid %s", proc.pid, exc_info=True)
 
+    _TRG_CMD_TIMEOUT = 30.0       # 单个外部程序动作的最长存活时间
     _TRG_STOP_WAIT = 2.0          # 等在途启动收尾的上限
 
     def _trg_stop_procs(self):
@@ -12281,6 +12294,9 @@ class CommTool(QMainWindow):
             self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
         self._ar_stop_script_worker()      # B5：回收常驻脚本子进程
         self._trg_stop_procs()             # 同收触发器外部程序动作的子进程
+        # 正常退出已经收完，注销兵底：否则每开一个窗口就累积一个句柄（测试里
+        # 会建很多个），那些句柄还会把已销毁的窗口一直拉着不放。
+        atexit.unregister(self._trg_stop_procs)
         self._save_settings()
         self.close_conn()
         self._close_log_file()

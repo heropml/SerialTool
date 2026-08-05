@@ -113,3 +113,25 @@ def test_udp_group_close_still_closes_when_leave_group_raises():
     conn.close()
     assert sock.calls == ["leaveMulticastGroup", "close", "deleteLater"]
     assert conn._sock is None
+
+
+def test_close_while_connecting_does_not_fake_a_disconnect():
+    """还在 connecting 就关掉：从未发过 state_changed(True)，也不能发 False。
+
+    主窗口把 False 读成「对端已断开」——会弹提示并触发自动重连，
+    而这次连接根本没建立过。_on_conn_timeout 避的是同一个坑。
+    """
+    conn = TcpClientConn("127.0.0.1", 1)     # 不去真连，只看信号
+    states = []
+    conn.state_changed.connect(states.append)
+    conn.close()
+    assert states == []
+
+
+def test_close_after_connected_still_reports_the_disconnect():
+    conn = TcpClientConn("127.0.0.1", 1)
+    states = []
+    conn.state_changed.connect(states.append)
+    conn._connected = True                          # 已连上过
+    conn.close()
+    assert states == [False]

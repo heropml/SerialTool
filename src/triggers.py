@@ -108,6 +108,12 @@ def parse_hex_pattern(text):
         return None
 
 
+# 歧义结构被重复放大到多少倍算危险。代价随上界翻倍增长，实测
+# `(\\w|\\w\\w){k,k+5}$` 打 50 字符：上界 10 约 0.003s、15 约 0.07s、
+# 20 约 1.6s、23 约 11s。
+_AMBIGUOUS_BOUND = 12
+
+
 def compile_regex(pattern):
     """正则 → 已编译对象；非法或明显会灾难性回溯的表达式返回 None。
 
@@ -125,28 +131,35 @@ def compile_regex(pattern):
     if possessive is not None:
         repeat_ops.add(possessive)
 
-    def unsafe(seq, repeated=False):
+    def unsafe(seq, repeated=False, bound=1):
+        """bound = 外层各层重复上界的乘积，即内部歧义被放大了多少倍。"""
         for op, arg in seq:
             if op in repeat_ops:
                 lo, hi, child = arg
                 variable = lo != hi
                 if repeated and variable:
                     return True
+                inner = (float("inf") if hi == _re_parser.MAXREPEAT else bound * hi)
                 # 无界/大范围外层重复才会放大内部歧义；{2,4} 这类常用结构不误伤。
-                amplifies = hi == _re_parser.MAXREPEAT or hi > 100 or hi - lo > 10
-                if unsafe(child, repeated or amplifies):
+                # 但有界重复也能指数级：(\w|\w\w){10,15} 的 hi-lo 只有 5、hi 也不过 100，
+                # 却能在几十字符上跑到秒级，所以累计上界过阀也算放大。
+                amplifies = (hi == _re_parser.MAXREPEAT or hi > 100 or hi - lo > 10
+                             or inner >= _AMBIGUOUS_BOUND)
+                if unsafe(child, repeated or amplifies, inner):
                     return True
             elif op == _re_parser.SUBPATTERN:
-                if unsafe(arg[-1], repeated):
+                if unsafe(arg[-1], repeated, bound):
                     return True
             elif op == _re_parser.BRANCH:
                 alternatives = arg[1]
+                # 空选项 = 同一个字符有多条路可走。CPython 会把公共前缀提出来，
+                # 所以 (a|ab) 这类歧义写法正是落到这里被拦的。
                 if repeated and any(not alt for alt in alternatives):
                     return True
-                if any(unsafe(alt, repeated) for alt in alternatives):
+                if any(unsafe(alt, repeated, bound) for alt in alternatives):
                     return True
             elif op in (_re_parser.ASSERT, _re_parser.ASSERT_NOT):
-                if unsafe(arg[1], repeated):
+                if unsafe(arg[1], repeated, bound):
                     return True
             elif op == _re_parser.GROUPREF and repeated:
                 return True

@@ -348,13 +348,18 @@ class TcpClientConn(NetConn):
         # 先置 _connected=False + 解绑 _sock，再 abort()：abort 可能触发 errorOccurred，
         # 此时 _on_error 的 `self._sock` 已为 None，杜绝虚假错误通知（不再仅依赖外层 blockSignals）
         self._conn_timer.stop()
+        was_connected = self._connected
         self._connected = False
         sock = self._sock
         self._sock = None
         if sock:
             _safe(sock.abort)
             _safe(sock.deleteLater)
-        self.state_changed.emit(False)
+        if was_connected:
+            # 还在 connecting 就被关掉时，从未发过 state_changed(True)，再发一个
+            # False 会被主窗口读成「对端已断开」——弹提示并触发自动重连。
+            # 上面 _on_conn_timeout 避的是同一个坑。
+            self.state_changed.emit(False)
 
     @property
     def is_open(self):

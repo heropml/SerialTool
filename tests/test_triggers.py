@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """触发告警单测：匹配语义 / 冷却 / 计数 / 收发范围 / 坏配置容错。"""
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -69,6 +70,28 @@ class MatchTests(unittest.TestCase):
         # 常用而有界的分组、分支、重复仍可用，防护不能把正常正则一刀切。
         self.assertIsNotNone(tg.compile_regex(r"^(ERROR|WARN)-\d{1,3}$"))
         self.assertIsNotNone(tg.compile_regex(r"^(ab){2,4}$"))
+
+    def test_ambiguous_branch_in_a_bounded_repeat_is_rejected(self):
+        """有界重复里的歧义分支同样指数级回溯。
+
+        CPython 会把交替分支的公共前缀提出来，`(\\w|\\w\\w)` 变成「一个 \\w，
+        后跟 空|\\w」——歧义就落在「分支带空选项」上。这类写法 hi-lo 很小、
+        hi 也不超 100，光看单层上界看不出危险，但打 50 字符要跑十几秒。
+        """
+        for pat in (r"(\w|\w\w){10,15}$", r"(\w|\w\w){20,25}$",
+                    r"(a|ab){12,16}c", r"((a|ab){5,8}){5,8}c", r"(\d?){5,12}$"):
+            self.assertIsNone(tg.compile_regex(pat), pat)
+
+    def test_mutually_exclusive_branches_stay_usable(self):
+        """首字符互斥的分支没有歧义，别因为重复次数多就误伤。"""
+        for pat in (r"(ERR|WARN|INFO){1,20}", r"(a|b|c){1,50}$",
+                    r"(\d|[a-f]){1,30}$", r"(\w|\w\w){2,8}$"):
+            compiled = tg.compile_regex(pat)
+            self.assertIsNotNone(compiled, pat)
+            # 顺带确认放行的确实不慢（歧义那几条在这个输入上要秒级）
+            t0 = time.perf_counter()
+            compiled.search("a" * 60 + "!")
+            self.assertLess(time.perf_counter() - t0, 0.05, pat)
 
     def test_hex_modes(self):
         data = bytes.fromhex("01 03 00 6B 00 03")

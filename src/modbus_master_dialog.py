@@ -441,6 +441,15 @@ class ModbusMasterDialog(QDialog):
             self._commit()
             if self._dirty:
                 return
+        # 删视图会当场把这些规则的分组清空并落盘，没有 undo；
+        # 而 + / - 两个按钮相邻且只有 28×28，很容易按错。
+        count = sum(1 for r in (getattr(self.app, "_mbm_rules", []) or [])
+                    if str(r.get("group", "") or "") == name)
+        if not self.app._confirm_dlg(self.app._t("mbm_view_del_title"),
+                                     self.app._t("mbm_view_del_body",
+                                                 name=name, n=count),
+                                     ok_text=self.app._t("device_delete")):
+            return
         for r in getattr(self.app, "_mbm_rules", []) or []:
             if str(r.get("group", "") or "") == name:
                 r["group"] = ""
