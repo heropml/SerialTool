@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.3.8
+
+This release wraps up the post-1.3.7 polish items:
+
+- **Wrapping tooltips** — long tips are routed through `ui_tips.set_tooltip` so Qt wraps them as rich text instead of one ultra-wide line. The system-tray icon tip stays plain text (Windows shows HTML literally in the tray).
+- **Modbus advanced UI** — the auto-reply slave dialog now configures exception injection (mode / n / funcs / addrs), dynamic registers (table), and `server_id`. Multi-slave remains a JSON box. On the master page, FC08 qty accepts `sub:data` (e.g. `0:1`); switching function codes reshapes the cell and refreshes its tooltip. Read quantities clamp to at least 1; dynamics `max=0` saves correctly.
+- **Plot → session jump** — double-click a plot point to jump the structured record to that sample's wall time via `jump_to_session_time`. Rate series (`rx_Bps` / `tx_Bps` / `rx_pps` / `tx_pps`) are not jump targets.
+- **Fixes** — auto-reply `closeEvent` now both commits pending edits and syncs settings (split sizes persist); help text no longer claims exception/dynamics have no UI.
+
+---
+
 ## What's New in v1.3.7
 
 This release closes the loop from reusable connections to CI-ready test artifacts, and deepens Modbus simulation and record playback:
@@ -722,7 +733,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.7`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.3.8`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

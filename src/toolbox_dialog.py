@@ -19,6 +19,7 @@ from theme import chrome_for
 from fonts import localize_qss
 from i18n import CHECKSUM_KEYS
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from ui_tips import set_tooltip
 
 _SEQ_KEYS = ("hex", "text", "dec", "bin")       # 字节序列四种表示
 _VAL_KEYS = ("dec", "hex", "bin", "oct")        # 单值四种进制
@@ -502,7 +503,7 @@ class ToolboxDialog(QDialog):
     def retranslate(self):
         t = self.app._t
         self.setWindowTitle(t("tb_title"))
-        self.btn_help.setToolTip(t("tb_help_btn"))
+        set_tooltip(self.btn_help, t("tb_help_btn"))
         self.tabs.setTabText(0, t("tb_tab_convert"))
         self.tabs.setTabText(1, t("tb_tab_checksum"))
         self.lbl_seq.setText(t("tb_seq_title"))
@@ -543,7 +544,7 @@ class ToolboxDialog(QDialog):
                 ((self.chk_crc_refout,), "tb_crc_refout_tip"),
                 ((self.lbl_crc_order, self.cb_crc_order), "tb_crc_order_tip")):
             for wdg in widgets:
-                wdg.setToolTip(t(key))
+                set_tooltip(wdg, t(key))
         self.lbl_ck_hint.setText(t("tb_ck_hint"))
 
     def refresh_theme(self):

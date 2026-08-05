@@ -27,6 +27,7 @@ from theme import chrome_for
 from widgets import IOSSwitch
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 # ── 常量 ─────────────────────────────────────────────────────
 _BAUD_LIST = [
@@ -160,7 +161,7 @@ class _BridgeSidePanel(QWidget):
         self.btn_scan = QPushButton("⟳")
         self.btn_scan.setObjectName("BgScanBtn")
         self.btn_scan.setFixedSize(30, 26)
-        self.btn_scan.setToolTip("")
+        set_tooltip(self.btn_scan, "")
         self.btn_scan.clicked.connect(self._scan_ports_now)
         g.addWidget(self.cb_port, 0, 1)
         g.addWidget(self.btn_scan, 0, 2)
@@ -591,7 +592,7 @@ class _BridgeSidePanel(QWidget):
         urip_lbl.setText(t("bg_remote_ip"))
         urport_lbl.setText(t("bg_remote_port"))
         self.lbl_spec_remote.setText(t("bg_spec_remote"))
-        self.btn_scan.setToolTip(t("bg_refresh_ports"))
+        set_tooltip(self.btn_scan, t("bg_refresh_ports"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -878,7 +879,7 @@ class BridgeDialog(QDialog):
         t = self.app._t
         self.setWindowTitle(t("bg_title"))
         self.lbl_log_section.setText(t("bg_log_title"))
-        self.btn_help.setToolTip(t("bg_help"))
+        set_tooltip(self.btn_help, t("bg_help"))
         self.btn_start.setText(t("bg_start"))
         self.btn_stop.setText(t("bg_stop"))
         self.sw_log.setText(t("bg_log_enable"))

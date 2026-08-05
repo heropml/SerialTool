@@ -14,6 +14,7 @@ import binproto
 from theme import chrome_for, _mix
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 _TILE_W, _TILE_H = 160, 90
 _MAX_TILES = 64        # 通道卡片上限：防分隔符模式下畸形长行（上千列）建出海量卡片卡死 UI
@@ -138,7 +139,7 @@ class DashboardDialog(QDialog):
         self.ed_header.setMaximumWidth(110)
         self.ed_header.editingFinished.connect(self._on_header_changed)
         self.ed_fields = QLineEdit()
-        self.ed_fields.setToolTip(binproto.NUM_TYPES_TIP)
+        set_tooltip(self.ed_fields, binproto.NUM_TYPES_TIP)
         self.ed_fields.editingFinished.connect(self._on_fields_changed)
         bar.addWidget(self.lbl_mode)
         bar.addWidget(self.cb_mode)
@@ -522,7 +523,7 @@ class DashboardDialog(QDialog):
         self.ed_thresh.setPlaceholderText(t("dash_thresh_ph"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
-        self.btn_help.setToolTip(t("plot_help_btn"))
+        set_tooltip(self.btn_help, t("plot_help_btn"))
         self.lbl_hint.setText(t("dash_hint"))
 
     # ---------------- 生命周期 ----------------

@@ -18,6 +18,7 @@ import rec_replay
 from theme import chrome_for
 from fonts import localize_qss, mono_font, ui_font
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 _MAX_ROWS = 5000        # 表格渲染上限：差异动辄上万行时只画前 N 条，其余引导去导出 CSV
 _HEX_PREVIEW = 24       # 单元格里最多显示多少字节，长帧截断加省略号（完整值在 tooltip / CSV）
@@ -139,7 +140,7 @@ class RecDiffDialog(QDialog):
         setattr(self, "_events_%s" % side, events)
         getattr(self, "name_%s" % side).setText(
             t("rd_loaded", f=os.path.basename(path), n=len(events)))
-        getattr(self, "name_%s" % side).setToolTip(path)
+        set_tooltip(getattr(self, "name_%s" % side), path)
         self._result = None
         self.table.setRowCount(0)
         self.lbl_stat.setText("")
@@ -210,7 +211,7 @@ class RecDiffDialog(QDialog):
                     item.setFont(mono_font(9))
                     full = (r["bytes_a"] if col == 4 else r["bytes_b"])
                     if full:
-                        item.setToolTip(full.hex(" ").upper())
+                        set_tooltip(item, full.hex(" ").upper())
                 else:
                     item.setFont(ui_font(9))
                 if col in (1, 2, 3):
@@ -378,7 +379,7 @@ class RecDiffDialog(QDialog):
         self.btn_cmp.setText(t("rd_compare"))
         self.chk_only_diff.setText(t("rd_only_diff"))
         self.btn_export.setText(t("rd_export"))
-        self.btn_help.setToolTip(t("rd_help_btn"))
+        set_tooltip(self.btn_help, t("rd_help_btn"))
         self.lbl_hint.setText(t("rd_hint"))
         self.table.setHorizontalHeaderLabels([
             t("rd_col_kind"), t("rd_col_ia"), t("rd_col_ib"),

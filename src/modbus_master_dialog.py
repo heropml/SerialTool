@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 # 功能码下拉项：(code, i18n_key)。读 01-04 / 写单 05-06 / 写多 0F-10。
 FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
@@ -202,6 +203,12 @@ class ModbusMasterDialog(QDialog):
         QTimer.singleShot(0, lambda: self._sync_splits(self._hdr_split))
 
     # ---------------- 行 ----------------
+    def _qty_tip_for(self, code):
+        tip = self.app._t("mbm_qty_tip")
+        if int(code or 0) == 0x08:
+            tip = tip + "\n" + self.app._t("mbm_diag_sub_tip")
+        return tip
+
     def _add_row(self, rule=None):
         rule = rule or {}
         r = QWidget()
@@ -259,9 +266,17 @@ class ModbusMasterDialog(QDialog):
         else:
             qty_val = rule.get("wval")
             qty_val = "" if qty_val is None else qty_val
+            # FC08: show "sub:data" so the sub-function is editable without a
+            # dedicated column (still carried as diag_sub on collect).
+            if int(rule.get("func") or 0) == 0x08:
+                sub = rule.get("diag_sub", 0)
+                if sub in (None, ""):
+                    sub = 0
+                data = qty_val if qty_val != "" else 0
+                qty_val = "%s:%s" % (sub, data)
         ed_qty = QLineEdit(str(qty_val))
         ed_qty.setMinimumWidth(_SPLIT_COLS[4][1])
-        ed_qty.setToolTip(self.app._t("mbm_qty_tip"))
+        set_tooltip(ed_qty, self._qty_tip_for(rule.get("func")))
         ed_qty.textChanged.connect(self._schedule)
 
         period_val = rule.get("period", 1000)
@@ -296,6 +311,10 @@ class ModbusMasterDialog(QDialog):
                # 08 的子功能没有控件（只能由 JSON 配），存下来原样带回 _collect，
                # 否则一次应用就把它重置成 0（=回环诊断）。
                "diag_sub": rule.get("diag_sub")}
+        # Re-bind: the earlier currentIndexChanged only dirties; this one
+        # reshapes qty when entering/leaving FC08.
+        cb_func.currentIndexChanged.connect(
+            lambda *_a, _r=rec: self._on_row_func_changed(_r))
 
         def _del():
             r.setParent(None)
@@ -339,6 +358,35 @@ class ModbusMasterDialog(QDialog):
         self.cb_variant.blockSignals(False)
         self.reload_rows()
 
+    def _on_row_func_changed(self, rec):
+        """Keep the qty cell in the shape the active function expects."""
+        code = rec["func"].currentData()
+        ed = rec["qty"]
+        raw = (ed.text() or "").strip()
+        if code == 0x08:
+            if ":" not in raw:
+                # Former read qty / write value -> loopback data under sub 0.
+                data = raw if raw != "" else "0"
+                ed.blockSignals(True)
+                ed.setText("0:%s" % data)
+                ed.blockSignals(False)
+        elif ":" in raw and raw.count(":") == 1 and "@" not in raw:
+            # Leaving 08: drop the sub half, keep data as the cell value.
+            # Read funcs need qty >= 1 -- FC08 data 0 must not become qty 0.
+            _sub, data = raw.split(":", 1)
+            data = data.strip() or "0"
+            if code in READ_FUNCS:
+                try:
+                    n = int(data, 0) if data.lower().startswith("0x") else int(data)
+                except ValueError:
+                    n = 0
+                data = "1" if n < 1 else str(n)
+            ed.blockSignals(True)
+            ed.setText(data)
+            ed.blockSignals(False)
+        set_tooltip(ed, self._qty_tip_for(code))
+        self._schedule()
+
     def _collect(self):
         out = []
         for rec in self._rows:
@@ -374,7 +422,21 @@ class ModbusMasterDialog(QDialog):
                 "write_addr": write_addr,
                 "period": rec["period"].text().strip(),
             })
-            if rec.get("diag_sub") is not None:
+            if code == 0x08:
+                # Qty for 08 is always "sub:data". Bare number = DATA with sub=0
+                # (safe loopback). Never treat bare "1" as sub-function 1 -- that
+                # is Restart Communications and fires when switching FC03->08.
+                # Clearing leftover wval_field ("12:7") is intentional.
+                raw = (rec["qty"].text() or "").strip()
+                if ":" in raw:
+                    left, right = raw.split(":", 1)
+                    out[-1]["diag_sub"] = left.strip() or "0"
+                    out[-1]["wval"] = right.strip() or "0"
+                else:
+                    out[-1]["diag_sub"] = "0"
+                    out[-1]["wval"] = raw if raw != "" else "0"
+                out[-1]["qty"] = "1"
+            elif rec.get("diag_sub") is not None:
                 out[-1]["diag_sub"] = rec["diag_sub"]
         return out
 
@@ -547,10 +609,10 @@ class ModbusMasterDialog(QDialog):
         self.cb_enable.setText(t("mbm_enable"))
         self.lbl_variant.setText(t("mbm_variant"))
         self.cb_echo.setText(t("mbm_echo"))
-        self.cb_echo.setToolTip(t("mbm_echo_tip"))
+        set_tooltip(self.cb_echo, t("mbm_echo_tip"))
         self.btn_apply.setText(t("mbm_apply"))
         self.btn_add.setText(t("mbm_add"))
-        self.btn_help.setToolTip(t("mbm_help_btn"))
+        set_tooltip(self.btn_help, t("mbm_help_btn"))
         self.lbl_hint.setText(t("mbm_hint"))
         cur = self.cb_variant.currentData()
         self.cb_variant.blockSignals(True)

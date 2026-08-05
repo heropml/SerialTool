@@ -16,6 +16,7 @@ from script_console import ScriptWorker
 from theme import chrome_for
 from fonts import localize_qss, mono_font
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 _MAX_SCRIPTS = 50          # 脚本库条数上限
 _MAX_CODE_CHARS = 200000   # 单脚本字符上限（防坏配置/超大导入）
@@ -615,7 +616,7 @@ class ScriptConsoleDialog(QDialog):
         self.btn_run.setText(t("sc_run"))
         self.btn_stop.setText(t("sc_stop"))
         self.btn_clear.setText(t("sc_clear_out"))
-        self.btn_help.setToolTip(t("sc_help_btn"))
+        set_tooltip(self.btn_help, t("sc_help_btn"))
         # 走 _set_rec_ui 而不是只改按钮文字：切语言/配置时录制态的按钮样式(红)、
         # 「运行」禁用态、状态栏文案都要一起同步，否则录制中切语言会退回成非录制外观。
         self._set_rec_ui(self.app._macro.recording)

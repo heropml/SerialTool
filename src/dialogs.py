@@ -15,6 +15,7 @@ import junit_report
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
+from ui_tips import set_tooltip
 
 
 # ============== 无边框对话框「按住空白处拖动」混入 ==============
@@ -605,7 +606,7 @@ class _DragHandle(QLabel):
         self.setFixedWidth(18)
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip({"zh": "按住拖动改变顺序", "en": "Drag to reorder",
+        set_tooltip(self, {"zh": "按住拖动改变顺序", "en": "Drag to reorder",
                          "zh_tw": "按住拖動改變順序"}.get(getattr(dialog.app, "_lang", "zh"),
                                                           "Drag to reorder"))
         self._dialog = dialog
@@ -789,7 +790,7 @@ class MultiSendDialog(QDialog):
         self.btn_snippets = QPushButton(app._t("ms_snip_btn"))
         self.btn_snippets.setObjectName("MsGhostBtn")
         self.btn_snippets.setMinimumHeight(28)
-        self.btn_snippets.setToolTip(app._t("ms_snip_btn_tip"))
+        set_tooltip(self.btn_snippets, app._t("ms_snip_btn_tip"))
         self.btn_snippets.clicked.connect(lambda *_: self.app.open_snippets())
         header.addWidget(self.btn_snippets)
         right.addLayout(header)
@@ -925,7 +926,7 @@ class MultiSendDialog(QDialog):
         h.addWidget(split, 1)
         ed_delay = QLineEdit(str(delay))
         ed_delay.setFixedWidth(58)
-        ed_delay.setToolTip(self.app._t("ms_delay_tip"))
+        set_tooltip(ed_delay, self.app._t("ms_delay_tip"))
         ed_delay.setPlaceholderText("ms")
         ed_delay.textChanged.connect(self._save)
         h.addWidget(ed_delay)
@@ -1146,7 +1147,7 @@ class MultiSendDialog(QDialog):
         self.btn_add.setText(self.app._t("ms_add"))
         self.cb_all.setText(self.app._t("ms_select_all"))
         self.btn_snippets.setText(self.app._t("ms_snip_btn"))
-        self.btn_snippets.setToolTip(self.app._t("ms_snip_btn_tip"))
+        set_tooltip(self.btn_snippets, self.app._t("ms_snip_btn_tip"))
         self.lbl_hint.setText(self.app._t("ms_hint"))
         self.btn_new_group.setText(self.app._t("kw_new_group"))
         self.btn_del_group.setText(self.app._t("kw_del_group"))
@@ -1154,7 +1155,7 @@ class MultiSendDialog(QDialog):
         for r in self._rows:
             r["edit"].setPlaceholderText(self.app._t("ms_placeholder"))
             r["name"].setPlaceholderText(self.app._t("ms_name_ph"))
-            r["delay"].setToolTip(self.app._t("ms_delay_tip"))
+            set_tooltip(r["delay"], self.app._t("ms_delay_tip"))
             r["nl"].setItemText(0, self.app._t("ms_nl_none"))
             cs_idx = r["cs"].currentIndex()
             r["cs"].blockSignals(True)
@@ -1903,12 +1904,12 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
         d["retry"] = QLineEdit(str(self._to_int(step.get("retry", 0), 0)))   # 失败重试次数（0=不重试）
         d["retry"].setValidator(QIntValidator(0, self._MAX_RETRY, self))
-        d["retry"].setToolTip(self.app._t("seq_retry_tip"))
+        set_tooltip(d["retry"], self.app._t("seq_retry_tip"))
         d["retry"].textChanged.connect(self._schedule)
 
         d["extract"] = QLineEdit(str(step.get("extract_dsl") or "") or seq_context.extractors_to_dsl(step.get("extract") or []))
         d["extract"].setPlaceholderText(self.app._t("seq_extract_ph"))
-        d["extract"].setToolTip(self.app._t("seq_extract_tip"))
+        set_tooltip(d["extract"], self.app._t("seq_extract_tip"))
         d["extract"].textChanged.connect(self._schedule)
 
         # 只把两个数据框放进可拖：左组[名称 发送↔ HEX 校验] / 右组[期望↔ HEX 模式 超时 超时动作 延时 重试]，
@@ -2056,13 +2057,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             n = len(self._csv_dataset["rows"])
             self.ed_loops.setText(str(n))
             self.lbl_csv.setText(sequence_dataset.dataset_status(self._csv_dataset))
-            self.lbl_csv.setToolTip(self._csv_dataset.get("path") or "")
+            set_tooltip(self.lbl_csv, self._csv_dataset.get("path") or "")
             self.btn_csv_clear.setEnabled(not running)
         else:
             self.ed_loops.setText(str(max(1, getattr(self, "_loops_cfg", 1))))
             stale = bool(getattr(self, "_csv_path", "") or "")
             self.lbl_csv.setText(self.app._t("seq_csv_stale") if stale else "")
-            self.lbl_csv.setToolTip(self._csv_path if stale else "")
+            set_tooltip(self.lbl_csv, self._csv_path if stale else "")
             self.btn_csv_clear.setEnabled(stale and (not running))
 
     def _save_csv_cfg(self):
@@ -2171,7 +2172,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             st = res.get("status", "pending") if show else "pending"
             text, color = self._status_display(st, res, c)
             d["res"].setText(text)
-            d["res"].setToolTip(text)
+            set_tooltip(d["res"], text)
             d["res"].setStyleSheet("color: %s; background: transparent;" % color)
         summ = getattr(self.app, "_seq_summary", None)
         if running:
@@ -2700,14 +2701,14 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.btn_steps.setText(self.app._t("seq_steps_menu"))
         self.btn_export.setText(self.app._t("seq_export"))
         self.lbl_loops.setText(self.app._t("seq_loops"))
-        self.ed_loops.setToolTip(self.app._t("seq_loops_tip"))
+        set_tooltip(self.ed_loops, self.app._t("seq_loops_tip"))
         self.cb_stopfail.setText(self.app._t("seq_stop_on_fail"))
         self.btn_csv.setText(self.app._t("seq_csv_btn"))
-        self.btn_csv.setToolTip(self.app._t("seq_csv_tip"))
+        set_tooltip(self.btn_csv, self.app._t("seq_csv_tip"))
         self.btn_csv_clear.setText(self.app._t("seq_csv_clear"))
-        self.btn_csv_clear.setToolTip(self.app._t("seq_csv_clear_tip"))
+        set_tooltip(self.btn_csv_clear, self.app._t("seq_csv_clear_tip"))
         self._refresh_csv_ui()
-        self.btn_help.setToolTip(self.app._t("seq_help_btn"))   # 按钮固定 "?"，悬停/点开看完整说明
+        set_tooltip(self.btn_help, self.app._t("seq_help_btn"))   # 按钮固定 "?"，悬停/点开看完整说明
         self.lbl_hint.setText(self.app._t("seq_hint"))
         for lb in self._hdr_labels:                 # 表头列名（HEX 列不翻译）
             k = lb.property("k")
@@ -2717,8 +2718,8 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             d["exp"].setPlaceholderText(self.app._t("seq_expect_ph"))
             if "extract" in d:
                 d["extract"].setPlaceholderText(self.app._t("seq_extract_ph"))
-                d["extract"].setToolTip(self.app._t("seq_extract_tip"))
-            d["retry"].setToolTip(self.app._t("seq_retry_tip"))
+                set_tooltip(d["extract"], self.app._t("seq_extract_tip"))
+            set_tooltip(d["retry"], self.app._t("seq_retry_tip"))
             for i, k in enumerate(CHECKSUM_KEYS):
                 if i < d["cs"].count():
                     d["cs"].setItemText(i, self.app._t(k))

@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
 import binproto
 from theme import chrome_for
 from fonts import localize_qss
+from ui_tips import set_tooltip
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 
 pg.setConfigOptions(antialias=True)
@@ -42,6 +43,7 @@ _SEP_RX = [r",", r"\s+", r"\t", r";", r"[,\s;]+"]
 
 # 模式索引
 _MODE_DELIM, _MODE_REGEX, _MODE_HEX = 0, 1, 2
+_NO_JUMP_TAGS = frozenset({"rx_Bps", "tx_Bps", "rx_pps", "tx_pps"})
 
 
 class PlotDialog(QDialog):
@@ -94,7 +96,7 @@ class PlotDialog(QDialog):
         self.ed_header.setMaximumWidth(120)
         self.ed_header.editingFinished.connect(self._on_header_changed)
         self.ed_fields = QLineEdit()         # 仅 HEX 字节模式：字段定义
-        self.ed_fields.setToolTip(binproto.NUM_TYPES_TIP)
+        set_tooltip(self.ed_fields, binproto.NUM_TYPES_TIP)
         self.ed_fields.editingFinished.connect(self._on_fields_changed)
         self.lbl_win = QLabel()
         self.cb_maxpts = QComboBox()
@@ -146,6 +148,7 @@ class PlotDialog(QDialog):
         self.plot.setMouseEnabled(x=True, y=True)
         self.plot.getAxis("bottom").enableAutoSIPrefix(False)  # 样本序号不该被缩成 (x0.001)
         root.addWidget(self.plot, 1)
+        self.plot.scene().sigMouseClicked.connect(self._on_plot_clicked)
 
         # ===== 通道勾选条（横向滚动）=====
         self._ch_bar = QWidget()
@@ -305,6 +308,9 @@ class PlotDialog(QDialog):
                 ch = self._channels[idx]
             ch["xs"].append(x)
             ch["ys"].append(v)
+            walls = ch.get("walls")
+            if walls is not None:
+                walls.append(time.time())
         self._sample_idx += 1
 
     def feed_named_samples(self, samples):
@@ -320,16 +326,23 @@ class PlotDialog(QDialog):
         else:
             x = self._sample_idx
         appended = False
+        wall = None
         for s in samples:
-            if self._append_named(s.get("tag"), s.get("value"), x=x, bump=False):
+            if wall is None and s.get("timestamp") is not None:
+                try:
+                    wall = float(s.get("timestamp"))
+                except (TypeError, ValueError):
+                    wall = None
+            if self._append_named(s.get("tag"), s.get("value"), x=x, bump=False,
+                                 wall=wall):
                 appended = True
         if appended:                     # 本响应实际画了点才推进采样序号
             self._sample_idx += 1
 
-    def _append_named(self, name, value, x=None, bump=True):
+    def _append_named(self, name, value, x=None, bump=True, wall=None):
         if not name or not isinstance(value, (int, float)):
             return False
-        if x is None:                    # 兼容单样本调用（缺省时按旧逻辑自算 x）
+        if x is None:
             if self._x_time:
                 if self._t0 is None:
                     self._t0 = time.monotonic()
@@ -344,6 +357,13 @@ class PlotDialog(QDialog):
         ch = self._channels[idx]
         ch["xs"].append(x)
         ch["ys"].append(value)
+        if name in _NO_JUMP_TAGS:
+            ch["jumpable"] = False
+        walls = ch.get("walls")
+        if walls is not None:
+            # Real sample timestamps stay jumpable; rate ticks use time.time()
+            # but are excluded via jumpable=False above.
+            walls.append(float(wall) if wall is not None else time.time())
         if bump:
             self._sample_idx += 1
         return True
@@ -363,6 +383,8 @@ class PlotDialog(QDialog):
                 "name": nm, "color": color, "curve": curve, "cb": cb,
                 "xs": deque(maxlen=self._max_points),
                 "ys": deque(maxlen=self._max_points),
+                "walls": deque(maxlen=self._max_points),
+                "jumpable": nm not in _NO_JUMP_TAGS,
             })
         return self._channels[i]
 
@@ -420,9 +442,14 @@ class PlotDialog(QDialog):
 
     def _on_maxpts_changed(self, *_args):
         self._max_points = self.cb_maxpts.currentData()
-        for ch in self._channels:    # 重建定长队列，保留最近的点
+        for ch in self._channels:
             ch["xs"] = deque(ch["xs"], maxlen=self._max_points)
             ch["ys"] = deque(ch["ys"], maxlen=self._max_points)
+            if "walls" in ch:
+                ch["walls"] = deque(ch["walls"], maxlen=self._max_points)
+            else:
+                # 旧配置 channel 无 walls，回填零值以支持双击跳转
+                ch["walls"] = deque([0] * len(ch["xs"]), maxlen=self._max_points)
         self._save_cfg()
 
     def _on_xaxis_changed(self, *_args):
@@ -435,6 +462,53 @@ class PlotDialog(QDialog):
     def _toggle_pause(self):
         self._paused = not self._paused
         self.btn_pause.setText(self.app._t("plot_resume" if self._paused else "plot_pause"))
+
+    def _on_plot_clicked(self, event):
+        """Double-click nearest sample -> jump_to_session_time(wall)."""
+        if event.double() is not True:
+            return
+        if not self._channels:
+            return
+        try:
+            mouse_point = self.plot.plotItem.vb.mapSceneToView(event.scenePos())
+            x_click = float(mouse_point.x())
+        except Exception:
+            return
+        try:
+            y_click = float(mouse_point.y())
+        except Exception:
+            y_click = 0.0
+        best_wall, best_score = None, None
+        for ch in self._channels:
+            if ch.get("jumpable") is False or ch["name"] in _NO_JUMP_TAGS:
+                continue
+            xs = list(ch.get("xs") or ())
+            ys = list(ch.get("ys") or ())
+            if not xs or len(ys) != len(xs):
+                continue
+            walls = ch.get("walls")
+            if walls is None or len(walls) != len(xs):
+                padded = list(walls or ())
+                if len(padded) < len(xs):
+                    padded.extend([0.0] * (len(xs) - len(padded)))
+                else:
+                    padded = padded[:len(xs)]
+                ch["walls"] = deque(padded, maxlen=self._max_points)
+                walls = list(ch["walls"])
+            else:
+                walls = list(walls)
+            for i, xv in enumerate(xs):
+                # View coords: weight X a bit more (time axis) but include Y so
+                # a click on the device curve beats a rate series sharing X.
+                score = abs(float(xv) - x_click) + 0.25 * abs(float(ys[i]) - y_click)
+                if best_score is None or score < best_score:
+                    best_score, best_wall = score, float(walls[i])
+        if best_wall is None:
+            return
+        jump = getattr(self.app, "jump_to_session_time", None)
+        if callable(jump):
+            jump(best_wall)
+
 
     def _clear(self):
         for ch in self._channels:
@@ -575,8 +649,9 @@ class PlotDialog(QDialog):
         self.cb_xaxis.setItemText(1, t("plot_x_time"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
+        set_tooltip(self.plot, t("plot_jump_tip"))
         self.btn_export.setText(t("plot_export"))
-        self.btn_help.setToolTip(t("plot_help_btn"))
+        set_tooltip(self.btn_help, t("plot_help_btn"))
         self.lbl_hint.setText(t("plot_hint"))
         self.plot.setLabel("bottom",
                            t("plot_x_time" if self._x_time else "plot_x_index"))

@@ -18,6 +18,7 @@ from theme import chrome_for
 from fonts import localize_qss
 from i18n import CHECKSUM_KEYS
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _DragHandle
+from ui_tips import set_tooltip
 
 # 内置模板：key -> [(kind, typ, value, name), ...]。name 为默认标签(可编辑，不影响拼出的字节)。
 # checksum 的 typ 是 CHECKSUM_KEYS 下标(5=ModbusCRC16)；length 的 typ 是编码宽度。
@@ -528,7 +529,7 @@ class FrameBuilderDialog(QDialog):
         self.btn_add.setText(t("fb_add"))
         self.btn_fill.setText(t("fb_fill"))
         self.btn_send.setText(t("fb_send"))
-        self.btn_help.setToolTip(t("fb_help_btn"))
+        set_tooltip(self.btn_help, t("fb_help_btn"))
         self.lbl_hint.setText(t("fb_hint"))
         self.lbl_out.setText(t("fb_out"))
         for i, k in enumerate(_TEMPLATE_ORDER):
@@ -546,7 +547,7 @@ class FrameBuilderDialog(QDialog):
                 if n < cb.count():
                     cb.setItemText(n, label)
             cb.blockSignals(False)
-            d["grip"].setToolTip({"zh": "按住拖动改变顺序", "en": "Drag to reorder",
+            set_tooltip(d["grip"], {"zh": "按住拖动改变顺序", "en": "Drag to reorder",
                                    "zh_tw": "按住拖動改變順序"}.get(self.app._lang,
                                                                       "Drag to reorder"))
             self._apply_val_enabled(d)

@@ -15,6 +15,7 @@ import triggers
 from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 
 class TriggersDialog(QDialog):
@@ -393,7 +394,7 @@ class TriggersDialog(QDialog):
         self.chk_hex.setText(t("trg_hex"))
         self.lbl_scope.setText(t("trg_scope"))
         self.lbl_cd.setText(t("trg_cooldown"))
-        self.ed_cd.setToolTip(t("trg_cooldown_tip"))
+        set_tooltip(self.ed_cd, t("trg_cooldown_tip"))
         self.lbl_act.setText(t("trg_actions"))
         self.chk_beep.setText(t("trg_beep"))
         self.chk_notify.setText(t("trg_notify"))

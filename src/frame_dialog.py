@@ -22,6 +22,7 @@ import binproto
 from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from ui_tips import set_tooltip
 
 _MAX_ROWS = 1000   # 每个表最多保留行数（环形，超出删最旧）
 
@@ -300,7 +301,7 @@ class FrameParseDialog(QDialog):
         ed_h.setMaximumWidth(96)
         ed_f = QLineEdit(fields)
         ed_f.setPlaceholderText(t("frame_fields_ph"))
-        ed_f.setToolTip(binproto.ALL_TYPES_TIP)
+        set_tooltip(ed_f, binproto.ALL_TYPES_TIP)
         btn_del = QPushButton("✕")
         btn_del.setObjectName("FrameDelBtn")
         btn_del.setFixedSize(26, 26)
@@ -595,11 +596,11 @@ class FrameParseDialog(QDialog):
         t = self.app._t
         self.setWindowTitle(t("frame_title"))
         self.lbl_rules.setText(t("frame_rules"))
-        self.btn_help.setToolTip(t("frame_help_btn"))
+        set_tooltip(self.btn_help, t("frame_help_btn"))
         self.btn_add.setText(t("frame_add_rule"))
         self.btn_apply.setText(t("frame_apply"))
         self.chk_highlight.setText(t("proto_highlight"))
-        self.chk_highlight.setToolTip(t("proto_hl_tip"))
+        set_tooltip(self.chk_highlight, t("proto_hl_tip"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         self.btn_export.setText(t("plot_export"))

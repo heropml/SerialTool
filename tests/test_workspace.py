@@ -970,7 +970,8 @@ def test_freeze_view_has_hover_help(tmp_path, monkeypatch):
     try:
         _APP.processEvents()
         assert window.sw_freeze_view.property("tr_tooltip") == "freeze_view_tip"
-        assert window.sw_freeze_view.toolTip() == window._t("freeze_view_tip")
+        from ui_tips import tip_html
+        assert window.sw_freeze_view.toolTip() == tip_html(window._t("freeze_view_tip"))
     finally:
         window.deleteLater()
         _APP.processEvents()

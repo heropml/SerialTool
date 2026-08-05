@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from fonts import localize_qss
 from theme import chrome_for
+from ui_tips import set_tooltip
 
 
 class StructuredRecordDialog(QDialog):
@@ -313,7 +314,7 @@ class StructuredRecordDialog(QDialog):
         self.cb_source.setItemText(0, t("structured_all_sources"))
         for button in (self.btn_clear, self.btn_open, self.btn_save):
             button.setText(t(button.property("tr_text")))
-        self.btn_help.setToolTip(t("structured_help_btn"))
+        set_tooltip(self.btn_help, t("structured_help_btn"))
         self.table.setHorizontalHeaderLabels([
             t("structured_col_time"), t("structured_col_source"),
             t("structured_col_tag"), t("structured_col_value"),

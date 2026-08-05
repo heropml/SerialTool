@@ -16,6 +16,7 @@ from device_resources import REGISTER_ORDERS, REGISTER_TYPES, normalize_register
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from fonts import localize_qss
 from theme import chrome_for
+from ui_tips import set_tooltip
 
 
 _REGISTER_COLUMNS = (
@@ -586,7 +587,7 @@ class DeviceCenterDialog(QDialog):
         for button in (self.btn_add, self.btn_delete, self.btn_import, self.btn_export,
                        self.btn_apply, self.btn_scan, self.btn_scan_stop, self.btn_scan_add):
             button.setText(t(button.property("tr_text")))
-        self.btn_help.setToolTip(t("device_help_btn"))
+        set_tooltip(self.btn_help, t("device_help_btn"))
         self.table.setHorizontalHeaderLabels([t(key) for key in _REGISTER_COLUMNS])
         self.lbl_scan_mode.setText(t("device_scan_mode"))
         self.cb_scan_mode.setItemText(0, t("device_scan_slave"))

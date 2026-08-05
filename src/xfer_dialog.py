@@ -18,6 +18,7 @@ import xfer
 from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from ui_tips import set_tooltip
 
 MODE_RAW = "raw"            # 原始字节流：无协议、按分块 + 块间延时直接发送（只发不收）
 
@@ -419,7 +420,7 @@ class XferDialog(QDialog):
         t = self.app._t
         self.setWindowTitle(t("xfer_title"))
         self.lbl_hint.setText(t("xfer_hint"))
-        self.btn_help.setToolTip(t("xfer_help_btn"))
+        set_tooltip(self.btn_help, t("xfer_help_btn"))
         self.lbl_dir.setText(t("xfer_dir"))
         self.rb_send.setText(t("xfer_dir_send"))
         self.rb_recv.setText(t("xfer_dir_recv"))

@@ -13,6 +13,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from ui_tips import tip_html
 
 try:
     from PyQt5.QtWidgets import QApplication, QLabel
@@ -2928,7 +2929,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
             w._lang = "en"
             dlg.retranslate()
-            self.assertEqual(dlg._rows[0]["grip"].toolTip(), "Drag to reorder")
+            self.assertEqual(dlg._rows[0]["grip"].toolTip(), tip_html("Drag to reorder"))
 
             w.settings.setValue("frame_builder_split", "999999999999999999999,1,1")
             self.assertIsNone(dlg._load_split_sizes())                       # 不得传给 Qt C++ int 崩溃
@@ -5570,9 +5571,9 @@ class OfflineIntegrationTests(unittest.TestCase):
         old_lang = w._lang
         try:
             w._set_language("en")
-            self.assertEqual(w.sw_vconn_loop.toolTip(), w._t("vconn_tip"))
+            self.assertEqual(w.sw_vconn_loop.toolTip(), tip_html(w._t("vconn_tip")))
             w._set_language("zh_tw")
-            self.assertEqual(w.sw_vconn_loop.toolTip(), w._t("vconn_tip"))
+            self.assertEqual(w.sw_vconn_loop.toolTip(), tip_html(w._t("vconn_tip")))
         finally:
             w._set_language(old_lang)
 
@@ -5949,7 +5950,7 @@ class SelectionChecksumTests(unittest.TestCase):
         self.assertFalse(w.lbl_sel_chk.isHidden())
         self.assertIn("C4 0B", w.lbl_sel_chk.text())      # Modbus CRC16
         title, meta, rows = w._sel_chk_popup_payload
-        self.assertEqual(w.lbl_sel_chk.toolTip(), title)  # 仅作 Qt 悬停触发器，不再塞 HTML
+        self.assertEqual(w.lbl_sel_chk.toolTip(), tip_html(title))  # 仅作 Qt 悬停触发器，不再塞 HTML
         self.assertIn(w.fmt_bytes(len(self.FRAME)), meta)
         values = dict(rows)
         for idx in range(1, len(CHECKSUM_KEYS)):          # 9 种全在 tooltip 里
@@ -6010,7 +6011,7 @@ class SelectionChecksumTests(unittest.TestCase):
         w.txt_recv.clear(); w._reset_recv_state()
         w._on_data_received_impl(bytes(w._SEL_CHK_MAX + 1024))
         self._select_all(w)
-        self.assertEqual(w.lbl_sel_chk.toolTip(), "")
+        self.assertEqual(w.lbl_sel_chk.toolTip(), tip_html(""))
         self.assertEqual(w.lbl_sel_chk.text(),
                          w._t("sel_chk_too_big", n=w._SEL_CHK_MAX // 1024))
         self.assertNotIn(w._t("sel_chk"), w.lbl_sel_chk.text())   # 不带"选中 N KB"前缀
@@ -6172,7 +6173,7 @@ class SelectionChecksumTests(unittest.TestCase):
     def test_data_area_tooltip_advertises_feature(self):
         """状态栏标签没选区时是隐藏的，提示必须挂在数据区上，否则功能没人发现得了。"""
         w = self._setup()
-        self.assertEqual(w.txt_recv.toolTip(), w._t("sel_chk_hint"))
+        self.assertEqual(w.txt_recv.toolTip(), tip_html(w._t("sel_chk_hint")))
         self.assertEqual(w.txt_recv.property("tr_tooltip"), "sel_chk_hint")
 
     def test_i18n_keys_present(self):

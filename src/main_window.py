@@ -53,6 +53,7 @@ import modbus_slave
 import modbus_master
 from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
 from updater import UpdateChecker
+from ui_tips import set_tooltip
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
@@ -728,7 +729,7 @@ class CommTool(QMainWindow):
         # 自动挂 tooltip：若同名 _tip 键存在则用它，语言切换时由 _apply_language 同步
         tip_key = key + "_tip"
         if tip_key in self._L:
-            lbl.setToolTip(self._L[tip_key])
+            set_tooltip(lbl, self._L[tip_key])
             lbl.setProperty("tr_tooltip", tip_key)
         return lbl
 
@@ -765,7 +766,7 @@ class CommTool(QMainWindow):
         for theme_id in THEMES.keys():
             self.cb_theme.addItem(self._theme_label(theme_id), theme_id)
         self.cb_theme.setProperty("tr_tooltip", "theme_tip")
-        self.cb_theme.setToolTip(self._t("theme_tip"))
+        set_tooltip(self.cb_theme, self._t("theme_tip"))
         self.cb_theme.currentIndexChanged.connect(lambda _: self._on_theme_changed())
 
         # 「帮助」下拉按钮：放在 stretch 后、min/max/close 前；点开弹菜单含「关于」
@@ -1023,7 +1024,7 @@ class CommTool(QMainWindow):
         self.btn_cpreset_save.setObjectName("GhostBtnSm")
         self.btn_cpreset_save.setProperty("tr_text", "cpreset_save_btn")
         self.btn_cpreset_save.setProperty("tr_tooltip", "cpreset_save_btn_tip")
-        self.btn_cpreset_save.setToolTip(self._t("cpreset_save_btn_tip"))
+        set_tooltip(self.btn_cpreset_save, self._t("cpreset_save_btn_tip"))
         self.btn_cpreset_save.clicked.connect(
             lambda *_: self.save_connection_preset_from_ui(prompt_name=True))
         pbl_preset.addWidget(self.btn_cpreset_save)
@@ -1031,7 +1032,7 @@ class CommTool(QMainWindow):
         self.btn_cpreset_manage.setObjectName("GhostBtnSm")
         self.btn_cpreset_manage.setProperty("tr_text", "cpreset_manage_btn")
         self.btn_cpreset_manage.setProperty("tr_tooltip", "cpreset_manage_btn_tip")
-        self.btn_cpreset_manage.setToolTip(self._t("cpreset_manage_btn_tip"))
+        set_tooltip(self.btn_cpreset_manage, self._t("cpreset_manage_btn_tip"))
         self.btn_cpreset_manage.clicked.connect(self.open_connection_presets)
         pbl_preset.addWidget(self.btn_cpreset_manage)
         self.row_conn_preset = make_row("cpreset_label", preset_box)
@@ -1152,11 +1153,11 @@ class CommTool(QMainWindow):
         v_lbl.setFixedWidth(self._label_col_width())
         v_lbl.setProperty("tr_fixedw", True)
         v_lbl.setProperty("tr_tooltip", "vconn_tip")
-        v_lbl.setToolTip(self._t("vconn_tip"))
+        set_tooltip(v_lbl, self._t("vconn_tip"))
         vl.addWidget(v_lbl)
         vl.addWidget(self.sw_vconn_loop)
         self.sw_vconn_loop.setProperty("tr_tooltip", "vconn_tip")
-        self.sw_vconn_loop.setToolTip(self._t("vconn_tip"))
+        set_tooltip(self.sw_vconn_loop, self._t("vconn_tip"))
         vl.addStretch(1)
         layout.addWidget(vrow)
         self.row_vconn_loop = vrow
@@ -1181,24 +1182,24 @@ class CommTool(QMainWindow):
         self.sw_dtr = IOSSwitch(True)
         self.sw_dtr.toggled.connect(self._on_dtr_toggled)
         self.sw_dtr.setProperty("tr_tooltip", "ctrl_dtr_tip")
-        self.sw_dtr.setToolTip(self._t("ctrl_dtr_tip"))
+        set_tooltip(self.sw_dtr, self._t("ctrl_dtr_tip"))
         self.sw_rts = IOSSwitch(True)
         self.sw_rts.toggled.connect(self._on_rts_toggled)
         self.sw_rts.setProperty("tr_tooltip", "ctrl_rts_tip")
-        self.sw_rts.setToolTip(self._t("ctrl_rts_tip"))
+        set_tooltip(self.sw_rts, self._t("ctrl_rts_tip"))
         _dtr_l = QLabel("DTR"); _dtr_l.setObjectName("CtrlLbl")
         _rts_l = QLabel("RTS"); _rts_l.setObjectName("CtrlLbl")
         self.btn_reset = QPushButton(self._t("ctrl_reset"))
         self.btn_reset.setObjectName("GhostBtnSm")
         self.btn_reset.setProperty("tr_text", "ctrl_reset")
         self.btn_reset.setProperty("tr_tooltip", "ctrl_reset_tip")
-        self.btn_reset.setToolTip(self._t("ctrl_reset_tip"))
+        set_tooltip(self.btn_reset, self._t("ctrl_reset_tip"))
         self.btn_reset.clicked.connect(self._pulse_reset)
         self.btn_break = QPushButton(self._t("ctrl_break"))
         self.btn_break.setObjectName("GhostBtnSm")
         self.btn_break.setProperty("tr_text", "ctrl_break")
         self.btn_break.setProperty("tr_tooltip", "ctrl_break_tip")
-        self.btn_break.setToolTip(self._t("ctrl_break_tip"))
+        set_tooltip(self.btn_break, self._t("ctrl_break_tip"))
         self.btn_break.clicked.connect(self._send_break)
         # DTR / RTS / 复位 / 中断 四组两端对齐、均匀铺满整行（与下方 CTS/DSR/DCD/RI 状态灯行同分布，上下一致）
         r_out.addWidget(_dtr_l); r_out.addWidget(self.sw_dtr)
@@ -1357,7 +1358,7 @@ class CommTool(QMainWindow):
             self.cb_view_mode.addItem(self._t(_key), _data)
         self.cb_view_mode.setFixedWidth(MAIN_W)
         self.cb_view_mode.setProperty("tr_tooltip", "view_mode_tip")
-        self.cb_view_mode.setToolTip(self._t("view_mode_tip"))
+        set_tooltip(self.cb_view_mode, self._t("view_mode_tip"))
         self.cb_view_mode.currentIndexChanged.connect(self._on_view_mode_changed)
 
         # 附属参数（每行字节数 / 数值类型）跟着模式换：同一格用 QStackedLayout 叠三页，
@@ -1367,7 +1368,7 @@ class CommTool(QMainWindow):
         self.cb_hexdump_width.setCurrentText("16")
         self.cb_hexdump_width.setFixedWidth(MAIN_W)
         self.cb_hexdump_width.setProperty("tr_tooltip", "hexdump_width_tip")
-        self.cb_hexdump_width.setToolTip(self._t("hexdump_width_tip"))
+        set_tooltip(self.cb_hexdump_width, self._t("hexdump_width_tip"))
         self.cb_hexdump_width.currentIndexChanged.connect(self._on_hexdump_width_changed)
 
         self.cb_numview_type = QComboBox()
@@ -1379,7 +1380,7 @@ class CommTool(QMainWindow):
                 _t_ if not _e_ else "%s %s" % (_t_, _e_.upper()), (_t_, _e_ or "le"))
         self.cb_numview_type.setFixedWidth(MAIN_W)
         self.cb_numview_type.setProperty("tr_tooltip", "numview_type_tip")
-        self.cb_numview_type.setToolTip(self._t("numview_type_tip"))
+        set_tooltip(self.cb_numview_type, self._t("numview_type_tip"))
         self.cb_numview_type.currentIndexChanged.connect(self._on_numview_type_changed)
 
         # ANSI 着色只对「按文本渲染」有意义（文本 与 终端模式），故不再单占一行 ——
@@ -1397,7 +1398,7 @@ class CommTool(QMainWindow):
         _ah.addWidget(self.lbl_ansi)
         _ah.addWidget(self.sw_ansi)
         for _w in (_ansi_page, self.lbl_ansi, self.sw_ansi):
-            _w.setToolTip(self._t("ansi_tip"))
+            set_tooltip(_w, self._t("ansi_tip"))
         _ansi_page.setProperty("tr_tooltip", "ansi_tip")
         self.sw_ansi.setProperty("tr_tooltip", "ansi_tip")
 
@@ -1488,7 +1489,7 @@ class CommTool(QMainWindow):
         self.sw_log_file = IOSSwitch(False)
         # 文件名变量说明挂在开关上：用户是在这里开功能、随后才看到文件对话框，
         # 到了对话框里再想起有变量可用就晚了
-        self.sw_log_file.setToolTip(self._t("log_vars_tip"))
+        set_tooltip(self.sw_log_file, self._t("log_vars_tip"))
         self.sw_log_file.setProperty("tr_tooltip", "log_vars_tip")
         self.sw_log_file.toggled.connect(self.on_log_file_toggled)
         # 实时记录按文件大小分包：到设定大小切到新文件（可编辑自定义，如 3M）
@@ -1499,7 +1500,7 @@ class CommTool(QMainWindow):
             self.cb_log_split.addItem(s)
         self.cb_log_split.setCurrentIndex(0)
         self.cb_log_split.setFixedWidth(MAIN_W)
-        self.cb_log_split.setToolTip(self._t("log_split_tip"))
+        set_tooltip(self.cb_log_split, self._t("log_split_tip"))
         self.cb_log_split.setProperty("tr_tooltip", "log_split_tip")
         self.cb_log_split.currentTextChanged.connect(self._on_log_split_changed)
         sw_extra_row(mrow, "real_time_log", self.sw_log_file, self.cb_log_split); mrow += 1
@@ -1512,7 +1513,7 @@ class CommTool(QMainWindow):
 
         self.sw_freeze_view = IOSSwitch(False)
         self.sw_freeze_view.setProperty("tr_tooltip", "freeze_view_tip")
-        self.sw_freeze_view.setToolTip(self._t("freeze_view_tip"))
+        set_tooltip(self.sw_freeze_view, self._t("freeze_view_tip"))
         self.sw_freeze_view.toggled.connect(self._on_freeze_view_toggled)
         sw_row(mrow, "freeze_view", self.sw_freeze_view); mrow += 1
 
@@ -1714,7 +1715,7 @@ class CommTool(QMainWindow):
         self.btn_font_dec.setObjectName("IconBtn")
         self.btn_font_dec.setFixedSize(34, 30)
         self.btn_font_dec.setProperty("tr_tooltip", "font_dec")
-        self.btn_font_dec.setToolTip(self._t("font_dec"))
+        set_tooltip(self.btn_font_dec, self._t("font_dec"))
         self.btn_font_dec.clicked.connect(lambda: self.change_recv_font_size(-1))
         title_row.addWidget(self.btn_font_dec)
 
@@ -1722,7 +1723,7 @@ class CommTool(QMainWindow):
         self.btn_font_inc.setObjectName("IconBtn")
         self.btn_font_inc.setFixedSize(34, 30)
         self.btn_font_inc.setProperty("tr_tooltip", "font_inc")
-        self.btn_font_inc.setToolTip(self._t("font_inc"))
+        set_tooltip(self.btn_font_inc, self._t("font_inc"))
         self.btn_font_inc.clicked.connect(lambda: self.change_recv_font_size(+1))
         title_row.addWidget(self.btn_font_inc)
 
@@ -1737,7 +1738,7 @@ class CommTool(QMainWindow):
         # 提示挂在数据区自己身上，用户才可能碰到。协议高亮模式下会被它自己的字段气泡接管
         # （见 eventFilter 的 ToolTip 分支），那是有意的——那种模式有更具体的东西要说。
         self.txt_recv.setProperty("tr_tooltip", "sel_chk_hint")
-        self.txt_recv.setToolTip(self._t("sel_chk_hint"))
+        set_tooltip(self.txt_recv, self._t("sel_chk_hint"))
         self.txt_recv.document().setMaximumBlockCount(10000)
         layout.addWidget(self.txt_recv, 1)
         self._build_search_bar()
@@ -2040,7 +2041,7 @@ class CommTool(QMainWindow):
         self.ed_search.returnPressed.connect(self._search_next)
         self.cb_search_mode = QComboBox()
         self.cb_search_mode.setProperty("tr_tooltip", "search_mode")
-        self.cb_search_mode.setToolTip(self._t("search_mode"))
+        set_tooltip(self.cb_search_mode, self._t("search_mode"))
         self.cb_search_mode.setFixedWidth(54)
         self.cb_search_mode.blockSignals(True)
         for data, key in (("plain", "search_mode_plain"), ("regex", "search_mode_regex"),
@@ -2050,20 +2051,20 @@ class CommTool(QMainWindow):
         self.cb_search_mode.currentIndexChanged.connect(lambda *_: self._on_search_mode_changed())
         self.btn_search_case = QPushButton("Aa")
         self.btn_search_case.setProperty("tr_tooltip", "search_case")
-        self.btn_search_case.setToolTip(self._t("search_case"))
+        set_tooltip(self.btn_search_case, self._t("search_case"))
         self.btn_search_case.setCheckable(True)
         self.btn_search_case.setFixedWidth(30)
         self.btn_search_case.toggled.connect(self._on_search_case_toggled)
         self.lbl_search_cnt = QLabel("")
         self.btn_search_prev = QPushButton("▲")
         self.btn_search_prev.setProperty("tr_tooltip", "search_prev")
-        self.btn_search_prev.setToolTip(self._t("search_prev"))
+        set_tooltip(self.btn_search_prev, self._t("search_prev"))
         self.btn_search_prev.setCursor(Qt.PointingHandCursor)
         self.btn_search_prev.setFixedSize(26, 26)
         self.btn_search_prev.clicked.connect(self._search_prev)
         self.btn_search_next = QPushButton("▼")
         self.btn_search_next.setProperty("tr_tooltip", "search_next")
-        self.btn_search_next.setToolTip(self._t("search_next"))
+        set_tooltip(self.btn_search_next, self._t("search_next"))
         self.btn_search_next.setCursor(Qt.PointingHandCursor)
         self.btn_search_next.setFixedSize(26, 26)
         self.btn_search_next.clicked.connect(self._search_next)
@@ -2761,7 +2762,7 @@ class CommTool(QMainWindow):
         self.txt_send.setPlaceholderText(self._t(_ph))
         # 悬浮提示：动态字段语法 + ↑↓ 历史；语言切换由 _apply_language 通过 tr_tooltip 刷新
         self.txt_send.setProperty("tr_tooltip", "send_box_tip")
-        self.txt_send.setToolTip(self._t("send_box_tip"))
+        set_tooltip(self.txt_send, self._t("send_box_tip"))
         layout.addWidget(self.txt_send)
 
         btn_row = QHBoxLayout()
@@ -2784,7 +2785,7 @@ class CommTool(QMainWindow):
         self.btn_autoreply.setObjectName("GhostBtn")
         self.btn_autoreply.setProperty("tr_text", "ar_open")
         self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
-        self.btn_autoreply.setToolTip(self._t("ar_btn_tip"))
+        set_tooltip(self.btn_autoreply, self._t("ar_btn_tip"))
         self.btn_autoreply.setProperty("tr_tooltip", "ar_btn_tip")   # 语言切换时由 _apply_language 刷新
         self.btn_autoreply.clicked.connect(self._ar_btn_clicked)
         self.btn_autoreply.installEventFilter(self)
@@ -3436,7 +3437,7 @@ class CommTool(QMainWindow):
     def _hide_sel_checksum(self):
         """收起状态栏的校验和显示（连同它左边那条分隔，免得悬空）。"""
         self.lbl_sel_chk.setText("")
-        self.lbl_sel_chk.setToolTip("")
+        set_tooltip(self.lbl_sel_chk, "")
         self._sel_chk_popup_payload = None
         if self._sel_chk_popup is not None:
             self._sel_chk_popup.hide()
@@ -3463,7 +3464,7 @@ class CommTool(QMainWindow):
             # 「超过上限」的证据、不是选区实际大小，拿它当数字报出来会是假精确。
             # 也不截断一部分去算：那会给出一个"看着像真的"的错值，比不给结果危险得多。
             self.lbl_sel_chk.setText(self._t("sel_chk_too_big", n=self._SEL_CHK_MAX // 1024))
-            self.lbl_sel_chk.setToolTip("")
+            set_tooltip(self.lbl_sel_chk, "")
             self._sel_chk_popup_payload = None
             if self._sel_chk_popup is not None:
                 self._sel_chk_popup.hide()
@@ -3475,7 +3476,7 @@ class CommTool(QMainWindow):
             self._sel_chk_popup_payload = self._sel_chk_popup_content(data)
             # 非空 tooltip 属性让 Qt 按系统悬停延时派发 QEvent.ToolTip；事件过滤器会
             # 消费事件并显示 ChecksumPopup，因此这个纯文本不会交给原生提示框绘制。
-            self.lbl_sel_chk.setToolTip(self._sel_chk_popup_payload[0])
+            set_tooltip(self.lbl_sel_chk, self._sel_chk_popup_payload[0])
             if self._sel_chk_popup is not None and self._sel_chk_popup.isVisible():
                 self._show_sel_checksum_popup()
         self.lbl_sel_chk.show()
@@ -5050,7 +5051,7 @@ class CommTool(QMainWindow):
                 label = label[:15] + "…"
             btn = QPushButton(label)
             btn.setObjectName("MsQuickBtn")
-            btn.setToolTip(item.get("data", ""))
+            set_tooltip(btn, item.get("data", ""))
             btn.clicked.connect(lambda _=False, it=item: self._send_ms_item(it))
             self._ms_quick_h.addWidget(btn)
         self._ms_quick_h.addStretch(1)
@@ -9524,14 +9525,14 @@ class CommTool(QMainWindow):
             return
         if not path:
             self.lbl_log_path.setText("")
-            self.lbl_log_path.setToolTip("")
+            set_tooltip(self.lbl_log_path, "")
             if hasattr(self, "_log_path_sep"):
                 self._log_path_sep.hide()
             return
         fm = QFontMetrics(self.lbl_log_path.font())
         w = getattr(self, "_log_path_elide_w", 560)
         self.lbl_log_path.setText("📝 " + fm.elidedText(path, Qt.ElideMiddle, w))
-        self.lbl_log_path.setToolTip(path)
+        set_tooltip(self.lbl_log_path, path)
         if hasattr(self, "_log_path_sep"):
             self._log_path_sep.show()
 
@@ -9812,8 +9813,8 @@ class CommTool(QMainWindow):
         self.lbl_rx_stat.setText(rx)
         self.lbl_tx_stat.setText(tx)
         if with_tooltip:
-            self.lbl_rx_stat.setToolTip(self._stat_tooltip("rx"))
-            self.lbl_tx_stat.setToolTip(self._stat_tooltip("tx"))
+            set_tooltip(self.lbl_rx_stat, self._stat_tooltip("rx"))
+            set_tooltip(self.lbl_tx_stat, self._stat_tooltip("tx"))
 
     def _stat_tooltip(self, direction):
         acc = self._io_stats
@@ -9920,7 +9921,7 @@ class CommTool(QMainWindow):
             k = w.property("tr_tooltip")
             if k:
                 try:
-                    w.setToolTip(self._t(k))
+                    set_tooltip(w, self._t(k))
                 except Exception:
                     pass
             # 固定宽标签（网络设置左列）随语言调整列宽，避免英文被遮挡
@@ -10809,7 +10810,7 @@ class CommTool(QMainWindow):
             return
         if not (self._project_name or self._project_path):
             self.btn_project_menu.setText(self._t("project_menu"))
-            self.btn_project_menu.setToolTip(self._t("project_menu"))
+            set_tooltip(self.btn_project_menu, self._t("project_menu"))
             return
         name = self._project_name or os.path.splitext(
             os.path.basename(self._project_path))[0]
@@ -10818,7 +10819,7 @@ class CommTool(QMainWindow):
         shown = QFontMetrics(self.btn_project_menu.font()).elidedText(
             full_text, Qt.ElideMiddle, 172)
         self.btn_project_menu.setText(shown)
-        self.btn_project_menu.setToolTip(self._project_path or name)
+        set_tooltip(self.btn_project_menu, self._project_path or name)
 
     def _build_project_menu(self):
         menu = QMenu(self)
@@ -10844,7 +10845,7 @@ class CommTool(QMainWindow):
             recent_menu.setToolTipsVisible(True)
             for path in recent:
                 action = recent_menu.addAction(os.path.basename(path))
-                action.setToolTip(path)
+                set_tooltip(action, path)
                 action.triggered.connect(
                     lambda _checked=False, p=path: self._open_project_path(p))
             recent_menu.addSeparator()
@@ -11570,7 +11571,7 @@ class CommTool(QMainWindow):
             return
         self._update_badge_version = ver
         self.lbl_version.setText(self._t("update_badge", ver=ver))
-        self.lbl_version.setToolTip(self._t("update_badge_tip", ver=ver))
+        set_tooltip(self.lbl_version, self._t("update_badge_tip", ver=ver))
         self.lbl_version.setCursor(Qt.PointingHandCursor)
         self._apply_version_label_style()
 

@@ -16,6 +16,7 @@ import rec_replay
 from theme import chrome_for
 from fonts import localize_qss, mono_font
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+from ui_tips import set_tooltip
 
 _SPEEDS = [("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("5x", 5.0), ("最快", 1000.0)]
 _TICK_MS = 20                # 回放派发间隔；20ms 足够贴合原时序又不吃 CPU
@@ -490,7 +491,7 @@ class RecReplayDialog(QDialog):
         self.chk_tx.setText(t("rr_include_tx"))
         self.btn_play.setText(t("rr_play"))
         self.btn_stop.setText(t("rr_stop"))
-        self.btn_help.setToolTip(t("rr_help_btn"))
+        set_tooltip(self.btn_help, t("rr_help_btn"))
         self.lbl_hint.setText(t("rr_hint"))
         self.cb_speed.setItemText(len(_SPEEDS) - 1, t("rr_speed_max"))
         self._refresh_stat()

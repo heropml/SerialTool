@@ -15,6 +15,7 @@ from theme import chrome_for
 from fonts import localize_qss
 from i18n import CHECKSUM_KEYS
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
+from ui_tips import set_tooltip
 
 
 class AutoReplyDialog(QDialog):
@@ -273,7 +274,7 @@ class AutoReplyDialog(QDialog):
         btn_mhelp.setObjectName("ArHelpBtn")
         btn_mhelp.setFixedSize(20, 20)
         btn_mhelp.setCursor(Qt.PointingHandCursor)
-        btn_mhelp.setToolTip({"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
+        set_tooltip(btn_mhelp, {"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
                               "zh_tw": "匹配語法 / 遮罩範例"}.get(self.app._lang, "Match syntax"))
         btn_mhelp.clicked.connect(lambda *_: self._show_mask_help(btn_mhelp))
         cb_mhex = QCheckBox("HEX")
@@ -287,7 +288,7 @@ class AutoReplyDialog(QDialog):
         for k in CHECKSUM_KEYS:
             cb_verify.addItem(t(k))
         cb_verify.setCurrentIndex(_i(rule.get("verify", 0)))
-        cb_verify.setToolTip(t("ar_verify_tip"))
+        set_tooltip(cb_verify, t("ar_verify_tip"))
         ed_reply = QLineEdit(str(rule.get("reply") or ""))   # 同上：str() 容错
         ed_reply.setPlaceholderText(t("ar_reply_ph"))
         cb_rhex = QCheckBox("HEX")
@@ -305,13 +306,13 @@ class AutoReplyDialog(QDialog):
         # delay=回复 turnaround；cooldown=触发限流（两回事，旧 cooldown 配置原义保留）
         ed_cd = QLineEdit(str(rule.get("delay", "0")))   # C7：支持 "100"(固定) 或 "100-300"(随机范围)
         ed_cd.setMaximumWidth(72)
-        ed_cd.setToolTip(t("ar_delay_tip"))
+        set_tooltip(ed_cd, t("ar_delay_tip"))
         ed_cdwn = QLineEdit(str(_i(rule.get("cooldown", 0))))
         ed_cdwn.setMaximumWidth(56)
-        ed_cdwn.setToolTip(t("ar_cooldown_tip"))
+        set_tooltip(ed_cdwn, t("ar_cooldown_tip"))
         ed_gap = QLineEdit(str(_i(rule.get("gap", 0))))   # 整包静默(实际取各规则最大值)
         ed_gap.setMaximumWidth(56)
-        ed_gap.setToolTip(t("ar_gap_tip"))
+        set_tooltip(ed_gap, t("ar_gap_tip"))
         btn_del = QPushButton("✕")
         btn_del.setObjectName("ArDelBtn")
         btn_del.setFixedSize(26, 26)
@@ -473,9 +474,6 @@ class AutoReplyDialog(QDialog):
         finally:
             self._syncing = False
 
-    def closeEvent(self, e):
-        self.app.settings.sync()   # 把拖动列宽刷到磁盘
-        super().closeEvent(e)
 
     def _del_row(self, rec):
         rec["w"].setParent(None)
@@ -624,7 +622,7 @@ class AutoReplyDialog(QDialog):
         has_code = bool((rec.get("script") or "").strip())
         active = has_code and bool(rec.get("script_on", True))    # 启用且有代码才生效
         btn.setText(self.app._t("ar_script_btn"))   # 不加 ●，纯靠颜色区分：启用=蓝、禁用/无码=灰
-        btn.setToolTip(self.app._t("ar_script_tip"))
+        set_tooltip(btn, self.app._t("ar_script_tip"))
         c = chrome_for(self.app._theme_id())
         if active:   # 启用：按钮文字 + ● 变蓝(accent)，一眼看出此行走脚本
             btn.setStyleSheet(
@@ -640,7 +638,7 @@ class AutoReplyDialog(QDialog):
             if w is not None:
                 w.setEnabled(not active)
         if rec.get("reply") is not None:
-            rec["reply"].setToolTip(self.app._t("ar_script_mode_tip") if active else "")
+            set_tooltip(rec["reply"], self.app._t("ar_script_mode_tip") if active else "")
 
     def _edit_script(self, rec):
         """编辑某条规则的「脚本应答」(Python)：定义 reply(frame, ctx) 动态生成应答。
@@ -927,7 +925,7 @@ class AutoReplyDialog(QDialog):
         dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint
                            | Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
-        dlg.resize(640, 470)
+        dlg.resize(720, 620)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(8)
@@ -966,16 +964,51 @@ class AutoReplyDialog(QDialog):
             lambda *_: self._show_help_dlg(t("ar_modbus_help_title"), t("ar_modbus_help")))
         top.addWidget(btn_help)
         v.addLayout(top)
+        from modbus_dyn import MODES, EXC_MODES
+
+        _exc = cfg.get("exception") if isinstance(cfg.get("exception"), dict) else {}
         adv = QHBoxLayout()
-        adv.addWidget(QLabel(t("ar_modbus_exc_code")))
-        ed_exc_code = QLineEdit(str((cfg.get("exception") or {}).get("code", "")))
-        ed_exc_code.setFixedWidth(48)
-        adv.addWidget(ed_exc_code)
+        adv.setSpacing(6)
         cb_exc_on = QCheckBox(t("ar_modbus_exc_on"))
-        cb_exc_on.setChecked(bool((cfg.get("exception") or {}).get("enabled")))
+        cb_exc_on.setChecked(bool(_exc.get("enabled")))
         adv.addWidget(cb_exc_on)
+        adv.addWidget(QLabel(t("ar_modbus_exc_code")))
+        ed_exc_code = QLineEdit(str(_exc.get("code", "")))
+        ed_exc_code.setFixedWidth(40)
+        adv.addWidget(ed_exc_code)
+        adv.addWidget(QLabel(t("ar_modbus_exc_mode")))
+        cb_exc_mode = QComboBox()
+        cb_exc_mode.setFixedWidth(90)
+        for mk, lk in (("always", "ar_modbus_mode_always"),
+                       ("once", "ar_modbus_mode_once"),
+                       ("n", "ar_modbus_mode_n")):
+            cb_exc_mode.addItem(t(lk), mk)
+        _midx = cb_exc_mode.findData(str(_exc.get("mode") or "always").lower())
+        cb_exc_mode.setCurrentIndex(_midx if _midx >= 0 else 0)
+        adv.addWidget(cb_exc_mode)
+        adv.addWidget(QLabel(t("ar_modbus_exc_n")))
+        ed_exc_n = QLineEdit(str(_exc.get("n", 1)))
+        ed_exc_n.setFixedWidth(40)
+        adv.addWidget(ed_exc_n)
         adv.addStretch(1)
         v.addLayout(adv)
+
+        filt = QHBoxLayout()
+        filt.setSpacing(6)
+        filt.addWidget(QLabel(t("ar_modbus_exc_funcs")))
+        ed_exc_funcs = QLineEdit(",".join(str(x) for x in (_exc.get("funcs") or [])))
+        ed_exc_funcs.setPlaceholderText(t("ar_modbus_exc_funcs_ph"))
+        filt.addWidget(ed_exc_funcs, 1)
+        filt.addWidget(QLabel(t("ar_modbus_exc_addrs")))
+        ed_exc_addrs = QLineEdit(",".join(str(x) for x in (_exc.get("addrs") or [])))
+        ed_exc_addrs.setPlaceholderText(t("ar_modbus_exc_addrs_ph"))
+        filt.addWidget(ed_exc_addrs, 1)
+        filt.addWidget(QLabel(t("ar_modbus_server_id")))
+        ed_server_id = QLineEdit(str(cfg.get("server_id") or ""))
+        ed_server_id.setFixedWidth(120)
+        filt.addWidget(ed_server_id)
+        v.addLayout(filt)
+
         slaves_hint = QLabel(t("ar_modbus_slaves_hint"))
         slaves_hint.setWordWrap(True)
         slaves_hint.setObjectName("ArCsHint")
@@ -1064,15 +1097,89 @@ class AutoReplyDialog(QDialog):
         if not any_row:
             add_reg()
 
+        dyn_hint = QLabel(t("ar_modbus_dyn_hint"))
+        dyn_hint.setWordWrap(True)
+        dyn_hint.setObjectName("ArCsHint")
+        v.addWidget(dyn_hint)
+        dyn_hdr = QHBoxLayout()
+        dyn_hdr.setSpacing(4)
+        for lk, w in (("ar_modbus_space", 110), ("ar_modbus_dyn_addr", 56),
+                      ("ar_modbus_dyn_mode", 80), ("ar_modbus_dyn_step", 48),
+                      ("ar_modbus_dyn_min", 48), ("ar_modbus_dyn_max", 48),
+                      ("ar_modbus_dyn_period", 64)):
+            lb = QLabel(t(lk)); lb.setFixedWidth(w); dyn_hdr.addWidget(lb)
+        dyn_hdr.addSpacing(28)
+        v.addLayout(dyn_hdr)
+        dyn_host = QWidget()
+        dyn_v = QVBoxLayout(dyn_host)
+        dyn_v.setContentsMargins(0, 0, 0, 0)
+        dyn_v.setSpacing(4)
+        dyn_v.addStretch(1)
+        dyn_scroll = QScrollArea()
+        dyn_scroll.setObjectName("ArScroll")
+        dyn_scroll.setWidget(dyn_host)
+        dyn_scroll.setWidgetResizable(True)
+        dyn_scroll.setFrameShape(QFrame.NoFrame)
+        dyn_scroll.setFixedHeight(110)
+        v.addWidget(dyn_scroll)
+        dyn_rows = []
+
+        def add_dyn(space="holding", addr=0, mode="inc", step=1, vmin=0, vmax=65535, period=1000):
+            r = QWidget()
+            rh = QHBoxLayout(r)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.setSpacing(4)
+            cb_sp = QComboBox(); cb_sp.setFixedWidth(110)
+            for _k, lk in self._MB_SPACES:
+                cb_sp.addItem(t(lk))
+            cb_sp.setCurrentIndex(space_keys.index(space) if space in space_keys else 0)
+            ed_a = QLineEdit(str(addr)); ed_a.setFixedWidth(56)
+            cb_mode = QComboBox(); cb_mode.setFixedWidth(80)
+            for mm in MODES:
+                cb_mode.addItem(mm, mm)
+            mi = cb_mode.findData(mode if mode in MODES else "inc")
+            cb_mode.setCurrentIndex(mi if mi >= 0 else 0)
+            ed_step = QLineEdit(str(step)); ed_step.setFixedWidth(48)
+            ed_min = QLineEdit(str(vmin)); ed_min.setFixedWidth(48)
+            ed_max = QLineEdit(str(vmax)); ed_max.setFixedWidth(48)
+            ed_per = QLineEdit(str(period)); ed_per.setFixedWidth(64)
+            btn_x = QPushButton("x")
+            btn_x.setObjectName("ArDelBtn"); btn_x.setFixedSize(26, 26)
+            rrec = {"w": r, "space": cb_sp, "addr": ed_a, "mode": cb_mode,
+                    "step": ed_step, "min": ed_min, "max": ed_max, "period": ed_per}
+
+            def _del(rec=rrec):
+                rec["w"].setParent(None)
+                rec["w"].deleteLater()
+                if rec in dyn_rows:
+                    dyn_rows.remove(rec)
+
+            btn_x.clicked.connect(lambda *_: _del())
+            for wdg in (cb_sp, ed_a, cb_mode, ed_step, ed_min, ed_max, ed_per, btn_x):
+                rh.addWidget(wdg)
+            dyn_v.insertWidget(dyn_v.count() - 1, r)
+            dyn_rows.append(rrec)
+
+        for d in (cfg.get("dynamics") or []):
+            if isinstance(d, dict):
+                add_dyn(str(d.get("space") or "holding"),
+                        d.get("addr", 0), str(d.get("mode") or "inc"),
+                        d.get("step", 1), d.get("min", 0), d.get("max", 65535),
+                        d.get("period_ms", 1000))
+
         btn_add = QPushButton(t("ar_modbus_add"))
         btn_add.setObjectName("PlotGhostBtn")
         btn_add.clicked.connect(lambda *_: add_reg())
+        btn_add_dyn = QPushButton(t("ar_modbus_dyn_add"))
+        btn_add_dyn.setObjectName("PlotGhostBtn")
+        btn_add_dyn.clicked.connect(lambda *_: add_dyn())
         ok_txt = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self.app._lang, "OK")
         cancel_txt = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(self.app._lang, "Cancel")
         btn_ok = QPushButton(ok_txt); btn_ok.setObjectName("PlotGhostBtn"); btn_ok.clicked.connect(dlg.accept)
         btn_cancel = QPushButton(cancel_txt); btn_cancel.setObjectName("PlotGhostBtn"); btn_cancel.clicked.connect(dlg.reject)
         brow = QHBoxLayout()
         brow.addWidget(btn_add)
+        brow.addWidget(btn_add_dyn)
         brow.addStretch(1)
         brow.addWidget(btn_cancel)
         brow.addWidget(btn_ok)
@@ -1123,23 +1230,44 @@ class AutoReplyDialog(QDialog):
         _exc_code = _parse_int(ed_exc_code.text(), None)
         if _exc_code is None:
             _exc_code = 4
-        _exc_prev = cfg.get("exception")
-        if not isinstance(_exc_prev, dict):
-            _exc_prev = {}
-        # mode/n/funcs/addrs have no widget here; carry them over untouched.
+        def _parse_int_list(txt):
+            out_list = []
+            for tok in (txt or "").replace(";", ",").split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                n = _parse_int(tok, None)
+                if n is not None:
+                    out_list.append(n)
+            return out_list
+        _mode = cb_exc_mode.currentData() or "always"
+        if _mode not in EXC_MODES:
+            _mode = "always"
         out["exception"] = {
             "enabled": bool(cb_exc_on.isChecked()),
             "code": int(_exc_code),
-            "mode": _exc_prev.get("mode", "always"),
-            "n": _exc_prev.get("n", 1),
-            "funcs": _exc_prev.get("funcs") or [],
-            "addrs": _exc_prev.get("addrs") or [],
+            "mode": _mode,
+            "n": _parse_int(ed_exc_n.text(), 1) or 1,
+            "funcs": _parse_int_list(ed_exc_funcs.text()),
+            "addrs": _parse_int_list(ed_exc_addrs.text()),
         }
-        out["dynamics"] = cfg.get("dynamics") if isinstance(cfg.get("dynamics"), list) else []
-        # server_id has no widget either; dropping it here would silently
-        # reset a project-file value back to the default.
-        if cfg.get("server_id"):
-            out["server_id"] = cfg["server_id"]
+        out["dynamics"] = []
+        for dr in dyn_rows:
+            _dmin = _parse_int(dr["min"].text(), None)
+            _dmax = _parse_int(dr["max"].text(), None)
+            out["dynamics"].append({
+                "space": space_keys[dr["space"].currentIndex()],
+                "addr": _parse_int(dr["addr"].text(), 0) or 0,
+                "mode": dr["mode"].currentData() or "inc",
+                "step": _parse_int(dr["step"].text(), 1) or 1,
+                # 0 is a legal bound (e.g. min=max=0); never use `or 0xFFFF`.
+                "min": 0 if _dmin is None else _dmin,
+                "max": 0xFFFF if _dmax is None else _dmax,
+                "period_ms": _parse_int(dr["period"].text(), 1000) or 1000,
+            })
+        sid = (ed_server_id.text() or "").strip()
+        if sid:
+            out["server_id"] = sid
         raw_slaves = (ed_slaves_json.toPlainText() or "").strip()
         if raw_slaves:
             import json as _json
@@ -1339,17 +1467,17 @@ class AutoReplyDialog(QDialog):
         self.btn_add.setText(t("ar_add"))
         self.btn_test.setText(t("ar_test"))
         self.btn_reset_stats.setText(t("ar_reset_stats"))
-        self.btn_modbus.setToolTip(t("ar_modbus_tip"))
+        set_tooltip(self.btn_modbus, t("ar_modbus_tip"))
         self._update_modbus_btn()                    # B4：按钮文案(含 ● 标记)随语言/开关刷新
-        self.btn_help.setToolTip(t("ar_help_btn"))   # 按钮文字固定 "?", 悬停看完整文案
+        set_tooltip(self.btn_help, t("ar_help_btn"))   # 按钮文字固定 "?", 悬停看完整文案
         self.cb_frame_on.setText(t("ar_frame_on"))
-        self.cb_frame_on.setToolTip(t("ar_frame_tip"))
+        set_tooltip(self.cb_frame_on, t("ar_frame_tip"))
         self.lbl_fhdr.setText(t("ar_frame_hdr"))
         self.lbl_foff.setText(t("ar_frame_off"))
         self.lbl_fwidth.setText(t("ar_frame_width"))
         self.lbl_fextra.setText(t("ar_frame_extra"))
         self.cb_fault_on.setText(t("ar_fault_on"))
-        self.cb_fault_on.setToolTip(t("ar_fault_tip"))
+        set_tooltip(self.cb_fault_on, t("ar_fault_tip"))
         self.lbl_fdrop.setText(t("ar_fault_drop"))
         self.lbl_fbadcrc.setText(t("ar_fault_badcrc"))
         self.lbl_fbadlen.setText(t("ar_fault_badlen"))
@@ -1357,7 +1485,7 @@ class AutoReplyDialog(QDialog):
         self.lbl_fault_desc.setText(t("ar_fault_desc"))
         # C8 状态机框
         self.cb_sm_on.setText(t("ar_sm_on"))
-        self.cb_sm_on.setToolTip(t("ar_sm_tip"))
+        set_tooltip(self.cb_sm_on, t("ar_sm_tip"))
         self.lbl_sm_init.setText(t("ar_sm_init"))
         self.ed_sm_init.setPlaceholderText(t("ar_sm_init_ph"))
         self.lbl_sm_cur.setText(t("ar_sm_cur"))
@@ -1370,13 +1498,13 @@ class AutoReplyDialog(QDialog):
         cs_items = [t(k) for k in CHECKSUM_KEYS]
         for rec in self._rows:
             rec["match"].setPlaceholderText(t("ar_match_ph"))
-            rec["mhelp"].setToolTip({"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
+            set_tooltip(rec["mhelp"], {"zh": "匹配语法 / 掩码示例", "en": "Match syntax / mask examples",
                                      "zh_tw": "匹配語法 / 遮罩範例"}.get(self.app._lang, "Match syntax"))
             rec["reply"].setPlaceholderText(t("ar_reply_ph"))
             rec["when"].setPlaceholderText(t("ar_when_ph"))    # C8
-            rec["when"].setToolTip(t("ar_when_tip"))
+            set_tooltip(rec["when"], t("ar_when_tip"))
             rec["goto"].setPlaceholderText(t("ar_goto_ph"))
-            rec["goto"].setToolTip(t("ar_goto_tip"))
+            set_tooltip(rec["goto"], t("ar_goto_tip"))
             # 行内 label 文本
             rec["lbl_match"].setText(t("ar_match"))
             rec["lbl_verify"].setText(t("ar_verify"))
@@ -1385,15 +1513,15 @@ class AutoReplyDialog(QDialog):
             rec["lbl_delay"].setText(t("ar_delay"))
             rec["lbl_cdwn"].setText(t("ar_cooldown"))
             # tooltip
-            rec["verify"].setToolTip(t("ar_verify_tip"))
-            rec["gap"].setToolTip(t("ar_gap_tip"))
-            rec["cdwn"].setToolTip(t("ar_cooldown_tip"))
-            rec["cd"].setToolTip(t("ar_delay_tip"))
+            set_tooltip(rec["verify"], t("ar_verify_tip"))
+            set_tooltip(rec["gap"], t("ar_gap_tip"))
+            set_tooltip(rec["cdwn"], t("ar_cooldown_tip"))
+            set_tooltip(rec["cd"], t("ar_delay_tip"))
             self._update_seg_btn(rec)
-            rec["seg_btn"].setToolTip(t("ar_cs_tip"))
+            set_tooltip(rec["seg_btn"], t("ar_cs_tip"))
             self._update_script_btn(rec)
-            rec["script_btn"].setToolTip(t("ar_script_tip"))
-            rec["hits_lbl"].setToolTip(t("ar_hits_tip"))
+            set_tooltip(rec["script_btn"], t("ar_script_tip"))
+            set_tooltip(rec["hits_lbl"], t("ar_hits_tip"))
             # combo 项（保留当前选中索引）：模式 + 收/发校验
             for combo, items in ((rec["mode"], mode_items),
                                  (rec["verify"], cs_items),
@@ -1488,4 +1616,5 @@ class AutoReplyDialog(QDialog):
     def closeEvent(self, e):
         if self._save_timer.isActive():
             self._commit()
+        self.app.settings.sync()
         super().closeEvent(e)
