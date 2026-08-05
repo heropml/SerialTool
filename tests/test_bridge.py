@@ -324,5 +324,91 @@ class BridgeConnectionSemanticsTests(unittest.TestCase):
         conn._sock = None
 
 
+class FakeTcpServerConn(QObject):
+    """假 TCP Server：像真的一样同时发 data_received 和带来源的 data_received_from。"""
+    data_received = pyqtSignal(bytes)
+    data_received_from = pyqtSignal(bytes, str)
+    clients_changed = pyqtSignal(list)
+    state_changed = pyqtSignal(bool)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.is_open = True
+        self.bridge_ready = True
+        self.sent = []          # [(target, data)]
+
+    def deliver(self, data, key):
+        self.data_received.emit(data)
+        self.data_received_from.emit(data, key)
+
+    def send_bridge(self, data, target=None):
+        self.sent.append((target, bytes(data)))
+        return len(data)
+
+    def send(self, data, target=None):
+        return self.send_bridge(data, target)
+
+    def close(self):
+        self.is_open = False
+
+
+class GatewayRoutingTests(unittest.TestCase):
+    """网关回包必须只发给发起请求的客户端。"""
+
+    def _setup(self):
+        import modbus_master as mm
+        import modbus_slave as ms
+        eng = BridgeEngine()
+        a, b = FakeTcpServerConn(), FakeConn()
+        eng.set_connection(0, a)
+        eng.set_connection(1, b)
+        eng.set_modbus_gateway(True)
+        eng.start()
+        return eng, a, b, mm, ms
+
+    def test_reply_targets_only_the_requesting_client(self):
+        eng, a, b, mm, ms = self._setup()
+        try:
+            slave = ms.ModbusSlave(addr=1, holding={0: 0x1234})
+            a.deliver(mm.build_tcp_request(0x77, 1, 3, 0, 1), "10.0.0.5:1111")
+            self.assertEqual(len(b.sent), 1)              # 请求已转成 RTU
+            b.data_received.emit(slave.handle(b.sent[0]))
+            self.assertEqual(len(a.sent), 1)
+            target, frame = a.sent[0]
+            self.assertEqual(target, "10.0.0.5:1111")     # 定向，而非广播
+            self.assertEqual(
+                mm.take_tcp_response(frame, 0x77, 3, 1)[0]["regs"], [0x1234])
+        finally:
+            eng.stop()
+
+    def test_two_clients_are_not_cross_fed(self):
+        eng, a, b, mm, ms = self._setup()
+        try:
+            half = mm.build_tcp_request(0x11, 1, 3, 0, 1)[:5]
+            a.deliver(half, "A:1")                         # A 只发了半帧
+            self.assertEqual(b.sent, [])
+            a.deliver(mm.build_tcp_request(0x22, 2, 3, 0, 1), "B:2")
+            self.assertEqual(len(b.sent), 1)               # B 的整帧照常转出
+            self.assertEqual(b.sent[0][0], 2)              # 而且是发给单元 2
+            slave_b = ms.ModbusSlave(addr=2, holding={0: 0xBBBB})
+            b.data_received.emit(slave_b.handle(b.sent[0]))
+            self.assertEqual([t for t, _f in a.sent], ["B:2"])
+        finally:
+            eng.stop()
+
+    def test_disconnected_client_reply_is_dropped(self):
+        eng, a, b, mm, ms = self._setup()
+        try:
+            slave = ms.ModbusSlave(addr=1, holding={0: 0x1234})
+            a.deliver(mm.build_tcp_request(0x33, 1, 3, 0, 1), "gone:9")
+            self.assertEqual(len(b.sent), 1)
+            a.clients_changed.emit([])                     # 该客户端断开
+            b.data_received.emit(slave.handle(b.sent[0]))
+            self.assertEqual(a.sent, [])                   # 回包丢弃，不广播
+        finally:
+            eng.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

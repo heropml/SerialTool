@@ -27,8 +27,8 @@ _WRITE_SINGLE = (0x05, 0x06)
 _WRITE_MULTI = (0x0F, 0x10)
 # 广播（地址 0）按规范只允许写类功能码，且从机一律不回响应。
 # 17(读写多寄存器) 含读，不可广播；08/0B/11 是诊断类，也都要求点对点。
-_BROADCAST_WRITE_FUNCS = _WRITE_SINGLE + _WRITE_MULTI
-SUPPORTED_FUNCS = _READ_FUNCS + _WRITE_SINGLE + _WRITE_MULTI + (0x08, 0x0B, 0x11, 0x17)
+_BROADCAST_WRITE_FUNCS = _WRITE_SINGLE + _WRITE_MULTI + (0x16,)
+SUPPORTED_FUNCS = _READ_FUNCS + _WRITE_SINGLE + _WRITE_MULTI + (0x08, 0x0B, 0x11, 0x16, 0x17, 0x2B)
 
 
 class ModbusException(Exception):
@@ -112,6 +112,10 @@ def expected_len(buf):
         return 8
     if func in (0x0B, 0x11):
         return 4                          # 无数据段：addr(1)+func(1)+crc(2)
+    if func == 0x16:
+        return 10                         # addr+and+or + crc
+    if func == 0x2B:
+        return 7                          # MEI + read_code + object_id + crc
     if func in _WRITE_MULTI:
         # 7 字节头 + 数据(byte_count) + crc(2)；还读不到字节计数字段就先等
         return None if len(buf) < 7 else 9 + buf[6]
@@ -278,7 +282,7 @@ class ModbusSlave:
 
     def __init__(self, addr=1, coils=None, discrete=None, holding=None,
                  input_regs=None, dynamics=None, exception_policy=None,
-                 server_id=b"CommTool"):
+                 server_id=b"CommTool", device_id_objects=None):
         self.addr = max(0, min(0xFF, int(addr)))   # clamp 而非回绕：addr=300 不能静默变成 44
         self.coils = dict(coils or {})
         self.discrete = dict(discrete or {})
@@ -288,9 +292,33 @@ class ModbusSlave:
         self.exception_injector = ExceptionInjector(exception_policy)
         self.server_id = (server_id.encode("utf-8") if isinstance(server_id, str)
                           else bytes(server_id or b"CommTool"))
+        self.device_id_objects = self._norm_device_id_objects(device_id_objects)
         # 0B「读事件计数器」用：收到的合法报文数 / CRC·LRC 校验失败数，均按 16 位回绕
         self.bus_msg_count = 0
         self.bus_comm_error = 0
+
+    @staticmethod
+    def _norm_device_id_objects(objects):
+        """Map object id 0..255 -> bytes; defaults cover basic Vendor/Product/Rev."""
+        defaults = {
+            0: b"CommTool",
+            1: b"Slave",
+            2: b"1.0",
+        }
+        out = dict(defaults)
+        for key, value in (objects or {}).items():
+            try:
+                oid = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= oid <= 255:
+                continue
+            if isinstance(value, str):
+                value = value.encode("utf-8", "replace")
+            else:
+                value = bytes(value or b"")
+            out[oid] = value[:240]
+        return out
 
     def _value(self, space, table, addr):
         """读取某地址的当前值：动态规则优先，没有规则就回落到静态表（缺省 0）。"""
@@ -305,7 +333,7 @@ class ModbusSlave:
         """按注入策略决定是否把本次请求变成异常响应。
         只有带地址字段的功能码才提取起始地址供 addrs 过滤；08 的前两字节是子功能，不是地址。"""
         start = None
-        if func in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0F, 0x10, 0x17) and len(data) >= 2:
+        if func in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0F, 0x10, 0x16, 0x17) and len(data) >= 2:
             start = _u16(data, 0)
         if func == 0x17 and len(data) >= 6:
             # 17 同时读写两段：写段起始地址也要参与addrs 过滤，否则只盯写入地址的策略永远不生效。
@@ -435,6 +463,58 @@ class ModbusSlave:
                 payload = b"\x00\xff"
             return bytes((func, len(payload))) + payload
 
+        if func == 0x16:                          # Mask Write Register
+            if len(data) < 6:
+                raise ModbusException(EXC_ILLEGAL_VALUE)
+            addr, and_m, or_m = _u16(data, 0), _u16(data, 2), _u16(data, 4)
+            cur = int(self._value("holding", self.holding, addr)) & 0xFFFF
+            # Spec: result = (current AND and) OR (or AND NOT and)
+            result = (cur & and_m) | (or_m & (~and_m & 0xFFFF))
+            self._write("holding", self.holding, addr, result & 0xFFFF)
+            return bytes((func,)) + data[:6]      # echo addr+and+or
+
+        if func == 0x2B:                          # Encapsulated Interface Transport
+            if len(data) < 3:
+                raise ModbusException(EXC_ILLEGAL_VALUE)
+            mei, read_code, obj_id = data[0], data[1], data[2]
+            if mei != 0x0E:
+                raise ModbusException(EXC_ILLEGAL_FUNCTION)
+            objs = self.device_id_objects
+            if read_code == 1:                     # basic stream
+                ids = [i for i in (0, 1, 2) if i in objs]
+                conformity = 0x81                 # basic + individual access
+            elif read_code == 2:                   # basic + regular stream
+                ids = sorted(i for i in objs if i < 0x80)
+                conformity = 0x82
+            elif read_code == 3:                   # extended stream
+                ids = sorted(i for i in objs if i >= 0x80)
+                if not ids:
+                    ids = sorted(objs)
+                conformity = 0x83
+            elif read_code == 4:                   # specific object
+                if obj_id not in objs:
+                    raise ModbusException(EXC_ILLEGAL_ADDRESS)
+                ids = [obj_id]
+                conformity = 0x81
+            else:
+                raise ModbusException(EXC_ILLEGAL_VALUE)
+            # Pack objects; keep PDU under 253 bytes (func already counted outside).
+            body = bytearray()
+            packed = 0
+            more = 0
+            next_id = 0
+            for oid in ids:
+                val = bytes(objs[oid])
+                chunk = bytes((oid, len(val))) + val
+                # header after objects: mei+rc+conf+more+next+nobj = 6
+                if 1 + 6 + len(body) + len(chunk) > 253:
+                    more = 0xFF
+                    next_id = oid
+                    break
+                body += chunk
+                packed += 1
+            return bytes((func, mei, read_code, conformity, more, next_id, packed)) + bytes(body)
+
         if func == 0x17:                          # 读写多个寄存器：先写后读（规范要求的次序）
             rs, rq = _u16(data, 0), _u16(data, 2)
             ws, wq, count = _u16(data, 4), _u16(data, 6), data[8]
@@ -479,6 +559,7 @@ def slave_from_config(cfg):
         dynamics=cfg.get("dynamics"),
         exception_policy=cfg.get("exception"),
         server_id=cfg.get("server_id", b"CommTool"),
+        device_id_objects=cfg.get("device_id_objects"),
     )
 
 

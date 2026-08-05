@@ -10,6 +10,11 @@ from collections import deque
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
+try:
+    from modbus_gateway import ModbusGatewayEngine
+except ImportError:  # pragma: no cover
+    ModbusGatewayEngine = None
+
 
 class BridgeEngine(QObject):
     """双向透传引擎。
@@ -35,6 +40,7 @@ class BridgeEngine(QObject):
         self._conn_a = None
         self._conn_b = None
         self._active = False
+        self._gateway = None  # optional ModbusGatewayEngine (A=TCP, B=RTU)
 
         # 字节计数器
         self._a_rx = 0
@@ -52,8 +58,22 @@ class BridgeEngine(QObject):
         self._rate_timer = QTimer(self)
         self._rate_timer.timeout.connect(self._tick_rate)
         self._rate_timer.setInterval(1000)
+        # The rate tick is too coarse to expire gateway requests on time.
+        self._gw_timer = QTimer(self)
+        self._gw_timer.timeout.connect(self._tick_gateway)
+        self._gw_timer.setInterval(100)
 
     # ── 公开 API ─────────────────────────────────────────────
+
+    def set_modbus_gateway(self, enabled, unit_map=None, timeout_s=1.0):
+        """When enabled, A->B is MBAP->RTU and B->A is RTU->MBAP."""
+        if not enabled or ModbusGatewayEngine is None:
+            self._gateway = None
+            self._gw_timer.stop()
+            return
+        self._gateway = ModbusGatewayEngine(unit_map=unit_map, timeout_s=timeout_s)
+        if self._active:
+            self._gw_timer.start()
 
     def set_connection(self, side: int, conn) -> None:
         """设置一侧的连接对象。
@@ -78,6 +98,9 @@ class BridgeEngine(QObject):
                    for c in (self._conn_a, self._conn_b)):
             return False
         self._reset_stats()
+        if self._gateway is not None:
+            self._gateway.reset()
+            self._gw_timer.start()
         self._connect_signals()
         self._active = True
         self._rate_timer.start()
@@ -92,6 +115,7 @@ class BridgeEngine(QObject):
         self._active = False
         self._emit_stats(0, 0)  # 保留累计量，但停止态实时速率必须归零
         self._rate_timer.stop()
+        self._gw_timer.stop()
         self._disconnect_signals()
         self.stopped.emit(reason)
 
@@ -108,8 +132,18 @@ class BridgeEngine(QObject):
 
     def _connect_signals(self):
         ca, cb = self._conn_a, self._conn_b
+        self._a_keyed = False
         ca.data_received.connect(self._on_data_a)
         cb.data_received.connect(self._on_data_b)
+        # TCP Server 侧还带一个标了来源客户端的信号。网关模式下必须用它：多个客户端
+        # 的分片混进同一个重组缓冲会被切成错帧，响应也会广播给不相干的客户端。
+        sig_from = getattr(ca, "data_received_from", None)
+        if sig_from is not None:
+            sig_from.connect(self._on_data_a_from)
+            self._a_keyed = True
+        sig_clients = getattr(ca, "clients_changed", None)
+        if sig_clients is not None:
+            sig_clients.connect(self._on_clients_a)
         ca.state_changed.connect(self._on_state_a)
         cb.state_changed.connect(self._on_state_b)
         ca.error_occurred.connect(self._on_error_a)
@@ -131,14 +165,75 @@ class BridgeEngine(QObject):
                     sig.disconnect(slot)
                 except (TypeError, RuntimeError):
                     pass
+        for name, slot in (("data_received_from", self._on_data_a_from),
+                           ("clients_changed", self._on_clients_a)):
+            sig = getattr(self._conn_a, name, None)
+            if sig is None:
+                continue
+            try:
+                sig.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+        self._a_keyed = False
 
     # ── 转发槽 ────────────────────────────────────────────────
 
+    def _gw_send(self, direction, frames):
+        """Forward gateway output. direction: 0 = to side B, 1 = to side A.
+
+        Mirrors the plain-forward bookkeeping (tx counter, rate sample,
+        forwarded signal) and keeps the one-shot error latch per side so a
+        broken link does not emit one error per frame.
+        """
+        to_a = (direction == 1)
+        conn = self._conn_a if to_a else self._conn_b
+        if not frames or conn is None:
+            return
+        ok_attr = "_send_ok_a" if to_a else "_send_ok_b"
+        err_side = 0 if to_a else 1
+        try:
+            for item in frames:
+                # TCP 回包是 TcpReply(client, frame)，RTU 侧仍是裸 bytes
+                target = getattr(item, "client", None)
+                fr = getattr(item, "frame", item)
+                sent = self._send_bridge(conn, fr, target)
+                if sent != len(fr):
+                    raise IOError("sent %s of %s bytes" % (sent, len(fr)))
+                if to_a:
+                    self._a_tx += len(fr)
+                else:
+                    self._b_tx += len(fr)
+                self._record_rate(direction, len(fr))
+                self.forwarded.emit(direction, fr)
+            setattr(self, ok_attr, True)
+        except Exception as e:
+            if getattr(self, ok_attr):
+                setattr(self, ok_attr, False)
+                self.error_occurred.emit(err_side, "send failed: %s" % e)
+
+    def _gw_dispatch(self, out):
+        rtu_out, tcp_out = out
+        self._gw_send(0, rtu_out)
+        self._gw_send(1, tcp_out)
+
+    def _tick_gateway(self):
+        if not self._active or self._gateway is None:
+            return
+        try:
+            self._gw_dispatch(self._gateway.tick())
+        except Exception:
+            pass
+
     def _on_data_a(self, data: bytes):
         self._a_rx += len(data)
+        if self._gateway is not None and getattr(self, "_a_keyed", False):
+            return        # 同一批字节由 _on_data_a_from 按客户端喂给网关，避免喂两遍
         if self._active and self._conn_b:
             try:
                 payload = bytes(data)
+                if self._gateway is not None:
+                    self._gw_dispatch(self._gateway.feed_tcp(payload))
+                    return
                 sent = self._send_bridge(self._conn_b, payload)
                 if sent != len(data):
                     raise IOError("sent %s of %s bytes" % (sent, len(data)))
@@ -152,11 +247,37 @@ class BridgeEngine(QObject):
                     self._send_ok_b = False
                     self.error_occurred.emit(1, "send failed: %s" % e)
 
+    def _on_data_a_from(self, data: bytes, key: str):
+        """TCP Server 侧带来源的收包：网关按客户端隔离重组，回包定向送回。"""
+        if not self._active or self._gateway is None or self._conn_b is None:
+            return
+        try:
+            self._gw_dispatch(self._gateway.feed_tcp(bytes(data), client=key))
+        except Exception as e:
+            if self._send_ok_b:
+                self._send_ok_b = False
+                self.error_occurred.emit(1, "gateway failed: %s" % e)
+
+    def _on_clients_a(self, clients):
+        """客户端断开后清掉网关里它的重组缓冲和排队请求。
+
+        不清的话 key 会一直堆积，且它那条在途请求的响应会落到广播路径上。
+        """
+        if self._gateway is None:
+            return
+        alive = {k for k, _label in clients}
+        for key in self._gateway.clients:
+            if key is not None and key not in alive:
+                self._gateway.forget_client(key)
+
     def _on_data_b(self, data: bytes):
         self._b_rx += len(data)
         if self._active and self._conn_a:
             try:
                 payload = bytes(data)
+                if self._gateway is not None:
+                    self._gw_dispatch(self._gateway.feed_rtu(payload))
+                    return
                 sent = self._send_bridge(self._conn_a, payload)
                 if sent != len(data):
                     raise IOError("sent %s of %s bytes" % (sent, len(data)))
@@ -171,10 +292,15 @@ class BridgeEngine(QObject):
                     self.error_occurred.emit(0, "send failed: %s" % e)
 
     @staticmethod
-    def _send_bridge(conn, data: bytes) -> int:
-        """桥接可使用连接层更严格的发送语义，不改变主窗口普通 send 行为。"""
+    def _send_bridge(conn, data: bytes, target=None) -> int:
+        """桥接可使用连接层更严格的发送语义，不改变主窗口普通 send 行为。
+
+        target 非空时定向发给该客户端（网关回包用）；为空时行为与原来完全一致。
+        """
         sender = getattr(conn, "send_bridge", None)
-        return sender(data) if sender is not None else conn.send(data)
+        if sender is None:
+            return conn.send(data) if target is None else conn.send(data, target)
+        return sender(data) if target is None else sender(data, target)
 
     # ── 状态监听 ──────────────────────────────────────────────
 
@@ -211,7 +337,7 @@ class BridgeEngine(QObject):
         (self._a_hist if side == 0 else self._b_hist).append((t, n))
 
     def _tick_rate(self):
-        """每秒触发：清理过期条目，计算实时速率，发射 stats_updated。"""
+        """滑动窗口重算双向速率（B/s）并上报 stats_updated。"""
         cutoff = time.monotonic() - 1.0
         for hist in (self._a_hist, self._b_hist):
             while hist and hist[0][0] < cutoff:

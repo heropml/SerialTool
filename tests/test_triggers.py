@@ -220,3 +220,22 @@ class EngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActionGateTests(unittest.TestCase):
+    def test_min_hits_and_every_n(self):
+        eng = tg.TriggerEngine([rule(pattern="ERR", min_hits=3, every_n=2, cooldown=0)])
+        fired = []
+        for _ in range(6):
+            fired.append(eng.feed(b"ERR", text="ERR"))
+        # hits 1,2 suppressed by min_hits; 3 odd skipped by every_n; 4 fire; 5 skip; 6 fire
+        self.assertEqual([bool(x) for x in fired], [False, False, False, True, False, True])
+        self.assertEqual(eng.hits(0), 6)
+
+    def test_normalize_action_fields(self):
+        r = tg.normalize({"webhook": True, "webhook_url": "https://x", "run_cmd_on": 1,
+                          "run_cmd": "echo {name}", "min_hits": 0, "every_n": -3})
+        self.assertTrue(r["webhook"] and r["run_cmd_on"])
+        self.assertEqual(r["webhook_url"], "https://x")
+        self.assertEqual(r["min_hits"], 1)
+        self.assertEqual(r["every_n"], 1)

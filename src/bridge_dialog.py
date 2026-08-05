@@ -653,6 +653,7 @@ class BridgeDialog(QDialog):
         self.btn_start.setObjectName("DialogPrimaryBtn")
         self.btn_start.setMinimumHeight(28)
         self.btn_start.clicked.connect(self._on_start)
+        # placed in retranslate/layout if present
 
         self.btn_stop = QPushButton()
         self.btn_stop.setObjectName("DialogDangerBtn")
@@ -669,12 +670,16 @@ class BridgeDialog(QDialog):
         self.btn_help.setCursor(Qt.PointingHandCursor)
         self.btn_help.clicked.connect(self._show_help)
 
+        self.chk_modbus_gw = QCheckBox()
+        self.chk_modbus_gw.setObjectName('BgGwCheck')
+
         row_ctrl = QHBoxLayout()
         row_ctrl.setSpacing(10)
         row_ctrl.addWidget(self.lbl_ab)
         row_ctrl.addWidget(self.lbl_ba)
         row_ctrl.addStretch()
         row_ctrl.addWidget(self.lbl_bridge_status)
+        row_ctrl.addWidget(self.chk_modbus_gw)
         row_ctrl.addWidget(self.btn_start)
         row_ctrl.addWidget(self.btn_stop)
         row_ctrl.addWidget(self.btn_help)
@@ -760,6 +765,8 @@ class BridgeDialog(QDialog):
 
         self.engine.set_connection(0, c_a)
         self.engine.set_connection(1, c_b)
+        self.engine.set_modbus_gateway(
+            bool(getattr(self, "chk_modbus_gw", None) and self.chk_modbus_gw.isChecked()))
         if self.engine.start():
             self._log_to_view("Bridge started")
         else:
@@ -881,6 +888,9 @@ class BridgeDialog(QDialog):
         self.lbl_log_section.setText(t("bg_log_title"))
         set_tooltip(self.btn_help, t("bg_help"))
         self.btn_start.setText(t("bg_start"))
+        if hasattr(self, "chk_modbus_gw"):
+            self.chk_modbus_gw.setText(t("bg_modbus_gw"))
+            set_tooltip(self.chk_modbus_gw, t("bg_modbus_gw_tip"))
         self.btn_stop.setText(t("bg_stop"))
         self.sw_log.setText(t("bg_log_enable"))
         self.sw_log_hex.setText(t("bg_log_hex"))

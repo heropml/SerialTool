@@ -693,18 +693,28 @@ def _dialog_list_qss(c):
     """
 
 
-def _style_combo_popups(root, c):
-    """按主窗口相同方式给 QComboBoxPrivateContainer 显式刷底色。
+def _style_one_combo_popup(combo, c):
+    """Style one combo dropdown container.
 
-    下拉弹出容器是独立顶层窗口，只给 QAbstractItemView 写 QSS 时 Windows 原生 palette
-    仍可能在外框透出青绿色系统强调色。
+    The container is a separate top-level window, so QSS on the dialog cannot
+    reach it. Leave it hidden unless the user already opened that dropdown.
     """
+    try:
+        view = combo.view()
+        win = view.window()
+        win.setStyleSheet(
+            "background-color: %s;" % c["combo_dropdown_bg"])
+        if not view.isVisible():
+            win.hide()
+    except (AttributeError, RuntimeError):
+        pass
+
+
+def _style_combo_popups(root, c):
+    """Paint every QComboBoxPrivateContainer under root with dialog chrome."""
     for combo in root.findChildren(QComboBox):
-        try:
-            combo.view().window().setStyleSheet(
-                f"background-color: {c['combo_dropdown_bg']};")
-        except (AttributeError, RuntimeError):
-            pass
+        _style_one_combo_popup(combo, c)
+
 
 
 # ============== 多条发送弹窗 ==============
@@ -1203,8 +1213,7 @@ class MultiSendDialog(QDialog):
         """))
         for r in getattr(self, "_rows", []):
             for key in ("nl", "cs"):
-                popup = r[key].view().window()
-                popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+                _style_one_combo_popup(r[key], c)
 
 
 # ============== 关键字高亮配置弹窗 ==============
@@ -1546,8 +1555,7 @@ class KeywordHighlightDialog(QDialog):
         for r in self._rows:                       # 颜色按钮保持各自底色
             self._paint_color_btn(r)
             for key in ("mode", "scope"):
-                popup = r[key].view().window()
-                popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+                _style_one_combo_popup(r[key], c)
 
 
 # ============== 自动化测试序列对话框 ==============
@@ -1949,7 +1957,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self._rows.append(d)
         c = chrome_for(self.app._theme_id())      # 下拉弹出窗上色（QSS 罩不到弹窗框；新增行也覆盖）
         for combo in (cb_cs, cb_mode, cb_of):
-            combo.view().window().setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+            _style_one_combo_popup(combo, c)
 
     def _del_row(self, d):
         if d in self._rows:
@@ -2792,7 +2800,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # 下拉弹出是独立顶层窗，QSS 罩不到弹窗边框 → 单独上色，避免深色主题露白边
         for d in self._rows:
             for combo in (d["cs"], d["mode"], d["of"]):
-                combo.view().window().setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+                _style_one_combo_popup(combo, c)
         self.update_results()   # 结果列颜色/运行绿按钮是内联样式，换主题后需按新强调色重刷
 
     def closeEvent(self, e):

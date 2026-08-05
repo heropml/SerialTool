@@ -18,7 +18,7 @@ from modbus_slave import crc16, _u16, ModbusException, lrc8, ascii_wrap, parse_a
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)     # 01 线圈 / 02 离散输入 / 03 保持 / 04 输入寄存器
 WRITE_SINGLE = (0x05, 0x06)               # 05 写单线圈 / 06 写单寄存器
 WRITE_MULTI = (0x0F, 0x10)                # 0F 写多线圈 / 10 写多寄存器（写值为列表）
-SUPPORTED_FUNCS = READ_FUNCS + WRITE_SINGLE + WRITE_MULTI + (0x08, 0x0B, 0x11, 0x17)
+SUPPORTED_FUNCS = READ_FUNCS + WRITE_SINGLE + WRITE_MULTI + (0x08, 0x0B, 0x11, 0x16, 0x17, 0x2B)
 MAX_TCP_MBAP_LENGTH = 254                  # Unit(1) + 最大 PDU(253)
 
 
@@ -140,6 +140,47 @@ def _build_pdu(func, addr, qty_or_val):
                       (data >> 8) & 0xFF, data & 0xFF])
     if func in (0x0B, 0x11):
         return bytes([func])
+    if func == 0x16:
+        # Mask Write Register: and_mask + or_mask (echoed back).
+        if isinstance(qty_or_val, (list, tuple)) and len(qty_or_val) >= 2:
+            and_m = _exact_int(qty_or_val[0], "and_mask must be an integer")
+            or_m = _exact_int(qty_or_val[1], "or_mask must be an integer")
+        elif isinstance(qty_or_val, dict):
+            and_m = _exact_int(qty_or_val.get("and_mask", 0xFFFF),
+                             "and_mask must be an integer")
+            or_m = _exact_int(qty_or_val.get("or_mask", 0),
+                             "or_mask must be an integer")
+        else:
+            raise ValueError("FC22 requires and_mask and or_mask")
+        if not 0 <= and_m <= 0xFFFF or not 0 <= or_m <= 0xFFFF:
+            raise ValueError("mask values must be 0..65535")
+        return bytes([func, (addr >> 8) & 0xFF, addr & 0xFF,
+                      (and_m >> 8) & 0xFF, and_m & 0xFF,
+                      (or_m >> 8) & 0xFF, or_m & 0xFF])
+    if func == 0x2B:
+        # MEI Read Device Identification (type 0x0E only).
+        if isinstance(qty_or_val, dict):
+            mei = _exact_int(qty_or_val.get("mei", 0x0E), "MEI type must be an integer")
+            read_code = _exact_int(qty_or_val.get("read_code", 1),
+                                  "read device id code must be an integer")
+            obj_id = _exact_int(qty_or_val.get("object_id", 0),
+                               "object id must be an integer")
+        elif isinstance(qty_or_val, (list, tuple)) and len(qty_or_val) == 3:
+            mei = _exact_int(qty_or_val[0], "MEI type must be an integer")
+            read_code = _exact_int(qty_or_val[1], "read device id code must be an integer")
+            obj_id = _exact_int(qty_or_val[2], "object id must be an integer")
+        elif isinstance(qty_or_val, (list, tuple)) and len(qty_or_val) == 2:
+            mei = 0x0E
+            read_code = _exact_int(qty_or_val[0], "read device id code must be an integer")
+            obj_id = _exact_int(qty_or_val[1], "object id must be an integer")
+        else:
+            raise ValueError("FC43 requires read_code and object_id")
+        if mei != 0x0E:
+            raise ValueError("only MEI type 0x0E is supported")
+        if not 0 <= read_code <= 0xFF or not 0 <= obj_id <= 0xFF:
+            raise ValueError("device id fields must be 0..255")
+        # addr unused for 0x2B; still validated above
+        return bytes([func, mei & 0xFF, read_code & 0xFF, obj_id & 0xFF])
     if func == 0x17:
         if isinstance(qty_or_val, dict):
             ra = _exact_int(qty_or_val.get("read_addr", addr),
@@ -269,6 +310,36 @@ def parse_pdu(req_func, pdu):
         run = bool(payload[-1] == 0xFF) if payload else False
         server_id = bytes(payload[:-1]) if len(payload) > 1 else b""
         return {"server_id": server_id, "run": run, "additional": b""}
+    if func == 0x16:
+        if len(pdu) != 7:
+            raise ValueError("bad mask-write echo length")
+        return {"mask": (_u16(pdu, 1), _u16(pdu, 3), _u16(pdu, 5))}
+    if func == 0x2B:
+        if len(pdu) < 7:
+            raise ValueError("short device-id response")
+        if pdu[1] != 0x0E:
+            raise ValueError("unsupported MEI type 0x%02X" % pdu[1])
+        read_code = pdu[2]
+        conformity = pdu[3]
+        more = bool(pdu[4])
+        next_id = pdu[5]
+        nobj = pdu[6]
+        objects = {}
+        off = 7
+        for _ in range(nobj):
+            if off + 2 > len(pdu):
+                raise ValueError("truncated device-id objects")
+            oid = pdu[off]
+            olen = pdu[off + 1]
+            off += 2
+            if off + olen > len(pdu):
+                raise ValueError("truncated device-id object value")
+            objects[oid] = bytes(pdu[off:off + olen])
+            off += olen
+        if off != len(pdu):
+            raise ValueError("trailing device-id bytes")
+        return {"device_id": {"read_code": read_code, "conformity": conformity,
+                             "more": more, "next_id": next_id, "objects": objects}}
     if func == 0x17:
         if len(pdu) < 2:
             raise ValueError("short FC23 response")
@@ -289,9 +360,13 @@ def rtu_normal_len(req_func, qty):
         return 8
     if req_func in (0x08, 0x0B):
         return 8
+    if req_func == 0x16:
+        return 10  # unit + func + addr + and + or + crc
     if req_func == 0x11:
         # Variable Server ID; use RTU ADU upper bound for timeout budgeting.
         return 256
+    if req_func == 0x2B:
+        return 256  # variable object list
     if req_func == 0x17:
         return 5 + _read_qty(0x03, qty) * 2
     return None
@@ -315,6 +390,20 @@ def take_rtu_response(buf, req_unit, req_func, qty):
             raise ValueError("crc error")
         parse_pdu(req_func, frame[1:-2])              # 必抛 ModbusException
         raise ValueError("unreachable")
+    if req_func == 0x2B:
+        # Variable MEI response; wait until CRC matches a complete frame.
+        # Shortest legal frame is unit+PDU(7)+crc2 = 10 bytes.
+        if len(buf) < 10:
+            return None
+        for size in range(10, min(len(buf), 256) + 1):
+            frame = bytes(buf[:size])
+            if crc16(frame[:-2]) != frame[-2:]:
+                continue
+            try:
+                return parse_pdu(req_func, frame[1:-2]), size
+            except ValueError:
+                continue          # CRC collision on a partial frame; keep going
+        return None
     if req_func == 0x11:
         if len(buf) < 3:
             return None
@@ -494,6 +583,52 @@ def normalize_poll(rec):
         wval = diag_data
     elif func in (0x0B, 0x11):
         qty = 1
+    elif func == 0x16:
+        qty = 1
+        # Dedicated keys win once present (preserve None = invalid across renorm).
+        if "and_mask" in rec or "or_mask" in rec:
+            if "and_mask" not in rec or rec.get("and_mask") == "":
+                and_m = 0xFFFF
+            else:
+                and_m = _bounded(rec.get("and_mask"), 0, 0xFFFF)
+            if "or_mask" not in rec or rec.get("or_mask") == "":
+                or_m = 0
+            else:
+                or_m = _bounded(rec.get("or_mask"), 0, 0xFFFF)
+        else:
+            raw = str(rec.get("wval", "") or "")
+            if ":" in raw:
+                left, right = raw.split(":", 1)
+                and_m = _bounded(left.strip() or "0xFFFF", 0, 0xFFFF)
+                or_m = _bounded(right.strip() or "0", 0, 0xFFFF)
+            else:
+                and_m = 0xFFFF
+                or_m = _bounded(raw if raw != "" else "0", 0, 0xFFFF)
+        wval = and_m
+        diag_sub = and_m
+        diag_data = or_m
+    elif func == 0x2B:
+        qty = 1
+        # Dedicated keys win once present (preserve None = invalid across renorm).
+        if "read_code" in rec or "object_id" in rec:
+            if "read_code" not in rec or rec.get("read_code") == "":
+                diag_sub = 1
+            else:
+                diag_sub = _bounded(rec.get("read_code"), 0, 255)
+            if "object_id" not in rec or rec.get("object_id") == "":
+                diag_data = 0
+            else:
+                diag_data = _bounded(rec.get("object_id"), 0, 255)
+        else:
+            raw = str(rec.get("wval", rec.get("qty", "1:0")) or "1:0")
+            if ":" in raw:
+                left, right = raw.split(":", 1)
+                diag_sub = _bounded(left.strip() or "1", 0, 255)
+                diag_data = _bounded(right.strip() or "0", 0, 255)
+            else:
+                diag_sub = _bounded(raw or "1", 0, 255)
+                diag_data = 0
+        wval = diag_data
     elif func == 0x17:
         try:
             rq = _read_qty(0x03, rec.get("qty", 1))
@@ -537,6 +672,7 @@ def normalize_poll(rec):
         qty = len(wvals) or 1        # qty 至少 1（仅用于读响应长度预测；写多空值不会真发）
     return {
         "name": str(rec.get("name", "") or ""),
+        "group": str(rec.get("group", "") or "")[:40],
         "unit": unit,
         "func": func,
         "addr": addr,
@@ -547,6 +683,11 @@ def normalize_poll(rec):
         "wvals": wvals,
         "diag_sub": diag_sub,
         "diag_data": diag_data,
+        "and_mask": diag_sub if func == 0x16 else None,
+        "or_mask": diag_data if func == 0x16 else None,
+        "mei": 0x0E if func == 0x2B else None,
+        "read_code": diag_sub if func == 0x2B else None,
+        "object_id": diag_data if func == 0x2B else None,
         "write_addr": write_addr,
         "rw": rw,
     }

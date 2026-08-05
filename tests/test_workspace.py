@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QWidgetAction
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from main_window import CommTool, PortScannerThread
-from device_center_dialog import DeviceCenterDialog
+from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
 from plot_dialog import PlotDialog
 from project_model import load_project, make_project, save_project
 from widgets import IOSSwitch
@@ -304,7 +304,8 @@ def test_device_and_structured_dialogs_open_from_workspace(tmp_path, monkeypatch
         _APP.processEvents()
 
         assert window._device_center_dlg.tabs.count() == 2
-        assert window._device_center_dlg.table.columnCount() == 11
+        assert (window._device_center_dlg.table.columnCount()
+                == len(_REGISTER_COLUMNS))
         assert window._structured_dlg.table.columnCount() == 6
         assert window._structured_dlg.btn_help.objectName() == "PlotHelpBtn"
         assert window._device_center_dlg.btn_help.objectName() == "PlotHelpBtn"

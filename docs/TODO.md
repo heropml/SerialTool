@@ -2,7 +2,9 @@
 
 > 本文件是 CommTool 的后续开发基线。后续新增功能、拆分任务和排期，优先以第四节「执行版路线图」为准；第三节仅作为市场对标后的备选功能池。
 > 已落地的（Modbus ASCII、寄存器表↔绘图联动、搜索正则/HEX、时间戳多格式、冻结显示、结构化记录/设备中心帮助按钮等）不在未完成清单中。
-> 产品定位：面向嵌入式研发、协议联调和产线验机的「通信协议测试工作台」，重点形成“设备预设 → 自动化测试 → 收发记录 → 失败定位 → 报告导出 → CLI/产线复用”的闭环。
+> 产品定位（v1.4 起收窄）：**轻量、稳定、好用的串口/网络协议调试工具**。面向嵌入式研发、协议联调和产线验机，
+> 闭环止于「设备预设 → 自动化测试 → 收发记录 → 失败定位 → 报告导出」，不再向 CLI/API/插件平台化延伸。
+> 收窄理由与恢复判据见第四节「P2：平台化能力（v1.4 起暂缓）」。
 > 完整路线图背景见 plan：`D:\mingl\Documents\.claude\plans\encapsulated-riding-marshmallow.md`
 
 ---
@@ -51,13 +53,16 @@
 | | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | 仅针对 TCP/UDP；串口继续使用 `.ctrec`，不强行套 PCAP |
 | | Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | 现 CSV 已防注入，加 openpyxl |
 | | 吞吐量随时间曲线（I/O Graph） | Wireshark | 带宽抖动可视化 | 中 | 扩 plot，按 `_rx_rate/_tx_rate` 历史 |
-| ⭐ | **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机已做；真·TCP↔RTU 网关路由仍待做） |
-| ⭐ | **更多 Modbus 功能码（FC08诊断/FC11/FC17/FC23读写多）** | ModbusSimulator(14码) | 覆盖诊断与一次读写 | 中 | `modbus_master/slave._exec` / `SUPPORTED_FUNCS` |
-| | 位域(bitfield)解析 | 嵌入式协议工具 | 寄存器内部按位拆 | 中 | `binproto.py` + `device_resources` 的 bit 扩展 |
+| ⭐ | DONE **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机与真·TCP↔RTU 网关路由均已完成；网关见 `modbus_gateway.py`） |
+| ⭐ | DONE **更多 Modbus 功能码（FC08诊断/FC11/FC17/FC23读写多/FC22掩码写/FC43设备标识）** | ModbusSimulator(14码) | 覆盖诊断与一次读写 | 中 | `modbus_master/slave._exec` / `SUPPORTED_FUNCS` |
+| | DONE 位域(bitfield)解析 | 嵌入式协议工具 | 寄存器内部按位拆 | 中 | `device_resources.parse_bitfields` / `decode_bitfields` + 设备中心「位域」列 |
 | | 回放驱动真实 TX（不只注入虚拟连接） | IO Ninja | 录的帧从真实串口/网络发出去 | 中 | `rec_replay.Player` 注入路径加一条 TX 侧 |
-| | 触发动作：webhook / 命中N次 / 运行外部程序 | Docklight action chain | 接运维/告警链路 | 中 | `_fire_trigger` (`main_window.py` ~5300) 扩动作集 |
+| | DONE 触发动作：webhook / 命中N次 / 运行外部程序 | Docklight action chain | 接运维/告警链路 | 中 | `_fire_trigger`（`main_window.py`）扩动作集；提前落地的取舍见第四节「Webhook / 外部程序提前落地的取舍」 |
 
 ### Tier 3 — 大工程/战略级（差异化壁垒，单独立项）
+
+> v1.4 起：本梯队的远程 API、Headless/CLI、插件式 dissector 三项已整体暂缓，理由见第四节。
+> 此处保留仅作市场对标记录，不代表排期。
 
 | # | 功能 | 对标 | 价值 | 量 |
 |---|---|---|---|---|
@@ -103,14 +108,40 @@
 > **P1 收尾（v1.3.8–v1.3.9）已完成**：异常注入/动态寄存器/`server_id` 界面、主机 FC08、多从机行表 UI、tooltip 自动换行、波形/状态栏/会话比较 `jump_to_session_time`、数据区书签、ANSI 清屏清书签、重复从机地址拒绝。FC08 变长回环/切帧取舍仍见 `tests/test_modbus_slave.py` 中的对抗性测试备注。后续能力见 **P2**。
 
 
-### P2：平台化能力（单独立项）
+### v1.4：稳定性与易用性（当前推进）
 
-| 顺序 | 功能 | 目标 | 前置条件 |
+> 目标不是加功能，而是「删复杂度、修细节、提稳定」。脚本、宏、虚拟连接、回放、仪表盘、
+> Modbus 和自动化序列都已具备，功能面足够；v1.4 只做减法和打磨。
+
+| 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
-| P2-1 | **Headless / CLI** | 无界面运行序列、脚本、回放并输出 JUnit | 序列引擎、报告引擎与 GUI 解耦 |
-| P2-2 | **REST / WebSocket API** | 让外部程序控制连接、收发、统计和测试 | CLI/API 共用同一套核心服务层 |
-| P2-3 | **脚本化协议解析器/插件** | 支持用户自定义协议和字段解码 | 先稳定协议字段模型、变量上下文和资源包格式 |
-| P2-4 | **TCP/UDP 专用 PCAP 导出** | 网络流量与 Wireshark 互通 | 仅对 TCP/UDP 提供；串口保留 `.ctrec` 语义 |
+| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 全量 232 处宽泛 `except`、其中 98 处静默 `pass` 逐模块收敛；清理型代码改分步兜底，前一步失败不跳过后续步骤。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`）；`main_window.py`（138/72）、`serial_io.py`（12/6）待做 |
+| S-2 | **拆分 `main_window.py`** | 12198 行、占 src 40672 行 30% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 932 个用例全是短平快功能验证，无一条长跑 |
+| S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | `log_naming.py` 现只有按日轮转（`should_roll_date`），补按大小切分及两者组合 |
+| S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 错误提示给出可操作建议而非原始 `errorString`；常用 Modbus 读写收敛成简化表单；补发送历史全文搜索 |
+
+> 已具备、不要重复投入：连接预设与最近使用（`connection_presets.py`，含 `recent`/`last_used`）、
+> 发送历史 FIFO 100 与上下键导航（`_send_hist`）、快捷发送栏（`_ms_quick_host`）、
+> 片段库（`snippets.py`，带 filter）、日志按日轮转。
+
+### P2：平台化能力（v1.4 起暂缓）
+
+> 整体暂缓，不排期。暂缓不等于否定，而是前置条件尚未满足：
+>
+> - 本节末验收要求第 1 条要求核心逻辑抽成 Qt-free 模块，而 `main_window.py` 现有 12198 行、
+>   占 src 全部 40672 行的 30%，内含 138 处宽泛异常捕获（72 处静默）。CLI 与 API 都要从这里
+>   往外拆逻辑，插件式 dissector 还要等协议字段模型稳定之后才能定接口。
+> - 在此前提下开 P2，等于在一个尚未解耦、异常路径不透明的核心上再架一层远程接口。
+>
+> 恢复排期的判据：S-2 拆分完成、S-1 异常收敛到位、S-3 有长跑与吞吐基线数据。
+
+| 顺序 | 功能 | 状态 | 恢复排期的前置条件 |
+|---|---|---|---|
+| P2-1 | Headless / CLI | 暂缓 | 序列引擎、报告引擎与 GUI 解耦（S-2） |
+| P2-2 | REST / WebSocket API | 暂缓 | CLI/API 共用同一套核心服务层（S-2） |
+| P2-3 | 脚本化协议解析器/插件 | 暂缓 | 先稳定协议字段模型、变量上下文和资源包格式 |
+| P2-4 | TCP/UDP 专用 PCAP 导出 | 保留候选 | 属导出格式而非平台化，不受本次收窄影响；仅对 TCP/UDP 提供，串口保留 `.ctrec` 语义 |
 
 ### 暂不纳入近期排期
 
@@ -118,7 +149,25 @@
 - 不以“新增控件数量”为目标；图表先做双 Y 轴、XY、直方图、游标和统计，再考虑更多 gauge/LED。
 - Excel/xlsx 后置，优先保证 HTML、CSV、JUnit XML 三种交付格式。
 - 不支持“回放数据直接注入真实串口”作为默认能力，避免把历史 RX 数据误当成真实设备响应；如确有需要，单独设计明确的 TX 重放模式和安全确认。
-- Webhook、外部程序和触发联动放到 API/事件总线之后，避免在现有触发器中继续堆积互斥逻辑。
+- 触发联动发送（匹配后自动回发）仍不做，避免与自动应答引擎互斥打架（同第三节末「明确不建议借鉴」）。
+- v1.4 起明确划出边界、不做：远程 API / CLI / 插件系统（见上）、窗口内多标签与拖拽窗口、
+  云端与协作、AI 能力、更多冷门协议、复杂权限与操作员体系。
+
+### Webhook / 外部程序提前落地的取舍
+
+原计划把 Webhook 和外部程序排在 API/事件总线之后，实际在 v1.3.9 之后直接落到了触发器里。
+理由和补偿措施记在这里，后续做事件总线时按此边界迁移：
+
+1. 提前的理由：这两个动作不依赖总线的编排能力，只要「匹配到就发一次」；等总线会把告警链路
+   压后一整个大版本。
+2. 没有堆积互斥逻辑：两者都不占用统一占用表，不与脚本、序列、传输、回放和 Modbus 抢收发
+   通道，因此不构成本节验收要求第 3 条所说的「第二套收发互斥机制」。
+3. 失控防护：在途动作数上限 `_TRG_MAX_ACTIONS`（8），超出即丢弃并计数，避免冷却设成 0 时
+   线程和子进程无限增长。
+4. 权限边界：`import_config` / `_apply_loaded_settings` 检测到 `run_cmd` 或 `webhook_url` 时，
+   走与脚本库、脚本应答同一套信任确认；用户拒绝则剥离这两类字段后再导入。
+5. 迁移约定：事件总线落地后，触发器侧只保留「产生事件」，动作执行统一挪到总线消费端，
+   并发上限和导入门禁一并移交。
 
 ### 每个功能的统一验收要求
 
@@ -145,4 +194,16 @@
 - 修复：从机 variant 穿透规范化、ASCII 主机剥本地回显、ASCII 超时按 hex 编码估算、`_modbus_send`/`_mbm_timeout_ms` 按 variant 路由（不嗅探首字节，避开 RTU addr=58=`:` 误判）、ASCII 超时隔离 guard、ASCII feed 循环重同步、冻结不切断实时日志、右键作用于所点行、联动前 commit
 - `tests/test_ansi_integration::test_survives_window_destroy_and_recreate` 在 offscreen 下挂的预存在 flake（closeEvent 弹模态框）已修
 
-测试基线：**877 passed, 4 skipped, 288 subtests**（4 个 skip 全是平台门控：3 个 POSIX-only 进程组用例 + 1 个 offscreen Qt 排版用例；带界面跑法下少 1 个 skip、多 1 个 pass）。
+### v1.3.9 之后本轮落地
+
+- **D** 寄存器显示格式与位域：u64/i64/f64、8 种字序、0/1 地址基、位域拆解、预警与报警阈值；设备中心补 4 列并随工程往返
+- **E** Modbus 主机多视图分组轮询：分标签编辑、共用一套半双工引擎；提交时按全局下标就地合并，不打乱其他视图的规则顺序；标签顺序取自持久化的 `modbus_master_views`
+- **F** FC22 掩码写（0x16）+ FC43/14 设备标识（0x2B/0x0E）：主机、从机、UI 与单测齐全
+- **G** 触发动作链：Webhook / 外部程序 / 命中阈值（`min_hits`、`every_n`），带在途并发上限与配置导入门禁（取舍见第四节）
+- **H** 真·Modbus TCP/RTU 网关（`modbus_gateway.py`）：TCP 流缓冲重组、请求排队（上限 32）、广播不等回包、超时回 MBAP 异常 0x0B、从机异常响应原样转发；`bridge.py` 挂 100ms 专用 tick 并双向记速。**默认行为**：Unit ID 原样透传（`unit_map` 留空）、从机超时 1s，这两项界面暂不开放，已写进网关开关的提示文字。**多客户端**：每个 TCP 客户端独立重组缓冲（上限 16 个），请求入队时记来源，响应经 `TcpReply(client, frame)` 定向回发起方；客户端断开时清掉它的缓冲与排队请求，在途请求的响应直接丢弃而不广播
+- 修复：启动时 `QStackedLayout` 页面未挂父窗口导致的窗口闪现；`QComboBox` 弹出层取样式时的瞬时白框（`dialogs._style_one_combo_popup`）
+- **I（v1.4 S-1 首块）** `net_io.py` 异常收敛：9 处静默 `except Exception: pass` 归零。清理动作改为分步兜底（`_safe`）——
+  退组或 abort 失败不再连带跳过 `close`/`deleteLater`（原会泄漏 socket 且没退组），半帧污染的客户端先摘表再释放
+  （原 abort 抛异常会把它留在客户端表里继续接收后续写入）；回归见 `tests/test_net_io_cleanup.py`
+
+测试基线：**932 passed, 4 skipped, 291 subtests**（4 个 skip 全是平台门控：3 个 POSIX-only 进程组用例 + 1 个 offscreen Qt 排版用例；带界面跑法下少 1 个 skip、多 1 个 pass）。

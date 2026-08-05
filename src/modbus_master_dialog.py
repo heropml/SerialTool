@@ -8,7 +8,8 @@
 """
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
-                             QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame, QSplitter)
+                             QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame,
+                             QSplitter, QTabBar, QInputDialog)
 
 from theme import chrome_for
 from fonts import localize_qss
@@ -20,7 +21,8 @@ FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
               (0x04, "mbm_f4"), (0x05, "mbm_f5"), (0x06, "mbm_f6"),
               (0x0F, "mbm_f7"), (0x10, "mbm_f8"),
               (0x08, "mbm_f8d"), (0x0B, "mbm_f11"),
-              (0x11, "mbm_f17"), (0x17, "mbm_f23")]
+              (0x11, "mbm_f17"), (0x16, "mbm_f22"),
+              (0x17, "mbm_f23"), (0x2B, "mbm_f43")]
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)
 WRITE_MULTI = (0x0F, 0x10)
 
@@ -47,6 +49,8 @@ class ModbusMasterDialog(QDialog):
         self.resize(1040, 460)
 
         self._rows = []
+        self._view_name = ""
+        self._row_rule_index = []  # maps visible row -> global _mbm_rules index
         # 名称~值七列的共享拖动比例，所有行与表头同步；从 settings 恢复上次拖好的列宽，
         # 没存过则 None → 用 _DEFAULT_SPLIT。拖动后在 _sync_splits 里写回 settings 持久化。
         self._split_sizes = self._load_split_sizes()
@@ -94,6 +98,23 @@ class ModbusMasterDialog(QDialog):
         self.btn_help.clicked.connect(self._show_help)
         top.addWidget(self.btn_help)
         root.addLayout(top)
+
+        view_row = QHBoxLayout()
+        self.tabs = QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.currentChanged.connect(self._on_view_changed)
+        view_row.addWidget(self.tabs, 1)
+        self.btn_add_view = QPushButton("+")
+        self.btn_add_view.setObjectName("PlotGhostBtn")
+        self.btn_add_view.setFixedWidth(28)
+        self.btn_add_view.clicked.connect(self._add_view)
+        view_row.addWidget(self.btn_add_view)
+        self.btn_del_view = QPushButton("-")
+        self.btn_del_view.setObjectName("PlotGhostBtn")
+        self.btn_del_view.setFixedWidth(28)
+        self.btn_del_view.clicked.connect(self._del_view)
+        view_row.addWidget(self.btn_del_view)
+        root.addLayout(view_row)
 
         self.lbl_hint = QLabel()
         self.lbl_hint.setObjectName("ArDesc")
@@ -149,6 +170,7 @@ class ModbusMasterDialog(QDialog):
         self.scroll.verticalScrollBar().rangeChanged.connect(self._update_header_scroll_margin)
         root.addWidget(self.scroll, 1)
 
+        self._rebuild_tabs()
         self.reload_rows()
         self.retranslate()
         self.refresh_theme()
@@ -205,8 +227,13 @@ class ModbusMasterDialog(QDialog):
     # ---------------- 行 ----------------
     def _qty_tip_for(self, code):
         tip = self.app._t("mbm_qty_tip")
-        if int(code or 0) == 0x08:
+        code = int(code or 0)
+        if code == 0x08:
             tip = tip + "\n" + self.app._t("mbm_diag_sub_tip")
+        elif code == 0x16:
+            tip = tip + "\n" + self.app._t("mbm_mask_tip")
+        elif code == 0x2B:
+            tip = tip + "\n" + self.app._t("mbm_devid_tip")
         return tip
 
     def _add_row(self, rule=None):
@@ -274,6 +301,22 @@ class ModbusMasterDialog(QDialog):
                     sub = 0
                 data = qty_val if qty_val != "" else 0
                 qty_val = "%s:%s" % (sub, data)
+            elif int(rule.get("func") or 0) == 0x16:
+                am = rule.get("and_mask", rule.get("diag_sub", 0xFFFF))
+                om = rule.get("or_mask", rule.get("diag_data", qty_val if qty_val != "" else 0))
+                if am in (None, ""):
+                    am = 0xFFFF
+                if om in (None, ""):
+                    om = 0
+                qty_val = "%s:%s" % (am, om)
+            elif int(rule.get("func") or 0) == 0x2B:
+                rc = rule.get("read_code", rule.get("diag_sub", 1))
+                oid = rule.get("object_id", rule.get("diag_data", 0))
+                if rc in (None, ""):
+                    rc = 1
+                if oid in (None, ""):
+                    oid = 0
+                qty_val = "%s:%s" % (rc, oid)
         ed_qty = QLineEdit(str(qty_val))
         ed_qty.setMinimumWidth(_SPLIT_COLS[4][1])
         set_tooltip(ed_qty, self._qty_tip_for(rule.get("func")))
@@ -329,13 +372,99 @@ class ModbusMasterDialog(QDialog):
         self.rows_v.insertWidget(self.rows_v.count() - 1, r)   # 在末尾 stretch 之前
         self._rows.append(rec)
 
+    def _views(self):
+        """Tab order follows view creation order, not rule order.
+
+        Deriving it from the rule list would make tabs jump around whenever
+        rules are added or removed. The default view is always first.
+        """
+        names = [""]
+        for g in list(getattr(self.app, "_mbm_views", None) or []):
+            g = str(g or "")
+            if g and g not in names:
+                names.append(g)
+        for rule in getattr(self.app, "_mbm_rules", []) or []:
+            g = str(rule.get("group", "") or "")
+            if g and g not in names:
+                names.append(g)
+        return names
+
+    def _rebuild_tabs(self, keep=None):
+        names = self._views()
+        self.tabs.blockSignals(True)
+        while self.tabs.count():
+            self.tabs.removeTab(0)
+        for g in names:
+            self.tabs.addTab(g if g else self.app._t("mbm_view_default"))
+        if keep is None:
+            keep = self._view_name
+        idx = names.index(keep) if keep in names else 0
+        self._view_name = names[idx]
+        self.tabs.setCurrentIndex(idx)
+        self.tabs.blockSignals(False)
+
+    def _on_view_changed(self, index):
+        if index < 0:
+            return
+        if self._dirty:
+            self._commit()
+            if self._dirty:          # refused (device scan busy): stay put
+                self._rebuild_tabs(keep=self._view_name)
+                return
+        names = self._views()
+        if 0 <= index < len(names):
+            self._view_name = names[index]
+        self.reload_rows()
+
+    def _add_view(self):
+        text, ok = QInputDialog.getText(
+            self, self.app._t("mbm_view_add"), self.app._t("mbm_view_name"))
+        if not ok:
+            return
+        name = (text or "").strip()[:40]
+        if not name:
+            return
+        views = [str(v) for v in (getattr(self.app, "_mbm_views", None) or []) if v]
+        if name not in views:
+            views.append(name)
+        self.app._mbm_views = views
+        if hasattr(self.app, "_mbm_save_views"):
+            self.app._mbm_save_views()
+        self._rebuild_tabs(keep=name)
+        self.reload_rows()
+
+    def _del_view(self):
+        name = self._view_name
+        if not name:
+            return
+        if self._dirty:
+            self._commit()
+            if self._dirty:
+                return
+        for r in getattr(self.app, "_mbm_rules", []) or []:
+            if str(r.get("group", "") or "") == name:
+                r["group"] = ""
+        self.app._mbm_views = [v for v in (getattr(self.app, "_mbm_views", None) or [])
+                              if v != name]
+        if hasattr(self.app, "_mbm_save_views"):
+            self.app._mbm_save_views()
+        if hasattr(self.app, "_mbm_save_rules"):
+            self.app._mbm_save_rules()
+        self._rebuild_tabs(keep="")
+        self.reload_rows()
+
     def reload_rows(self):
+        self._rebuild_tabs()      # imported rules may carry unknown groups
         for rec in self._rows:
             rec["w"].setParent(None)
             rec["w"].deleteLater()
         self._rows = []
-        for rule in getattr(self.app, "_mbm_rules", []):
+        self._row_rule_index = []
+        for gi, rule in enumerate(getattr(self.app, "_mbm_rules", []) or []):
+            if str(rule.get("group", "") or "") != self._view_name:
+                continue
             self._add_row(rule)
+            self._row_rule_index.append(gi)
         # 回填已有轮询结果
         results = getattr(self.app, "_mbm_results", {}) or {}
         for i, res in results.items():
@@ -356,6 +485,7 @@ class ModbusMasterDialog(QDialog):
         idx = self.cb_variant.findData(self.app._mbm_variant)
         self.cb_variant.setCurrentIndex(idx if idx >= 0 else 0)
         self.cb_variant.blockSignals(False)
+        self._rebuild_tabs()
         self.reload_rows()
 
     def _on_row_func_changed(self, rec):
@@ -369,6 +499,17 @@ class ModbusMasterDialog(QDialog):
                 data = raw if raw != "" else "0"
                 ed.blockSignals(True)
                 ed.setText("0:%s" % data)
+                ed.blockSignals(False)
+        elif code == 0x16:
+            if ":" not in raw:
+                data = raw if raw != "" else "0"
+                ed.blockSignals(True)
+                ed.setText("0xFFFF:%s" % data)
+                ed.blockSignals(False)
+        elif code == 0x2B:
+            if ":" not in raw:
+                ed.blockSignals(True)
+                ed.setText("1:0")
                 ed.blockSignals(False)
         elif ":" in raw and raw.count(":") == 1 and "@" not in raw:
             # Leaving 08: drop the sub half, keep data as the cell value.
@@ -413,6 +554,7 @@ class ModbusMasterDialog(QDialog):
             out.append({
                 "enabled": rec["enable"].isChecked(),
                 "name": rec["name"].text(),
+                "group": self._view_name,
                 "unit": rec["unit"].text().strip(),
                 "func": code,
                 "addr": rec["addr"].text().strip(),
@@ -436,6 +578,29 @@ class ModbusMasterDialog(QDialog):
                     out[-1]["diag_sub"] = "0"
                     out[-1]["wval"] = raw if raw != "" else "0"
                 out[-1]["qty"] = "1"
+            elif code == 0x16:
+                raw = (rec["qty"].text() or "").strip()
+                if ":" in raw:
+                    left, right = raw.split(":", 1)
+                    out[-1]["and_mask"] = left.strip() or "0xFFFF"
+                    out[-1]["or_mask"] = right.strip() or "0"
+                    out[-1]["wval"] = "%s:%s" % (out[-1]["and_mask"], out[-1]["or_mask"])
+                else:
+                    out[-1]["and_mask"] = "0xFFFF"
+                    out[-1]["or_mask"] = raw if raw != "" else "0"
+                    out[-1]["wval"] = "%s:%s" % (out[-1]["and_mask"], out[-1]["or_mask"])
+                out[-1]["qty"] = "1"
+            elif code == 0x2B:
+                raw = (rec["qty"].text() or "").strip()
+                if ":" in raw:
+                    left, right = raw.split(":", 1)
+                    out[-1]["read_code"] = left.strip() or "1"
+                    out[-1]["object_id"] = right.strip() or "0"
+                else:
+                    out[-1]["read_code"] = raw if raw != "" else "1"
+                    out[-1]["object_id"] = "0"
+                out[-1]["wval"] = "%s:%s" % (out[-1]["read_code"], out[-1]["object_id"])
+                out[-1]["qty"] = "1"
             elif rec.get("diag_sub") is not None:
                 out[-1]["diag_sub"] = rec["diag_sub"]
         return out
@@ -453,11 +618,30 @@ class ModbusMasterDialog(QDialog):
         self.app.toast(self.app._t("io_exclusive_busy"), error=True)
         return True
 
-    def _commit(self):
+    def _commit(self, _checked=False):
         if self._scan_locked():
             return
         import modbus_master
-        self.app._mbm_rules = [modbus_master.normalize_poll(r) for r in self._collect()]
+        edited = [modbus_master.normalize_poll(r) for r in self._collect()]
+        # Splice the edited rows back at their original positions. The engine
+        # keys results and timers off the global rule index, so appending this
+        # view at the end would renumber every other view's rules.
+        merged, mapping = [], []
+        pending = iter(edited)
+        for rule in (self.app._mbm_rules or []):
+            if str(rule.get("group", "") or "") != self._view_name:
+                merged.append(rule)
+                continue
+            nxt = next(pending, None)
+            if nxt is None:
+                continue                      # row deleted from this view
+            mapping.append(len(merged))
+            merged.append(nxt)
+        for extra in pending:                 # rows added to this view
+            mapping.append(len(merged))
+            merged.append(extra)
+        self.app._mbm_rules = merged
+        self._row_rule_index = mapping
         self.app._mbm_save_rules()
         self._dirty = False
         self.btn_apply.setEnabled(False)
@@ -549,10 +733,15 @@ class ModbusMasterDialog(QDialog):
     # ---------------- 引擎回调：刷新某行的值/状态 ----------------
     def update_result(self, i, status, text):
         if self._dirty:
-            return                  # 运行态索引与草稿行不再可靠，应用前不回填实时结果
-        if not (0 <= i < len(self._rows)):
             return
-        rec = self._rows[i]
+        # Engine uses global rule index; map into the visible view rows.
+        try:
+            row = self._row_rule_index.index(i)
+        except (ValueError, AttributeError):
+            return
+        if not (0 <= row < len(self._rows)):
+            return
+        rec = self._rows[row]
         c = chrome_for(self.app._theme_id())
         if status == "ok":
             rec["val"].setText(text)
@@ -612,6 +801,10 @@ class ModbusMasterDialog(QDialog):
         set_tooltip(self.cb_echo, t("mbm_echo_tip"))
         self.btn_apply.setText(t("mbm_apply"))
         self.btn_add.setText(t("mbm_add"))
+        set_tooltip(self.btn_add_view, t("mbm_view_add"))
+        set_tooltip(self.btn_del_view, t("mbm_view_del"))
+        if hasattr(self, "tabs"):
+            self._rebuild_tabs(keep=getattr(self, "_view_name", ""))
         set_tooltip(self.btn_help, t("mbm_help_btn"))
         self.lbl_hint.setText(t("mbm_hint"))
         cur = self.cb_variant.currentData()

@@ -140,6 +140,41 @@ class TriggersDialog(QDialog):
         acts.addStretch(1)
         right.addLayout(acts)
 
+        acts2 = QHBoxLayout()
+        acts2.setSpacing(8)
+        self.chk_webhook = QCheckBox(); self.chk_webhook.toggled.connect(self._on_edit)
+        self.ed_webhook = QLineEdit(); self.ed_webhook.setObjectName("TrgInput")
+        self.ed_webhook.textChanged.connect(self._on_edit)
+        acts2.addWidget(self.chk_webhook)
+        acts2.addWidget(self.ed_webhook, 1)
+        right.addLayout(acts2)
+
+        acts3 = QHBoxLayout()
+        acts3.setSpacing(8)
+        self.chk_run = QCheckBox(); self.chk_run.toggled.connect(self._on_edit)
+        self.ed_run = QLineEdit(); self.ed_run.setObjectName("TrgInput")
+        self.ed_run.textChanged.connect(self._on_edit)
+        acts3.addWidget(self.chk_run)
+        acts3.addWidget(self.ed_run, 1)
+        right.addLayout(acts3)
+
+        gate = QHBoxLayout()
+        gate.setSpacing(8)
+        self.lbl_min = QLabel(); self.lbl_min.setObjectName("MsHint")
+        self.ed_min = QLineEdit(); self.ed_min.setObjectName("TrgInput")
+        self.ed_min.setFixedWidth(56)
+        self.ed_min.textChanged.connect(self._on_edit)
+        self.lbl_every = QLabel(); self.lbl_every.setObjectName("MsHint")
+        self.ed_every = QLineEdit(); self.ed_every.setObjectName("TrgInput")
+        self.ed_every.setFixedWidth(56)
+        self.ed_every.textChanged.connect(self._on_edit)
+        gate.addWidget(self.lbl_min)
+        gate.addWidget(self.ed_min)
+        gate.addWidget(self.lbl_every)
+        gate.addWidget(self.ed_every)
+        gate.addStretch(1)
+        right.addLayout(gate)
+
         self.lbl_hits = QLabel()
         self.lbl_hits.setObjectName("TrgHits")
         right.addWidget(self.lbl_hits)
@@ -212,7 +247,8 @@ class TriggersDialog(QDialog):
             rule = self._items[self._cur] if ok else triggers.normalize({})
             for w_ in (self.chk_on, self.ed_name, self.ed_pat, self.cb_mode, self.chk_hex,
                        self.cb_scope, self.ed_cd, self.chk_beep, self.chk_notify,
-                       self.chk_mark):
+                       self.chk_mark, self.chk_webhook, self.ed_webhook,
+                       self.chk_run, self.ed_run, self.ed_min, self.ed_every):
                 w_.setEnabled(ok)
             self.chk_on.setChecked(rule.get("on", True))
             self.ed_name.setText(rule.get("name", ""))
@@ -225,6 +261,12 @@ class TriggersDialog(QDialog):
             self.chk_beep.setChecked(rule.get("beep", True))
             self.chk_notify.setChecked(rule.get("notify", True))
             self.chk_mark.setChecked(rule.get("mark", False))
+            self.chk_webhook.setChecked(rule.get("webhook", False))
+            self.ed_webhook.setText(rule.get("webhook_url", ""))
+            self.chk_run.setChecked(rule.get("run_cmd_on", False))
+            self.ed_run.setText(rule.get("run_cmd", ""))
+            self.ed_min.setText(str(rule.get("min_hits", 1)))
+            self.ed_every.setText(str(rule.get("every_n", 1)))
             self._sync_mode_items()
         finally:
             self._loading = False
@@ -272,6 +314,12 @@ class TriggersDialog(QDialog):
             "beep": self.chk_beep.isChecked(),
             "notify": self.chk_notify.isChecked(),
             "mark": self.chk_mark.isChecked(),
+            "webhook": self.chk_webhook.isChecked(),
+            "webhook_url": self.ed_webhook.text(),
+            "run_cmd_on": self.chk_run.isChecked(),
+            "run_cmd": self.ed_run.text(),
+            "min_hits": self.ed_min.text(),
+            "every_n": self.ed_every.text(),
             "cooldown": self.ed_cd.text(),
         })
         self._items[self._cur] = rule
@@ -397,6 +445,16 @@ class TriggersDialog(QDialog):
         set_tooltip(self.ed_cd, t("trg_cooldown_tip"))
         self.lbl_act.setText(t("trg_actions"))
         self.chk_beep.setText(t("trg_beep"))
+        self.chk_webhook.setText(t("trg_webhook"))
+        set_tooltip(self.ed_webhook, t("trg_webhook_tip"))
+        self.ed_webhook.setPlaceholderText(t("trg_webhook_ph"))
+        self.chk_run.setText(t("trg_run"))
+        set_tooltip(self.ed_run, t("trg_run_tip"))
+        self.ed_run.setPlaceholderText(t("trg_run_ph"))
+        self.lbl_min.setText(t("trg_min_hits"))
+        set_tooltip(self.ed_min, t("trg_min_hits_tip"))
+        self.lbl_every.setText(t("trg_every_n"))
+        set_tooltip(self.ed_every, t("trg_every_n_tip"))
         self.chk_notify.setText(t("trg_notify"))
         self.chk_mark.setText(t("trg_mark"))
         self.lbl_hint.setText(t("trg_hint"))

@@ -6,6 +6,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import traceback
 import types
@@ -51,7 +52,8 @@ import io_stats
 import log_naming
 import modbus_slave
 import modbus_master
-from dialogs import CloseDialog, MultiSendDialog, KeywordHighlightDialog, AboutDialog, InfoDialog
+from dialogs import (CloseDialog, MultiSendDialog, KeywordHighlightDialog,
+                     AboutDialog, InfoDialog, _style_one_combo_popup)
 from updater import UpdateChecker
 from ui_tips import set_tooltip
 
@@ -395,6 +397,7 @@ class ChecksumPopup(QWidget):
 class CommTool(QMainWindow):
     RESIZE_MARGIN = 6
     _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
+    _TRG_MAX_ACTIONS = 8       # in-flight webhook / run_cmd workers
     _AR_SCRIPT_START_TIMEOUT = 5.0  # spawn/冻结版首启可较慢；与单次脚本超时分开
 
     def __init__(self, profile=""):
@@ -488,6 +491,7 @@ class CommTool(QMainWindow):
         self._modbus_buffers = {}                    # TCP Server 每客户端独立半包，防止并发连接串流
         # Modbus 主机轮询（master/poll）：规则 + 总开关 + 变体；运行态半双工调度
         self._mbm_rules = self._load_mbm_rules()
+        self._mbm_views = self._load_mbm_views()
         self._mbm_on = self.settings.value("modbus_master_on", False, type=bool)
         if self._mbm_on and self._ar_on:
             self._ar_on = False       # 主机/自动应答共用同一收流，启动时主机模式优先，禁止假双开
@@ -578,6 +582,9 @@ class CommTool(QMainWindow):
         self._triggers = self._load_triggers()
         self._trigger_engine = triggers.TriggerEngine(self._triggers)
         self._triggers_dlg = None
+        self._trg_action_lock = threading.Lock()   # webhook / 运行程序动作的并发闸门
+        self._trg_action_busy = 0
+        self._trg_action_dropped = 0
         self._trg_dec_buf = {}      # 触发引擎的增量解码状态，按方向/来源流隔离
         self._trg_dec = {}
         self._trg_dec_codec = None
@@ -1409,16 +1416,17 @@ class CommTool(QMainWindow):
         _ansi_page.setProperty("tr_tooltip", "ansi_tip")
         self.sw_ansi.setProperty("tr_tooltip", "ansi_tip")
 
-        self._view_extra = QStackedLayout()
+        # Host first: QStackedLayout shows page 0 as soon as it is inserted,
+        # and a page with no parent yet would flash as a real top-level window.
+        _extra_host = QWidget()
+        _extra_host.setFixedWidth(MAIN_W)
+        self._view_extra = QStackedLayout(_extra_host)
         self._view_extra.setContentsMargins(0, 0, 0, 0)
         _blank = QWidget(); _blank.setFixedWidth(MAIN_W)
         self._view_extra.addWidget(_ansi_page)             # 0 = 文本：ANSI 着色开关
         self._view_extra.addWidget(_blank)                 # 1 = HEX：无附属参数
         self._view_extra.addWidget(self.cb_hexdump_width)  # 2 = HEX 转储
         self._view_extra.addWidget(self.cb_numview_type)   # 3 = 数值
-        _extra_host = QWidget()
-        _extra_host.setLayout(self._view_extra)
-        _extra_host.setFixedWidth(MAIN_W)
 
         grid.addWidget(lbl("view_mode"), row, 0)
         # 主选项固定放在最右列，与下面的字符编码 / 开关右边缘对齐；模式附属项
@@ -3251,8 +3259,7 @@ class CommTool(QMainWindow):
         # 下拉弹出容器(QComboBoxPrivateContainer)是独立顶层窗口，其底色走系统调色板默认白，
         # 深色主题下圆角/边框处会露白边。这里把每个下拉的弹出容器背景刷成下拉色，彻底消除白边。
         for combo in self.findChildren(QComboBox):
-            popup = combo.view().window()
-            popup.setStyleSheet(f"background-color: {c['combo_dropdown_bg']};")
+            _style_one_combo_popup(combo, c)
 
     # ----- 连接 打开/关闭 -----
     def toggle_conn(self):
@@ -5546,6 +5553,105 @@ class CommTool(QMainWindow):
             except Exception:
                 pass
 
+        hits = 0
+        try:
+            hits = int(self._trigger_engine.hits(idx))
+        except Exception:
+            hits = 0
+        if rule.get("webhook") and (rule.get("webhook_url") or "").strip():
+            self._trg_run_webhook(rule, name, direction, hits)
+        if rule.get("run_cmd_on") and (rule.get("run_cmd") or "").strip():
+            self._trg_run_cmd(rule, name, direction, hits)
+
+    def _trg_run_webhook(self, rule, name, direction, hits):
+        """POST a small JSON payload; never block the GUI thread."""
+        url = (rule.get("webhook_url") or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return
+        payload = {
+            "name": name,
+            "direction": direction,
+            "hits": hits,
+            "pattern": rule.get("pattern") or "",
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+
+        def _worker():
+            try:
+                import urllib.request
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url, data=data, method="POST",
+                    headers={"Content-Type": "application/json",
+                             "User-Agent": "CommTool-Trigger/1.0"})
+                urllib.request.urlopen(req, timeout=5).read(256)
+            except Exception:
+                pass
+
+        self._trg_spawn_action(_worker)
+
+    def _trg_run_cmd(self, rule, name, direction, hits):
+        """Launch an external program with simple placeholder expansion."""
+        raw = (rule.get("run_cmd") or "").strip()
+        if not raw:
+            return
+        cmd = (raw.replace("{name}", str(name))
+                  .replace("{hits}", str(hits))
+                  .replace("{dir}", str(direction))
+                  .replace("{pattern}", str(rule.get("pattern") or "")))
+
+        def _worker():
+            try:
+                import subprocess
+                kwargs = {"shell": True}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                proc = subprocess.Popen(cmd, **kwargs)
+            except Exception:
+                return
+            try:
+                # 必须等子进程退出：Popen 启动即返回，不等的话这个线程几微秒就结束并
+                # 把名额还回去，_TRG_MAX_ACTIONS 就只限制「同时在启动中的动作数」，
+                # 冷却设 0 时子进程仍可无限堆积。顺带回收 POSIX 上的僵尸进程。
+                proc.wait()
+            except Exception:
+                pass
+
+        self._trg_spawn_action(_worker)
+
+    def _trg_spawn_action(self, worker):
+        """Run a trigger action off the GUI thread, capped in flight.
+
+        Cooldown may be set to 0, so a busy link would otherwise spawn one
+        thread -- and for run_cmd one process -- per matching packet.
+
+        A slot stays taken for the whole action: the webhook worker blocks on
+        the HTTP round-trip and the run_cmd worker waits on the child, so the
+        cap bounds live processes rather than just launch calls.
+        """
+        with self._trg_action_lock:
+            if self._trg_action_busy >= self._TRG_MAX_ACTIONS:
+                self._trg_action_dropped += 1
+                return False
+            self._trg_action_busy += 1
+
+        def _run():
+            try:
+                worker()
+            except Exception:
+                pass
+            finally:
+                with self._trg_action_lock:
+                    self._trg_action_busy = max(0, self._trg_action_busy - 1)
+
+        try:
+            threading.Thread(target=_run, daemon=True).start()
+            return True
+        except Exception:
+            with self._trg_action_lock:
+                self._trg_action_busy = max(0, self._trg_action_busy - 1)
+            return False
+
     def open_triggers(self):
         """打开触发告警对话框（单实例、非模态）。"""
         dlg = getattr(self, "_triggers_dlg", None)
@@ -7687,7 +7793,7 @@ class CommTool(QMainWindow):
         "autoreply_modbus", "autoreply_split",
         # Modbus 主机轮询
         "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
-        "modbus_master_split", "device_registers",
+        "modbus_master_views", "modbus_master_split", "device_registers",
         "device_plot_tags", "device_dash_tags",
         # 自动化测试序列
         "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
@@ -7733,6 +7839,38 @@ class CommTool(QMainWindow):
         lm = lambda zh, en, tw: {"zh": zh, "en": en, "zh_tw": tw}.get(self._lang, en)
         return self._confirm_dlg(title, body, ok_text=lm("是", "Yes", "是"), danger=False,
                                  cancel_text=lm("否", "No", "否"))
+
+    def _gate_imported_trigger_actions(self, data):
+        """Same bar as the script gates: imported triggers can run local
+        commands or POST captured data outward, so ask before keeping them.
+        Declining strips only the external actions; the rules import normally."""
+        raw = data.get("triggers")
+        if not raw:
+            return data
+        try:
+            rules = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(rules, list):
+                return data
+        except Exception:
+            return data
+
+        def _external(r):
+            return isinstance(r, dict) and bool(str(r.get("run_cmd") or "").strip()
+                                                or str(r.get("webhook_url") or "").strip())
+
+        n = sum(1 for r in rules if _external(r))
+        if n == 0:
+            return data
+        if self._ar_confirm(self._t("trg_import_title"),
+                            self._t("trg_import_warn", n=n)):
+            return data
+        for r in rules:
+            if isinstance(r, dict):
+                for key in ("run_cmd", "run_cmd_on", "webhook", "webhook_url"):
+                    r.pop(key, None)
+        new = dict(data)
+        new["triggers"] = json.dumps(rules, ensure_ascii=False)
+        return new
 
     def _gate_imported_script_lib(self, data):
         """脚本控制台库的导入门禁：导入配置若含非空脚本，征求同意；拒绝则整个丢掉 script_lib
@@ -7801,6 +7939,7 @@ class CommTool(QMainWindow):
             return
         data = self._ar_gate_imported_scripts(data)   # B5：含脚本则征求同意，拒绝则清空脚本
         data = self._gate_imported_script_lib(data)   # 脚本控制台库同理：导入的脚本会在本机执行
+        data = self._gate_imported_trigger_actions(data)  # 触发器外部动作同样在本机执行
         s = self.settings
         n = 0
         for k, v in data.items():
@@ -8182,6 +8321,28 @@ class CommTool(QMainWindow):
                                json.dumps(sorted(self._device_dash_tags), ensure_ascii=False))
         self.settings.sync()
 
+    def _load_mbm_views(self):
+        raw = self.settings.value("modbus_master_views", "")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return []
+        if not isinstance(data, list):
+            return []
+        out = []
+        for item in data:
+            name = str(item or "")[:40]
+            if name and name not in out:
+                out.append(name)
+        return out[:32]
+
+    def _mbm_save_views(self):
+        self.settings.setValue(
+            "modbus_master_views",
+            json.dumps(list(getattr(self, "_mbm_views", []) or []), ensure_ascii=False))
+
     def _load_mbm_rules(self):
         raw = self.settings.value("modbus_master", "")
         try:
@@ -8362,6 +8523,8 @@ class CommTool(QMainWindow):
             rw = r.get("rw") or {}
             return bool(over(r["addr"], r["qty"])
                         or over(r.get("write_addr"), len(rw.get("write_vals") or [])))
+        if func == 0x16:
+            return bool(over(r["addr"], 1))
         return False
 
     def _mbm_poll(self, i):
@@ -8389,6 +8552,16 @@ class CommTool(QMainWindow):
             self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
             self._mbm_sched.start(0)
             return
+        if r["func"] == 0x16 and (r.get("and_mask") is None or r.get("or_mask") is None):
+            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)
+            return
+        if r["func"] == 0x2B and (r.get("read_code") is None or r.get("object_id") is None):
+            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_sched.start(0)
+            return
         if ((r["func"] in modbus_master.WRITE_SINGLE and r["wval"] is None)
                 or (r["func"] in modbus_master.WRITE_MULTI and not r["wvals"])):
             self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
@@ -8398,7 +8571,8 @@ class CommTool(QMainWindow):
         # RTU/ASCII unit 0 = broadcast: only single/multi write allowed (no response).
         # Reject reads and non-broadcastable FCs (08/0B/11/17, etc.).
         if variant in ("rtu", "ascii") and r["unit"] == 0:
-            if r["func"] not in (modbus_master.WRITE_SINGLE + modbus_master.WRITE_MULTI):
+            if r["func"] not in (modbus_master.WRITE_SINGLE
+                                 + modbus_master.WRITE_MULTI + (0x16,)):
                 self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_nowrite"))
                 self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
                 self._mbm_sched.start(0)
@@ -8409,6 +8583,12 @@ class CommTool(QMainWindow):
             arg = r["wvals"]
         elif r["func"] == 0x08:
             arg = (int(r.get("diag_sub") or 0), int(r.get("diag_data")))
+        elif r["func"] == 0x16:
+            arg = (int(r["and_mask"]), int(r["or_mask"]))
+        elif r["func"] == 0x2B:
+            arg = {"mei": 0x0E,
+                   "read_code": int(r.get("read_code") or 1),
+                   "object_id": int(r.get("object_id") or 0)}
         elif r["func"] in (0x0B, 0x11):
             arg = 0
         elif r["func"] == 0x17:
@@ -8737,6 +8917,20 @@ class CommTool(QMainWindow):
                     sid_txt = bytes(sid).hex(" ")
             run_key = "mbm_st_run_on" if result.get("run") else "mbm_st_run_off"
             return self._t("mbm_st_serverid", sid=sid_txt, run=self._t(run_key))
+        if "mask" in result:
+            a, am, om = result["mask"]
+            return self._t("mbm_st_mask", addr=a, aand=am, oor=om)
+        if "device_id" in result:
+            did = result["device_id"]
+            parts = []
+            for oid, val in sorted((did.get("objects") or {}).items()):
+                if isinstance(val, (bytes, bytearray)):
+                    txt = bytes(val).decode("utf-8", "replace")
+                else:
+                    txt = str(val)
+                parts.append("%d=%s" % (oid, txt))
+            return self._t("mbm_st_devid", code=did.get("read_code", 0),
+                           objs="; ".join(parts) if parts else "-")
         return ""
 
     def _mbm_set_result(self, i, status, text):
@@ -11167,6 +11361,7 @@ class CommTool(QMainWindow):
         if gate_scripts:
             data = self._ar_gate_imported_scripts(data)
             data = self._gate_imported_script_lib(data)
+            data = self._gate_imported_trigger_actions(data)
         converted = {}
         for key, value in data.items():
             if key not in self._CFG_KEYS:

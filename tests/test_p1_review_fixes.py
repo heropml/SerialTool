@@ -63,10 +63,10 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(p._pause_elapsed, elapsed)
 
     def test_unknown_func_noise_resyncs(self):
-        # Unsupported FC 0x2B garbage then a valid read request.
+        # Unsupported FC 0x63 garbage then a valid read request.
         good = bytes.fromhex("010300000001")
         good = good + modbus_slave.crc16(good)
-        junk = bytes([0x01, 0x2B, 0x00, 0x01, 0x02, 0x03])  # no valid CRC prefix
+        junk = bytes([0x01, 0x63, 0x00, 0x01, 0x02, 0x03])  # no valid CRC prefix
         frames, rem = modbus_slave.iter_frames(junk + good)
         self.assertEqual(frames, [good])
         self.assertEqual(rem, b"")

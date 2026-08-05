@@ -23,6 +23,8 @@ _REGISTER_COLUMNS = (
     "device_col_enabled", "device_col_name", "device_col_slave", "device_col_func",
     "device_col_address", "device_col_type", "device_col_order", "device_col_bit",
     "device_col_scale", "device_col_offset", "device_col_unit",
+    "device_col_addr_base", "device_col_bitfields",
+    "device_col_warn", "device_col_alarm",
 )
 _MAX_SCAN_TARGETS = 512
 _SCAN_STATUS_KEYS = {
@@ -173,6 +175,19 @@ class DeviceCenterDialog(QDialog):
             total=len(self._scan_rows), found=len(self._scan_ok)))
 
     @staticmethod
+    def _range_text(lo, hi):
+        """Render an optional lo/hi threshold pair as "lo:hi"; blank if unset."""
+        if lo is None and hi is None:
+            return ""
+        return "%s:%s" % ("" if lo is None else "%g" % lo,
+                          "" if hi is None else "%g" % hi)
+
+    @staticmethod
+    def _split_range(text):
+        lo, _, hi = str(text or "").partition(":")
+        return lo.strip(), hi.strip()
+
+    @staticmethod
     def _combo(options, current):
         combo = QComboBox()
         for label, value in options:
@@ -200,6 +215,10 @@ class DeviceCenterDialog(QDialog):
             row, 5, self._combo(tuple((value, value) for value in REGISTER_TYPES), rec["type"]))
         self.table.setCellWidget(
             row, 6, self._combo(tuple((value, value) for value in REGISTER_ORDERS), rec["order"]))
+        self.table.setCellWidget(row, 11, self._combo((("0", 0), ("1", 1)), rec["addr_base"]))
+        self.table.setItem(row, 12, self._item(rec["bitfields"]))
+        self.table.setItem(row, 13, self._item(self._range_text(rec["warn_lo"], rec["warn_hi"])))
+        self.table.setItem(row, 14, self._item(self._range_text(rec["alarm_lo"], rec["alarm_hi"])))
 
     def _add_register(self):
         self._append_register({"address": self.table.rowCount()})
@@ -218,12 +237,17 @@ class DeviceCenterDialog(QDialog):
             def combo_value(column, default):
                 combo = self.table.cellWidget(row, column)
                 return combo.currentData() if combo is not None else default
+            warn_lo, warn_hi = self._split_range(text(13))
+            alarm_lo, alarm_hi = self._split_range(text(14))
             records.append({
                 "enabled": self.table.item(row, 0).checkState() == Qt.Checked,
                 "name": text(1), "slave": text(2, "1"), "function": combo_value(3, 3),
                 "address": text(4, "0"), "type": combo_value(5, "u16"),
                 "order": combo_value(6, "AB"), "bit": text(7, "0"),
                 "scale": text(8, "1"), "offset": text(9, "0"), "unit": text(10),
+                "addr_base": combo_value(11, 0), "bitfields": text(12),
+                "warn_lo": warn_lo, "warn_hi": warn_hi,
+                "alarm_lo": alarm_lo, "alarm_hi": alarm_hi,
             })
         return normalize_registers(records)
 

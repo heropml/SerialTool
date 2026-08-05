@@ -8,8 +8,12 @@ import struct
 import time
 
 
-REGISTER_TYPES = ("u16", "i16", "u32", "i32", "f32", "bit")
-REGISTER_ORDERS = ("AB", "BA", "ABCD", "CDAB", "BADC", "DCBA")
+REGISTER_TYPES = ("u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64", "bit")
+REGISTER_ORDERS = (
+    "AB", "BA",
+    "ABCD", "CDAB", "BADC", "DCBA",
+    "ABCDEFGH", "GHEFCDAB", "BADCFEHG", "HGFEDCBA",
+)
 STRUCTURED_COLUMNS = (
     "timestamp", "source", "tag", "value", "unit", "raw",
     "slave", "function", "address",
@@ -48,7 +52,12 @@ def _bool(value, default=True):
 
 
 def register_width(data_type):
-    return 2 if str(data_type) in ("u32", "i32", "f32") else 1
+    typ = str(data_type)
+    if typ in ("u64", "i64", "f64"):
+        return 4
+    if typ in ("u32", "i32", "f32"):
+        return 2
+    return 1
 
 
 def normalize_register(record):
@@ -57,28 +66,51 @@ def normalize_register(record):
     data_type = str(record.get("type", "u16")).lower()
     if data_type not in REGISTER_TYPES:
         data_type = "u16"
-    default_order = "ABCD" if register_width(data_type) == 2 else "AB"
+    width = register_width(data_type)
+    if width == 4:
+        default_order = "ABCDEFGH"
+    elif width == 2:
+        default_order = "ABCD"
+    else:
+        default_order = "AB"
     order = str(record.get("order", default_order)).upper()
     if order not in REGISTER_ORDERS:
         order = default_order
-    if register_width(data_type) == 1 and order not in ("AB", "BA"):
+    if width == 1 and order not in ("AB", "BA"):
         order = "AB"
-    if register_width(data_type) == 2 and order in ("AB", "BA"):
+    if width == 2 and order in ("AB", "BA"):
+        order = default_order
+    if width == 4 and len(order) != 8:
         order = default_order
     address = _int(record.get("address", 0), 0, 0, 0xFFFF)
     bit = _int(record.get("bit", 0), 0, 0, 15)
+    addr_base = _int(record.get("addr_base", 0), 0, 0, 1)
+
+    def _opt_float(key):
+        if key not in record or record.get(key) in (None, ""):
+            return None
+        return _float(record.get(key), None)
+
+    bitfields = str(record.get("bitfields", "") or "")[:200]
     return {
         "enabled": _bool(record.get("enabled", True)),
         "name": str(record.get("name") or "R%d" % address)[:80],
         "slave": _int(record.get("slave", 1), 1, 0, 255),
         "function": _int(record.get("function", 3), 3, 3, 4),
         "address": address,
+        "addr_base": addr_base,
+        "display_address": address + addr_base,
         "type": data_type,
         "order": order,
         "bit": bit,
+        "bitfields": bitfields,
         "scale": _float(record.get("scale", 1), 1.0),
         "offset": _float(record.get("offset", 0), 0.0),
         "unit": str(record.get("unit", ""))[:32],
+        "warn_lo": _opt_float("warn_lo"),
+        "warn_hi": _opt_float("warn_hi"),
+        "alarm_lo": _opt_float("alarm_lo"),
+        "alarm_hi": _opt_float("alarm_hi"),
     }
 
 
@@ -90,10 +122,68 @@ def normalize_registers(records):
 
 def _ordered_bytes(registers, order):
     raw = b"".join(struct.pack(">H", int(value) & 0xFFFF) for value in registers)
-    labels = "AB" if len(raw) == 2 else "ABCD"
-    if len(raw) not in (2, 4) or sorted(order) != sorted(labels):
+    if len(raw) == 2:
+        labels = "AB"
+    elif len(raw) == 4:
+        labels = "ABCD"
+    elif len(raw) == 8:
+        labels = "ABCDEFGH"
+    else:
+        return raw
+    if sorted(order) != sorted(labels):
         order = labels
     return bytes(raw[labels.index(ch)] for ch in order)
+
+
+def parse_bitfields(text):
+    """Parse 'start:width:name,...' into [(start, width, name), ...]."""
+    out = []
+    for part in str(text or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        toks = part.split(":")
+        if len(toks) < 2:
+            continue
+        try:
+            start = int(toks[0].strip(), 0)
+            width = int(toks[1].strip(), 0)
+        except ValueError:
+            continue
+        if not 0 <= start <= 63 or not 1 <= width <= 64 or start + width > 64:
+            continue
+        name = (toks[2].strip() if len(toks) >= 3 else "b%d" % start)[:40]
+        out.append((start, width, name or ("b%d" % start)))
+    return out[:32]
+
+
+def decode_bitfields(word_value, fields):
+    """Extract unsigned bitfield values from a 16/32/64-bit integer."""
+    value = int(word_value) & ((1 << 64) - 1)
+    result = {}
+    for start, width, name in fields:
+        mask = (1 << width) - 1
+        result[name] = (value >> start) & mask
+    return result
+
+
+def value_level(value, rec):
+    """Return '' / 'warn' / 'alarm' based on optional thresholds."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    alo, ahi = rec.get("alarm_lo"), rec.get("alarm_hi")
+    wlo, whi = rec.get("warn_lo"), rec.get("warn_hi")
+    if alo is not None and v <= float(alo):
+        return "alarm"
+    if ahi is not None and v >= float(ahi):
+        return "alarm"
+    if wlo is not None and v <= float(wlo):
+        return "warn"
+    if whi is not None and v >= float(whi):
+        return "warn"
+    return ""
 
 
 def decode_register_value(definition, registers):
@@ -115,7 +205,15 @@ def decode_register_value(definition, registers):
         value = int.from_bytes(raw, "big", signed=False)
     elif typ == "i32":
         value = int.from_bytes(raw, "big", signed=True)
-    else:
+    elif typ == "u64":
+        value = int.from_bytes(raw, "big", signed=False)
+    elif typ == "i64":
+        value = int.from_bytes(raw, "big", signed=True)
+    elif typ == "f64":
+        value = struct.unpack(">d", raw)[0]
+        if not math.isfinite(value):
+            raise ValueError("non-finite float")
+    else:  # f32
         value = struct.unpack(">f", raw)[0]
         if not math.isfinite(value):
             raise ValueError("non-finite float")
@@ -142,6 +240,7 @@ def decode_modbus_samples(definitions, slave, function, start_address, registers
             value, raw = decode_register_value(rec, values[offset:offset + width])
         except (TypeError, ValueError, struct.error):
             continue
+        level = value_level(value, rec)
         samples.append({
             "timestamp": now,
             "source": "modbus",
@@ -152,7 +251,28 @@ def decode_modbus_samples(definitions, slave, function, start_address, registers
             "slave": rec["slave"],
             "function": rec["function"],
             "address": rec["address"],
+            "display_address": rec.get("display_address", rec["address"]),
+            "level": level,
         })
+        fields = parse_bitfields(rec.get("bitfields"))
+        if fields:
+            # Bitfields always unpack the unsigned integer before scale/offset.
+            words = [int(v) & 0xFFFF for v in values[offset:offset + width]]
+            packed = int.from_bytes(_ordered_bytes(words, rec["order"]), "big", signed=False)
+            for fname, fval in decode_bitfields(packed, fields).items():
+                samples.append({
+                    "timestamp": now,
+                    "source": "modbus",
+                    "tag": "%s.%s" % (rec["name"], fname),
+                    "value": fval,
+                    "unit": "",
+                    "raw": raw,
+                    "slave": rec["slave"],
+                    "function": rec["function"],
+                    "address": rec["address"],
+                    "display_address": rec.get("display_address", rec["address"]),
+                    "level": "",
+                })
     return samples
 
 

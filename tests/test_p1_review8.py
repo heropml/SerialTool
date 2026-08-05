@@ -157,7 +157,7 @@ def test_slave_survives_random_frames():
         exception_policy={"enabled": True, "code": 4, "mode": "n", "n": 3,
                           "funcs": [3, 0x17], "addrs": []},
     )
-    funcs = [1, 2, 3, 4, 5, 6, 8, 0x0B, 0x0F, 0x10, 0x11, 0x17, 0x2B, 0x63]
+    funcs = [1, 2, 3, 4, 5, 6, 8, 0x0B, 0x0F, 0x10, 0x11, 0x16, 0x17, 0x2B, 0x63]
     for _ in range(1500):
         body = bytes([rng.choice((0, 1, 2, 247)), rng.choice(funcs)])
         body += bytes(rng.randrange(256) for _ in range(rng.randrange(0, 30)))
@@ -179,7 +179,7 @@ def test_normalize_poll_idempotent_and_buildable():
     accept must actually build on the wire."""
     rng = random.Random(4321)
     pools = {
-        "func": [1, 2, 3, 4, 5, 6, 8, 0x0B, 0x0F, 0x10, 0x11, 0x17, 99, "3", None],
+        "func": [1, 2, 3, 4, 5, 6, 8, 0x0B, 0x0F, 0x10, 0x11, 0x16, 0x17, 0x2B, 99, "3", None],
         "unit": [0, 1, 247, 248, -1, "1", "0x0A", None, "abc"],
         "addr": [0, 5, 0xFFF0, 0xFFFF, 0x10000, -1, "0x10", None, ""],
         "qty": [0, 1, 17, 125, 126, 2000, "7", None, "x"],
@@ -204,6 +204,10 @@ def test_normalize_poll_idempotent_and_buildable():
             guards_ok = False
         if a["func"] == 0x08 and (a["diag_sub"] is None or a["diag_data"] is None):
             guards_ok = False
+        if a["func"] == 0x16 and (a.get("and_mask") is None or a.get("or_mask") is None):
+            guards_ok = False
+        if a["func"] == 0x2B and (a.get("read_code") is None or a.get("object_id") is None):
+            guards_ok = False
         if a["func"] in mm.WRITE_SINGLE and a["wval"] is None:
             guards_ok = False
         if a["func"] in mm.WRITE_MULTI and not a["wvals"]:
@@ -211,7 +215,7 @@ def test_normalize_poll_idempotent_and_buildable():
         if a["func"] == 0x17 and not (a.get("rw") or {}).get("write_vals"):
             guards_ok = False
         if a["func"] not in (mm.READ_FUNCS + mm.WRITE_SINGLE + mm.WRITE_MULTI
-                             + (0x08, 0x0B, 0x11, 0x17)):
+                             + (0x08, 0x0B, 0x11, 0x16, 0x17, 0x2B)):
             guards_ok = False
         if not guards_ok:
             continue
@@ -222,6 +226,10 @@ def test_normalize_poll_idempotent_and_buildable():
             arg = a["wvals"]
         elif a["func"] == 0x08:
             arg = (a["diag_sub"], a["diag_data"])
+        elif a["func"] == 0x16:
+            arg = (a["and_mask"], a["or_mask"])
+        elif a["func"] == 0x2B:
+            arg = {"mei": 0x0E, "read_code": a["read_code"], "object_id": a["object_id"]}
         elif a["func"] in (0x0B, 0x11):
             arg = 0
         elif a["func"] == 0x17:
@@ -246,6 +254,9 @@ def test_all_function_codes_roundtrip_on_every_variant():
         (0x0F, 0, [1, 0, 1], lambda r: r["echo"] == (0, 3)),
         (0x10, 0, [7, 8], lambda r: r["echo"] == (0, 2)),
         (0x11, 0, 0, lambda r: r["server_id"].startswith(b"CommTool")),
+        (0x16, 4, (0xFFF0, 0x0001), lambda r: r["mask"] == (4, 0xFFF0, 0x0001)),
+        (0x2B, 0, {"mei": 0x0E, "read_code": 1, "object_id": 0},
+         lambda r: r["device_id"]["objects"][0].startswith(b"CommTool")),
         (0x17, 0, {"read_addr": 0, "read_qty": 2, "write_addr": 6,
                    "write_vals": [11, 12]}, lambda r: r["regs"] == [0, 1]),
     ]
@@ -258,8 +269,11 @@ def test_all_function_codes_roundtrip_on_every_variant():
             server_id=b"CommTool")
 
     for func, addr, arg, check in cases:
-        qty = arg if isinstance(arg, int) else (
-            arg.get("read_qty") if isinstance(arg, dict) else len(arg))
+        if func in (0x16, 0x2B):
+            qty = 1
+        else:
+            qty = arg if isinstance(arg, int) else (
+                arg.get("read_qty") if isinstance(arg, dict) else len(arg))
 
         resp = fresh().handle(mm.build_rtu_request(7, func, addr, arg))
         out = mm.take_rtu_response(resp, 7, func, qty)
@@ -284,6 +298,8 @@ def test_parse_pdu_rejects_truncated_and_overlong_cleanly():
     cases = [(1, 0, 5), (2, 0, 5), (3, 0, 4), (4, 0, 4), (5, 2, 1), (6, 2, 0x1234),
              (8, 0, (0, 0xBEEF)), (0x0B, 0, 0), (0x0F, 0, [1, 0, 1]),
              (0x10, 0, [7, 8]), (0x11, 0, 0),
+             (0x16, 4, (0xFFF0, 0x0001)),
+             (0x2B, 0, {"mei": 0x0E, "read_code": 1, "object_id": 0}),
              (0x17, 0, {"read_addr": 0, "read_qty": 2, "write_addr": 6,
                         "write_vals": [11, 12]})]
     for func, addr, arg in cases:

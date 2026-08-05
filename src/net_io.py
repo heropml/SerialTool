@@ -14,6 +14,8 @@
     state_changed(bool)    True=已连接/监听中；False=对端断开/停止
     clients_changed(list)  TCP Server 专用，已连接客户端 [(key, label)]
 """
+import logging
+
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtNetwork import (
     QTcpServer, QTcpSocket, QUdpSocket, QHostAddress, QAbstractSocket,
@@ -37,6 +39,22 @@ _TCP_CONNECT_TIMEOUT_MS = 10000
 _BRIDGE_MAX_PENDING_BYTES = 4 * 1024 * 1024
 _UDP_MAX_PAYLOAD = 65507
 
+_log = logging.getLogger(__name__)
+
+
+def _safe(func, *args):
+    """执行一步清理动作。失败只记日志不抛，保证同一段清理里后面的步骤不被跳过。
+
+    默认 debug 级，不配日志时不产生任何输出；排查连接泄漏时打开即可看到是哪一步失败。
+    """
+    try:
+        func(*args)
+        return True
+    except Exception:
+        _log.debug("net_io cleanup step %s failed",
+                   getattr(func, "__name__", func), exc_info=True)
+        return False
+
 
 def local_ipv4_list():
     """枚举本机 IPv4 地址，供「本地IP」下拉用。首项 0.0.0.0 = 监听所有网卡。"""
@@ -48,7 +66,7 @@ def local_ipv4_list():
                 if s and s not in ips:
                     ips.append(s)
     except Exception:
-        pass
+        _log.debug("枚举本机 IPv4 地址失败，回退到默认地址表", exc_info=True)
     if "127.0.0.1" not in ips:
         ips.append("127.0.0.1")
     return ips
@@ -92,7 +110,7 @@ def _find_interface(ip):
                 if entry.ip().toString() == ip:
                     return nif
     except Exception:
-        pass
+        _log.debug("按 IP %s 查找网卡失败，回退到默认路由", ip, exc_info=True)
     return None
 
 
@@ -176,6 +194,14 @@ class TcpServerConn(NetConn):
     def _emit_clients(self):
         self.clients_changed.emit([(self._key(s), self._key(s)) for s in self._clients])
 
+    def _drop_client(self, sock):
+        """摘掉半帧污染/出错的客户端。先移出客户端表再释放：
+        这样 abort() 失败也不会把它留在表里继续接收后续写入。"""
+        if sock in self._clients:
+            self._clients.remove(sock)
+        _safe(sock.abort)
+        _safe(sock.deleteLater)
+
     def send(self, data, target=None):
         if not self._clients:
             return SEND_NO_TARGET
@@ -197,24 +223,25 @@ class TcpServerConn(NetConn):
             elif 0 < n < len(data):
                 poisoned.append(s)  # 半帧已进入该客户端流，不能继续复用
         for s in poisoned:
-            try:
-                s.abort()
-                if s in self._clients:
-                    self._clients.remove(s)
-                s.deleteLater()
-            except Exception:
-                pass
+            self._drop_client(s)
         if poisoned:
             self._emit_clients()
         return len(data) if any_ok else 0
 
-    def send_bridge(self, data):
-        """桥接广播要求所有当前客户端都接收，并限制 Qt 待发送缓冲。"""
-        if not self._clients:
+    def send_bridge(self, data, target=None):
+        """桥接发送。target=None 广播给所有客户端，否则只发给指定客户端。
+
+        网关模式必须定向：把某个客户端的 Modbus 响应广播给其他客户端会串数据。
+        """
+        if target in (None, "", "__all__"):
+            targets = list(self._clients)
+        else:
+            targets = [s for s in self._clients if self._key(s) == target]
+        if not targets:
             return SEND_NO_TARGET
         all_ok = True
         poisoned = []
-        for sock in list(self._clients):
+        for sock in targets:
             if sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
                 all_ok = False
                 continue
@@ -224,24 +251,15 @@ class TcpServerConn(NetConn):
                 if 0 < n < len(data):
                     poisoned.append(sock)
         for sock in poisoned:
-            try:
-                sock.abort()
-                if sock in self._clients:
-                    self._clients.remove(sock)
-                sock.deleteLater()
-            except Exception:
-                pass
+            self._drop_client(sock)
         if poisoned:
             self._emit_clients()
         return len(data) if all_ok else 0
 
     def close(self):
         for s in list(self._clients):
-            try:
-                s.close()
-                s.deleteLater()
-            except Exception:
-                pass
+            _safe(s.close)
+            _safe(s.deleteLater)
         self._clients = []
         if self._server:
             self._server.close()
@@ -309,11 +327,8 @@ class TcpClientConn(NetConn):
             return
         sock = self._sock
         self._sock = None
-        try:
-            sock.abort()
-            sock.deleteLater()
-        except Exception:
-            pass
+        _safe(sock.abort)
+        _safe(sock.deleteLater)
         self.error_occurred.emit(ERR_CONN_TIMEOUT)
 
     def send(self, data, target=None):
@@ -322,7 +337,7 @@ class TcpClientConn(NetConn):
             return n if n > 0 else 0
         return 0
 
-    def send_bridge(self, data):
+    def send_bridge(self, data, target=None):
         if not self.bridge_ready:
             return SEND_NO_TARGET
         if self._sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
@@ -337,11 +352,8 @@ class TcpClientConn(NetConn):
         sock = self._sock
         self._sock = None
         if sock:
-            try:
-                sock.abort()
-                sock.deleteLater()
-            except Exception:
-                pass
+            _safe(sock.abort)
+            _safe(sock.deleteLater)
         self.state_changed.emit(False)
 
     @property
@@ -395,7 +407,7 @@ class UdpConn(NetConn):
             return SEND_NO_TARGET   # 没填远程地址，也还没收到过任何对端
         return n if n != -1 else 0   # writeDatagram 失败(网络不可达等)返回 -1
 
-    def send_bridge(self, data):
+    def send_bridge(self, data, target=None):
         """超大流块拆成合法 UDP 数据报；返回成功写入的总字节数。"""
         if not self.bridge_ready:
             return SEND_NO_TARGET
@@ -410,11 +422,8 @@ class UdpConn(NetConn):
 
     def close(self):
         if self._sock:
-            try:
-                self._sock.close()
-                self._sock.deleteLater()
-            except Exception:
-                pass
+            _safe(self._sock.close)
+            _safe(self._sock.deleteLater)
             self._sock = None
         # 清理对端缓存：否则复用本对象重开后，首次「回复最近对端」会发给上一会话的旧地址
         self._last_peer = None
@@ -485,12 +494,10 @@ class UdpGroupConn(NetConn):
 
     def close(self):
         if self._sock:
-            try:
-                self._sock.leaveMulticastGroup(QHostAddress(self._group))
-                self._sock.close()
-                self._sock.deleteLater()
-            except Exception:
-                pass
+            # 三步各自兜底：退组失败以前会连带跳过 close/deleteLater，socket 泄漏且没退组
+            _safe(self._sock.leaveMulticastGroup, QHostAddress(self._group))
+            _safe(self._sock.close)
+            _safe(self._sock.deleteLater)
             self._sock = None
         self.state_changed.emit(False)
 

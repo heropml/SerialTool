@@ -16,7 +16,7 @@ def test_register_normalization_and_32bit_word_order():
     records = normalize_registers([{
         "name": "temperature", "slave": "1", "function": "3",
         "address": "10", "type": "u32", "order": "CDAB",
-        "scale": "0.1", "unit": "℃",
+        "scale": "0.1", "unit": "C",
     }])
     assert records[0]["address"] == 10
     value, raw = decode_register_value(records[0], [0x0002, 0x0001])
@@ -70,3 +70,30 @@ def test_structured_recorder_caps_rows_and_rejects_nonfinite():
     assert len(recorder.rows) == 1
     assert recorder.rows[0]["value"] == ""
     assert recorder.truncated is True
+
+
+def test_f64_and_bitfields():
+    import struct
+    from device_resources import decode_register_value, decode_modbus_samples, parse_bitfields
+    # f64 AB order across 4 regs: pack as big-endian double split into words
+    raw8 = struct.pack(">d", 1.5)
+    regs = [int.from_bytes(raw8[i:i+2], "big") for i in range(0, 8, 2)]
+    val, _ = decode_register_value({"type": "f64", "order": "ABCDEFGH"}, regs)
+    assert abs(val - 1.5) < 1e-9
+    assert parse_bitfields("0:4:nibble,4:1:flag") == [(0, 4, "nibble"), (4, 1, "flag")]
+    samples = decode_modbus_samples(
+        [{"name": "st", "slave": 1, "function": 3, "address": 0,
+          "type": "u16", "bitfields": "0:3:code,3:1:ok", "alarm_hi": 100}],
+        1, 3, 0, [0b1011], timestamp=1)
+    tags = {s["tag"]: s["value"] for s in samples}
+    assert tags["st"] == 0b1011
+    assert tags["st.code"] == 0b011
+    assert tags["st.ok"] == 1
+
+
+def test_value_level_thresholds():
+    from device_resources import value_level
+    rec = {"warn_hi": 80, "alarm_hi": 100}
+    assert value_level(50, rec) == ""
+    assert value_level(85, rec) == "warn"
+    assert value_level(120, rec) == "alarm"

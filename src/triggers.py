@@ -25,6 +25,8 @@ MAX_RULES = 200          # 规则条数上限：防误导入巨表拖慢每包�
 MAX_PATTERN = 2000       # 单条匹配内容长度上限
 MAX_NAME = 100
 DEFAULT_COOLDOWN_MS = 3000   # 默认冷却 3s：告警是给人看的，不是给机器计数的
+MAX_WEBHOOK_URL = 2000
+MAX_RUN_CMD = 2000
 REGEX_LOOKBACK = 256         # 正则图样长度不可知，跨块回看固定窗口
 MAX_LOOKBACK = 8192          # 回看上限：再长也没意义，且不该让缓冲无界增长
 
@@ -76,6 +78,12 @@ def normalize(rule):
         "beep": _as_bool(rule.get("beep", True), True),
         "notify": _as_bool(rule.get("notify", True), True),
         "mark": _as_bool(rule.get("mark", False)),
+        "webhook": _as_bool(rule.get("webhook", False)),
+        "webhook_url": str(rule.get("webhook_url", "") or "")[:MAX_WEBHOOK_URL],
+        "run_cmd_on": _as_bool(rule.get("run_cmd_on", False)),
+        "run_cmd": str(rule.get("run_cmd", "") or "")[:MAX_RUN_CMD],
+        "min_hits": max(1, min(1000000, _to_int(rule.get("min_hits", 1), 1))),
+        "every_n": max(1, min(1000000, _to_int(rule.get("every_n", 1), 1))),
         "cooldown": max(0, min(3600000, cooldown)),
     }
 
@@ -324,6 +332,13 @@ class TriggerEngine:
             st["hits"] += 1
             st["last"] = now
             st["last_wall"] = wall
+            hits = st["hits"]
+            min_hits = int(rule.get("min_hits", 1) or 1)
+            every_n = int(rule.get("every_n", 1) or 1)
+            if hits < min_hits:
+                continue                     # count only until threshold
+            if every_n > 1 and (hits % every_n) != 0:
+                continue                     # fire every Nth hit
             cd = rule.get("cooldown", 0)
             if cd > 0 and now < self._cool_until.get(i, 0.0):
                 continue                     # 冷却中：只计数、不再重复告警（防刷屏）
