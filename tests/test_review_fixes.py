@@ -76,8 +76,9 @@ def test_gateway_broadcast_does_not_stall_the_bus():
 def test_gateway_timeout_answers_with_exception_0b():
     gw = ModbusGatewayEngine(timeout_s=0.05)
     gw.feed_tcp(mm.build_tcp_request(9, 1, 3, 0, 1))
-    time.sleep(0.06)
-    _, tcp_out = gw.tick()
+    # tick() 接受 now=：直接把时针拨到超时后，不依赖真实 sleep
+    gw._pending["t0"] = 1000.0
+    _, tcp_out = gw.tick(now=1000.06)
     assert len(tcp_out) == 1
     frame = tcp_out[0].frame
     assert frame[0:2] == b"\x00\x09"                  # same transaction id
@@ -405,19 +406,42 @@ def test_run_cmd_holds_its_slot_until_the_child_exits(tmp_path, monkeypatch):
     _patch_window_runtime(monkeypatch, tmp_path / "runcmd.ini")
     window = CommTool("trg-runcmd")
     try:
+        # 子进程的寿命由哨兵文件控制，不看墙上时间：用固定 sleep 取样时，
+        # 机器一卡 sleep 就会超调到子进程（0.6s）已退出，在 CI 上偶发失败。
+        child = tmp_path / "child.py"
+        child.write_text(
+            "import os, sys, time\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(sys.argv[1]) and time.time() < deadline:\n"
+            "    time.sleep(0.02)\n", encoding="utf-8")
+        sentinel = tmp_path / "go"
         rule = {"run_cmd_on": True,
-                "run_cmd": '"%s" -c "import time;time.sleep(0.6)"' % sys.executable}
+                "run_cmd": '"%s" "%s" "%s"' % (sys.executable, child, sentinel)}
         window._trg_run_cmd(rule, "t", 0, 1)
-        # 在子进程存活期中段取样：不等待的话此刻 worker 早已退出、名额已归还。
-        # 用固定时刻而非"轮询到 1 就通过"，避免恰好撞上启动瞬间造成误判。
-        time.sleep(0.25)
-        assert window._trg_action_busy == 1     # 子进程还在跑，名额不能释放
-        for _ in range(100):
+        procs = []
+        for _ in range(250):
+            with window._trg_action_lock:
+                procs = list(window._trg_procs)
+            if procs:
+                break
+            time.sleep(0.02)
+        assert procs, "子进程没起来"
+        proc = procs[0]
+        # 哨兵未出现 → 子进程必定还活着 → 名额不得释放
+        for _ in range(5):
+            assert proc.poll() is None
+            assert window._trg_action_busy == 1
+            time.sleep(0.02)
+
+        sentinel.write_text("go", encoding="utf-8")
+        for _ in range(250):
             if window._trg_action_busy == 0:
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
         assert window._trg_action_busy == 0     # 子进程退出后才释放
     finally:
+        sentinel.write_text("go", encoding="utf-8")
+        window._trg_stop_procs()
         window.deleteLater()
         _APP.processEvents()
 
@@ -470,6 +494,9 @@ def test_shutdown_reaps_run_cmd_children(tmp_path, monkeypatch):
     finally:
         window.deleteLater()
         _APP.processEvents()
+
+
+_SIGKILL = getattr(signal, "SIGKILL", 9)   # Windows 的 signal 没有 SIGKILL
 
 
 class _FakeProc:
@@ -603,8 +630,113 @@ def test_kill_proc_uses_the_process_group_off_windows(monkeypatch):
                                            proc.terminate()),
                         raising=False)          # Windows 的 os 没有 killpg
     CommTool._trg_kill_proc(proc)
-    assert signals == [(777, signal.SIGTERM)]    # 用 pid 当组号，SIGTERM 就收住了
+    assert signals == [(777, signal.SIGTERM), (777, _SIGKILL)]
     assert proc.dead
+
+
+def test_kill_proc_sigkills_the_group_even_if_the_leader_is_gone(monkeypatch):
+    """组长（父 shell）已退不等于整组已死，SIGKILL 不能省。
+
+    run_cmd 走 shell=True，句柄指向的是 shell；它很容易先退，而真正干活的
+    孙进程还留在同一个进程组里——只看组长死没死就会放跑它们。
+    """
+    import os as _os
+    signals = []
+    proc = _FakeProc(pid=779)
+    proc.terminate()                            # 组长已经不在了
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(_os, "killpg",
+                        lambda pgid, sig: signals.append((pgid, sig)),
+                        raising=False)
+    CommTool._trg_kill_proc(proc)
+    assert signals == [(779, signal.SIGTERM), (779, _SIGKILL)]
+
+
+def test_kill_proc_stops_once_the_group_is_gone(monkeypatch):
+    """SIGKILL 报 ProcessLookupError 就是整组已消失，不必再走通用兵底。"""
+    import os as _os
+    calls = []
+    proc = _FakeProc(pid=780)
+    fallback = []
+    monkeypatch.setattr(type(proc), "terminate",
+                        lambda self: fallback.append(1))
+
+    def killpg(pgid, sig):
+        calls.append(sig)
+        if sig != signal.SIGTERM:
+            raise ProcessLookupError
+        _FakeProc.kill(proc)                    # SIGTERM 就把组长收了
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(_os, "killpg", killpg, raising=False)
+    CommTool._trg_kill_proc(proc)
+    assert calls == [signal.SIGTERM, _SIGKILL]
+    assert fallback == []                       # 没再走 terminate 那条兼容路径
+
+
+def test_kill_proc_falls_back_when_taskkill_reports_failure(monkeypatch):
+    """taskkill 非 0 退出且进程还活着时不能就此当完成。
+
+    原来只要 taskkill 没抛异常就 return，报错退出（如拒访问）也算收完了。
+    """
+    proc = _FakeProc(pid=781)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    class _Res:
+        returncode = 1
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Res())
+    CommTool._trg_kill_proc(proc)
+    assert proc.dead                            # 退回 terminate/kill 收住了
+
+
+def test_taskkill_success_skips_the_fallback(monkeypatch):
+    proc = _FakeProc(pid=782)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    class _Res:
+        returncode = 0
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Res())
+    CommTool._trg_kill_proc(proc)
+    assert not proc.dead                        # taskkill 说收完了，不再多杀一道
+
+
+def test_process_registered_after_shutdown_is_killed_by_its_worker(tmp_path, monkeypatch):
+    """_trg_stop_procs 可能已经扫完并返回，此后登记的句柄就无人回收了。
+
+    所以退出态下不再往 _trg_procs 里放，直接由当前 worker 收掉。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "race4.ini")
+    window = CommTool("trg-race4")
+    killed = []
+    try:
+        gate = threading.Event()
+        _, proc = _fake_launch(monkeypatch, on_call=lambda: gate.wait(5))
+        monkeypatch.setattr(
+            type(window), "_trg_kill_proc",
+            staticmethod(lambda p: (killed.append(p), p.terminate())))
+
+        window._trg_run_cmd({"run_cmd_on": True, "run_cmd": "x"}, "t", 0, 1)
+        for _ in range(300):                    # 等 worker 进到 Popen 里
+            with window._trg_action_lock:
+                if window._trg_launching == 1:
+                    break
+            time.sleep(0.01)
+        with window._trg_action_lock:
+            window._trg_stopping = True         # 模拟“已扫完并返回”
+        gate.set()                              # Popen 现在才返回，登记落在门禁之后
+
+        for _ in range(300):
+            if killed:
+                break
+            time.sleep(0.01)
+        assert killed == [proc]                 # worker 自己收掉了
+        with window._trg_action_lock:
+            assert not window._trg_procs        # 也没残留在集合里
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
 
 
 def test_kill_proc_falls_back_when_not_a_group(monkeypatch):
@@ -619,3 +751,55 @@ def test_kill_proc_falls_back_when_not_a_group(monkeypatch):
     monkeypatch.setattr(_os, "killpg", boom, raising=False)
     CommTool._trg_kill_proc(proc)
     assert proc.dead
+
+
+def test_shell_value_neutralises_metacharacters():
+    """占位符的值必须变成 shell 惰性文本。"""
+    q = CommTool._trg_shell_value
+    payloads = ("; rm -rf /", "&& del x", "| tee x", "$(id)", "`id`", "a\nrm y")
+    for payload in payloads:
+        quoted = q(payload)
+        assert "\n" not in quoted and "\r" not in quoted
+        if sys.platform == "win32":
+            # 整体被双引号包住，且内部没有能提前收尾的引号
+            assert quoted.startswith('"') and quoted.endswith('"')
+            assert '"' not in quoted[1:-1]
+            assert "%" not in quoted and "!" not in quoted
+        else:
+            import shlex
+            expected = "".join(ch for ch in payload if ch >= " ")
+            assert shlex.split(quoted) == [expected]
+
+
+def test_run_cmd_placeholders_cannot_inject_a_second_command(tmp_path, monkeypatch):
+    """占位符的值不能变成命令。
+
+    命令里写的是无害的 echo，name 里塞的「分隔符 + 第二条命令」只能当文本。
+    导入门禁只让人确认「这份配置含外部命令动作」，不会让人逐字段去读 name，
+    所以命令看着无害、name 里藏毒是真实的欺骗面。
+    """
+    _patch_window_runtime(monkeypatch, tmp_path / "inject.ini")
+    window = CommTool("trg-inject")
+    try:
+        pwned = tmp_path / "pwned"
+        out = tmp_path / "out.txt"
+        sep = "&" if sys.platform == "win32" else ";"
+        # 用 mkdir 而不是带重定向的命令：注入的 `> x` 会和用户自己的
+        # `> out.txt` 撞车，两个重定向叠在一条命令上反而看不出注入效果。
+        payload = 'zzz %s mkdir "%s"' % (sep, pwned)
+        window._trg_run_cmd({"run_cmd_on": True,
+                             "run_cmd": 'echo {name}> "%s"' % out},
+                            payload, 0, 1)
+        for _ in range(250):
+            with window._trg_action_lock:
+                idle = not window._trg_procs and not window._trg_launching
+            if out.exists() and idle:
+                break
+            time.sleep(0.02)
+        assert out.exists(), "无害的那条命令本身要能跑"
+        assert not pwned.exists(), "注入的第二条命令被执行了"   # 修复前这里会红
+        assert "zzz" in out.read_text(errors="replace")   # 值仍作为文本传了进去
+    finally:
+        window._trg_stop_procs()
+        window.deleteLater()
+        _APP.processEvents()

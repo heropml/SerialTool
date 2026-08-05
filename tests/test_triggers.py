@@ -218,10 +218,6 @@ class EngineTests(unittest.TestCase):
         self.assertIn(r"\d+", eng._regex_cache)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ActionGateTests(unittest.TestCase):
     def test_min_hits_and_every_n(self):
         eng = tg.TriggerEngine([rule(pattern="ERR", min_hits=3, every_n=2, cooldown=0)])
@@ -239,3 +235,7 @@ class ActionGateTests(unittest.TestCase):
         self.assertEqual(r["webhook_url"], "https://x")
         self.assertEqual(r["min_hits"], 1)
         self.assertEqual(r["every_n"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

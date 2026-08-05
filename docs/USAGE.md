@@ -45,6 +45,7 @@ This release finishes the remaining P1 polish:
 - **Jump to session time** -- click the status-bar RX/TX stats to jump to the latest sample wall time; double-click a session-compare row to jump via `.ctrec` `wall_t0` (older recordings without the anchor show a toast). New recordings store `wall_t0`.
 - **Data-area bookmarks** -- `Ctrl+F2` toggles a bookmark on the current line; `F2` / `Shift+F2` move next/prev (wrapping). Clearing the data area or an ANSI full clear (`ESC[2J`) drops bookmarks.
 - **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next up is P2 (CLI / API / plugins / PCAP).
+- **v1.4 stability follow-up** -- register definitions now cover 64-bit values, bitfields and warning/alarm levels; Modbus Master adds grouped views, FC22 mask writes and FC43/14 device identification; trigger actions add Webhook / external commands with hit thresholds; and the Bridge page includes a real multi-client Modbus TCP↔RTU gateway. External command processes are reaped on shutdown, including POSIX child process groups.
 
 ---
 

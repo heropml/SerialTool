@@ -4157,7 +4157,7 @@ class CommTool(QMainWindow):
                 conn.blockSignals(True)
                 conn.close()
             except Exception:
-                pass
+                _log.debug("connection close failed", exc_info=True)
             conn.deleteLater()
 
         if getattr(self, "_seq_on", False):   # 连接断开 → 中止运行中的序列（保留结果 + 提示，不静默）
@@ -5592,19 +5592,37 @@ class CommTool(QMainWindow):
                              "User-Agent": "CommTool-Trigger/1.0"})
                 urllib.request.urlopen(req, timeout=5).read(256)
             except Exception:
-                pass
+                _log.debug("trigger webhook failed", exc_info=True)
 
         self._trg_spawn_action(_worker)
+
+    @staticmethod
+    def _trg_shell_value(value):
+        """把占位符的值变成 shell 惰性文本。
+
+        run_cmd 走 shell=True（用户要用管道和重定向），但占位符展开的是
+        规则里的 name / pattern：命令里写着 `echo {name}` 看着无害，name 里塔
+        `; rm -rf /` 就会被执行。导入门禁只让人确认「含外部命令动作」，不会
+        逐字段读 name，所以在这里把值本身钉死。
+        """
+        text = "".join(ch for ch in str(value) if ch >= " ")   # 掩揉掉控制字符与换行
+        if sys.platform == "win32":
+            # cmd.exe 在双引号内仍会展开 %VAR% 与 !VAR!，没有可靠的转义写法，
+            # 只能把这两个引导符去掉；其余元字符加上引号即失效。
+            return '"%s"' % text.replace('"', "'").replace("%", "").replace("!", "")
+        import shlex
+        return shlex.quote(text)
 
     def _trg_run_cmd(self, rule, name, direction, hits):
         """Launch an external program with simple placeholder expansion."""
         raw = (rule.get("run_cmd") or "").strip()
         if not raw:
             return
-        cmd = (raw.replace("{name}", str(name))
-                  .replace("{hits}", str(hits))
-                  .replace("{dir}", str(direction))
-                  .replace("{pattern}", str(rule.get("pattern") or "")))
+        q = self._trg_shell_value
+        cmd = (raw.replace("{name}", q(name))
+                  .replace("{hits}", q(hits))
+                  .replace("{dir}", q(direction))
+                  .replace("{pattern}", q(rule.get("pattern") or "")))
 
         def _worker():
             with self._trg_action_lock:
@@ -5622,15 +5640,24 @@ class CommTool(QMainWindow):
                     kwargs["start_new_session"] = True
                 proc = subprocess.Popen(cmd, **kwargs)
             except Exception:
-                pass
+                _log.debug("run_cmd launch failed", exc_info=True)
             finally:
+                kill_after_register = False
                 with self._trg_action_lock:
                     # 登记必须排在放开占位之前：_trg_stop_procs 等的就是这个次序，
                     # 否则它可能在句柄入表前就扫完走人，把进程漏在系统里。
                     if proc is not None:
-                        self._trg_procs.add(proc)
+                        if self._trg_stopping:
+                            # _trg_stop_procs 可能已经扫完并返回；退出态下不能再把
+                            # 句柄放进无人回收的集合，登记后由当前 worker 直接收掉。
+                            kill_after_register = True
+                        else:
+                            self._trg_procs.add(proc)
                     self._trg_launching -= 1
             if proc is None:
+                return
+            if kill_after_register:
+                self._trg_kill_proc(proc)
                 return
             try:
                 # 必须等子进程退出：Popen 启动即返回，不等的话这个线程几微秒就结束并
@@ -5656,26 +5683,47 @@ class CommTool(QMainWindow):
         import subprocess
         if sys.platform == "win32":
             try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                               capture_output=True, timeout=5)
-                return
+                result = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=5)
+                if result.returncode == 0 or proc.poll() is not None:
+                    return
+                _log.debug("taskkill returned %s for pid %s",
+                           result.returncode, proc.pid)
             except Exception:             # taskkill 不可用时退回通用路径
                 _log.debug("taskkill failed for pid %s", proc.pid, exc_info=True)
         else:
             import signal
             # Windows 的 signal 没有 SIGKILL，这段平时不走但不能因此招 AttributeError
-            for sig in (getattr(signal, "SIGTERM", 15), getattr(signal, "SIGKILL", 9)):
+            try:
+                # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
+                # 所以直接拿 proc.pid 当组号用。
+                os.killpg(proc.pid, getattr(signal, "SIGTERM", 15))
+            except Exception:
+                _log.debug("killpg SIGTERM failed for pid %s", proc.pid,
+                           exc_info=True)  # 没成组 → 走通用路径
+            else:
                 try:
-                    # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
-                    # 所以直接拿 proc.pid 当组号用。
-                    os.killpg(proc.pid, sig)
+                    proc.wait(timeout=0.5)
                 except Exception:
-                    break                 # 没成组（如 start_new_session 未生效）→ 走通用路径
+                    _log.debug("process group leader did not exit after SIGTERM",
+                               exc_info=True)
                 try:
-                    proc.wait(timeout=2)
+                    # 父 shell 可能已经退出，但它的后代仍留在同一进程组；
+                    # 无条件补 SIGKILL，只有进程组已消失时才算完成。
+                    os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
+                except ProcessLookupError:
                     return
                 except Exception:
-                    continue              # SIGTERM 没收住 → 接着 SIGKILL
+                    _log.debug("killpg SIGKILL failed for pid %s", proc.pid,
+                               exc_info=True)
+                else:
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        _log.debug("process group leader did not exit after SIGKILL",
+                                   exc_info=True)
+                    return
         try:
             proc.terminate()
             proc.wait(timeout=2)
@@ -5698,7 +5746,7 @@ class CommTool(QMainWindow):
         窗口里的进程。所以先竖 _trg_stopping 挡住后续动作，再等已在途的启动
         登记完毕。等的只是 Popen 本身，不是命令的执行，所以是有界的。
         """
-        deadline = time.time() + self._TRG_STOP_WAIT
+        deadline = time.monotonic() + self._TRG_STOP_WAIT
         while True:
             with self._trg_action_lock:
                 self._trg_stopping = True
@@ -5707,7 +5755,7 @@ class CommTool(QMainWindow):
             for proc in procs:
                 if proc.poll() is None:
                     self._trg_kill_proc(proc)
-            if not launching or time.time() >= deadline:
+            if not launching or time.monotonic() >= deadline:
                 return
             time.sleep(0.01)
 
@@ -5733,7 +5781,7 @@ class CommTool(QMainWindow):
             try:
                 worker()
             except Exception:
-                pass
+                _log.debug("trigger action failed", exc_info=True)
             finally:
                 with self._trg_action_lock:
                     self._trg_action_busy = max(0, self._trg_action_busy - 1)

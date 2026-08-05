@@ -496,6 +496,23 @@ class ModbusMasterP1Tests(unittest.TestCase):
         self.assertEqual(s.holding[10], 1)
         self.assertEqual(s.holding[11], 2)
 
+    def test_fc23_invalid_read_qty_fails_at_build_time(self):
+        """FC23 读数量非法时必须在建帧阶段报错。
+
+        normalize_poll 会把非法数量存成 None（保持 None 才能让上层报错，而不是
+        静默改成别的值）。轮询发送前的建帧被 try/except 兜住并把错落到那条规则
+        上；要是建帧反而放过 None，后面按 帧长 算超时的一步就会带着 None 崩掉。
+        """
+        for bad in ("abc", "", 0, 9999, None):
+            r = mm.normalize_poll({"func": 0x17, "addr": 0, "qty": bad,
+                                   "write_addr": 5, "wvals": "1,2"})
+            self.assertIsNone(r["qty"])
+            with self.assertRaises(ValueError):
+                mm.build_rtu_request(1, 0x17, r["addr"],
+                                     (r["qty"], r["write_addr"], r["wvals"]))
+            with self.assertRaises(ValueError):
+                mm.rtu_normal_len(0x17, r["qty"])
+
     def test_normalize_poll_new_funcs(self):
         p = mm.normalize_poll({"func": 8, "wval": 5})
         self.assertEqual(p["func"], 8)

@@ -11,6 +11,8 @@ from collections import deque
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
+from net_io import SEND_NO_TARGET
+
 try:
     from modbus_gateway import ModbusGatewayEngine
 except ImportError:  # pragma: no cover
@@ -65,6 +67,7 @@ class BridgeEngine(QObject):
         self._gw_timer = QTimer(self)
         self._gw_timer.timeout.connect(self._tick_gateway)
         self._gw_timer.setInterval(100)
+        self._gw_ok = True          # 错误门閙；_reset_stats() 会重置，这里只保证属性存在
 
     # ── 公开 API ─────────────────────────────────────────────
 
@@ -200,6 +203,8 @@ class BridgeEngine(QObject):
                 target = getattr(item, "client", None)
                 fr = getattr(item, "frame", item)
                 sent = self._send_bridge(conn, fr, target)
+                if sent == SEND_NO_TARGET:
+                    continue          # 对端已走，丢包而不是报发送失败
                 if sent != len(fr):
                     raise IOError("sent %s of %s bytes" % (sent, len(fr)))
                 if to_a:
@@ -245,6 +250,10 @@ class BridgeEngine(QObject):
                     self._gw_dispatch(self._gateway.feed_tcp(payload))
                     return
                 sent = self._send_bridge(self._conn_b, payload)
+                if sent == SEND_NO_TARGET:
+                    # UDP 无对端 / TCP Server 无客户端：确实没送出去，但不是
+                    # “sent -1 of N” 这种写法能说清的错。单独报一次，同样上门閙。
+                    raise IOError("no receiver connected; %d bytes dropped" % len(data))
                 if sent != len(data):
                     raise IOError("sent %s of %s bytes" % (sent, len(data)))
                 self._b_tx += len(data)
@@ -264,9 +273,12 @@ class BridgeEngine(QObject):
         try:
             self._gw_dispatch(self._gateway.feed_tcp(bytes(data), client=key))
         except Exception as e:
-            if self._send_ok_b:
-                self._send_ok_b = False
-                self.error_occurred.emit(1, "gateway failed: %s" % e)
+            # 网关解析失败不是 B 侧发送失败：蹭 _send_ok_b 会把后续真正的
+            # B 侧发送失败静默掉；且数据来自 A 侧 TCP，应归 A 侧。
+            _log.debug("gateway feed failed", exc_info=True)
+            if self._gw_ok:
+                self._gw_ok = False
+                self.error_occurred.emit(0, "gateway failed: %s" % e)
 
     def _on_clients_a(self, clients):
         """客户端断开后清掉网关里它的重组缓冲和排队请求。
@@ -289,6 +301,10 @@ class BridgeEngine(QObject):
                     self._gw_dispatch(self._gateway.feed_rtu(payload))
                     return
                 sent = self._send_bridge(self._conn_a, payload)
+                if sent == SEND_NO_TARGET:
+                    # UDP 无对端 / TCP Server 无客户端：确实没送出去，但不是
+                    # “sent -1 of N” 这种写法能说清的错。单独报一次，同样上门閙。
+                    raise IOError("no receiver connected; %d bytes dropped" % len(data))
                 if sent != len(data):
                     raise IOError("sent %s of %s bytes" % (sent, len(data)))
                 self._a_tx += len(data)

@@ -3871,6 +3871,22 @@ class DashboardTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
+    def test_text_feed_clears_a_stale_register_level(self):
+        """同名通道先从寄存器样本拿到 alarm，再走文本解析时不能一直标红。"""
+        w, dlg = self._dlg()
+        try:
+            dlg.feed_named_samples([{"tag": "CH1", "value": 99, "level": "alarm"}])
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._tiles["CH1"]["level"], "alarm")
+
+            dlg.feed(b"20\n")            # 文本路径：无阈值概念
+            dlg._refresh_tiles()
+            self.assertEqual(dlg._values["CH1"], 20)
+            self.assertEqual(dlg._tiles["CH1"]["level"], "")
+            self.assertEqual(dlg._tiles["CH1"]["state"], "")
+        finally:
+            dlg.deleteLater()
+
     def test_panel_threshold_still_wins_without_register_level(self):
         """面板自己的阈值行不受影响：没有寄存器级别时照样告警。"""
         w, dlg = self._dlg(thresh="T:0~30:C")

@@ -115,9 +115,9 @@
 
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
-| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **233 处宽泛 `except`、其中 88 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算，别手数）。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`），`bridge.py` 的网关 tick 同步改为记日志 + 一次性 `error_occurred`；`main_window.py`（144/72）、`serial_io.py`（12/6）待做 |
-| S-2 | **拆分 `main_window.py`** | 12198 行、占 src 40672 行 30% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 951 个用例全是短平快功能验证，无一条长跑 |
+| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **235 处宽泛 `except`、其中 84 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算，别手数）。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`），`bridge.py` 的网关 tick 同步改为记日志 + 一次性 `error_occurred`；`main_window.py`（146/68）、`serial_io.py`（12/6）待做 |
+| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 975 个用例全是短平快功能验证，无一条长跑 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | `log_naming.py` 现只有按日轮转（`should_roll_date`），补按大小切分及两者组合 |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 错误提示给出可操作建议而非原始 `errorString`；常用 Modbus 读写收敛成简化表单；补发送历史全文搜索 |
 
@@ -129,8 +129,8 @@
 
 > 整体暂缓，不排期。暂缓不等于否定，而是前置条件尚未满足：
 >
-> - 本节末验收要求第 1 条要求核心逻辑抽成 Qt-free 模块，而 `main_window.py` 现有 12198 行、
->   占 src 全部 40672 行的 30%，内含 138 处宽泛异常捕获（72 处静默）。CLI 与 API 都要从这里
+ > - 本节末验收要求第 1 条要求核心逻辑抽成 Qt-free 模块，而 `main_window.py` 现有 12334 行、
+ >   占 src 全部 37865 行的 33%，内含 146 处宽泛异常捕获（68 处静默）。CLI 与 API 都要从这里
 >   往外拆逻辑，插件式 dissector 还要等协议字段模型稳定之后才能定接口。
 > - 在此前提下开 P2，等于在一个尚未解耦、异常路径不透明的核心上再架一层远程接口。
 >
@@ -212,9 +212,28 @@
     `run_cmd` 用 `shell=True`，句柄指向 shell 本身，只 terminate() 会漏掉孙进程，所以
     Windows 走 `taskkill /T`、POSIX 用 `start_new_session` 成组后 `killpg`
   - 关掉 Popen 与句柄登记之间的竞态。`_trg_stopping` 竖起后不再放行新动作，
-    `_trg_launching` 记住在途的启动；登记排在释放占位之前，`_trg_stop_procs()`
-    等到占位归零再返回（只等 Popen、不等命令执行，上限 2s），因此不会漏掉
-    恰好落在窗口里的进程
+    `_trg_launching` 记住在途的启动；登记排在释放占位之前，退出态下即使 Popen
+    卡过 2s，句柄登记后也会由当前 worker 立即回收，不会漏进程
+  - 外部动作失败改记 debug 日志；POSIX 进程组在 SIGTERM 后无条件补 SIGKILL，
+    避免父 shell 先退、孙进程仍存活
   - 网关 tick 不再静默吞异常：记 debug 日志并发一次 `error_occurred`（tick 100ms 一次，用门閙避免刷屏，恢复后再故障会再报）
 
-测试基线：**956 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。
+- **K** 外部审核收尾（发布前）：
+  - `run_cmd` 占位符的值做 shell 转义。命令本体仍走 `shell=True`（用户要管道与重定向），但
+    `{name}` / `{pattern}` 展开的值不再参与解析：POSIX 用 `shlex.quote`，Windows 加双引号并去掉 cmd.exe
+    在引号内仍会展开的 `%` / `!`。堵的是「命令看着无害、name 里藏毒」：导入门禁只让人确认
+    「这份配置含外部命令动作」，不会逐字段去读 name（非远程面：占位符取不到报文内容）
+  - `SEND_NO_TARGET`（-1）不再报成「sent -1 of N bytes」：网关回包遇到对端已走直接丢，
+    普通转发改报「no receiver connected」
+  - 网关解析失败改用 `_gw_ok` 门闙并归 A 侧；原来蹭 `_send_ok_b`，会把后续真正的 B 侧发送失败静默掉
+  - 仪表盘文本解析路径清掉寄存器留下的 `level`（否则同名通道值已正常、卡片还一直标红）
+  - 测试可达性与确定性：`test_triggers.py` 的 `__main__` 块回到文件末尾（直接运行从 28 恢复到 30 条）；
+    网关超时改用 `tick(now=)` 注入时间，`run_cmd` 并发上限用哨兵文件控制子进程寿命，
+    两处不再依赖 sleep 里程（机器一卡 sleep 超调就会偶发失败）
+  - 网关 `tick()` 补 6 条确定性用例：未到点不动 / 0x0B 定向回发起方 / 超时后释放总线发下一条 / 客户端已走不回包
+
+> 本轮审核里有两条是误报，已写成用例钉住：`_gw_ok` 实际不可达（`_reset_stats()` 在 `start()` 里早于
+> timer 启动，且 `_tick_gateway` 先看 `_active`），但仍在 `__init__` 补了一行；FC23 非法读数量不会崩轮询引擎，
+> 建帧阶段就报 `ValueError: FC23 requires read/write fields` 并被那条规则的 try/except 收走，走不到算超时那一步。
+
+测试基线：**975 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。

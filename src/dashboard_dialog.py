@@ -252,7 +252,11 @@ class DashboardDialog(QDialog):
             elif len(self._tiles) < _MAX_TILES:      # 未建卡且未到上限 → 新建
                 self._values[name] = val
                 self._ensure_tile(name)
-            # 已到卡片上限的新通道：直接丢弃（不建卡、不记值），避免畸形长行卡死
+            else:
+                continue    # 已到卡片上限的新通道：不建卡、不记值，避免畸形长行卡死
+            # 文本解析没有寄存器阈值概念；不清的话，同名通道曾经从寄存器
+            # 样本拿到的 warn/alarm 会一直留在卡片上，值已经正常了还标红。
+            self._levels.pop(name, None)
 
     def reset_stream(self):
         """切断当前数据流的跨包状态，但保留卡片上的最近值。用于暂停/隐藏/重连等

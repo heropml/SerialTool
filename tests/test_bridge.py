@@ -16,7 +16,9 @@ _APP = QApplication.instance() or QApplication([])
 
 from bridge import BridgeEngine  # noqa: E402
 from bridge_dialog import BridgeDialog, _BridgeSidePanel  # noqa: E402
-from net_io import TcpServerConn, UdpConn, _UDP_MAX_PAYLOAD  # noqa: E402
+from net_io import (TcpServerConn, UdpConn, SEND_NO_TARGET,  # noqa: E402
+                    _UDP_MAX_PAYLOAD)
+from modbus_gateway import TcpReply  # noqa: E402
 
 
 class FakeConn(QObject):
@@ -137,6 +139,18 @@ class BridgeEngineTests(unittest.TestCase):
         self.assertEqual(errs[0][0], 1)
         self.assertEqual(stats[-1][3], 0)  # b_tx
         self.assertEqual(stats[-1][4], 0)  # a_rate：只统计成功转发
+        eng.stop()
+
+    def test_no_receiver_gets_a_readable_error(self):
+        """没有可发目标时 send() 回 -1；报错要说得清，不能是 "sent -1 of N bytes"。"""
+        eng, a, b = _engine(b=FakeConn(send_result=SEND_NO_TARGET))
+        errs = []
+        eng.error_occurred.connect(lambda side, msg: errs.append((side, msg)))
+        eng.start()
+        a.data_received.emit(b"lost")
+        self.assertEqual(errs[0][0], 1)
+        self.assertIn("no receiver", errs[0][1])
+        self.assertNotIn("-1", errs[0][1])
         eng.stop()
 
     def test_connection_error_stops_active_bridge(self):
@@ -394,6 +408,49 @@ class GatewayRoutingTests(unittest.TestCase):
             slave_b = ms.ModbusSlave(addr=2, holding={0: 0xBBBB})
             b.data_received.emit(slave_b.handle(b.sent[0]))
             self.assertEqual([t for t, _f in a.sent], ["B:2"])
+        finally:
+            eng.stop()
+
+    def test_reply_to_a_departed_client_is_not_a_send_failure(self):
+        """对端已走时 send_bridge 回 -1，不能报成 "sent -1 of N bytes"。"""
+        eng, a, b, mm, ms = self._setup()
+        try:
+            errs = []
+            eng.error_occurred.connect(lambda side, msg: errs.append((side, msg)))
+            a.send_bridge = lambda data, target=None: SEND_NO_TARGET
+            eng._gw_send(1, [TcpReply("gone", b"\x00\x01")])   # 1 = 发往 A 侧
+            self.assertEqual(errs, [])              # 丢包，但不是发送失败
+            self.assertTrue(eng._send_ok_a)         # 门闩没被消耗
+        finally:
+            eng.stop()
+
+    def test_gateway_parse_error_is_reported_on_side_a(self):
+        """网关解析失败归 A 侧，且不能占用 B 侧发送失败的门闩。"""
+        eng, a, b, mm, ms = self._setup()
+        try:
+            errs = []
+            eng.error_occurred.connect(lambda side, msg: errs.append((side, msg)))
+
+            def _boom(*_a, **_k):
+                raise RuntimeError("bad frame")
+
+            eng._gateway.feed_tcp = _boom
+            eng._on_data_a_from(b"\x00", "c1")
+            self.assertEqual(len(errs), 1)
+            self.assertEqual(errs[0][0], 0)         # A 侧：数据来自 A 侧 TCP
+            self.assertTrue(eng._send_ok_b)         # B 侧门闩没被牵连
+
+            eng._on_data_a_from(b"\x00", "c1")
+            self.assertEqual(len(errs), 1)          # 持续故障只报一次
+        finally:
+            eng._gateway = None
+            eng.stop()
+
+    def test_gw_ok_exists_before_start(self):
+        """错误门闩在 __init__ 就该存在，不能只靠 start() 里的 _reset_stats。"""
+        eng = BridgeEngine()
+        try:
+            self.assertTrue(eng._gw_ok)
         finally:
             eng.stop()
 

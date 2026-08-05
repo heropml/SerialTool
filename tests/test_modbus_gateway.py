@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import modbus_master as mm
 import modbus_slave as ms
-from modbus_gateway import ModbusGatewayEngine
+from modbus_gateway import ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE
 
 
 def test_tcp_to_rtu_and_back():
@@ -104,3 +104,79 @@ def test_max_clients_caps_buffer_growth():
     rtu_out, tcp_out = gw.feed_tcp(b"\x00", client="C")
     assert rtu_out == [] and tcp_out == []
     assert "C" not in gw.clients and gw.stats["drops"] >= 1
+
+
+# ------------------------------------------------------------------ tick ---
+# tick() 接受 now=，超时行为可以完全确定性地测，不需要 sleep。
+
+def _inflight(gw, tid=0x10, unit=1, client="c1", t0=1000.0):
+    """发一条请求让它在途，并把计时起点钉在 t0。"""
+    rtu_out, _ = gw.feed_tcp(mm.build_tcp_request(tid, unit, 3, 0, 1), client=client)
+    assert len(rtu_out) == 1
+    gw._pending["t0"] = t0
+    return rtu_out[0]
+
+
+def test_tick_before_timeout_keeps_waiting():
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    _inflight(gw, t0=1000.0)
+    rtu_out, tcp_out = gw.tick(now=1000.99)
+    assert rtu_out == [] and tcp_out == []
+    assert gw._pending is not None          # 仍在等回包
+    assert gw.stats["timeouts"] == 0
+
+
+def test_tick_timeout_answers_0x0b_to_the_requester():
+    """超时要主动回 MBAP 异常 0x0B，而不是让 TCP 主机自己等超时。"""
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    _inflight(gw, tid=0x77, unit=9, client="10.0.0.5:1111", t0=1000.0)
+    rtu_out, tcp_out = gw.tick(now=1001.0)      # 正好到点即算超时
+    assert rtu_out == []
+    assert len(tcp_out) == 1
+    reply = tcp_out[0]
+    assert reply.client == "10.0.0.5:1111"      # 只回发起方
+    frame = reply.frame
+    assert frame[:2] == b"\x00\x77"             # tid 原样
+    assert frame[6] == 9                        # unit 原样
+    assert frame[7] == 0x83                     # func | 0x80
+    assert frame[8] == EXC_GATEWAY_NO_RESPONSE  # 0x0B
+    assert gw._pending is None                  # 总线已释放
+    assert gw.stats["timeouts"] == 1
+
+
+def test_tick_timeout_releases_the_bus_for_the_next_request():
+    """超时后要把排队的下一条发出去，否则网关就此卡住。"""
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    _inflight(gw, tid=1, unit=1, client="A", t0=1000.0)
+    rtu_out, _ = gw.feed_tcp(mm.build_tcp_request(2, 2, 3, 0, 1), client="B")
+    assert rtu_out == []                        # 在途期间排队
+    rtu_out, tcp_out = gw.tick(now=1001.0)
+    assert len(rtu_out) == 1 and rtu_out[0][0] == 2   # 下一条已上总线
+    assert len(tcp_out) == 1                          # 同时回了上一条的 0x0B
+    assert gw._pending is not None and gw._pending["client"] == "B"
+
+
+def test_tick_timeout_for_a_departed_client_emits_no_reply():
+    """客户端已断开：回包无处可去，直接丢，不能落到广播路径。"""
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    _inflight(gw, client="gone", t0=1000.0)
+    gw.forget_client("gone")
+    rtu_out, tcp_out = gw.tick(now=1001.0)
+    assert tcp_out == []                        # 不回给任何人
+    assert gw.stats["timeouts"] == 1            # 但超时照记
+    assert gw._pending is None
+
+
+def test_tick_is_a_noop_without_anything_in_flight():
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    assert gw.tick(now=1e9) == ([], [])
+    assert gw.stats["timeouts"] == 0
+
+
+def test_tick_uses_wall_clock_when_now_is_omitted():
+    """省略 now 时退回 time.monotonic()，生产路径就是这么调的。"""
+    gw = ModbusGatewayEngine(timeout_s=0.0)     # 0 超时 → 立即到点
+    _inflight(gw, t0=0.0)
+    rtu_out, tcp_out = gw.tick()
+    assert len(tcp_out) == 1
+    assert tcp_out[0].frame[8] == EXC_GATEWAY_NO_RESPONSE
