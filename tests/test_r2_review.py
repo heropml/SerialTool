@@ -298,6 +298,19 @@ def test_is_private_url_blocks_localhost():
     assert CommTool._is_private_url("http://localhost/hook") is True
 
 
+def test_is_private_url_blocks_ipv4_mapped_ipv6():
+    """::ffff:192.168.1.1 must be treated as private (dotted form)."""
+    from main_window import CommTool
+    assert CommTool._is_private_url("http://[::ffff:192.168.1.1]/hook") is True
+    assert CommTool._is_private_url("http://[::ffff:127.0.0.1]/hook") is True
+
+
+def test_is_private_url_blocks_ipv4_mapped_hex_form():
+    """::ffff:c0a8:101 is 192.168.1.1 in hex-mapped form."""
+    from main_window import CommTool
+    assert CommTool._is_private_url("http://[::ffff:c0a8:101]/hook") is True
+
+
 # =========================================================================
 # 9. Device decode skip redundant normalize
 #    decode_modbus_samples works when passed definitions directly.

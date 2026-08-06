@@ -5576,34 +5576,30 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _is_private_url(url):
-        """Return True if the URL's host resolves to a private/loopback address."""
+        """Return True if the URL's host is a private/loopback/link-local address.
+
+        Hostnames are left alone (no DNS lookup). IPv4-mapped IPv6 forms
+        like ::ffff:192.168.1.1 / ::ffff:c0a8:101 are unwrapped first.
+        """
         try:
             from urllib.parse import urlparse
+            import ipaddress
             host = urlparse(url).hostname
             if not host:
                 return False
-            # IPv4-mapped IPv6 (e.g. ::ffff:192.168.1.1) — unwrap and check
-            if host.startswith("::ffff:"):
-                try:
-                    return CommTool._is_private_url(
-                        "http://" + host[7:] + "/")
-                except Exception:
-                    pass
-            # IPv4 private ranges
-            parts = host.split(".")
-            if len(parts) == 4 and all(p.isdigit() for p in parts):
-                octets = [int(p) for p in parts]
-                if (octets[0] in (127, 0) or
-                    octets[0] == 10 or
-                    (octets[0] == 172 and 16 <= octets[1] <= 31) or
-                    (octets[0] == 192 and octets[1] == 168) or
-                    (octets[0] == 169 and octets[1] == 254)):
-                    return True
-            if host in ("localhost", "::1"):
+            if host.lower() == "localhost":
                 return True
+            try:
+                addr = ipaddress.ip_address(host)
+            except ValueError:
+                return False
+            mapped = getattr(addr, "ipv4_mapped", None)
+            if mapped is not None:
+                addr = mapped
+            return bool(addr.is_private or addr.is_loopback
+                        or addr.is_link_local or addr.is_unspecified)
         except Exception:
-            pass
-        return False
+            return False
 
     def _trg_run_webhook(self, rule, name, direction, hits):
         """POST a small JSON payload; never block the GUI thread."""

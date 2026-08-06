@@ -990,3 +990,42 @@ def test_collect_registers_survives_a_missing_checkbox(tmp_path, monkeypatch):
     finally:
         window.deleteLater()
         _APP.processEvents()
+
+
+def test_deleting_a_trigger_asks_first(tmp_path, monkeypatch):
+    """Deleting a trigger is irreversible; always confirm with trg_* copy."""
+    import triggers
+    from triggers_dialog import TriggersDialog
+    _patch_window_runtime(monkeypatch, tmp_path / "trg.ini")
+    window = CommTool("trg-del-confirm")
+    try:
+        window._triggers = [triggers.normalize({"name": "alarm", "pattern": "ERR"})]
+        dlg = TriggersDialog(window)
+        try:
+            dlg._cur = 0
+            seen = {}
+
+            def _confirm(title, body, ok_text=None, danger=True):
+                seen["title"] = title
+                seen["body"] = body
+                seen["ok_text"] = ok_text
+                return False
+
+            monkeypatch.setattr(window, "_confirm_dlg", _confirm)
+            dlg._delete()
+            assert seen["title"] == window._t("trg_del_title")
+            assert "alarm" in seen["body"]
+            # Must not reuse the Modbus-view copy ("rules are kept").
+            assert "view" not in seen["body"].lower()
+            assert "默认视图" not in seen["body"] and "default view" not in seen["body"].lower()
+            assert len(dlg._items) == 1
+
+            monkeypatch.setattr(window, "_confirm_dlg", lambda *a, **k: True)
+            dlg._delete()
+            assert dlg._items == []
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()

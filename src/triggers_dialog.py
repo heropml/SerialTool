@@ -350,15 +350,15 @@ class TriggersDialog(QDialog):
     def _delete(self):
         if not (0 <= self._cur < len(self._items)):
             return
+        # 删规则当场落盘、无 undo；外部动作规则尤其危险，普通规则也不可逆，
+        # 所以一律先确认。文案用 trg_*，不能复用 mbm_view_del_body（那句说
+        # 「规则本身不删」，语义正好相反）。
         rule = self._items[self._cur]
-        has_external = rule.get("run_cmd_on") or rule.get("webhook")
-        if has_external:
-            if not self.app._confirm_dlg(
-                    self.app._t("device_delete"),
-                    self.app._t("mbm_view_del_body",
-                                 name=rule.get("name", ""), n=1),
-                    ok_text=self.app._t("device_delete")):
-                return
+        if not self.app._confirm_dlg(
+                self.app._t("trg_del_title"),
+                self.app._t("trg_del_body", name=rule.get("name") or ""),
+                ok_text=self.app._t("trg_del")):
+            return
         self._save_timer.stop()
         del self._items[self._cur]
         self._save()
