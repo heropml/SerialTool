@@ -8,6 +8,8 @@ from modbus_slave import crc16, ModbusException
 from modbus_master import MAX_TCP_MBAP_LENGTH, take_rtu_response, _u16
 
 MAX_QUEUE = 32
+# 超时后总线保持空闲的时长（即 RTU 主站的 turnaround delay）。
+RECOVERY_S = 0.2
 MAX_CLIENTS = 16                 # TCP 侧同时保留缓冲的客户端上限，防止 key 无限增长
 EXC_GATEWAY_NO_RESPONSE = 0x0B   # Gateway target device failed to respond
 
@@ -27,17 +29,23 @@ class ModbusGatewayEngine:
     the rest wait in a bounded queue. Pure framing/proxy -- does not execute
     PDU logic.
 
+    超时后的恢复窗口：总线先空闲 recovery_s 再发下一笔。RTU 没有事务号，
+    同从机、同功能码、同数量的两笔请求，其响应逐字节相同；不隔开的话上一笔
+    迟到的响应会被当成这一笔的答复，上游拿到别人的寄存器值却没任何报错。
+
     多客户端：每个 TCP 客户端有独立的重组缓冲，请求入队时记下来源，回包只发回
     该客户端。共用一个缓冲会让不同客户端的分片首尾相接被切成错帧，共用一条回包
     路径则会把 A 的响应广播给 B、C。
     """
 
     def __init__(self, unit_map=None, timeout_s=1.0, max_queue=MAX_QUEUE,
-                 max_clients=MAX_CLIENTS):
+                 max_clients=MAX_CLIENTS, recovery_s=RECOVERY_S):
         self.unit_map = dict(unit_map or {})
         self.timeout_s = max(0.05, float(timeout_s))
         self.max_queue = max(1, int(max_queue))
         self.max_clients = max(1, int(max_clients))
+        self.recovery_s = max(0.0, float(recovery_s))
+        self._recover_until = 0.0
         self._pending = None
         self._queue = deque()
         self._tcp_bufs = {}          # client -> bytearray，按来源隔离重组
@@ -47,6 +55,7 @@ class ModbusGatewayEngine:
 
     def reset(self):
         self._pending = None
+        self._recover_until = 0.0
         self._queue.clear()
         self._tcp_bufs.clear()
         self._rtu_buf.clear()
@@ -128,7 +137,7 @@ class ModbusGatewayEngine:
             del buf[:total]
             return frame
 
-    def feed_tcp(self, data, client=None):
+    def feed_tcp(self, data, client=None, now=None):
         """Accept TCP bytes from one client; return (rtu_frames, tcp_replies).
 
         client 是来源标识（TCP Server 侧的 "ip:port"）。不同客户端各自重组，
@@ -160,16 +169,23 @@ class ModbusGatewayEngine:
             self._queue.append({"tid": (frame[0] << 8) | frame[1],
                                 "unit_tcp": frame[6], "pdu": pdu,
                                 "client": client})
-        self._pump(rtu_out)
+        self._pump(rtu_out, now)
         return rtu_out, tcp_out
 
-    def _pump(self, rtu_out):
+    def _pump(self, rtu_out, now=None):
         """Start queued requests while the RTU bus is free.
+
+        超时后的恢复窗口内不发新请求：让上一笔迟到的响应落在「无
+        pending」的时段里被当作无主流量丢掉，而不是冒充下一笔的答复。
 
         广播请求（unit=0）不等回复，循环会一口气把所有广播帧发出去。
         每轮最多发 _BROADCAST_BURST 个广播帧后让出事件循环，给 RTU 响应
         回来的机会，避免 TX 缓冲溢出。
         """
+        if self._recover_until:
+            if (time.monotonic() if now is None else float(now)) < self._recover_until:
+                return
+            self._recover_until = 0.0
         _bcasts = 0
         while self._pending is None and self._queue:
             req = self._queue.popleft()
@@ -196,7 +212,7 @@ class ModbusGatewayEngine:
 
     # ---- side B: Modbus RTU ------------------------------------------------
 
-    def feed_rtu(self, data):
+    def feed_rtu(self, data, now=None):
         """Accept RTU bytes; return (rtu_frames_to_send, tcp_replies).
 
         噪声数据时逐字节重同步（CRC/单位不匹配），每轮最多丢弃 _RESYNC_MAX
@@ -205,8 +221,10 @@ class ModbusGatewayEngine:
         rtu_out, tcp_out = [], []
         self._rtu_buf.extend(bytes(data or b""))
         if self._pending is None:
-            self._rtu_buf.clear()             # unsolicited traffic
-            self._pump(rtu_out)
+            # 无主流量。超时后的恢复窗口等的就是这个：上一笔的迟到响应
+            # 落到这里被丢掉，不会去冒充下一笔的答复。
+            self._rtu_buf.clear()
+            self._pump(rtu_out, now)
             return rtu_out, tcp_out
         _drops = 0
         while self._pending is not None and self._rtu_buf:
@@ -241,7 +259,7 @@ class ModbusGatewayEngine:
             self._reply(pending, frame[1:-2], tcp_out)
             self._pending = None
             _drops = 0
-        self._pump(rtu_out)
+        self._pump(rtu_out, now)
         return rtu_out, tcp_out
 
     def tick(self, now=None):
@@ -251,16 +269,20 @@ class ModbusGatewayEngine:
         than leaving it to wait for its own timeout.
         """
         rtu_out, tcp_out = [], []
+        now = time.monotonic() if now is None else float(now)
         if self._pending is not None:
-            now = time.monotonic() if now is None else float(now)
             if now - self._pending["t0"] >= self.timeout_s:
                 expired = self._pending
                 self._pending = None
                 self._rtu_buf.clear()
                 self.stats["timeouts"] += 1
+                # 超时不等于从机不会再开口。它的响应与下一笔同形状请求的
+                # 响应逐字节相同，紧接着发下一笔的话，迟到的那帧会被当成它的
+                # 答复——上游拿到别人的寄存器值，却没有任何报错。
+                self._recover_until = now + self.recovery_s
                 self._reply(expired,
                             bytes([(expired["func"] | 0x80) & 0xFF,
                                    EXC_GATEWAY_NO_RESPONSE]),
                             tcp_out)
-        self._pump(rtu_out)
+        self._pump(rtu_out, now)
         return rtu_out, tcp_out

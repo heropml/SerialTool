@@ -58,8 +58,8 @@ class BridgeEngine(QObject):
         self._send_ok_b = True
 
         # 速率统计（1 秒滑动窗口）
-        self._a_hist = deque(maxlen=1200)   # ~20s @ 60Hz tick
-        self._b_hist = deque(maxlen=1200)
+        self._a_hist = deque(maxlen=1200)   # 安全上限；实际窗口由 _tick_rate 每秒裁剪
+        self._b_hist = deque(maxlen=1200)   # 安全上限；实际窗口由 _tick_rate 每秒裁剪
         self._rate_timer = QTimer(self)
         self._rate_timer.timeout.connect(self._tick_rate)
         self._rate_timer.setInterval(1000)
@@ -247,7 +247,6 @@ class BridgeEngine(QObject):
             try:
                 payload = bytes(data)
                 if self._gateway is not None:
-                    self._record_rate(0, len(data))
                     self._gw_dispatch(self._gateway.feed_tcp(payload))
                     return
                 sent = self._send_bridge(self._conn_b, payload)

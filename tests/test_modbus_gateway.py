@@ -145,14 +145,23 @@ def test_tick_timeout_answers_0x0b_to_the_requester():
 
 
 def test_tick_timeout_releases_the_bus_for_the_next_request():
-    """超时后要把排队的下一条发出去，否则网关就此卡住。"""
+    """超时后要把排队的下一条发出去，否则网关就此卡住。
+
+    但不能紧接着就发：上一笔的迟到响应会被当成新那笔的答复。
+    先空闲一个恢复窗口，窗口过后必须真的发出去。
+    """
     gw = ModbusGatewayEngine(timeout_s=1.0)
     _inflight(gw, tid=1, unit=1, client="A", t0=1000.0)
     rtu_out, _ = gw.feed_tcp(mm.build_tcp_request(2, 2, 3, 0, 1), client="B")
     assert rtu_out == []                        # 在途期间排队
+
     rtu_out, tcp_out = gw.tick(now=1001.0)
-    assert len(rtu_out) == 1 and rtu_out[0][0] == 2   # 下一条已上总线
-    assert len(tcp_out) == 1                          # 同时回了上一条的 0x0B
+    assert len(tcp_out) == 1                    # 上一条的 0x0B 立即回
+    assert rtu_out == []                        # 但总线先空着
+    assert gw._pending is None
+
+    rtu_out, _ = gw.tick(now=1001.0 + gw.recovery_s + 0.01)
+    assert len(rtu_out) == 1 and rtu_out[0][0] == 2   # 窗口过后上总线
     assert gw._pending is not None and gw._pending["client"] == "B"
 
 
@@ -180,3 +189,66 @@ def test_tick_uses_wall_clock_when_now_is_omitted():
     rtu_out, tcp_out = gw.tick()
     assert len(tcp_out) == 1
     assert tcp_out[0].frame[8] == EXC_GATEWAY_NO_RESPONSE
+
+
+def _read_req(tid):
+    """FC03 读 1 个寄存器；两笔这样的请求在 RTU 上的响应逐字节相同。"""
+    return mm.build_tcp_request(tid, 1, 3, 0, 1)
+
+
+def _read_resp(value):
+    body = bytes([1, 0x03, 0x02, (value >> 8) & 0xFF, value & 0xFF])
+    return body + ms.crc16(body)
+
+
+def test_a_late_reply_after_timeout_is_not_given_to_the_next_request():
+    """超时后迟到的响应不能冒充下一笔的答复。
+
+    RTU 没有事务号，同从机、同功能码、同数量的两笔请求，响应逐字节
+    相同。若超时后紧接着发下一笔，迟到的那帧会被当成它的答复，上游
+    拿到的是别人的寄存器值却没任何报错——错数据比报错危险。
+    """
+    gw = ModbusGatewayEngine(timeout_s=1.0)          # recovery_s 默认 0.2
+    gw.feed_tcp(_read_req(1), client="A", now=0.0)
+    gw.feed_tcp(_read_req(2), client="B", now=0.0)
+    t0 = gw._pending["t0"]
+
+    rtu_out, tcp_out = gw.tick(now=t0 + 1.5)
+    assert [r.client for r in tcp_out] == ["A"]      # A 拿到 0x0B
+    assert tcp_out[0].frame[-1] == EXC_GATEWAY_NO_RESPONSE
+    assert rtu_out == []                             # 恢复窗口内总线保持空闲
+
+    _, tcp_out = gw.feed_rtu(_read_resp(0xAAAA), now=t0 + 1.55)
+    assert tcp_out == []                             # 迟到帧当无主流量丢掉
+
+
+def test_the_bus_resumes_once_the_recovery_window_passes():
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    gw.feed_tcp(_read_req(1), client="A", now=0.0)
+    gw.feed_tcp(_read_req(2), client="B", now=0.0)
+    t0 = gw._pending["t0"]
+    gw.tick(now=t0 + 1.5)
+
+    rtu_out, _ = gw.tick(now=t0 + 1.5 + gw.recovery_s + 0.01)
+    assert len(rtu_out) == 1                         # B 终于上总线
+    assert gw._pending["client"] == "B"
+
+    _, tcp_out = gw.feed_rtu(_read_resp(0xBBBB), now=t0 + 1.8)
+    assert len(tcp_out) == 1 and tcp_out[0].client == "B"
+    assert tcp_out[0].frame[9:11] == bytes([0xBB, 0xBB])   # 拿到的是自己的数据
+
+
+def test_recovery_window_costs_nothing_when_nothing_times_out():
+    """没超时就不该有任何额外延迟。"""
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    rtu_out, _ = gw.feed_tcp(_read_req(9), client="A", now=0.0)
+    assert len(rtu_out) == 1
+
+
+def test_recovery_can_be_switched_off():
+    """recovery_s=0 退回旧行为，给不需要这层保护的场景留口子。"""
+    gw = ModbusGatewayEngine(timeout_s=1.0, recovery_s=0)
+    gw.feed_tcp(_read_req(1), client="A", now=0.0)
+    gw.feed_tcp(_read_req(2), client="B", now=0.0)
+    rtu_out, _ = gw.tick(now=gw._pending["t0"] + 1.5)
+    assert len(rtu_out) == 1
