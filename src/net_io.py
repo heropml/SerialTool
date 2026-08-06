@@ -152,6 +152,9 @@ class TcpServerConn(NetConn):
         self._clients = []   # [QTcpSocket]
 
     def open(self):
+        # 防御性守卫：重复 open() 先关闭旧的，避免泄漏 QTcpServer 和重复连接信号
+        if self._server:
+            self.close()
         self._server = QTcpServer(self)
         self._server.newConnection.connect(self._on_new)
         if not self._server.listen(_any_or(self._ip), self._port):
@@ -261,10 +264,12 @@ class TcpServerConn(NetConn):
             _safe(s.close)
             _safe(s.deleteLater)
         self._clients = []
+        was_open = bool(self._server)
         if self._server:
             self._server.close()
             self._server = None
-        self.state_changed.emit(False)
+        if was_open:
+            self.state_changed.emit(False)
 
     @property
     def is_open(self):
@@ -288,6 +293,9 @@ class TcpClientConn(NetConn):
         self._conn_timer.timeout.connect(self._on_conn_timeout)
 
     def open(self):
+        # 防御性守卫：重复 open() 先关闭旧的，避免泄漏 socket 和重复连接信号
+        if self._sock:
+            self.close()
         self._sock = QTcpSocket(self)
         self._sock.readyRead.connect(self._on_read)
         self._sock.connected.connect(self._on_connected)
@@ -379,6 +387,9 @@ class UdpConn(NetConn):
         self._last_peer_key = None   # (ip_str, port) 仅用于「对端是否变化」判断
 
     def open(self):
+        # 防御性守卫：重复 open() 先关闭旧的
+        if self._sock:
+            self.close()
         self._sock = QUdpSocket(self)
         if not self._sock.bind(_any_or(self._local_ip), self._local_port):
             self.error_occurred.emit(self._sock.errorString())
@@ -426,6 +437,7 @@ class UdpConn(NetConn):
         return total
 
     def close(self):
+        was_open = bool(self._sock)
         if self._sock:
             _safe(self._sock.close)
             _safe(self._sock.deleteLater)
@@ -433,7 +445,8 @@ class UdpConn(NetConn):
         # 清理对端缓存：否则复用本对象重开后，首次「回复最近对端」会发给上一会话的旧地址
         self._last_peer = None
         self._last_peer_key = None
-        self.state_changed.emit(False)
+        if was_open:
+            self.state_changed.emit(False)
 
     @property
     def is_open(self):
@@ -458,6 +471,9 @@ class UdpGroupConn(NetConn):
         self._sock = None
 
     def open(self):
+        # 防御性守卫：重复 open() 先关闭旧的
+        if self._sock:
+            self.close()
         self._sock = QUdpSocket(self)
         # 绑到 AnyIPv4 + ShareAddress/ReuseAddressHint：允许多个监听者共用端口，组播才收得到
         if not self._sock.bind(QHostAddress(QHostAddress.AnyIPv4), self._port,
@@ -498,13 +514,15 @@ class UdpGroupConn(NetConn):
         return n if n != -1 else 0
 
     def close(self):
+        was_open = bool(self._sock)
         if self._sock:
             # 三步各自兜底：退组失败以前会连带跳过 close/deleteLater，socket 泄漏且没退组
             _safe(self._sock.leaveMulticastGroup, QHostAddress(self._group))
             _safe(self._sock.close)
             _safe(self._sock.deleteLater)
             self._sock = None
-        self.state_changed.emit(False)
+        if was_open:
+            self.state_changed.emit(False)
 
     @property
     def is_open(self):

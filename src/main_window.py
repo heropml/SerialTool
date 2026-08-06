@@ -5574,10 +5574,37 @@ class CommTool(QMainWindow):
         if rule.get("run_cmd_on") and (rule.get("run_cmd") or "").strip():
             self._trg_run_cmd(rule, name, direction, hits)
 
+    @staticmethod
+    def _is_private_url(url):
+        """Return True if the URL's host resolves to a private/loopback address."""
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).hostname
+            if not host:
+                return False
+            # IPv4 private ranges
+            parts = host.split(".")
+            if len(parts) == 4 and all(p.isdigit() for p in parts):
+                octets = [int(p) for p in parts]
+                if (octets[0] in (127, 0) or
+                    octets[0] == 10 or
+                    (octets[0] == 172 and 16 <= octets[1] <= 31) or
+                    (octets[0] == 192 and octets[1] == 168) or
+                    (octets[0] == 169 and octets[1] == 254)):
+                    return True
+            if host in ("localhost", "::1"):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _trg_run_webhook(self, rule, name, direction, hits):
         """POST a small JSON payload; never block the GUI thread."""
         url = (rule.get("webhook_url") or "").strip()
         if not url.lower().startswith(("http://", "https://")):
+            return
+        # SSRF 防护：拒绝私有/回环地址，避免配置文件被用来探测内网
+        if self._is_private_url(url):
             return
         payload = {
             "name": name,

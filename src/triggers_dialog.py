@@ -316,7 +316,7 @@ class TriggersDialog(QDialog):
             "pattern": self.ed_pat.text(),
             "hex": self.chk_hex.isChecked(),
             "mode": self.cb_mode.currentIndex(),
-            "scope": ("rx", "tx", "both")[max(0, self.cb_scope.currentIndex())],
+            "scope": ("rx", "tx", "both")[min(2, max(0, self.cb_scope.currentIndex()))],
             "on": self.chk_on.isChecked(),
             "beep": self.chk_beep.isChecked(),
             "notify": self.chk_notify.isChecked(),

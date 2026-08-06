@@ -408,6 +408,8 @@ def take_rtu_response(buf, req_unit, req_func, qty):
         if len(buf) < 3:
             return None
         bc = buf[2]
+        if bc > 252:
+            raise ValueError("FC11 byte_count too large")
         ln = 3 + bc + 2
         if len(buf) < ln:
             return None
@@ -604,6 +606,8 @@ def normalize_poll(rec):
             else:
                 and_m = 0xFFFF
                 or_m = _bounded(raw if raw != "" else "0", 0, 0xFFFF)
+        # FC22 复用: diag_sub=and_mask, diag_data=or_mask（与 FC08/FC43 共享变量名，
+        # 最终在 return dict 中按 func 条件映射到语义正确的 key）
         wval = and_m
         diag_sub = and_m
         diag_data = or_m

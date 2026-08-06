@@ -31,10 +31,6 @@ class FlowLayout(QLayout):
         self.setSpacing(spacing)
         self._items = []
 
-    def __del__(self):
-        while self.count():
-            self.takeAt(0)
-
     def addItem(self, item):
         self._items.append(item)
 
@@ -440,6 +436,8 @@ class DashboardDialog(QDialog):
         self._values.clear()
         self._levels.clear()
         self._parser.reset()
+        self._timer.stop()
+        self._blink_timer.stop()
 
     # ---------------- 主题 / 语言 ----------------
     def _show_help_dlg(self):

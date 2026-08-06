@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Modbus TCP <-> RTU gateway (framing, not byte tunnel)."""
+import logging
 import time
 from collections import deque, namedtuple
 
@@ -14,6 +15,8 @@ EXC_GATEWAY_NO_RESPONSE = 0x0B   # Gateway target device failed to respond
 TcpReply = namedtuple("TcpReply", "client frame")
 
 _GONE = object()   # 请求还在途、来源客户端已断开：回包直接丢弃，不能广播给别人
+
+_LOG = logging.getLogger(__name__)
 
 
 class ModbusGatewayEngine:
@@ -101,7 +104,12 @@ class ModbusGatewayEngine:
     # ---- side A: Modbus TCP ------------------------------------------------
 
     def _take_tcp_frame(self, buf):
-        """Pop one complete MBAP frame off one client's buffer, else None."""
+        """Pop one complete MBAP frame off one client's buffer, else None.
+
+        垃圾数据时逐字节重同步，但每轮最多扫描 64 字节头部以防 O(n²) 阻塞
+        Qt 事件循环；未消费的数据留给下次 feed_tcp 继续处理。
+        """
+        _scanned = 0
         while True:
             if len(buf) < 6:
                 return None
@@ -109,6 +117,9 @@ class ModbusGatewayEngine:
             if length < 2 or length > MAX_TCP_MBAP_LENGTH:
                 del buf[0]                    # not a plausible header, resync
                 self.stats["drops"] += 1
+                _scanned += 1
+                if _scanned >= 64:
+                    return None               # yield: 下次 feed 继续
                 continue
             total = 6 + length
             if len(buf) < total:
@@ -138,11 +149,13 @@ class ModbusGatewayEngine:
             self.stats["tcp_rx"] += 1
             proto = (frame[2] << 8) | frame[3]
             pdu = frame[7:]
-            if proto != 0 or not pdu:
+            if proto != 0:
                 self.stats["drops"] += 1
                 continue
             if len(self._queue) >= self.max_queue:
                 self.stats["drops"] += 1
+                _LOG.debug("gateway queue full (%d), dropping request",
+                           self.max_queue)
                 continue
             self._queue.append({"tid": (frame[0] << 8) | frame[1],
                                 "unit_tcp": frame[6], "pdu": pdu,
@@ -151,7 +164,13 @@ class ModbusGatewayEngine:
         return rtu_out, tcp_out
 
     def _pump(self, rtu_out):
-        """Start queued requests while the RTU bus is free."""
+        """Start queued requests while the RTU bus is free.
+
+        广播请求（unit=0）不等回复，循环会一口气把所有广播帧发出去。
+        每轮最多发 _BROADCAST_BURST 个广播帧后让出事件循环，给 RTU 响应
+        回来的机会，避免 TX 缓冲溢出。
+        """
+        _bcasts = 0
         while self._pending is None and self._queue:
             req = self._queue.popleft()
             unit_rtu = self.map_unit(req["unit_tcp"])
@@ -160,6 +179,9 @@ class ModbusGatewayEngine:
             self.stats["rtu_tx"] += 1
             self._rtu_buf.clear()
             if unit_rtu == 0:
+                _bcasts += 1
+                if _bcasts >= 4:
+                    return      # yield: 避免一次性突发太多广播帧
                 continue      # broadcast: no reply is coming, keep the bus free
             func = req["pdu"][0]
             self._pending = {
@@ -175,13 +197,18 @@ class ModbusGatewayEngine:
     # ---- side B: Modbus RTU ------------------------------------------------
 
     def feed_rtu(self, data):
-        """Accept RTU bytes; return (rtu_frames_to_send, tcp_replies)."""
+        """Accept RTU bytes; return (rtu_frames_to_send, tcp_replies).
+
+        噪声数据时逐字节重同步（CRC/单位不匹配），每轮最多丢弃 _RESYNC_MAX
+        字节后让出事件循环，避免 O(n²) 阻塞 UI 线程。
+        """
         rtu_out, tcp_out = [], []
         self._rtu_buf.extend(bytes(data or b""))
         if self._pending is None:
             self._rtu_buf.clear()             # unsolicited traffic
             self._pump(rtu_out)
             return rtu_out, tcp_out
+        _drops = 0
         while self._pending is not None and self._rtu_buf:
             pending = self._pending
             try:
@@ -196,10 +223,14 @@ class ModbusGatewayEngine:
                             bytes([(pending["func"] | 0x80) & 0xFF, exc.code & 0xFF]),
                             tcp_out)
                 self._pending = None
+                _drops = 0
                 continue
             except Exception:
                 del self._rtu_buf[0]          # CRC / unit mismatch: resync
                 self.stats["drops"] += 1
+                _drops += 1
+                if _drops >= 8:
+                    return rtu_out, tcp_out    # yield: 下次 feed 继续
                 continue
             if taken is None:
                 break                         # need more bytes
@@ -209,6 +240,7 @@ class ModbusGatewayEngine:
             self.stats["rtu_rx"] += 1
             self._reply(pending, frame[1:-2], tcp_out)
             self._pending = None
+            _drops = 0
         self._pump(rtu_out)
         return rtu_out, tcp_out
 

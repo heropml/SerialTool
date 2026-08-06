@@ -2,10 +2,13 @@
 """设备寄存器定义、Modbus 标签解码与结构化记录纯逻辑。"""
 
 import csv
+import logging
 import math
 import os
 import struct
 import time
+
+_LOG = logging.getLogger(__name__)
 
 
 REGISTER_TYPES = ("u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64", "bit")
@@ -161,6 +164,13 @@ def parse_bitfields(text):
             continue
         name = (toks[2].strip() if len(toks) >= 3 else "b%d" % start)[:40]
         out.append((start, width, name or ("b%d" % start)))
+        # Check for overlap with existing bitfields
+        for (es, ew, en) in out[:-1]:
+            if not (start + width <= es or es + ew <= start):
+                _LOG.warning("bitfield '%s' (%d:%d) overlaps with '%s' (%d:%d)",
+                            name, start, start + width, en, es, es + ew)
+                out.pop()
+                break
     return out[:32]
 
 
@@ -235,7 +245,13 @@ def decode_modbus_samples(definitions, slave, function, start_address, registers
     start = int(start_address)
     now = time.time() if timestamp is None else float(timestamp)
     samples = []
-    for rec in normalize_registers(definitions):
+    # Avoid re-normalizing when the caller already passes normalized definitions
+    # (all production callers do). Detect by checking the first item for the
+    # "enabled" key that normalize_register always adds.
+    _normed = (definitions
+               and isinstance(definitions[0], dict)
+               and "enabled" in definitions[0])
+    for rec in (definitions if _normed else normalize_registers(definitions)):
         if (not rec["enabled"] or rec["slave"] != int(slave)
                 or rec["function"] != int(function)):
             continue
