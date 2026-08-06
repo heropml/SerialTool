@@ -117,7 +117,7 @@
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **235 处宽泛 `except`、其中 84 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算，别手数）。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`），`bridge.py` 的网关 tick 同步改为记日志 + 一次性 `error_occurred`；`main_window.py`（146/68）、`serial_io.py`（12/6）待做 |
 | S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 986 个用例全是短平快功能验证，无一条长跑 |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 1023 个用例全是短平快功能验证，无一条长跑 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | `log_naming.py` 现只有按日轮转（`should_roll_date`），补按大小切分及两者组合 |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 错误提示给出可操作建议而非原始 `errorString`；常用 Modbus 读写收敛成简化表单；补发送历史全文搜索 |
 
@@ -200,7 +200,7 @@
 - **E** Modbus 主机多视图分组轮询：分标签编辑、共用一套半双工引擎；提交时按全局下标就地合并，不打乱其他视图的规则顺序；标签顺序取自持久化的 `modbus_master_views`
 - **F** FC22 掩码写（0x16）+ FC43/14 设备标识（0x2B/0x0E）：主机、从机、UI 与单测齐全
 - **G** 触发动作链：Webhook / 外部程序 / 命中阈值（`min_hits`、`every_n`），带在途并发上限与配置导入门禁（取舍见第四节）
-- **H** 真·Modbus TCP/RTU 网关（`modbus_gateway.py`）：TCP 流缓冲重组、请求排队（上限 32）、广播不等回包、超时回 MBAP 异常 0x0B、从机异常响应原样转发；`bridge.py` 挂 100ms 专用 tick 并双向记速。**默认行为**：Unit ID 原样透传（`unit_map` 留空）、从机超时 1s，这两项界面暂不开放，已写进网关开关的提示文字。**多客户端**：每个 TCP 客户端独立重组缓冲（上限 16 个），请求入队时记来源，响应经 `TcpReply(client, frame)` 定向回发起方；客户端断开时清掉它的缓冲与排队请求，在途请求的响应直接丢弃而不广播
+- **H** 真·Modbus TCP/RTU 网关（`modbus_gateway.py`）：TCP 流缓冲重组、请求排队（上限 32）、广播不等回包、超时回 MBAP 异常 0x0B、从机异常响应原样转发；`bridge.py` 挂 100ms 专用 tick 并双向记速。**默认行为**：Unit ID 原样透传（`unit_map` 留空）、从机超时 1s，这两项界面暂不开放，已写进网关开关的提示文字。**多客户端**：每个 TCP 客户端独立重组缓冲（上限 16 个），请求入队时记来源，响应经 `TcpReply(client, frame)` 定向回发起方；客户端断开时清掉它的缓冲与排队请求，在途请求的响应直接丢弃而不广播；**超时后恢复窗口**（默认 `recovery_s=0.2`）先空闲再发下一笔，避免迟到 RTU 响应冒充下一笔答复；同批噪声后的合法帧在单次 feed 内继续重同步，不再因 8/64 字节片上限卡住到超时
 - 修复：启动时 `QStackedLayout` 页面未挂父窗口导致的窗口闪现；`QComboBox` 弹出层取样式时的瞬时白框（`dialogs._style_one_combo_popup`）
 - **I（v1.4 S-1 首块）** `net_io.py` 异常收敛：9 处静默 `except Exception: pass` 归零。清理动作改为分步兜底（`_safe`）——
   退组或 abort 失败不再连带跳过 `close`/`deleteLater`（原会泄漏 socket 且没退组），半帧污染的客户端先摘表再释放
@@ -264,4 +264,4 @@
     并带默认值，只有这一列直接 `.checkState()`；缺项按启用算，与
     `normalize_registers` 的默认值一致
 
-测试基线：**986 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。
+测试基线：**1023 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。

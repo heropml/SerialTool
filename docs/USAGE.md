@@ -37,6 +37,20 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.4.0
+
+Official stability release:
+
+- **Register extensions** -- 64-bit types, bitfields, 0/1 address base, warn/alarm levels.
+- **Modbus Master multi-view** -- edit polls by view; shared half-duplex engine.
+- **FC22 / FC43/14** -- mask write and device identification.
+- **Trigger actions** -- Webhook / external command / hit thresholds; process-group cleanup; delete confirms.
+- **Modbus TCP↔RTU gateway** -- multi-client directed replies; 0x0B on timeout; recovery window; same-batch resync keeps valid frames.
+- **Hardening** -- shell-escape for run_cmd placeholders; no fake disconnect while connecting; literal private webhook URLs blocked.
+- **Tests** -- 1023 passed / 3 skipped / 291 subtests.
+
+---
+
 ## What's New in v1.3.9
 
 This release finishes the remaining P1 polish:
@@ -745,7 +759,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.3.9`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.4.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
