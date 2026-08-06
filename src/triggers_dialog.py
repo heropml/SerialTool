@@ -350,6 +350,15 @@ class TriggersDialog(QDialog):
     def _delete(self):
         if not (0 <= self._cur < len(self._items)):
             return
+        rule = self._items[self._cur]
+        has_external = rule.get("run_cmd_on") or rule.get("webhook")
+        if has_external:
+            if not self.app._confirm_dlg(
+                    self.app._t("device_delete"),
+                    self.app._t("mbm_view_del_body",
+                                 name=rule.get("name", ""), n=1),
+                    ok_text=self.app._t("device_delete")):
+                return
         self._save_timer.stop()
         del self._items[self._cur]
         self._save()

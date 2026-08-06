@@ -5582,6 +5582,13 @@ class CommTool(QMainWindow):
             host = urlparse(url).hostname
             if not host:
                 return False
+            # IPv4-mapped IPv6 (e.g. ::ffff:192.168.1.1) — unwrap and check
+            if host.startswith("::ffff:"):
+                try:
+                    return CommTool._is_private_url(
+                        "http://" + host[7:] + "/")
+                except Exception:
+                    pass
             # IPv4 private ranges
             parts = host.split(".")
             if len(parts) == 4 and all(p.isdigit() for p in parts):

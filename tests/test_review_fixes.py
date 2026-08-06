@@ -249,7 +249,9 @@ def test_bridge_gateway_timeout_reaches_side_a():
         a.data_received.emit(mm.build_tcp_request(4, 1, 3, 0, 1))
         assert len(b.sent) == 1
         assert a.sent == []
-        time.sleep(0.06)
+        # Pin pending timestamp so tick() uses deterministic time
+        # instead of real time.sleep, avoiding flaky CI failures.
+        eng._gateway._pending["t0"] = time.monotonic() - eng._gateway.timeout_s - 0.01
         eng._tick_gateway()
         assert len(a.sent) == 1
         assert a.sent[0][7] == 0x83 and a.sent[0][8] == EXC_GATEWAY_NO_RESPONSE

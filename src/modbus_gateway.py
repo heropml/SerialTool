@@ -160,6 +160,7 @@ class ModbusGatewayEngine:
             pdu = frame[7:]
             if proto != 0:
                 self.stats["drops"] += 1
+                _LOG.debug("non-Modbus protocol ID %d in TCP frame, dropped", proto)
                 continue
             if len(self._queue) >= self.max_queue:
                 self.stats["drops"] += 1
