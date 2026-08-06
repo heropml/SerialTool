@@ -71,34 +71,50 @@ def test_udp_group_conn_close_when_never_opened_no_signal():
 #    feed_rtu with corrupt data processes at most 8 drops per call.
 # =========================================================================
 
-def test_gateway_resync_yield_at_8_drops():
-    """feed_rtu with corrupt data drops at most 8 bytes per call."""
+def test_gateway_resync_caps_drops_per_call():
+    """Pathological noise must not resync without a per-feed ceiling."""
+    from modbus_gateway import _RESYNC_MAX_PER_FEED
     gw = ModbusGatewayEngine()
     gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1))
     assert gw._pending is not None
 
-    # Pre-fill the RTU buffer with garbage (all 0xFF)
-    gw._rtu_buf.extend(b"\xFF" * 20)
+    gw._rtu_buf.extend(b"\xFF" * (_RESYNC_MAX_PER_FEED + 80))
     initial_drops = gw.stats["drops"]
-    gw.feed_rtu(b"")  # triggers processing of the existing buffer
+    gw.feed_rtu(b"")
     new_drops = gw.stats["drops"] - initial_drops
-    assert new_drops <= 8, "feed_rtu should yield after at most 8 resync drops"
+    assert new_drops <= _RESYNC_MAX_PER_FEED
+    # leftover stays for the next feed
+    assert len(gw._rtu_buf) > 0
 
 
 def test_gateway_resync_continues_on_next_call():
-    """After yielding at 8 drops, next feed_rtu continues resyncing."""
+    """After hitting the per-feed ceiling, the next feed keeps resyncing."""
+    from modbus_gateway import _RESYNC_MAX_PER_FEED
     gw = ModbusGatewayEngine()
     gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1))
     assert gw._pending is not None
 
-    # First call: drops up to 8
-    gw.feed_rtu(b"\xFF" * 20)
+    gw.feed_rtu(b"\xFF" * (_RESYNC_MAX_PER_FEED + 40))
     drops_after_first = gw.stats["drops"]
+    gw.feed_rtu(b"\xFF" * 40)
+    assert gw.stats["drops"] > drops_after_first
 
-    # Second call: can drop more
-    gw.feed_rtu(b"\xFF" * 20)
-    drops_after_second = gw.stats["drops"]
-    assert drops_after_second > drops_after_first, "Second call should drop more"
+
+def test_gateway_resync_same_batch_keeps_the_valid_frame():
+    """Noise then a valid RTU reply in ONE feed must not strand the reply.
+
+    The old 8-drop early-return left the valid frame in _rtu_buf; with no more
+    slave traffic the gateway timed out and cleared it — silent data loss.
+    """
+    import modbus_slave as ms
+    gw = ModbusGatewayEngine(timeout_s=1.0)
+    gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1), client="A", now=0.0)
+    body = bytes([1, 0x03, 0x02, 0x12, 0x34])
+    valid = body + ms.crc16(body)
+    _, tcp_out = gw.feed_rtu(b"\xFF" * 8 + valid, now=0.1)
+    assert len(tcp_out) == 1 and tcp_out[0].client == "A"
+    assert tcp_out[0].frame[9:11] == bytes([0x12, 0x34])
+    assert gw._pending is None
 
 
 # =========================================================================
@@ -158,6 +174,15 @@ def test_tcp_resync_scans_at_most_64_per_call():
     drops_first_call = gw.stats["drops"]
     assert drops_first_call == 64, "First call should drop exactly 64 bytes"
     assert len(buf) == 200 - 64
+
+
+def test_tcp_resync_same_batch_keeps_the_valid_request():
+    """64 bytes of junk then a valid MBAP in one feed_tcp must still dispatch."""
+    gw = ModbusGatewayEngine()
+    req = mm.build_tcp_request(1, 1, 3, 0, 1)
+    rtu_out, _ = gw.feed_tcp(b"\xFF" * 64 + req, client="X", now=0.0)
+    assert len(rtu_out) == 1
+    assert gw._pending is not None and gw._pending["client"] == "X"
 
 
 # =========================================================================

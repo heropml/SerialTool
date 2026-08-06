@@ -10,6 +10,12 @@ from modbus_master import MAX_TCP_MBAP_LENGTH, take_rtu_response, _u16
 MAX_QUEUE = 32
 # 超时后总线保持空闲的时长（即 RTU 主站的 turnaround delay）。
 RECOVERY_S = 0.2
+# 重同步每片最多丢掉这么多字节后「让片」，避免噪声线上 take_* 反复扫整缓冲拖死 UI。
+# 同一次 feed 会继续扫后续片，直到本批缓冲耗尽或触达硬顶——否则噪声后紧跟的合法帧
+# 会留在缓冲里，从机不再发数据时只能等到超时被清掉（静默丢合法响应）。
+_RESYNC_SLICE = 8
+_RESYNC_TCP_SLICE = 64
+_RESYNC_MAX_PER_FEED = 512
 MAX_CLIENTS = 16                 # TCP 侧同时保留缓冲的客户端上限，防止 key 无限增长
 EXC_GATEWAY_NO_RESPONSE = 0x0B   # Gateway target device failed to respond
 
@@ -127,8 +133,8 @@ class ModbusGatewayEngine:
                 del buf[0]                    # not a plausible header, resync
                 self.stats["drops"] += 1
                 _scanned += 1
-                if _scanned >= 64:
-                    return None               # yield: 下次 feed 继续
+                if _scanned >= _RESYNC_TCP_SLICE:
+                    return None               # 一片扫完：feed_tcp 决定是否继续
                 continue
             total = 6 + length
             if len(buf) < total:
@@ -151,9 +157,16 @@ class ModbusGatewayEngine:
             buf = self._tcp_bufs[client] = bytearray()
         buf.extend(bytes(data or b""))
         rtu_out, tcp_out = [], []
+        drops_at_start = self.stats["drops"]
         while True:
+            drops_before = self.stats["drops"]
             frame = self._take_tcp_frame(buf)
             if frame is None:
+                # 片上限让出 vs 字节不够：前者且缓冲里还有头，同一次 feed 继续扫，
+                # 否则噪声+合法帧同批到达时合法帧会卡到下一次收包。
+                if (len(buf) >= 6 and self.stats["drops"] > drops_before
+                        and self.stats["drops"] - drops_at_start < _RESYNC_MAX_PER_FEED):
+                    continue
                 break
             self.stats["tcp_rx"] += 1
             proto = (frame[2] << 8) | frame[3]
@@ -228,6 +241,7 @@ class ModbusGatewayEngine:
             self._pump(rtu_out, now)
             return rtu_out, tcp_out
         _drops = 0
+        _drops_total = 0
         while self._pending is not None and self._rtu_buf:
             pending = self._pending
             try:
@@ -248,8 +262,14 @@ class ModbusGatewayEngine:
                 del self._rtu_buf[0]          # CRC / unit mismatch: resync
                 self.stats["drops"] += 1
                 _drops += 1
-                if _drops >= 8:
-                    return rtu_out, tcp_out    # yield: 下次 feed 继续
+                if _drops >= _RESYNC_SLICE:
+                    # 一片让出：重置计数后继续扫本批剩余，避免合法帧卡到超时。
+                    # 硬顶防极端噪声单次 feed 拖死事件循环。
+                    if _drops_total + _drops >= _RESYNC_MAX_PER_FEED:
+                        self._pump(rtu_out, now)
+                        return rtu_out, tcp_out
+                    _drops_total += _drops
+                    _drops = 0
                 continue
             if taken is None:
                 break                         # need more bytes

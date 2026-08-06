@@ -436,8 +436,8 @@ class DashboardDialog(QDialog):
         self._values.clear()
         self._levels.clear()
         self._parser.reset()
-        self._timer.stop()
-        self._blink_timer.stop()
+        # 窗口仍可见时不能停刷新表：feed 只写 _values，显示靠 _timer → _refresh_tiles。
+        # 停了又要等 hide/show 才 restart，清除/改模式后新数据会进内存但卡片不更新。
 
     # ---------------- 主题 / 语言 ----------------
     def _show_help_dlg(self):
