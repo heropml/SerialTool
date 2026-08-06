@@ -930,3 +930,61 @@ def test_normal_shutdown_unregisters_the_atexit_hook(tmp_path, monkeypatch):
     finally:
         window.deleteLater()
         _APP.processEvents()
+
+
+def test_dropped_actions_show_up_in_the_triggers_dialog(tmp_path, monkeypatch):
+    """被并发上限丢掉的动作必须有地方看得到。
+
+    丢弃时命中数照涨，但 webhook / 外部程序根本没跑；不说一声的话
+    用户只能对着「命中 500 次」猜为什么告警没发出去。
+    """
+    import triggers
+    from triggers_dialog import TriggersDialog
+    _patch_window_runtime(monkeypatch, tmp_path / "dropped.ini")
+    window = CommTool("trg-dropped")
+    try:
+        window._triggers = [triggers.normalize({"name": "r0", "pattern": "X"})]
+        dlg = TriggersDialog(window)
+        try:
+            dlg._refresh_stats()
+            assert dlg.lbl_dropped.text() == ""      # 没丢弃 → 不占位
+
+            with window._trg_action_lock:
+                window._trg_action_dropped = 3
+            dlg._refresh_stats()
+            assert "3" in dlg.lbl_dropped.text()
+
+            dlg._reset_stats()                       # 「重置统计」要连它一起清
+            assert window._trg_dropped_actions() == 0
+            assert dlg.lbl_dropped.text() == ""
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_collect_registers_survives_a_missing_checkbox(tmp_path, monkeypatch):
+    """第 0 列缺项时不能 AttributeError。
+
+    旁边每个列都走 text() / combo_value() 并带默认值，只有这一列直接
+    .checkState()；缺项按启用算，与 normalize_registers 的默认值一致。
+    """
+    from device_center_dialog import DeviceCenterDialog
+    _patch_window_runtime(monkeypatch, tmp_path / "regs.ini")
+    window = CommTool("dev-regs")
+    try:
+        dlg = DeviceCenterDialog(window)
+        try:
+            dlg._append_register({"name": "t0", "address": 5})
+            dlg.table.takeItem(0, 0)                 # 把勾选框抽掉
+            records = dlg._collect_registers()       # 不崩
+            assert len(records) == 1
+            assert records[0]["enabled"] is True
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()

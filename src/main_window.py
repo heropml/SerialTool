@@ -5772,6 +5772,15 @@ class CommTool(QMainWindow):
                 return
             time.sleep(0.01)
 
+    def _trg_dropped_actions(self):
+        """因并发上限被丢弃的动作次数。计数器由工作线程递增，读写都走锁。"""
+        with self._trg_action_lock:
+            return self._trg_action_dropped
+
+    def _trg_reset_dropped(self):
+        with self._trg_action_lock:
+            self._trg_action_dropped = 0
+
     def _trg_spawn_action(self, worker):
         """Run a trigger action off the GUI thread, capped in flight.
 

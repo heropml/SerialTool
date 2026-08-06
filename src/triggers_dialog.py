@@ -184,6 +184,13 @@ class TriggersDialog(QDialog):
         self.lbl_err.setWordWrap(True)
         right.addWidget(self.lbl_err)
 
+        # 全局（不分规则）：动作被并发上限丢掉时，命中数照涨但 webhook /
+        # 外部程序没跑，不说一声只能靠猜。只在 >0 时占位。
+        self.lbl_dropped = QLabel()
+        self.lbl_dropped.setObjectName("TrgDropped")
+        self.lbl_dropped.setWordWrap(True)
+        right.addWidget(self.lbl_dropped)
+
         right.addStretch(1)
         self.lbl_hint = QLabel()
         self.lbl_hint.setObjectName("MsHint")
@@ -353,6 +360,8 @@ class TriggersDialog(QDialog):
         # 重置后会 _reload_list；未提交的编辑必须先落模型，不能被重载覆盖。
         self.flush_pending()
         self.app._trigger_engine.reset_stats()
+        self.app._trg_reset_dropped()
+        self._refresh_stats()
         self._reload_list(keep=self._cur)
 
     def _refresh_stats(self):
@@ -371,6 +380,8 @@ class TriggersDialog(QDialog):
         why = bad.get(self._cur)
         self.lbl_err.setText(t("trg_bad_regex") if why == "regex"
                              else t("trg_bad_hex") if why == "hex" else "")
+        dropped = self.app._trg_dropped_actions()
+        self.lbl_dropped.setText(t("trg_dropped", n=dropped) if dropped else "")
         # 列表里的次数也跟着走（不重建列表，直接改文案，避免抢用户选中）
         for i in range(min(self.list.count(), len(self._items))):
             item = self.list.item(i)
@@ -422,6 +433,7 @@ class TriggersDialog(QDialog):
         QLineEdit#TrgInput:disabled {{ color: {c['text_sec']}; }}
         QLabel#TrgHits {{ color: {c['accent']}; font-size: 12px; font-weight: 600; }}
         QLabel#TrgErr {{ color: {c['danger']}; font-size: 11px; }}
+        QLabel#TrgDropped {{ color: {c['danger']}; font-size: 11px; }}
         """))
         _style_combo_popups(self, c)
 

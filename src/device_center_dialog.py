@@ -239,10 +239,14 @@ class DeviceCenterDialog(QDialog):
             def combo_value(column, default):
                 combo = self.table.cellWidget(row, column)
                 return combo.currentData() if combo is not None else default
+            def checked(column, default=True):
+                # 缺项按启用算，与 normalize_registers 的 enabled 默认值一致
+                item = self.table.item(row, column)
+                return item.checkState() == Qt.Checked if item is not None else default
             warn_lo, warn_hi = self._split_range(text(13))
             alarm_lo, alarm_hi = self._split_range(text(14))
             records.append({
-                "enabled": self.table.item(row, 0).checkState() == Qt.Checked,
+                "enabled": checked(0),
                 "name": text(1), "slave": text(2, "1"), "function": combo_value(3, 3),
                 "display_address": text(4, "0"), "type": combo_value(5, "u16"),
                 "order": combo_value(6, "AB"), "bit": text(7, "0"),
