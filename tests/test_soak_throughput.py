@@ -170,6 +170,28 @@ def test_recv_char_budget_without_newlines(monkeypatch, tmp_path):
         _shutdown_window(w)
 
 
+def test_terminal_char_budget_without_newlines(monkeypatch, tmp_path):
+    """P1: terminal path must apply the same char budget (bypasses append_block)."""
+    from main_window import _RECV_CHARS_PER_LINE
+
+    w = _fresh_window(monkeypatch, tmp_path, "term-nobreak")
+    try:
+        w._terminal_on = True
+        w.ed_max_lines.setText("100")
+        w._on_max_lines_changed()
+        budget = w._recv_char_budget()
+        assert budget == 100 * _RECV_CHARS_PER_LINE
+        payload = b"X" * 64
+        for _ in range(2000):
+            w._on_data_received_impl(payload)
+        chars = w.txt_recv.document().characterCount()
+        assert chars <= budget + 2, "chars=%d budget=%d" % (chars, budget)
+        last = w.txt_recv.document().characterCount() - 1
+        assert w._term_pos is None or 0 <= w._term_pos <= last
+    finally:
+        _shutdown_window(w)
+
+
 def test_reconnect_schedule_cancel_and_limit_churn(monkeypatch, tmp_path):
     """Auto-reconnect timer churn + serial attempt cap stay deterministic."""
     w = _fresh_window(monkeypatch, tmp_path, "reconn")
@@ -230,16 +252,76 @@ def test_mixed_rx_tx_counter_burst(monkeypatch, tmp_path):
         _shutdown_window(w)
 
 
+
+def test_terminal_toggle_char_budget_burst(monkeypatch, tmp_path):
+    """S-3: flipping terminal mode mid-burst must not unbounded-grow the doc."""
+    from main_window import _RECV_CHARS_PER_LINE
+
+    w = _fresh_window(monkeypatch, tmp_path, "term-toggle")
+    try:
+        w.ed_max_lines.setText("100")
+        w._on_max_lines_changed()
+        budget = w._recv_char_budget()
+        assert budget == 100 * _RECV_CHARS_PER_LINE
+        payload = b"Z" * 48
+        for i in range(1200):
+            w._terminal_on = (i % 40) >= 20
+            w._on_data_received_impl(payload)
+            if i % 100 == 0:
+                _APP.processEvents()
+        chars = w.txt_recv.document().characterCount()
+        assert chars <= budget + 2, "chars=%d budget=%d" % (chars, budget)
+    finally:
+        _shutdown_window(w)
+
+
+def test_reconnect_churn_under_rx_burst(monkeypatch, tmp_path):
+    """S-3: reconnect schedule/cancel interleaved with RX must stay stable."""
+    w = _fresh_window(monkeypatch, tmp_path, "reconn-rx")
+    try:
+        w.settings.setValue("auto_reconnect", True)
+        opens = []
+        w.open_conn = lambda reconnect_cfg=None: opens.append(reconnect_cfg)
+        cfg = ("Serial", "COM9", 9600, "8", "None", "1", "None")
+        w._serial_reconnect_cfg = cfg
+        w._available_serial_devices = {"COM9"}
+        w._reconnect_attempts = 0
+        w.conn = None
+        w._user_closing = False
+        payload = b"RX" * 16
+        for i in range(80):
+            w._schedule_reconnect()
+            w._on_data_received_impl(payload)
+            if i % 2 == 0:
+                w._cancel_reconnect()
+            if i % 10 == 0:
+                _APP.processEvents()
+        w._cancel_reconnect()
+        assert not w._reconnect_timer.isActive()
+        assert w.rx_bytes == 80 * len(payload)
+    finally:
+        _shutdown_window(w)
+
+
 def _soak_seconds_from_env(env=None):
-    """Parse COMMTOOL_SOAK; return None if unset/blank/invalid."""
-    raw = (os.environ if env is None else env).get("COMMTOOL_SOAK")
+    """Parse COMMTOOL_SOAK; return None if unset/blank/invalid.
+
+    Default CI cap is 600s. Set COMMTOOL_SOAK_NIGHTLY=1 to allow up to 4h
+    for overnight jobs (still no real serial hardware required).
+    """
+    env = os.environ if env is None else env
+    raw = env.get("COMMTOOL_SOAK")
     if raw is None:
         return None
     text = str(raw).strip()
     if not text:
         return None
+    nightly = str(env.get("COMMTOOL_SOAK_NIGHTLY", "")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    cap = 14400.0 if nightly else 600.0
     try:
-        return max(1.0, min(float(text), 600.0))
+        return max(1.0, min(float(text), cap))
     except (TypeError, ValueError):
         return None
 
@@ -251,6 +333,10 @@ def test_soak_seconds_from_env_rejects_invalid():
     assert _soak_seconds_from_env({"COMMTOOL_SOAK": "5"}) == 5.0
     assert _soak_seconds_from_env({"COMMTOOL_SOAK": "0.5"}) == 1.0
     assert _soak_seconds_from_env({"COMMTOOL_SOAK": "9999"}) == 600.0
+    assert _soak_seconds_from_env(
+        {"COMMTOOL_SOAK": "9999", "COMMTOOL_SOAK_NIGHTLY": "1"}) == 9999.0
+    assert _soak_seconds_from_env(
+        {"COMMTOOL_SOAK": "99999", "COMMTOOL_SOAK_NIGHTLY": "1"}) == 14400.0
 
 
 @pytest.mark.skipif(

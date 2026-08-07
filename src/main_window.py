@@ -56,9 +56,27 @@ import triggers
 import convert
 import snippets
 import connection_presets
+from config_keys import CFG_KEYS as _CFG_KEYS_MOD
+from multi_send import (
+    load_groups as _ms_load_groups,
+    active_items as _ms_active_items_fn,
+    build_cycle_seq as _ms_build_cycle_seq,
+    groups_json as _ms_groups_json,
+)
+from connection_presets import parse_port as _conn_parse_port
+from connection_presets import (
+    serial_signature as _conn_serial_sig,
+    tcp_client_signature as _conn_tcp_sig,
+    proto_only_signature as _conn_proto_sig,
+)
 import seq_context
 import sequence_dataset
 import io_stats
+from io_stats import (
+    fmt_bytes as _io_fmt_bytes,
+    fmt_rate as _io_fmt_rate,
+    format_stat_bar as _io_format_stat_bar,
+)
 import log_naming
 import modbus_slave
 import modbus_master
@@ -74,12 +92,76 @@ from ui_tips import set_tooltip
 PROTO_SERIAL = "Serial"
 CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS + [PROTO_VIRTUAL]
 
-# 自动化序列循环次数上限：防止用户填百万/无穷导致 _seq_rounds 无界增长 + 导出表异常庞大。
-_SEQ_MAX_LOOPS = 100000
-_SEQ_MAX_RETRIES = 999       # 引擎端也必须限制，防止 JSON/旧配置绕过 UI validator
-_SEQ_QTIMER_MAX_MS = 0x7FFFFFFF
-_SEQ_RETRY_GUARD_MS = 50     # 重试前要求连续安静，迟到字节会重新起算该窗口
-_SEQ_RETRY_MAX_QUIET_MS = 2000  # 静默窗上限：对端持续 <50ms 刷数据也不致无限延后重发，超此照常重发
+# Sequence engine limits (S-2: owned by sequence_engine; re-exported for callers).
+from sequence_engine import (
+    MAX_RETRIES as _SEQ_MAX_RETRIES,
+    QTIMER_MAX_MS as _SEQ_QTIMER_MAX_MS,
+    RETRY_GUARD_MS as _SEQ_RETRY_GUARD_MS,
+    RETRY_MAX_QUIET_MS as _SEQ_RETRY_MAX_QUIET_MS,
+    step_match as _seq_engine_step_match,
+    capture_vars as _seq_engine_capture_vars,
+    apply_capture as _seq_engine_apply_capture,
+    round_snapshot as _seq_engine_round_snapshot,
+    build_summary as _seq_engine_build_summary,
+    clamp_loops as _seq_engine_clamp_loops,
+    clamp_timer_ms as _seq_engine_clamp_timer_ms,
+    has_runnable_steps as _seq_engine_has_runnable,
+    next_enabled_index as _seq_engine_next_enabled,
+    prepare_runtime as _seq_engine_prepare_runtime,
+    step_kind as _seq_engine_step_kind,
+    should_retry as _seq_engine_should_retry,
+    plan_retry as _seq_engine_plan_retry,
+    retry_remain_s as _seq_engine_retry_remain,
+    more_rounds as _seq_engine_more_rounds,
+    continue_after_fail as _seq_engine_continue_after_fail,
+    clip_rx_hex as _seq_engine_clip_rx_hex,
+    detail_from_extracted as _seq_engine_detail_extracted,
+    initial_results as _seq_engine_initial_results,
+)
+
+from modbus_timing import (
+    serial_char_bits as _mbm_timing_char_bits,
+    rtu_silent_ms as _mbm_timing_silent_ms,
+    rtu_tx_guard_ms as _mbm_timing_tx_guard_ms,
+    response_len_budget as _mbm_timing_resp_len,
+    timeout_ms as _mbm_timing_timeout_ms,
+    span_bad as _mbm_timing_span_bad,
+)
+
+from modbus_scheduler import (
+    pick_next_due as _mbm_sched_pick_next,
+    schedule_delay_ms as _mbm_sched_delay_ms,
+    next_due_after as _mbm_sched_next_due,
+)
+
+from view_format import (
+    bytes_to_hex as _view_bytes_to_hex,
+    format_hexdump as _view_format_hexdump,
+    with_leading_newline as _view_leading_nl,
+    timestamp_prefix as _view_timestamp_prefix,
+    view_mode_of_state as _view_mode_of_state,
+    view_extra_index as _view_extra_index,
+)
+
+from rx_text import (
+    decode_auto_chunk as _rx_decode_auto_chunk,
+    split_lines_with_offsets as _rx_split_lines,
+    ansi_flatten as _rx_ansi_flatten,
+    ansi_shift as _rx_ansi_shift,
+    ansi_slice as _rx_ansi_slice,
+)
+
+from trigger_safe import (
+    is_private_url as _trg_is_private_url,
+    shell_value as _trg_shell_quote,
+)
+
+from keyword_groups import (
+    load_groups as _kw_load_groups,
+    active_rules as _kw_active_rules,
+    save_fields as _kw_save_fields,
+)
+
 
 # 数据区正文的实际渲染格式。切换视图不会重排历史，所以格式必须跟着字符保存，不能只看当前开关。
 VIEW_PROP = QTextFormat.UserProperty + 2
@@ -106,31 +188,31 @@ _DATABITS_MAP = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
 _FLOW_MAP = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
 
 
-def _ar_crc_impl(data, width=16, poly=0x1021, init=0x0000,
-                 refin=False, refout=False, xorout=0x0000, byteorder="big"):
-    """通用 CRC 实现。放在模块顶层，供主进程 ctx 和 spawn 脚本子进程共用。"""
-    data = bytes(data)
-    mask = (1 << width) - 1
-    topbit = 1 << (width - 1)
-
-    def _refl(v, n):
-        r = 0
-        for i in range(n):
-            if v & (1 << i):
-                r |= 1 << (n - 1 - i)
-        return r
-
-    reg = init & mask
-    for b in data:
-        if refin:
-            b = _refl(b, 8)
-        reg ^= (b << (width - 8)) & mask
-        for _ in range(8):
-            reg = ((reg << 1) ^ poly) & mask if (reg & topbit) else (reg << 1) & mask
-    if refout:
-        reg = _refl(reg, width)
-    reg = (reg ^ xorout) & mask
-    return reg.to_bytes((width + 7) // 8, byteorder)
+from auto_reply_core import (
+    crc_impl as _ar_crc_impl,
+    to_int as _ar_core_to_int,
+    parse_hex_pat as _ar_core_parse_hex_pat,
+    hex_at as _ar_core_hex_at,
+    hit_test as _ar_core_hit_test,
+    crc as _ar_core_crc,
+    parse_delay as _ar_core_parse_delay,
+    norm_idx as _ar_core_norm_idx,
+    frame_ok as _ar_core_frame_ok,
+    compute_checksum as _ar_core_compute_checksum,
+    state_tokens as _ar_core_state_tokens,
+    norm_frame as _ar_core_norm_frame,
+    norm_fault as _ar_core_norm_fault,
+    norm_sm as _ar_core_norm_sm,
+    norm_modbus as _ar_core_norm_modbus,
+    reply_bytes as _ar_core_reply_bytes,
+    apply_cs_segs as _ar_core_apply_cs_segs,
+    compose_frame as _ar_core_compose_frame,
+    apply_fault as _ar_core_apply_fault,
+    subst_reply as _ar_core_subst_reply,
+    build_parts as _ar_core_build_parts,
+    state_ok as _ar_core_state_ok,
+    next_state as _ar_core_next_state,
+)
 
 
 def _ar_script_worker(conn):
@@ -2500,56 +2582,25 @@ class CommTool(QMainWindow):
 
     # ----- 关键字高亮：分组模型（多个命名分组，每组多条规则，单个生效分组）-----
     def _load_keyword_groups(self):
-        """加载分组 + 生效分组名。兼容旧版扁平 keyword_rules → 迁移成「默认」分组。
-        返回 (groups, active_index, loaded_ok)；loaded_ok=False 表示走了迁移/默认(损坏或缺失)，
-        调用方据此落盘，避免每次启动重复迁移。active=-1 表示关闭。"""
-        groups = []
-        raw = self.settings.value("keyword_groups", "")
-        if raw:
-            try:
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    groups = [g for g in data
-                              if isinstance(g, dict) and isinstance(g.get("rules"), list)]
-            except Exception:
-                groups = []
-        loaded_ok = bool(groups)
-        if not groups:
-            # 迁移旧扁平规则(若有)到「默认」分组
-            old_rules = []
-            old = self.settings.value("keyword_rules", "")
-            if old:
-                try:
-                    parsed = json.loads(old)
-                    if isinstance(parsed, list):
-                        old_rules = parsed
-                except Exception:
-                    _log.debug("_load_keyword_groups failed", exc_info=True)
-            groups = [{"name": self._t("kw_default_group"), "rules": old_rules}]
-        # 生效分组按名称记忆(索引会因增删变动)
-        active = -1
-        active_name = self.settings.value("keyword_active", "")
-        if active_name:
-            for i, g in enumerate(groups):
-                if g.get("name") == active_name:
-                    active = i
-                    break
+        """Load groups + active index; migrate flat keyword_rules if needed."""
+        groups, active, loaded_ok = _kw_load_groups(
+            self.settings.value("keyword_groups", ""),
+            self.settings.value("keyword_rules", ""),
+            self.settings.value("keyword_active", ""),
+            self._t("kw_default_group"),
+        )
         return groups, active, loaded_ok
 
     def _save_keyword_groups(self):
-        self.settings.setValue("keyword_groups",
-                               json.dumps(self._keyword_groups, ensure_ascii=False))
-        name = (self._keyword_groups[self._keyword_active]["name"]
-                if 0 <= self._keyword_active < len(self._keyword_groups) else "")
+        payload, name = _kw_save_fields(self._keyword_groups, self._keyword_active)
+        self.settings.setValue("keyword_groups", payload)
         self.settings.setValue("keyword_active", name)
-        self.settings.remove("keyword_rules")    # 清理已迁移的旧扁平键
+        self.settings.remove("keyword_rules")
         self.settings.sync()
 
     def _active_rules(self):
-        """当前生效分组的规则列表；关闭(-1)或越界时返回空列表。"""
-        if 0 <= self._keyword_active < len(self._keyword_groups):
-            return self._keyword_groups[self._keyword_active]["rules"]
-        return []
+        """Rules of the active keyword group; off/OOB -> []."""
+        return _kw_active_rules(self._keyword_groups, self._keyword_active)
 
     def _apply_keyword_rules(self):
         """规则内容变更后：持久化 + 立即重扫高亮（绕过节流，立刻见效）"""
@@ -2607,39 +2658,19 @@ class CommTool(QMainWindow):
 
     # ----- 协议高亮：复用「帧解析」规则，HEX 模式下给收到的帧各字段上色 + 悬浮解析 -----
     def _proto_rules(self):
-        """解析 frame_rules（与「帧解析」对话框共用同一份配置）→
-        [{header(bytes), header_str, fields:[(name,off,typ)]}]。按原始串缓存，内容变了自动重解析。"""
+        """Parse frame_rules with cache; share config with frame dialog."""
         raw = self.settings.value("frame_rules", "") or ""
         if raw == self._proto_rules_raw:
             return self._proto_rules_cache
-        rules = []
-        for ln in raw.splitlines():
-            ln = ln.strip()
-            if not ln or ln.startswith("#"):
-                continue
-            hdr_s, fld_s = (ln.split("|", 1) if "|" in ln else ("", ln))
-            try:
-                header = binproto.parse_hex_header(hdr_s.strip())
-                fields = binproto.parse_field_spec(fld_s.strip())
-            except (ValueError, TypeError):
-                continue
-            if fields:
-                rules.append({"header": header, "header_str": hdr_s.strip() or "*",
-                              "fields": fields})
+        rules = binproto.parse_frame_rules(raw)
         self._proto_rules_raw = raw
         self._proto_rules_cache = rules
         return rules
 
     @staticmethod
     def _proto_field_disp(typ, v):
-        """字段值 → 悬浮显示文本：hexN/strN 串原样；数值带 x → 十六进制；否则十进制/浮点。"""
-        if v is None:
-            return ""
-        if isinstance(v, str):
-            return v
-        if binproto.is_hex_num(typ) and isinstance(v, int):
-            return f"0x{v:X}" if v >= 0 else f"-0x{-v:X}"
-        return f"{v:.6g}" if isinstance(v, float) else str(v)
+        """Field value -> tooltip/display text."""
+        return binproto.field_disp(typ, v)
 
     def _add_proto_fields(self, data: bytes, body_pos: int):
         """HEX 模式收到一帧后：按 frame_rules 首条命中规则解析，各字段映射成数据区字符区间存起来，
@@ -2648,7 +2679,7 @@ class CommTool(QMainWindow):
         rules = self._proto_rules()
         if not rules:
             return
-        rule = next((r for r in rules if not r["header"] or data.startswith(r["header"])), None)
+        rule = binproto.first_matching_rule(rules, data)
         if rule is None:
             return
         doc = self.txt_recv.document()
@@ -3303,26 +3334,13 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _bytes_to_hex(data):
-        """字节序列 → 'AA BB CC' 十六进制串（不含尾随空格，调用方按需自加）。
-        data 两处调用方都是 bytes（接收信号 / do_send 构造），直接用 bytes.hex。"""
-        return data.hex(" ").upper()   # C 级实现，大块数据明显快于逐字节 f-string
+        """Bytes -> 'AA BB CC' (no trailing space)."""
+        return _view_bytes_to_hex(data)
 
     @staticmethod
     def _format_hexdump(data, per=16):
-        """字节 → hex 编辑器风格转储：每行「偏移(8位) + per 字节 HEX(半程加宽中缝) + |ASCII|」。
-        per=每行字节数(8/16/32/64…)；多行以 \\n 分隔、不含尾随 \\n；短行补齐定宽让 ASCII 列对齐。空→''。"""
-        data = bytes(data)
-        per = per if per in (8, 16, 32, 64) else 16
-        half = per // 2
-        hex_w = per * 3   # per*2 hex + (per-1) 间隔 + 1 中缝 = 3*per
-        lines = []
-        for off in range(0, len(data), per):
-            chunk = data[off:off + per]
-            hexs = ["%02X" % b for b in chunk]
-            hex_col = (" ".join(hexs[:half]) + "  " + " ".join(hexs[half:])).ljust(hex_w)
-            ascii_col = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
-            lines.append("%08X  %s |%s|" % (off, hex_col, ascii_col))
-        return "\n".join(lines)
+        """Bytes -> hexdump lines (offset + HEX + |ASCII|)."""
+        return _view_format_hexdump(data, per)
 
     def _hexdump_block(self, data):
         """转储串；时间戳/箭头开启时前置 \\n 让它们单独成行 —— 否则首行被时间戳推右、续行(00000010…)
@@ -3332,9 +3350,7 @@ class CommTool(QMainWindow):
         except (ValueError, AttributeError):
             per = 16
         dump = self._format_hexdump(data, per)
-        if dump and self.sw_show_timestamp.isChecked():
-            dump = "\n" + dump
-        return dump
+        return _view_leading_nl(dump, self.sw_show_timestamp.isChecked())
 
     def _on_hexdump_toggled(self, on):
         if on and getattr(self, "_numview_on", False):
@@ -3381,9 +3397,7 @@ class CommTool(QMainWindow):
             tail = self._t("numview_tail", data=rest.hex(" ").upper())
             text = text + ("\n" if text else "") + tail
         # 同 _hexdump_block：多行块在时间戳/箭头开启时前置换行，避免首行被推右、续行纵向错位
-        if text and self.sw_show_timestamp.isChecked():
-            text = "\n" + text
-        return text
+        return _view_leading_nl(text, self.sw_show_timestamp.isChecked())
 
     def _flush_numview_carries(self, sources=None):
         """连续流结束/换口径时，把未凑整的 RX 尾字节明确显示出来，不让它们随 reset 静默消失。"""
@@ -3417,13 +3431,9 @@ class CommTool(QMainWindow):
         self._update_sel_checksum()        # 视图变了 → 选区字节的解读方式也变，重算校验和
 
     def _view_mode_of_state(self):
-        """三个状态开关 → 下拉该显示哪一项。渲染优先级同 _on_data_received_impl：
-        转储 > 数值 > HEX > 文本（异常配置让多个同时为真时，显示与实际渲染保持一致）。"""
-        if self._hexdump_on:
-            return "dump"
-        if self._numview_on:
-            return "num"
-        return "hex" if self.sw_rx_hex.isChecked() else "text"
+        """Toggle state -> view-mode combo id (dump>num>hex>text)."""
+        return _view_mode_of_state(
+            self._hexdump_on, self._numview_on, self.sw_rx_hex.isChecked())
 
     def _sync_view_mode_combo(self):
         """状态 → 下拉（导入配置 / 加载会话后调）。只改显示，不再回头触发切换逻辑。"""
@@ -3448,7 +3458,7 @@ class CommTool(QMainWindow):
             stack.setCurrentIndex(0)
             return
         mode = self.cb_view_mode.currentData()
-        stack.setCurrentIndex({"text": 0, "hex": 1, "dump": 2, "num": 3}.get(mode, 0))
+        stack.setCurrentIndex(_view_extra_index(mode, terminal_on=False))
 
     def _on_view_mode_changed(self, *_):
         """下拉 → 状态开关。先关掉不再生效的模式再开新的，避免两个「接管数据区」的
@@ -3630,26 +3640,26 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _parse_port(text):
-        try:
-            p = int(str(text).strip())
-        except ValueError:
-            return None
-        return p if 1 <= p <= 65535 else None
+        """Parse TCP/UDP port -> int 1..65535, else None."""
+        return _conn_parse_port(text)
 
     def _conn_config_signature(self, proto=None):
-        """当前 UI 的连接签名；用于确认打开后的实际连接没有被配置导入改写解释。"""
+        """Current UI connection signature (detect config overwrite)."""
         proto = proto or self.cb_proto.currentText()
         if proto == PROTO_SERIAL:
             try:
                 baud = int(self.cb_baud.currentText())
             except (ValueError, TypeError):
                 baud = None
-            return (proto, self.cb_port.currentData(), baud, self.cb_databits.currentText(),
-                    self.cb_parity.currentText(), self.cb_stopbits.currentText(),
-                    self.cb_flow.currentText())
+            return _conn_serial_sig(
+                proto, self.cb_port.currentData(), baud,
+                self.cb_databits.currentText(), self.cb_parity.currentText(),
+                self.cb_stopbits.currentText(), self.cb_flow.currentText())
         if proto == PROTO_TCP_CLIENT:
-            return (proto, self.ed_remote_ip.text().strip(), self._parse_port(self.ed_remote_port.text()))
-        return (proto,)
+            return _conn_tcp_sig(
+                proto, self.ed_remote_ip.text().strip(),
+                self._parse_port(self.ed_remote_port.text()))
+        return _conn_proto_sig(proto)
 
     def open_conn(self, reconnect_cfg=None):
         """打开当前 UI 连接；自动重连串口时传入掉线前签名，禁止漂移到别的端口/参数。"""
@@ -4572,23 +4582,8 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _decode_auto_chunk(buf: bytes, data: bytes):
-        """Auto 编码的增量解码核心：UTF-8 优先、半个字符留到下次、真乱码整段回退 GBK。
-        返回 (文本, 新缓冲)。
-
-        抽成纯函数是为了让「显示路径」和「触发告警」各持一份缓冲、共用同一套解码规则 ——
-        两边口径不同会出怪事：用户看到正确中文，带中文关键字的触发规则却看到乱码而漏报。"""
-        buf = buf + data
-        if not buf:
-            return "", b""
-        try:
-            return buf.decode("utf-8"), b""
-        except UnicodeDecodeError as e:
-            if e.end == len(buf) and "unexpected end of data" in str(e.reason):
-                try:
-                    return buf[:e.start].decode("utf-8"), buf[e.start:]
-                except UnicodeDecodeError:
-                    pass
-            return buf.decode("gbk", errors="replace"), b""
+        """Auto decode core: UTF-8 first, partial char kept, GBK fallback."""
+        return _rx_decode_auto_chunk(buf, data)
 
     def _rx_side(self, name, fn):
         """RX side-channel: log failures, never abort the receive path."""
@@ -4822,56 +4817,23 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _split_lines_with_offsets(text, nl_mode):
-        r"""按换行模式切段，并给出每段在 text 中的起始下标（ANSI 着色要按下标把颜色切回每行）。
-
-        与原先的 split 等价：Auto(0) 等价于把 \r\n 和 \r 都归一成 \n 再 split，这里用一条
-        正则一次切完，顺带拿到偏移（先 replace 再 split 会丢掉原串下标）。"""
-        sep = {1: r"\r\n", 2: r"\n", 3: r"\r"}.get(nl_mode, r"\r\n|\r|\n")
-        segs, starts, pos = [], [], 0
-        for m in re.finditer(sep, text):
-            segs.append(text[pos:m.start()])
-            starts.append(pos)
-            pos = m.end()
-        segs.append(text[pos:])
-        starts.append(pos)
-        return segs, starts
+        """Split by newline mode; return (segments, start_offsets)."""
+        return _rx_split_lines(text, nl_mode)
 
     @staticmethod
     def _ansi_flatten(runs):
-        """ansi.parse 的分段结果 → (纯文本, [(起, 止, 样式)])。默认样式的段不记区间，
-        让绝大多数无色文本走原来的整段插入路径，零额外开销。"""
-        parts, spans, pos = [], [], 0
-        for seg, st in runs:
-            if not seg:
-                continue
-            parts.append(seg)
-            if not st.is_default():
-                spans.append((pos, pos + len(seg), st))
-            pos += len(seg)
-        return "".join(parts), spans
+        """ansi.parse runs -> (plain_text, style spans)."""
+        return _rx_ansi_flatten(runs)
 
     @staticmethod
     def _ansi_shift(spans, delta, limit):
-        """跨包 CRLF 处理会在 text 首尾增删字符，颜色区间必须跟着平移并收进 [0, limit)，
-        否则整段色块错位一位（表现为行首字符没上色、行尾多上一格）。"""
-        if not spans:
-            return spans
-        out = []
-        for s, e, st in spans:
-            s2, e2 = max(0, s + delta), min(limit, e + delta)
-            if s2 < e2:
-                out.append((s2, e2, st))
-        return out
+        """Shift style spans by delta and clip to [0, limit)."""
+        return _rx_ansi_shift(spans, delta, limit)
 
     @staticmethod
     def _ansi_slice(spans, start, end):
-        """取 [start, end) 内的样式区间，换算成相对该段的 (行内偏移, 长度, 样式)。"""
-        out = []
-        for s, e, st in spans:
-            a, b = max(s, start), min(e, end)
-            if a < b:
-                out.append((a - start, b - a, st))
-        return out
+        """Keep spans in [start, end); rebase to line-relative offsets."""
+        return _rx_ansi_slice(spans, start, end)
 
     def _apply_sgr_format(self, fmt, st, dark=None):
         """把 ANSI 样式写进字符格式。颜色同时存一份「标识」(ANSI_*_PROP)：切主题时据此按
@@ -5096,37 +5058,17 @@ class CommTool(QMainWindow):
 
     # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
     def _load_ms_groups(self):
-        """加载多条发送分组；兼容旧版扁平 multi_send_items → 迁移成「默认」分组。
-        返回 (groups, loaded_ok)；loaded_ok=False 表示走了迁移/默认(损坏或缺失)，调用方据此落盘。"""
-        groups = []
-        raw = self.settings.value("multi_send_groups", "")
-        if raw:
-            try:
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    groups = [g for g in data
-                              if isinstance(g, dict) and isinstance(g.get("items"), list)]
-            except Exception:
-                groups = []
-        loaded_ok = bool(groups)
-        if not groups:
-            old_items = []
-            old = self.settings.value("multi_send_items", "")
-            if old:
-                try:
-                    parsed = json.loads(old)
-                    if isinstance(parsed, list):
-                        old_items = parsed
-                except Exception:
-                    _log.debug("_load_ms_groups failed", exc_info=True)
-            groups = [{"name": self._t("kw_default_group"), "items": old_items}]
-        return groups, loaded_ok
+        """Load multi-send groups; migrate flat multi_send_items if needed."""
+        return _ms_load_groups(
+            self.settings.value("multi_send_groups", ""),
+            self.settings.value("multi_send_items", ""),
+            self._t("kw_default_group"),
+        )
 
     def _save_ms_groups(self):
-        self.settings.setValue("multi_send_groups",
-                               json.dumps(self._ms_groups, ensure_ascii=False))
+        self.settings.setValue("multi_send_groups", _ms_groups_json(self._ms_groups))
         self.settings.setValue("multi_send_group_idx", self._ms_group_idx)
-        self.settings.remove("multi_send_items")    # 清理已迁移的旧扁平键
+        self.settings.remove("multi_send_items")
 
     def _load_snippets(self):
         """加载发送模板库；返回 (list, loaded_ok)。空/损坏时给示例模板（loaded_ok=False → 落盘）。"""
@@ -5149,9 +5091,7 @@ class CommTool(QMainWindow):
         self.settings.sync()
 
     def _ms_active_items(self):
-        if 0 <= self._ms_group_idx < len(self._ms_groups):
-            return self._ms_groups[self._ms_group_idx]["items"]
-        return []
+        return _ms_active_items_fn(self._ms_groups, self._ms_group_idx)
 
     def _send_ms_item(self, item):
         hx = bool(item.get("hex", False))
@@ -5215,11 +5155,8 @@ class CommTool(QMainWindow):
 
     # ----- 多条发送：循环（按每行延时）-----
     def _build_ms_cycle_seq(self):
-        """当前分组里勾选且非空的条目 → 循环发送序列 (data, hex, nl, cs, delay)。"""
-        return [(it.get("data", ""), bool(it.get("hex", False)), int(it.get("nl", 0)),
-                 int(it.get("cs", 0)), max(1, int(it.get("delay", 1000))))
-                for it in self._ms_active_items()
-                if it.get("checked") and str(it.get("data", "")).strip()]
+        """Checked non-empty items -> cycle send sequence."""
+        return _ms_build_cycle_seq(self._ms_active_items())
 
     def _ms_toggle_cycle(self):
         if self._ms_cycle_timer.isActive():
@@ -5612,30 +5549,8 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _is_private_url(url):
-        """Return True if the URL's host is a private/loopback/link-local address.
-
-        Hostnames are left alone (no DNS lookup). IPv4-mapped IPv6 forms
-        like ::ffff:192.168.1.1 / ::ffff:c0a8:101 are unwrapped first.
-        """
-        try:
-            from urllib.parse import urlparse
-            import ipaddress
-            host = urlparse(url).hostname
-            if not host:
-                return False
-            if host.lower() == "localhost":
-                return True
-            try:
-                addr = ipaddress.ip_address(host)
-            except ValueError:
-                return False
-            mapped = getattr(addr, "ipv4_mapped", None)
-            if mapped is not None:
-                addr = mapped
-            return bool(addr.is_private or addr.is_loopback
-                        or addr.is_link_local or addr.is_unspecified)
-        except Exception:
-            return False
+        """True if URL host is private/loopback/link-local."""
+        return _trg_is_private_url(url)
 
     def _trg_run_webhook(self, rule, name, direction, hits):
         """POST a small JSON payload; never block the GUI thread."""
@@ -5669,20 +5584,8 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _trg_shell_value(value):
-        """把占位符的值变成 shell 惰性文本。
-
-        run_cmd 走 shell=True（用户要用管道和重定向），但占位符展开的是
-        规则里的 name / pattern：命令里写着 `echo {name}` 看着无害，name 里塔
-        `; rm -rf /` 就会被执行。导入门禁只让人确认「含外部命令动作」，不会
-        逐字段读 name，所以在这里把值本身钉死。
-        """
-        text = "".join(ch for ch in str(value) if ch >= " ")   # 掩揉掉控制字符与换行
-        if sys.platform == "win32":
-            # cmd.exe 在双引号内仍会展开 %VAR% 与 !VAR!，没有可靠的转义写法，
-            # 只能把这两个引导符去掉；其余元字符加上引号即失效。
-            return '"%s"' % text.replace('"', "'").replace("%", "").replace("!", "")
-        import shlex
-        return shlex.quote(text)
+        """Quote a placeholder value so it stays shell-inert text."""
+        return _trg_shell_quote(value)
 
     def _trg_run_cmd(self, rule, name, direction, hits):
         """Launch an external program with simple placeholder expansion."""
@@ -6509,8 +6412,7 @@ class CommTool(QMainWindow):
         if not self._is_open():
             self.toast(self._t("seq_need_conn"), error=True)
             return
-        if not any(s.get("on", True) and (str(s.get("send", "")).strip() or str(s.get("expect", "")).strip())
-                   for s in steps):
+        if not _seq_engine_has_runnable(steps):
             self.toast(self._t("seq_no_steps"), error=True)
             return
         self._seq_steps = [dict(s) for s in steps]
@@ -6523,9 +6425,9 @@ class CommTool(QMainWindow):
         self._seq_dataset_row = None
         if self._seq_dataset:
             n_rows = len(self._seq_dataset["rows"])
-            self._seq_loops = max(1, min(n_rows, _SEQ_MAX_LOOPS))
+            self._seq_loops = _seq_engine_clamp_loops(n_rows)
         else:
-            self._seq_loops = max(1, min(self._ar_to_int(loops), _SEQ_MAX_LOOPS))
+            self._seq_loops = _seq_engine_clamp_loops(loops)
         self._seq_loop_i = 0
         self._seq_stop_on_fail = bool(stop_on_fail)
         self._seq_rounds = []
@@ -6548,8 +6450,7 @@ class CommTool(QMainWindow):
                 seed = self._seq_dataset_row.get("seeds")
         self._seq_ctx = seq_context.RoundContext(seed)
         self._seq_runtime_step = None
-        self._seq_results = [{"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
-                             for s in self._seq_steps]
+        self._seq_results = _seq_engine_initial_results(self._seq_steps)
         self._seq_round_snapshot_taken = False
         self._seq_notify()
         if not self._seq_waiting_mbm:            # 本轮计时从"真正开跑"起；等 Modbus 释放的那段不计入本轮
@@ -6557,15 +6458,13 @@ class CommTool(QMainWindow):
             self._seq_run_from(0)
 
     def _seq_run_from(self, i):
-        """从第 i 步起找下一个启用步骤执行；没有更多 → 本轮完成(按各步结果判通过)。"""
-        n = len(self._seq_steps)
-        while i < n and not self._seq_steps[i].get("on", True):
-            i += 1
-        if i >= n:
+        """Run from step i: skip disabled, or finish round when exhausted."""
+        i = _seq_engine_next_enabled(self._seq_steps, i)
+        if i >= len(self._seq_steps):
             self._seq_round_done()
             return
         self._seq_idx = i
-        self._seq_attempt = 1          # 进入新步：尝试计数复位（重试不经此，故计数在失败时递增）
+        self._seq_attempt = 1
         self._seq_step_total_t0 = time.monotonic()
         self._seq_do_step(i)
 
@@ -6575,30 +6474,18 @@ class CommTool(QMainWindow):
         self._seq_buf = b""
         ctx = getattr(self, "_seq_ctx", None)
         ctx_map = ctx.as_dict() if ctx is not None else {}
-        send_tmpl = step.get("send", "") or ""
-        expect_tmpl = step.get("expect", "") or ""
-        missing = []
-        seen = set()
-        for name in (seq_context.missing_vars(send_tmpl, ctx_map)
-                     + seq_context.missing_vars(expect_tmpl, ctx_map)):
-            if name not in seen:
-                seen.add(name)
-                missing.append(name)
-        runtime = dict(step)
-        runtime["send"] = seq_context.expand(send_tmpl, ctx_map)
-        runtime["expect"] = seq_context.expand(expect_tmpl, ctx_map)
+        runtime, missing = _seq_engine_prepare_runtime(step, ctx_map)
         self._seq_runtime_step = runtime
         if missing:
-            # Undefined ${var}: fail immediately (no silent pure-send; retry cannot invent vars).
             self.toast(self._t("seq_var_missing", names=", ".join(missing)), error=True)
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
             self._seq_set_result(i, "fail", ms, self._t("seq_st_var_missing"),
                                 "seq_st_var_missing", self._seq_attempt)
             self._seq_after_fail(step)
             return
+        kind = _seq_engine_step_kind(runtime)
         send = str(runtime.get("send", "") or "")
-        expect = str(runtime.get("expect", "") or "").strip()
-        if not send.strip() and not expect:
+        if kind == "skip":
             self._seq_set_result(i, "skip", 0, "")
             self._seq_schedule_next(step)
             return
@@ -6614,14 +6501,14 @@ class CommTool(QMainWindow):
                 return
             if 0 <= i < len(self._seq_results):
                 self._seq_results[i]["tx"] = send
-        if not expect:
+        if kind == "send_only":
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
             self._seq_set_result(i, "sent", ms, "", "", self._seq_attempt)
             self._seq_schedule_next(step)
             return
         self._seq_set_result(i, "waiting", 0, "", "", self._seq_attempt)
         self._seq_timer.stop()
-        timeout = min(_SEQ_QTIMER_MAX_MS, max(1, self._ar_to_int(step.get("timeout", 1000))))
+        timeout = _seq_engine_clamp_timer_ms(step.get("timeout", 1000), minimum=1)
         self._seq_timer.start(timeout)
 
     def _seq_feed(self, data):
@@ -6644,12 +6531,8 @@ class CommTool(QMainWindow):
             self._seq_timer.stop()
             ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
             extracted = self._seq_capture_vars(self._seq_steps[i], self._seq_buf)
-            detail = ""
-            if extracted:
-                detail = ",".join("%s=%s" % (k, extracted[k]) for k in list(extracted)[:4])
-            rx_hex = bytes(self._seq_buf or b"").hex()
-            if len(rx_hex) > 512:
-                rx_hex = rx_hex[:512] + "..."
+            detail = _seq_engine_detail_extracted(extracted)
+            rx_hex = _seq_engine_clip_rx_hex(self._seq_buf)
             self._seq_set_result(i, "pass", ms, detail, "", self._seq_attempt, rx_hex=rx_hex)
             if extracted and 0 <= i < len(self._seq_results):
                 self._seq_results[i]["extracted"] = dict(extracted)
@@ -6668,27 +6551,26 @@ class CommTool(QMainWindow):
         self._seq_step_failed("seq_st_fail")
 
     def _seq_step_failed(self, detail_key):
-        """当前步失败（发送失败 / 等回包超时）：还有重试次数则等间隔后重发本步；用尽则判失败按超时动作走。"""
+        """Fail current step: retry if budget remains, else mark fail."""
         i = self._seq_idx
         step = self._seq_steps[i]
-        k = min(_SEQ_MAX_RETRIES, max(0, self._ar_to_int(step.get("retry", 0))))
         ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
-        if self._seq_attempt <= k:
-            self._seq_attempt += 1
-            self._seq_set_result(i, "retry", ms, "", detail_key, self._seq_attempt)   # 显示"重试中"
-            delay = min(_SEQ_QTIMER_MAX_MS, max(0, self._ar_to_int(step.get("delay", 0))))
+        if _seq_engine_should_retry(self._seq_attempt, step.get("retry", 0)):
+            plan = _seq_engine_plan_retry(
+                step, self._seq_attempt,
+                guard_ms=_SEQ_RETRY_GUARD_MS,
+                max_quiet_ms=_SEQ_RETRY_MAX_QUIET_MS)
+            self._seq_attempt = plan["next_attempt"]
+            self._seq_set_result(i, "retry", ms, "", detail_key, self._seq_attempt)
             gen = self._seq_gen
-            now = time.monotonic()
-            self._seq_retry_not_before = now + delay / 1000.0
-            self._seq_retry_quiet_until = now + _SEQ_RETRY_GUARD_MS / 1000.0
-            self._seq_retry_quiet_deadline = self._seq_retry_not_before + _SEQ_RETRY_MAX_QUIET_MS / 1000.0
+            self._seq_retry_not_before = plan["not_before"]
+            self._seq_retry_quiet_until = plan["quiet_until"]
+            self._seq_retry_quiet_deadline = plan["quiet_deadline"]
             attempt = self._seq_attempt
-            QTimer.singleShot(max(delay, _SEQ_RETRY_GUARD_MS),
+            QTimer.singleShot(plan["timer_ms"],
                               lambda: self._seq_retry(gen, i, attempt))
             return
-        rx_hex = bytes(getattr(self, "_seq_buf", b"") or b"").hex()
-        if len(rx_hex) > 512:
-            rx_hex = rx_hex[:512] + "..."
+        rx_hex = _seq_engine_clip_rx_hex(getattr(self, "_seq_buf", b"") or b"")
         self._seq_set_result(i, "fail", ms, self._t(detail_key), detail_key, self._seq_attempt,
                              rx_hex=rx_hex)
         self._seq_after_fail(step)
@@ -6700,24 +6582,26 @@ class CommTool(QMainWindow):
                 and self._seq_results[i].get("status") == "retry"):
             return
         # 静默窗有上限：对端持续刷数据把 quiet_until 一直往后推时，用 deadline 兜底，避免永远卡在重试
-        quiet = min(self._seq_retry_quiet_until, self._seq_retry_quiet_deadline)
-        remain = max(self._seq_retry_not_before, quiet) - time.monotonic()
+        remain = _seq_engine_retry_remain(
+            self._seq_retry_not_before, self._seq_retry_quiet_until,
+            self._seq_retry_quiet_deadline)
         if remain > 0:
-            delay = min(_SEQ_QTIMER_MAX_MS, max(1, int(remain * 1000) + 1))
+            delay = _seq_engine_clamp_timer_ms(int(remain * 1000) + 1, minimum=1)
             QTimer.singleShot(delay, lambda: self._seq_retry(gen, i, attempt))
             return
         self._seq_do_step(i)
 
     def _seq_after_fail(self, step):
-        """一步失败后：on_timeout=continue → 继续下一步；否则本轮结束(失败)。"""
-        if str(step.get("on_timeout", "stop")) == "continue":
+        """After step fail: continue next step or end the round."""
+        if _seq_engine_continue_after_fail(step):
             self._seq_schedule_next(step)
         else:
             self._seq_round_done()
 
+
     def _seq_schedule_next(self, step):
         """步间延时后进下一步（用代际作废停止/重启后残留的续跑）。"""
-        delay = min(_SEQ_QTIMER_MAX_MS, max(0, self._ar_to_int(step.get("delay", 0))))
+        delay = _seq_engine_clamp_timer_ms(step.get("delay", 0), minimum=0)
         nxt = self._seq_idx + 1
         gen = self._seq_gen
         QTimer.singleShot(delay, lambda: self._seq_continue(gen, nxt))
@@ -6731,22 +6615,10 @@ class CommTool(QMainWindow):
         if getattr(self, "_seq_round_snapshot_taken", False):
             return
         self._seq_round_snapshot_taken = True
-        enabled = [self._seq_results[i] for i, s in enumerate(self._seq_steps)
-                   if s.get("on", True) and i < len(self._seq_results)]
-        total = sum(1 for r in enabled if r.get("status") != "skip")
-        passed = sum(1 for r in enabled if r.get("status") in ("pass", "sent"))
-        round_ok = (passed == total)
         t0 = getattr(self, "_seq_round_t0", None) or getattr(self, "_seq_t0", time.monotonic())
-        round_ms = int((time.monotonic() - t0) * 1000)
-        round_rec = {"round": self._seq_loop_i + 1, "ok": passed,
-                     "total": total, "ms": round_ms, "pass": round_ok,
-                     "steps": [dict(r) for r in (self._seq_results or [])],
-                     "step_defs": [dict(s) for s in (self._seq_steps or [])]}
-        row = getattr(self, "_seq_dataset_row", None)
-        if row:
-            round_rec["csv_row"] = row.get("number")
-            round_rec["csv_label"] = row.get("label") or ""
-        self._seq_rounds.append(round_rec)
+        self._seq_rounds.append(_seq_engine_round_snapshot(
+            self._seq_results, self._seq_steps, self._seq_loop_i, t0,
+            dataset_row=getattr(self, "_seq_dataset_row", None)))
 
     def _seq_round_done(self):
         """本轮所有启用步骤跑完（或失败停止）：记录本轮汇总，再决定跑下一轮还是整体收尾。"""
@@ -6756,7 +6628,8 @@ class CommTool(QMainWindow):
         self._seq_append_round_snapshot()
         round_ok = bool(self._seq_rounds and self._seq_rounds[-1].get("pass"))
         self._seq_loop_i += 1
-        more = self._seq_loop_i < self._seq_loops and not (self._seq_stop_on_fail and not round_ok)
+        more = _seq_engine_more_rounds(
+            self._seq_loop_i, self._seq_loops, self._seq_stop_on_fail, round_ok)
         if more:
             gen = self._seq_gen                          # 轮间让出事件循环再开下一轮（代际作废停止/断连残留）
             QTimer.singleShot(0, lambda: self._seq_next_round(gen))
@@ -6768,29 +6641,19 @@ class CommTool(QMainWindow):
             self._seq_begin_round()
 
     def _seq_build_summary(self, stopped=False):
-        """按已完成轮次(_seq_rounds)聚合汇总。stopped=True（用户停止/断连）一律不判 PASS。
-        loops=计划轮数，rounds=实际跑过轮数（stop_on_fail / 中途停止可能 < loops）。"""
-        rounds = list(self._seq_rounds)
-        rounds_total = len(rounds)
-        rounds_pass = sum(1 for r in rounds if r.get("pass"))
-        steps_ok = sum(r.get("ok", 0) for r in rounds)
-        steps_total = sum(r.get("total", 0) for r in rounds)
-        # 整体 PASS：未被中止、至少跑过一轮、每一跑过的轮都通过（提前停止时 rounds_pass<rounds_total → 非 PASS）
-        ok = (not stopped) and rounds_total > 0 and rounds_pass == rounds_total
-        ms = int((time.monotonic() - self._seq_t0) * 1000)
-        out = {"ok": steps_ok, "total": steps_total, "ms": ms, "pass": ok,
-               "loops": self._seq_loops, "rounds": rounds_total,
-               "rounds_pass": rounds_pass, "round_list": rounds, "stopped": bool(stopped),
-               "started_at": getattr(self, "_seq_started_at", "") or "",
-               "finished_at": getattr(self, "_seq_finished_at", "") or "",
-               "version": APP_VERSION,
-               "stop_on_fail": bool(getattr(self, "_seq_stop_on_fail", False)),
-               "step_count": len(getattr(self, "_seq_steps", []) or [])}
-        ds = getattr(self, "_seq_dataset", None)
-        if ds:
-            out["csv_path"] = ds.get("path") or ""
-            out["csv_rows"] = len(ds.get("rows") or [])
-        return out
+        """Aggregate finished rounds (_seq_rounds) into export summary."""
+        return _seq_engine_build_summary(
+            self._seq_rounds,
+            loops=self._seq_loops,
+            t0=self._seq_t0,
+            stopped=stopped,
+            started_at=getattr(self, "_seq_started_at", "") or "",
+            finished_at=getattr(self, "_seq_finished_at", "") or "",
+            version=APP_VERSION,
+            stop_on_fail=bool(getattr(self, "_seq_stop_on_fail", False)),
+            step_count=len(getattr(self, "_seq_steps", []) or []),
+            dataset=getattr(self, "_seq_dataset", None),
+        )
 
     def _seq_finalize(self):
         """整条序列（全部循环）结束：出聚合汇总 + toast + 恢复对端引擎。"""
@@ -6848,41 +6711,20 @@ class CommTool(QMainWindow):
 
     def _seq_capture_vars(self, step, buf):
         """Extract variables from a passed step into the round context."""
-        specs = step.get("extract")
-        if not specs:
-            dsl = step.get("extract_dsl") or step.get("vars") or ""
-            specs = seq_context.parse_extract_dsl(dsl)
-        specs = seq_context.sanitize_extractors(specs if isinstance(specs, list) else [])
-        if not specs:
-            return {}
         try:
             codec = self._get_codec()
         except Exception:
             codec = "utf-8"
-        enc = "utf-8" if codec == "auto" else codec
-        try:
-            text = buf.decode(enc, errors="replace")
-        except Exception:
-            text = ""
-        extracted = seq_context.extract(buf, specs, text=text, codec=codec)
-        ctx = getattr(self, "_seq_ctx", None)
-        if ctx is not None and extracted:
-            ctx.update(extracted)
-        return extracted
+        extracted = _seq_engine_capture_vars(step, buf, codec=codec)
+        return _seq_engine_apply_capture(getattr(self, "_seq_ctx", None), extracted)
 
     def _seq_step_match(self, step, buf):
-        """当前累积 buf 是否满足步骤期望（复用自动应答 _ar_hit_test：包含/相等/前缀 + HEX/文本）。"""
-        rule = {"match": step.get("expect", ""),
-                "match_hex": bool(step.get("expect_hex", False)),
-                "mode": self._ar_to_int(step.get("mode", 0))}
-        text = ""
-        if not rule["match_hex"]:
-            try:
-                codec = self._get_codec()
-                text = buf.decode("utf-8" if codec == "auto" else codec, errors="replace")
-            except Exception:
-                text = ""
-        return self._ar_hit_test(rule, buf, text)
+        """Whether accumulated buf satisfies step expect (AR hit-test rules)."""
+        try:
+            codec = self._get_codec()
+        except Exception:
+            codec = "utf-8"
+        return _seq_engine_step_match(step, buf, codec=codec)
 
     def _seq_set_result(self, i, status, ms, detail, detail_key="", attempt=1, **extra):
         if 0 <= i < len(self._seq_results):
@@ -6941,22 +6783,8 @@ class CommTool(QMainWindow):
         return self._norm_ar_frame(cfg)
 
     def _norm_ar_frame(self, cfg):
-        """规整组帧配置 + 预解析帧头为 bytes(_header)，容错坏值不让启动崩。
-        _header 是运行态(不持久化)：帧头 hex 解析失败 → b''，_auto_reply 据此视作未启用。"""
-        w = self._ar_to_int(cfg.get("len_width", 2))
-        out = {
-            "on": bool(cfg.get("on", False)),
-            "header": str(cfg.get("header", "")),
-            "len_off": max(0, self._ar_to_int(cfg.get("len_off", 0))),
-            "len_width": w if w in (1, 2, 4) else 2,
-            "len_be": bool(cfg.get("len_be", False)),
-            "len_extra": max(0, self._ar_to_int(cfg.get("len_extra", 0))),
-        }
-        try:
-            out["_header"] = binproto.parse_hex_header(out["header"])
-        except ValueError:
-            out["_header"] = b""
-        return out
+        """Normalize framing config + pre-parse header bytes."""
+        return _ar_core_norm_frame(cfg)
 
     def _set_ar_frame(self, cfg):
         """对话框编辑「帧头+长度组帧」后回调：更新内存配置 + 清缓冲 + 落盘（运行态 _header 不存）。"""
@@ -6980,12 +6808,8 @@ class CommTool(QMainWindow):
         return self._norm_ar_fault(cfg)
 
     def _norm_ar_fault(self, cfg):
-        def pct(v):
-            return max(0, min(100, self._ar_to_int(v, 0)))
-        return {"on": bool(cfg.get("on", False)),
-                "drop": pct(cfg.get("drop", 0)),
-                "badcrc": pct(cfg.get("badcrc", 0)),
-                "badlen": pct(cfg.get("badlen", 0))}
+        """Normalize fault-injection percentages."""
+        return _ar_core_norm_fault(cfg)
 
     def _set_ar_fault(self, cfg):
         self._ar_fault = self._norm_ar_fault(cfg)
@@ -7009,8 +6833,8 @@ class CommTool(QMainWindow):
         return self._norm_ar_sm(cfg)
 
     def _norm_ar_sm(self, cfg):
-        return {"on": bool(cfg.get("on", False)),
-                "init": str(cfg.get("init", "") or "").strip()}
+        """Normalize state-machine config."""
+        return _ar_core_norm_sm(cfg)
 
     def _set_ar_sm(self, cfg):
         """对话框编辑「状态机」后回调：更新内存配置 + 落盘。仅当 on/init 真变化时才复位当前状态——
@@ -7025,27 +6849,19 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _ar_state_tokens(when):
-        """规则 when 字段 → 状态集合（仅逗号分隔，每个去首尾空白）。空 → 空列表(=通配，任意状态)。
-        只按逗号拆 —— 状态名允许含内部空格（如 'WAIT ACK'），与 init/goto 的 strip() 一致。"""
-        return [t.strip() for t in str(when or "").split(",") if t.strip()]
+        """Rule when-field -> state token list."""
+        return _ar_core_state_tokens(when)
 
     def _ar_state_ok(self, rule):
-        """状态机门：SM 关 → 恒 True；SM 开 → 规则 when 为空(通配)或含当前状态才放行。"""
-        if not self._ar_sm.get("on"):
-            return True
-        toks = self._ar_state_tokens(rule.get("when"))
-        return (not toks) or (self._ar_state in toks)
+        """SM gate for a rule against current _ar_state."""
+        return _ar_core_state_ok(
+            bool(self._ar_sm.get("on")), rule.get("when"), self._ar_state)
 
     def _ar_apply_goto(self, rule):
-        """C8：规则命中且已发送后，SM 开且 goto 非空 → 把当前状态切到 goto。"""
-        if not self._ar_sm.get("on"):
-            return
-        goto = str(rule.get("goto", "") or "").strip()
-        if goto:
-            self._ar_state = goto
+        """Advance _ar_state to rule.goto when SM is on."""
+        self._ar_state = _ar_core_next_state(
+            bool(self._ar_sm.get("on")), rule, self._ar_state)
 
-    # ----- B4 Modbus RTU 从机（autoreply_modbus：on/addr + 四个稀疏寄存器表。开启后整条引擎
-    #        作为 Modbus 从机:按功能码自动应答,规则/状态机让位;运行态 _modbus 的写在会话级复位）-----
     def _load_ar_modbus(self):
         raw = self.settings.value("autoreply_modbus", "")
         cfg = {}
@@ -7059,59 +6875,8 @@ class CommTool(QMainWindow):
         return self._norm_ar_modbus(cfg)
 
     def _norm_ar_modbus(self, cfg):
-        cfg = cfg or {}
-
-        def _regmap(m, as_bool):
-            out = {}
-            if isinstance(m, dict):
-                for k, v in m.items():
-                    try:
-                        a = int(k)
-                    except (ValueError, TypeError):
-                        continue
-                    out[str(a)] = bool(v) if as_bool else (self._ar_to_int(v) & 0xFFFF)
-            return out
-        variant = str(cfg.get("variant", "rtu") or "rtu").lower()
-        if variant not in ("rtu", "ascii"):
-            variant = "rtu"
-        slaves_in = cfg.get("slaves")
-        slaves_out = []
-        if isinstance(slaves_in, list) and slaves_in:
-            for item in slaves_in:
-                if not isinstance(item, dict):
-                    continue
-                entry = {
-                    "addr": max(1, min(247, self._ar_to_int(item.get("addr", 1)) or 1)),
-                    "coils": _regmap(item.get("coils"), True),
-                    "discrete": _regmap(item.get("discrete"), True),
-                    "holding": _regmap(item.get("holding"), False),
-                    "input": _regmap(item.get("input"), False),
-                    # 与顶层同标准校类型：exception 传 list 会在 normalize_exception_policy 里抛
-                    # AttributeError，dynamics 传 dict 会静默变成 0 条规则。
-                    "dynamics": (item.get("dynamics")
-                                 if isinstance(item.get("dynamics"), list) else []),
-                    "exception": (item.get("exception")
-                                  if isinstance(item.get("exception"), dict) else {}),
-                }
-                # Omit server_id entirely so the slave inherits the top-level one.
-                if item.get("server_id"):
-                    entry["server_id"] = item["server_id"]
-                slaves_out.append(entry)
-        base = {
-            "on": bool(cfg.get("on", False)),
-            "addr": max(1, min(247, self._ar_to_int(cfg.get("addr", 1)) or 1)),
-            "variant": variant,
-            "coils": _regmap(cfg.get("coils"), True),
-            "discrete": _regmap(cfg.get("discrete"), True),
-            "holding": _regmap(cfg.get("holding"), False),
-            "input": _regmap(cfg.get("input"), False),
-            "dynamics": cfg.get("dynamics") if isinstance(cfg.get("dynamics"), list) else [],
-            "exception": cfg.get("exception") if isinstance(cfg.get("exception"), dict) else {},
-            "server_id": cfg.get("server_id", "CommTool"),
-        }
-        if slaves_out:
-            base["slaves"] = slaves_out
-        return base
+        """Normalize Modbus slave bank config."""
+        return _ar_core_norm_modbus(cfg)
 
     def _set_ar_modbus(self, cfg):
         """对话框编辑「Modbus 从机」后回调：更新内存配置 + 重建运行态从机(回初值) + 落盘。
@@ -7208,11 +6973,7 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _ar_to_int(v, default=0):
-        """容错 int：ini/json 被手改成非数字时不让启动崩。"""
-        try:
-            return int(v or 0)
-        except (ValueError, TypeError):
-            return default
+        return _ar_core_to_int(v, default)
 
     def _recompute_ar_gap(self):
         """整包静默取所有启用规则中的最大 gap（分帧在匹配前、整条串口共用一个值）。"""
@@ -7367,43 +7128,19 @@ class CommTool(QMainWindow):
             self._ar_sm_draining = False
 
     def _ar_hit_test(self, rule, data, text):
-        """rule 是否匹配 data（text=已按编码解码的文本，文本模式用）。只测匹配本身，
-        不含 verify / 长度 / 冷却 —— 供实时匹配(_ar_match)与离线测试器(_ar_preview)共用。"""
-        m = (rule.get("match") or "").strip()
-        if not m:
-            return False
-        mode = self._ar_to_int(rule.get("mode", 0))     # 0=包含 1=相等 2=前缀
-        if mode not in (0, 1, 2):
-            mode = 0       # 配置坏掉退回「包含」
-        if rule.get("match_hex", True):
-            pat = self._ar_parse_hex_pat(m)
-            if not pat:
-                return False
-            n = len(pat)
-            if mode == 2:
-                return self._ar_hex_at(pat, data, 0)
-            if mode == 1:
-                return len(data) == n and self._ar_hex_at(pat, data, 0)
-            return any(self._ar_hex_at(pat, data, i) for i in range(len(data) - n + 1))
-        if mode == 1:
-            return text.strip() == m
-        if mode == 2:
-            return text.startswith(m)
-        return m in text
+        return _ar_core_hit_test(rule, data, text)
 
     def _ar_build_parts(self, rule, data):
-        """rule.reply 按 | 分段、各段替换占位符 → 已替换文本列表（空段过滤）。"""
-        hexmode = bool(rule.get("reply_hex", True))
-        return [self._ar_subst_reply(s.strip(), data, hexmode)
-                for s in rule.get("reply", "").split("|") if s.strip()]
+        """Split reply on '|', substitute placeholders per segment."""
+        parts, self._ar_seq = _ar_core_build_parts(
+            rule, data, seq=getattr(self, "_ar_seq", 0))
+        return parts
 
     # ---- B5 脚本化应答：每条规则可选一段 Python，命中时跑 reply(frame, ctx) 动态生成应答 ----
     @staticmethod
     def _ar_crc(data, width=16, poly=0x1021, init=0x0000,
                 refin=False, refout=False, xorout=0x0000, byteorder="big"):
-        """通用参数化 CRC（Rocksoft 模型）→ bytes（width//8 字节，按 byteorder）。
-        覆盖 CCITT / Modbus / XMODEM / 任意自定义多项式，供脚本 ctx.crc 调用。"""
-        return _ar_crc_impl(data, width, poly, init, refin, refout, xorout, byteorder)
+        return _ar_core_crc(data, width, poly, init, refin, refout, xorout, byteorder)
 
     def _ar_make_ctx(self, rule, preview=False):
         """脚本只读上下文 + 校验工具：state / seq / hits + 可定制 crc 及便捷封装。
@@ -7658,105 +7395,43 @@ class CommTool(QMainWindow):
             fire(0)
 
     def _ar_parse_delay(self, v):
-        """C7 延时字段 → (min,max) ms。支持 'N'(固定) 或 'N-M'(随机范围)；坏值回退 (0,0)。"""
-        s = str(v if v is not None else "").strip()
-        body = s[1:] if s.startswith("-") else s     # 开头负号不当分隔符
-        if "-" in body:
-            head, _, tail = body.partition("-")
-            if s.startswith("-"):
-                head = "-" + head
-            lo = self._ar_to_int(head, 0)
-            hi = self._ar_to_int(tail, 0)
-            return (lo, hi) if hi >= lo else (hi, lo)
-        n = self._ar_to_int(s, 0)
-        return (n, n)
+        return _ar_core_parse_delay(v)
 
     @staticmethod
     def _ar_norm_idx(v, n):
-        """把可能为负的下标归一到 [0..]：负数从末尾算（-1=最后一字节）。"""
-        i = int(v)
-        return i + n if i < 0 else i
+        return _ar_core_norm_idx(v, n)
 
     def _ar_reply_bytes(self, text, hexmode):
-        """把（已替换占位符的）应答文本转字节：hexmode→宽容 hex 解析（同 _send_text 规则，
-        容注释/0x/分隔符）；否则按发送编码。坏 hex 返回 None（调用方回退原发送路径）。"""
-        if not hexmode:
-            return text.encode(self._send_codec(), errors="replace")
-        s = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-        s = re.sub(r'//[^\n]*', '', s)
-        s = re.sub(r'#[^\n]*', '', s)
-        s = s.replace("0x", "").replace("0X", "")
-        s = "".join(c for c in s if c not in " \t\r\n-:,;")
-        if not s or len(s) % 2:
-            return None
-        try:
-            return bytes.fromhex(s)
-        except ValueError:
-            return None
+        """Reply text -> bytes (hex parse or send codec)."""
+        return _ar_core_reply_bytes(
+            text, hexmode,
+            lambda t: t.encode(self._send_codec(), errors="replace"))
 
     def _ar_apply_cs_segs(self, buf, segs):
-        """按顺序对 buf 应用校验段：每段对 buf[start..end]（含端点）算校验，覆盖写到 at
-        或追加到帧尾。顺序=列表自上而下（内层在前，外层后算能把内层结果算进去）。
-        start/end/at 为 0 基、负数从末尾、end 留空=当前末字节、at 留空=追加。
-        越界 / 放不下 / 坏配置的段跳过、不影响其它段。buf 为 bytearray，原地改并返回。"""
-        for seg in (segs or []):
-            try:
-                algo = self._ar_to_int(seg.get("algo", 0))
-                if algo <= 0:
-                    continue
-                n = len(buf)
-                lo = self._ar_norm_idx(seg.get("start", 0), n)
-                end = seg.get("end", None)
-                hi = (n - 1) if end in (None, "") else self._ar_norm_idx(end, n)
-                if lo < 0 or hi < lo or hi >= n:
-                    continue
-                chk = self.compute_checksum(bytes(buf[lo:hi + 1]), algo)
-                if not chk:
-                    continue
-                at = seg.get("at", None)
-                if at in (None, ""):
-                    buf += chk
-                else:
-                    pos = self._ar_norm_idx(at, len(buf))
-                    if pos < 0 or pos + len(chk) > len(buf):
-                        continue       # 覆盖写放不下 → 跳过（应答里需先留好占位字节）
-                    buf[pos:pos + len(chk)] = chk
-            except Exception:
-                _log.debug("_ar_apply_cs_segs failed", exc_info=True)
-                continue
-        return buf
+        """Apply checksum segments onto bytearray buf."""
+        return _ar_core_apply_cs_segs(buf, segs, self.compute_checksum)
 
     def _ar_compose_frame(self, text, hexmode, cs_segs, cs):
-        """（已替换占位符的）单段应答文本 → 最终发送字节：解析为字节 → 应用校验段（内层）→
-        追加尾部 cs（外层）。实时发送(_ar_schedule_send)与离线测试器(_ar_preview)共用，
-        保证测试器看到的 = 实际发出的。hex 解析失败返回 None。"""
-        data = self._ar_reply_bytes(text, hexmode)
-        if data is None:
-            return None
-        buf = self._ar_apply_cs_segs(bytearray(data), cs_segs or [])
-        csi = self._ar_to_int(cs)
-        if csi > 0:
-            buf += self.compute_checksum(bytes(buf), csi)
-        return bytes(buf)
+        """Reply segment -> final TX bytes."""
+        return _ar_core_compose_frame(
+            text, hexmode, cs_segs, cs,
+            lambda t: t.encode(self._send_codec(), errors="replace"),
+            self.compute_checksum)
 
     def _ar_apply_fault(self, frame):
-        """C6 全局故障注入：对已组装好的最终帧按概率破坏（压测主机重传/容错）。
-        返回 (要发的字节 or None=丢包, 可读故障标记)。未启用→原样。三种独立掷骰，丢包命中即不发。"""
-        fc = self._ar_fault
-        if not fc.get("on") or not frame:
-            return frame, ""
-        if random.random() * 100 < self._ar_to_int(fc.get("drop", 0)):
-            return None, self._t("ar_fault_note_drop")        # 超时不回
-        buf = bytearray(frame)
+        """Global fault injection; returns (bytes|None, localized note)."""
+        out, tags = _ar_core_apply_fault(frame, self._ar_fault)
+        if not tags:
+            return out, ""
+        if tags == ["drop"]:
+            return None, self._t("ar_fault_note_drop")
         notes = []
-        if len(buf) > 1 and random.random() * 100 < self._ar_to_int(fc.get("badlen", 0)):
-            buf.pop()                                          # 砍末字节 → 长度错
+        if "badlen" in tags:
             notes.append(self._t("ar_fault_badlen_short"))
-        if len(buf) >= 1 and random.random() * 100 < self._ar_to_int(fc.get("badcrc", 0)):
-            buf[-1] ^= 0xFF                                    # 末字节翻转 → 校验/CRC 错
+        if "badcrc" in tags:
             notes.append(self._t("ar_fault_badcrc_short"))
         note = self._t("ar_fault_note_corrupt", what=" + ".join(notes)) if notes else ""
-        return bytes(buf), note
+        return out, note
 
     def _ar_fault_note(self, text):
         """故障注入在数据区留痕（让用户看到"这条被故意搞坏/丢了"）。text 已是可读文案。"""
@@ -7851,162 +7526,21 @@ class CommTool(QMainWindow):
             _log.debug("_ar_send failed", exc_info=True)
 
     def _ar_frame_ok(self, frame: bytes, idx: int) -> bool:
-        """收包校验：尾部 N 字节应等于前面内容按算法 idx 算出的校验。idx<=0 不校验直接放行。
-        帧太短或校验不符 → False（不应答）。"""
-        if idx <= 0:
-            return True
-        try:
-            n = len(self.compute_checksum(b"\x00", idx))   # 该算法校验字节数(MOBUS=1, CRC16=2…)
-        except Exception:
-            return True
-        if n == 0 or len(frame) <= n:
-            return False
-        try:
-            return self.compute_checksum(frame[:-n], idx) == frame[-n:]
-        except Exception:
-            return False
+        return _ar_core_frame_ok(frame, idx)
 
     @staticmethod
     def _ar_parse_hex_pat(s):
-        """解析 HEX 匹配 pattern → list[(值, 掩码)]，命中条件 (字节 & 掩码) == (值 & 掩码)。
-        支持（D 位掩码/字段级匹配）：
-          AB          整字节精确         → (0xAB, 0xFF)
-          ?? / XX     整字节通配         → (0x00, 0x00)
-          A? / ?5     半字节通配(X 同 ?) → (0xA0, 0xF0) / (0x05, 0x0F)
-          b:1xxxxxx1  位级掩码(8 位 0/1/x，x=该位不关心) → (0x81, 0x81)
-        为保证旧规则零回归，先完整尝试旧解析（删除空格后按字节解析）；旧语法能成功时
-        立即返回，只有失败后才按新掩码语法解析。`b:…` 的冒号在旧 HEX 中非法，
-        因此任意数量的位掩码都不会与旧规则撞义；token 须由空格/边界切出。
-        格式错误返回 None（整条规则跳过，与原行为一致）。"""
-        # 旧版会先删除所有半字节之间的空格；例如 `A b10000000` 是合法的
-        # `AB 10 00 00 00`。必须先跑原解析器，否则中间的 b-token 会抢占旧语义。
-        legacy = s.replace(" ", "").upper()
-        if legacy and len(legacy) % 2 == 0:
-            legacy_out = []
-            for i in range(0, len(legacy), 2):
-                pair = legacy[i:i + 2]
-                if pair in ("??", "XX"):
-                    legacy_out.append((0x00, 0x00))
-                else:
-                    try:
-                        legacy_out.append((int(pair, 16), 0xFF))
-                    except ValueError:
-                        break
-            else:
-                return legacy_out
-
-        out = []
-        buf = []   # 累积的 HEX 半字节字符（跨空格拼接）
-
-        def flush_hex():
-            chars = "".join(buf)
-            buf.clear()
-            if not chars:
-                return True
-            if len(chars) % 2:
-                return False
-            for i in range(0, len(chars), 2):
-                val = msk = 0
-                for nib in (chars[i], chars[i + 1]):
-                    val <<= 4
-                    msk <<= 4
-                    if nib in "?X":
-                        pass                       # 通配半字节：掩码该半字节为 0
-                    elif nib in "0123456789ABCDEF":
-                        val |= int(nib, 16)
-                        msk |= 0xF
-                    else:
-                        return False
-                out.append((val, msk))
-            return True
-
-        for tok in s.upper().split():
-            if tok.startswith("B:") and len(tok) == 10 and all(c in "01X" for c in tok[2:]):
-                if not flush_hex():                # 先消化前面累积的 hex
-                    return None
-                val = msk = 0
-                for c in tok[2:]:
-                    val <<= 1
-                    msk <<= 1
-                    if c == "1":
-                        val |= 1
-                        msk |= 1
-                    elif c == "0":
-                        msk |= 1
-                    # 'X'：该位 val/msk 均 0（不关心）
-                out.append((val, msk))
-            else:
-                buf.append(tok)
-        if not flush_hex():
-            return None
-        return out or None
+        return _ar_core_parse_hex_pat(s)
 
     @staticmethod
     def _ar_hex_at(pat, data, off):
-        """带掩码的 HEX pattern 是否在 data 偏移 off 处命中。pat 元素为 (值, 掩码)：
-        命中需 (data[off+i] & 掩码) == (值 & 掩码)。掩码 0xFF=精确、0x00=整字节通配。"""
-        if off < 0 or off + len(pat) > len(data):
-            return False
-        for i, (v, m) in enumerate(pat):
-            if (data[off + i] & m) != (v & m):
-                return False
-        return True
+        return _ar_core_hex_at(pat, data, off)
 
     def _ar_subst_reply(self, reply, data, hex_mode):
-        """应答占位符替换。占位符：
-          {rN}      第 N 字节(0 基)
-          {rN-M}    第 N..M 字节
-          {rN+K}    第 N 字节 + K (mod 256)，K 可为十进制或 0xHH
-          {rN^K}    第 N 字节 XOR K
-          {seq}     1 字节自增计数（每次替换 +1，wrap 0..255）
-          {ts}      当前毫秒时间戳低 4 字节 BE
-        HEX 模式替成两位十六进制(空格分隔)，文本模式替成原字符；越界/越界 K 替成空。"""
-        sep = " " if hex_mode else ""
-
-        def byte_s(b):
-            return f"{b & 0xFF:02X}" if hex_mode else chr(b & 0xFF)
-
-        def bytes_s(bs):
-            return sep.join(byte_s(b) for b in bs)
-
-        def parse_k(s):
-            return int(s, 16) if s.lower().startswith("0x") else int(s)
-
-        # {ts}：当前 ms 时间戳低 4 字节 BE
-        ts_ms = int(time.time() * 1000) & 0xFFFFFFFF
-        ts_bytes = bytes([(ts_ms >> 24) & 0xFF, (ts_ms >> 16) & 0xFF,
-                          (ts_ms >> 8) & 0xFF, ts_ms & 0xFF])
-        out = reply.replace("{ts}", bytes_s(ts_bytes))
-        # {seq}：仅在 reply 实际含 {seq} 时才推进，避免不用 {seq} 的规则白白消耗序号
-        # （多帧应答里每段独立调本函数，按段消耗 seq —— 这是符合直觉的，每段=一帧）
-        if "{seq}" in out:
-            self._ar_seq = (self._ar_seq + 1) & 0xFF
-            out = out.replace("{seq}", byte_s(self._ar_seq))
-
-        def repl(m):
-            n = int(m.group(1))
-            op = m.group(2)         # '+' 或 '^' 或 None
-            arg = m.group(3)        # 算术操作数 K
-            rng = m.group(4)        # 范围终点 M
-            if rng is not None:
-                # {rN-M} 范围
-                m_ = int(rng)
-                lo, hi = (n, m_) if n <= m_ else (m_, n)
-                return bytes_s([data[i] for i in range(lo, hi + 1) if 0 <= i < len(data)])
-            if op is not None:
-                # {rN+K} / {rN^K} 算术
-                if not (0 <= n < len(data)):
-                    return ""
-                try:
-                    k = parse_k(arg)
-                except ValueError:
-                    return ""
-                return byte_s((data[n] + k) & 0xFF if op == "+" else data[n] ^ k)
-            # {rN} 单字节
-            return byte_s(data[n]) if 0 <= n < len(data) else ""
-
-        # 同时匹配 {rN}/{rN-M}/{rN+K}/{rN^K}：K 可十进制或 0xHH
-        return re.sub(r"\{r(\d+)(?:([+^])(0x[0-9A-Fa-f]+|\d+)|-(\d+))?\}", repl, out)
+        """Substitute reply placeholders; advances _ar_seq when {seq} used."""
+        out, self._ar_seq = _ar_core_subst_reply(
+            reply, data, hex_mode, seq=getattr(self, "_ar_seq", 0))
+        return out
 
     def _info_dlg(self, title, body, is_error=False):
         """与主界面同主题的信息/错误模态对话框（替代风格不一致的 QMessageBox）。
@@ -8031,55 +7565,7 @@ class CommTool(QMainWindow):
     # 包含的 QSettings 键（实际 _save_settings 写入的 key 名，已对齐）：
     #   连接（网络/串口）+ 数据区显示 + 发送区 + 主题/语言 + 多条发送/关键字/帧解析/绘图 + 自动应答 + 自动重连
     # 不含：geometry / h_splitter（窗口位置布局不跨机器搬）、send_history（个人命令历史不导出）
-    _CFG_KEYS = (
-        # 网络连接
-        "net_proto", "net_local_ip", "net_local_port",
-        "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
-        # 虚拟连接（离线模式）
-        "vconn_loopback",
-        # 串口连接
-        "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
-        "ser_flow", "serial_dtr", "serial_rts",
-        # 数据区显示
-        "rx_hex", "hexdump_view", "hexdump_width", "numview", "numview_type", "ansi_color",
-        "proto_highlight", "wrap", "show_timestamp", "packet_split", "packet_timeout",
-        "line_split", "line_nl_mode", "encoding", "max_lines", "ts_format", "freeze_view",
-        "log_split", "filter_highlight", "recv_font_size",
-        # 发送区
-        "tx_hex", "append_newline", "append_nl_mode", "period_ms",
-        "checksum_idx", "send_text",
-        # 主题/语言
-        "theme", "language",
-        # 多条发送 / 关键字 / 帧解析 / 绘图
-        "multi_send_groups", "multi_send_group_idx", "multi_send_split", "snippets",
-        "connection_presets",
-        "keyword_groups", "keyword_active",
-        "frame_rules",
-        "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
-        "plot_hex_header", "plot_maxpts", "plot_xaxis",
-        # 数值仪表盘
-        "dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header", "dash_thresholds",
-        # 脚本控制台
-        "script_lib", "script_active",
-        # 自动应答
-        "autoreply_rules", "autoreply_on", "autoreply_frame", "autoreply_fault", "autoreply_sm",
-        "autoreply_modbus", "autoreply_split",
-        # Modbus 主机轮询
-        "modbus_master", "modbus_master_on", "modbus_master_variant", "modbus_master_echo",
-        "modbus_master_views", "modbus_master_split", "device_registers",
-        "device_plot_tags", "device_dash_tags",
-        # 自动化测试序列
-        "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
-        "sequence_csv_path",
-        # 触发告警
-        "triggers",
-        # 帧构造器
-        "frame_builder_fields", "frame_builder_split",
-        # 终端模式
-        "terminal_mode", "terminal_echo", "terminal_enter",
-        # 杂项
-        "auto_reconnect", "auto_update_check",
-    )
+    _CFG_KEYS = _CFG_KEYS_MOD
 
     def export_config(self):
         """导出当前配置为 JSON：QFileDialog 选保存路径，写入 _CFG_KEYS 里所有非空值。"""
@@ -8697,10 +8183,8 @@ class CommTool(QMainWindow):
             self._mbm_tick()
 
     def _mbm_rtu_silent_ms(self):
-        """Modbus RTU 帧间至少 3.5 个字符；高于 19200 baud 按规范固定取 1.75ms。"""
-        baud = self._mbm_serial_baud()
-        bits = self._mbm_serial_char_bits()
-        return 2 if baud > 19200 else max(2, int(3.5 * bits * 1000.0 / baud + 0.999))
+        """Modbus RTU inter-frame silence (>= 3.5 chars)."""
+        return _mbm_timing_silent_ms(self._mbm_serial_baud(), self._mbm_serial_char_bits())
 
     def _mbm_serial_baud(self):
         """优先使用连接打开时的真实波特率，不用可能已被配置导入改写的界面值。"""
@@ -8713,92 +8197,56 @@ class CommTool(QMainWindow):
             return 9600
 
     def _mbm_serial_char_bits(self):
-        """实际每字符位数 = 起始位 + 数据位 + 可选校验位 + 停止位。"""
+        """Bits per character from live/open serial config."""
         cfg = getattr(self, "_conn_cfg", None)
         try:
             if cfg and cfg[0] == PROTO_SERIAL and len(cfg) > 5:
-                databits, parity, stopbits = int(cfg[3]), str(cfg[4]), float(cfg[5])
+                databits, parity, stopbits = (int(cfg[3]), str(cfg[4]), float(cfg[5]))
             else:
                 databits = int(self.cb_databits.currentText())
                 parity = self.cb_parity.currentText()
                 stopbits = float(self.cb_stopbits.currentText())
         except (ValueError, TypeError):
             return 11.0
-        return 1.0 + databits + (0.0 if parity == "None" else 1.0) + stopbits
+        return _mbm_timing_char_bits(databits, parity, stopbits)
 
     def _mbm_rtu_tx_guard_ms(self, frame_len):
-        """无响应帧（广播）发送后，保守等待整帧传输时间 + t3.5。"""
-        tx_ms = int(frame_len * self._mbm_serial_char_bits()
-                    * 1000.0 / self._mbm_serial_baud() + 0.999)
-        return tx_ms + self._mbm_rtu_silent_ms()
+        """After broadcast TX: wait full frame time + t3.5."""
+        return _mbm_timing_tx_guard_ms(
+            frame_len, self._mbm_serial_baud(), self._mbm_serial_char_bits())
 
     def _mbm_tick(self):
-        """调度：无在途请求时挑一个到点的行发出；否则按最早到点时间排下次唤醒。"""
+        """Schedule: poll soonest due rule, else arm single-shot timer."""
         if self._mbm_inflight is not None or not self._mbm_active():
             return
         now = time.monotonic()
-        best_i, best_due = None, None
-        for i, r in enumerate(self._mbm_rules):
-            if not r.get("enabled"):
-                continue
-            due = self._mbm_due.get(i, 0.0)
-            if best_due is None or due < best_due:
-                best_i, best_due = i, due
+        best_i, wait = _mbm_sched_pick_next(
+            self._mbm_rules, self._mbm_due, now, self._mbm_guard_until)
         if best_i is None:
             return
-        wait = max(best_due, self._mbm_guard_until) - now   # 超时静默期内推迟，先排空迟到响应
         if wait <= 0.0:
             self._mbm_poll(best_i)
         else:
-            # +1 避免毫秒取整后提前唤醒；同时钳到 QTimer 的有符号 int 上限。
-            delay_ms = min(self._MBM_QTIMER_MAX_MS, max(1, int(wait * 1000) + 1))
+            delay_ms = _mbm_sched_delay_ms(wait, self._MBM_QTIMER_MAX_MS)
             self._mbm_sched.start(delay_ms)
 
     def _mbm_timeout_ms(self, frame, r):
-        """响应超时 = 处理余量(1s) + 串口收发传输时间。低波特率大帧(如 1200baud 255字节
-        ~2.1s)下固定 1s 会在请求还没发完就误判超时，故按 帧长+波特率 动态加时。
-        TCP / 非串口连接无波特率概念 → 用固定基值。"""
+        """Response timeout = base + serial wire time (TCP uses fixed base)."""
         base = (self._device_scan_timeout_ms
                 if self._device_scan_state is not None else self._MBM_TIMEOUT_MS)
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         if proto != PROTO_SERIAL:
             return base
-        baud = self._mbm_serial_baud()
-        resp_rtu = modbus_master.rtu_normal_len(r["func"], r["qty"])
-        if resp_rtu is None:
-            # Unknown / variable: budget a full RTU ADU.
-            resp_rtu = 256 if r["func"] == 0x11 else 8
-        if self._mbm_variant_eff() == "ascii":
-            # ASCII 响应是 hex 编码（每字节 2 字符 + ':' + CRLF + LRC），比 RTU 长约 2 倍；
-            # 用 RTU 字节数会低估传输时间，低波特率大包下超时偏短而误判。
-            # 按生效 variant 判定，不嗅探帧首字节——RTU unit=58(0x3A=':') 会被误判。
-            resp_len = 2 * resp_rtu + 1
-        else:
-            resp_len = resp_rtu
-        # 按实际数据位/校验/停止位计算，请求 + 响应两段传输。
-        tx_ms = ((len(frame) + resp_len) * self._mbm_serial_char_bits()
-                 * 1000.0 / baud)
-        return int(base + tx_ms)
+        resp_len = _mbm_timing_resp_len(
+            r["func"], r["qty"], variant=self._mbm_variant_eff())
+        return _mbm_timing_timeout_ms(
+            base, len(frame), resp_len,
+            self._mbm_serial_baud(), self._mbm_serial_char_bits())
 
     @staticmethod
     def _mbm_span_bad(r):
-        """连续读/写范围是否跨出 0xFFFF（与 modbus_master._check_address_span 保持一致）。"""
-        def over(start, count):
-            return (start is not None and count
-                    and start + int(count) - 1 > 0xFFFF)
-
-        func = r["func"]
-        if func in modbus_master.READ_FUNCS:
-            return bool(over(r["addr"], r["qty"]))
-        if func in modbus_master.WRITE_MULTI:
-            return bool(over(r["addr"], len(r["wvals"] or [])))
-        if func == 0x17:
-            rw = r.get("rw") or {}
-            return bool(over(r["addr"], r["qty"])
-                        or over(r.get("write_addr"), len(rw.get("write_vals") or [])))
-        if func == 0x16:
-            return bool(over(r["addr"], 1))
-        return False
+        """True when continuous read/write span crosses 0xFFFF."""
+        return _mbm_timing_span_bad(r)
 
     def _mbm_poll(self, i):
         """构造并发出第 i 行的请求帧，登记在途请求 + 启动响应超时。"""
@@ -8809,7 +8257,7 @@ class CommTool(QMainWindow):
                 or (r["func"] == 0x17 and r.get("write_addr") is None)
                 or (variant in ("rtu", "ascii") and r["unit"] > 247)):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = time.monotonic() + 1.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), 1000)
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
         # 写值守卫：输入空白/非法/越界 → 报错、不发送（绝不静默截断或写 0）
@@ -8817,28 +8265,28 @@ class CommTool(QMainWindow):
             # 连续读写范围不能跨出 16 位地址空间。构帧层 _check_address_span 也会拦，
             # 但那条是未本地化的异常文本，这里统一成「参数非法」。
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)
             return
         if r["func"] == 0x08 and (r.get("diag_sub") is None or r.get("diag_data") is None):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)
             return
         if r["func"] == 0x16 and (r.get("and_mask") is None or r.get("or_mask") is None):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)
             return
         if r["func"] == 0x2B and (r.get("read_code") is None or r.get("object_id") is None):
             self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)
             return
         if ((r["func"] in modbus_master.WRITE_SINGLE and r["wval"] is None)
                 or (r["func"] in modbus_master.WRITE_MULTI and not r["wvals"])):
             self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
         # RTU/ASCII unit 0 = broadcast: only single/multi write allowed (no response).
@@ -8847,7 +8295,7 @@ class CommTool(QMainWindow):
             if r["func"] not in (modbus_master.WRITE_SINGLE
                                  + modbus_master.WRITE_MULTI + (0x16,)):
                 self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_nowrite"))
-                self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+                self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
                 self._mbm_sched.start(0)
                 return
         if r["func"] in modbus_master.READ_FUNCS:
@@ -8872,7 +8320,7 @@ class CommTool(QMainWindow):
             }
             if not arg.get("write_vals"):
                 self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
-                self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+                self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
                 self._mbm_sched.start(0)
                 return
         else:
@@ -8891,12 +8339,12 @@ class CommTool(QMainWindow):
                 tid = None
         except Exception as e:
             self._mbm_set_result(i, "err", str(e))
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
         # RTU/ASCII 广播写：发送成功即完成本轮，不登记 inflight、不启动响应超时。
         if variant in ("rtu", "ascii") and r["unit"] == 0:
-            self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             sent_ok = self._mbm_send_raw(frame)
             # 广播无响应可作为帧结束锚点，自行覆盖发送时间+t3.5；期间本地回显也会被丢弃。
             self._mbm_guard_until = (time.monotonic()
@@ -8926,7 +8374,7 @@ class CommTool(QMainWindow):
                               "addr": r["addr"], "exp_write": exp_write,
                               "exp_diag": exp_diag,
                               "echo": frame if variant in ("rtu", "ascii") else None}
-        self._mbm_due[i] = time.monotonic() + r["period"] / 1000.0
+        self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
         timeout_ms = self._mbm_timeout_ms(frame, r)
         self._mbm_inflight["timeout_ms"] = timeout_ms
         self._mbm_to.start(timeout_ms)
@@ -8934,7 +8382,7 @@ class CommTool(QMainWindow):
             self._mbm_to.stop()
             self._mbm_inflight = None
             self._mbm_set_result(i, "err", self._t("mbm_st_senderr"))
-            self._mbm_due[i] = time.monotonic() + max(r["period"], 200) / 1000.0
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), max(r["period"], 200))
             self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
             return
 
@@ -9375,8 +8823,8 @@ class CommTool(QMainWindow):
             if dash_tags:
                 self._feed_named_view("_dash_dlg", dash_tags, samples)
         except Exception:
-            # 结构化附加功能不能阻断 Modbus 主流程；_mbm_apply 后续仍须写结果并释放 inflight。
-            pass
+            # Structured/plot side-path must not block Modbus apply / inflight release.
+            _log.debug("_mbm_feed_views failed", exc_info=True)
 
     def _feed_named_view(self, attr, tags, samples):
         """把命中 tags 的样本喂给 plot/dashboard（仅对话框可见时；与各自 feed 同条件）。"""
@@ -9644,12 +9092,8 @@ class CommTool(QMainWindow):
     # ----- 终端模式（轻量串口终端：逐字符即时发送 + 基础 VT 行编辑 / ANSI SGR）-----
     @staticmethod
     def _safe_enter_idx(v):
-        """回车映射索引安全解析：损坏/越界的 settings 值不让 __init__ 抛异常、不让下拉越界。"""
-        try:
-            n = int(v)
-        except (ValueError, TypeError):
-            return 0
-        return n if n in (0, 1, 2) else 0
+        """Enter-key mapping index: only 0/1/2, else 0."""
+        return log_naming.safe_enter_idx(v)
 
     def _set_terminal_enabled(self, on):
         on = bool(on)
@@ -9944,9 +9388,16 @@ class CommTool(QMainWindow):
                 "discard_osc": discard_osc,
                 "osc_prev_esc": osc_prev_esc,
             }
-        self._term_pos = cur.position()   # 光标位置留到下块延续
-        # 终端路径不经过 _append_block_data，但退出终端后普通文本仍会读取这份行尾状态。
-        # 不同步的话，终端末尾没有换行时下一条普通 RX 会被误当成「文档本来就在行首」。
+        self._term_pos = cur.position()
+        # Terminal bypasses _append_block_data; apply the same char budget and
+        # keep _term_pos valid after a head trim (P1: no-newline growth).
+        trimmed = self._trim_recv_overflow()
+        if trimmed and self._term_pos is not None:
+            self._term_pos = max(0, self._term_pos - trimmed)
+            last = self.txt_recv.document().characterCount() - 1
+            if self._term_pos > last:
+                self._term_pos = max(0, last)
+        # Keep line-end flag in sync for non-terminal RX after leaving terminal.
         self._txt_ends_with_nl = self.txt_recv.document().lastBlock().text() == ""
         if was_bottom:
             self._scroll_recv_to_bottom()
@@ -9990,54 +9441,7 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def compute_checksum(data: bytes, index: int) -> bytes:
-        if not data or index <= 0:
-            return b""
-        if index == 1:  # ADD8
-            return bytes([sum(data) & 0xFF])
-        if index == 2:  # ~ADD8
-            return bytes([(~sum(data)) & 0xFF])
-        if index == 3:  # XOR8
-            x = 0
-            for b in data:
-                x ^= b
-            return bytes([x])
-        if index == 4:  # CRC8 (poly 0x07)
-            crc = 0
-            for b in data:
-                crc ^= b
-                for _ in range(8):
-                    crc = ((crc << 1) ^ 0x07) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
-            return bytes([crc])
-        if index == 5:  # ModbusCRC16
-            crc = 0xFFFF
-            for b in data:
-                crc ^= b
-                for _ in range(8):
-                    crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
-            return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
-        if index == 6:  # CCITT-CRC16
-            crc = 0xFFFF
-            for b in data:
-                crc ^= (b << 8)
-                for _ in range(8):
-                    crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
-            return bytes([(crc >> 8) & 0xFF, crc & 0xFF])
-        if index == 7:  # CRC32
-            import zlib
-            crc = zlib.crc32(data) & 0xFFFFFFFF
-            return bytes([(crc >> 24) & 0xFF, (crc >> 16) & 0xFF,
-                          (crc >> 8) & 0xFF, crc & 0xFF])
-        if index == 8:  # ADD16
-            s = sum(data) & 0xFFFF
-            return bytes([(s >> 8) & 0xFF, s & 0xFF])
-        if index == 9:  # MOBUS: CRC8 with poly 0x31
-            crc = 0
-            for b in data:
-                crc ^= b
-                for _ in range(8):
-                    crc = ((crc << 1) ^ 0x31) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
-            return bytes([crc])
-        return b""
+        return _ar_core_compute_checksum(data, index)
 
     def on_period_toggled(self, on):
         if on:
@@ -10075,16 +9479,12 @@ class CommTool(QMainWindow):
         self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
 
     def _log_conn_token(self) -> str:
-        """%port 变量的取值：串口用设备名，网络用「IP_端口」，未连接时留空。"""
-        proto = getattr(self, "_conn_proto", None)
-        cfg = getattr(self, "_conn_cfg", None)
-        if proto == PROTO_SERIAL and cfg and len(cfg) > 1 and cfg[1]:
-            return str(cfg[1])
-        if proto == PROTO_TCP_CLIENT and cfg and len(cfg) > 2:
-            return "%s_%s" % (cfg[1], cfg[2])
-        if proto:
-            return str(proto)
-        return ""
+        """%port expansion: device / IP_port / proto / empty."""
+        return log_naming.conn_token(
+            getattr(self, "_conn_proto", None),
+            getattr(self, "_conn_cfg", None),
+            serial_name=PROTO_SERIAL,
+            tcp_client_name=PROTO_TCP_CLIENT)
 
     def _log_segment_path(self, when=None) -> str:
         """当前分包对应的文件名：展开 %date/%time/%port/%n 变量，再按需追加序号。
@@ -10249,27 +9649,16 @@ class CommTool(QMainWindow):
         self._refresh_project_dirty_label()
 
     def _timestamp_prefix(self, direction):
-        """按当前 ts_format 算块前缀（含方向箭头）；时间戳关闭返回 ''。"""
+        """Build block prefix from ts_format + direction arrow; off -> ''."""
         if not self.sw_show_timestamp.isChecked():
             return ""
         fmt = getattr(self, "_ts_format", "absolute")
-        now = datetime.now()
-        if fmt == "time":
-            ts = "%02d:%02d:%02d.%03d" % (now.hour, now.minute, now.second,
-                                          now.microsecond // 1000)
-        elif fmt == "epoch":
-            ts = "%.3f" % time.time()
-        elif fmt == "relative":
-            if self._ts_anchor is None:
-                self._ts_anchor = time.time()
-            ts = "+%.3f" % (time.time() - self._ts_anchor)
-        else:                                  # absolute
-            ts = ("%04d/%02d/%02d %02d:%02d:%02d.%03d"
-                  % (now.year, now.month, now.day, now.hour, now.minute,
-                     now.second, now.microsecond // 1000))
-        return "[%s] %s" % (ts, "→ " if direction == "tx" else "← ")
+        text, self._ts_anchor = _view_timestamp_prefix(
+            fmt, direction,
+            now=datetime.now(), wall_time=time.time(),
+            anchor=getattr(self, "_ts_anchor", None))
+        return text
 
-    # ----- 文件 -----
     def save_recv(self):
         path, _ = QFileDialog.getSaveFileName(
             self, self._t("dlg_save_data"),
@@ -10313,13 +9702,8 @@ class CommTool(QMainWindow):
     # ----- 工具 -----
     @staticmethod
     def fmt_bytes(n):
-        if n < 1024:
-            return f"{n} B"
-        if n < 1024 * 1024:
-            return f"{n/1024:.1f} KB"
-        return f"{n/1024/1024:.2f} MB"
+        return _io_fmt_bytes(n)
 
-    # ----- 收发速率 / 包统计 -----
     def _stat_note_rx(self, n):
         n = int(n or 0)
         self.rx_bytes += n
@@ -10346,7 +9730,7 @@ class CommTool(QMainWindow):
             acc.note_timeout(kind)
 
     def _fmt_rate(self, bps):
-        return self.fmt_bytes(int(bps)) + "/s"
+        return _io_fmt_rate(bps)
 
     def _tick_rate(self):
         """1Hz sample: B/s + pps + peaks + history via IoStatsAccumulator."""
@@ -10381,18 +9765,12 @@ class CommTool(QMainWindow):
             return
         unit = self._t("stat_pkt_unit")
         pps_u = self._t("stat_pps_unit")
-        mid = "\u00b7"
-        warn = "\u26a0"
-        rx = ("RX %s %s %s %s %s %s %s %s %s" % (
-            self.fmt_bytes(self.rx_bytes), mid, self.rx_packets, unit,
-            mid, self._fmt_rate(self._rx_rate), mid, self._io_stats.rx_pps, pps_u))
-        if self.rx_errors:
-            rx += " %s %s%s" % (mid, warn, self.rx_errors)
-        tx = ("TX %s %s %s %s %s %s %s %s %s" % (
-            self.fmt_bytes(self.tx_bytes), mid, self.tx_packets, unit,
-            mid, self._fmt_rate(self._tx_rate), mid, self._io_stats.tx_pps, pps_u))
-        if self.tx_errors:
-            tx += " %s %s%s" % (mid, warn, self.tx_errors)
+        rx = _io_format_stat_bar(
+            "RX", self.rx_bytes, self.rx_packets, self._rx_rate,
+            self._io_stats.rx_pps, self.rx_errors, unit, pps_u)
+        tx = _io_format_stat_bar(
+            "TX", self.tx_bytes, self.tx_packets, self._tx_rate,
+            self._io_stats.tx_pps, self.tx_errors, unit, pps_u)
         self.lbl_rx_stat.setText(rx)
         self.lbl_tx_stat.setText(tx)
         if with_tooltip:

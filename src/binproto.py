@@ -262,3 +262,58 @@ def iter_length_frames(buf, header, len_off, len_width, len_extra,
         frames.append(buf[i:i + total])
         i += total
     return frames, buf[i:]
+
+
+# ----- frame_rules (S-2 R11) ------------------------------------------------
+
+def parse_frame_rules(raw):
+    """Parse multiline frame_rules text -> list of rule dicts.
+
+    Each rule: {header: bytes, header_str: str, fields: [(name, off, typ), ...]}.
+    Blank / #comment lines skipped; malformed lines skipped (not raised).
+    Lines without '|' treat the whole line as field spec (empty header).
+    """
+    rules = []
+    for ln in str(raw or "").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        hdr_s, fld_s = (ln.split("|", 1) if "|" in ln else ("", ln))
+        try:
+            header = parse_hex_header(hdr_s.strip())
+            fields = parse_field_spec(fld_s.strip())
+        except (ValueError, TypeError):
+            continue
+        if fields:
+            rules.append({
+                "header": header,
+                "header_str": hdr_s.strip() or "*",
+                "fields": fields,
+            })
+    return rules
+
+
+def first_matching_rule(rules, data):
+    """First rule whose header is empty or a prefix of data; else None."""
+    data = bytes(data or b"")
+    for r in rules or ():
+        hdr = r.get("header") or b""
+        if not hdr or data.startswith(hdr):
+            return r
+    return None
+
+
+def field_disp(typ, v):
+    """Field value -> tooltip/display text.
+
+    hexN/strN keep string form; numeric types with 'x' -> hex; else decimal/float.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if is_hex_num(typ) and isinstance(v, int):
+        return ("0x%X" % v) if v >= 0 else ("-0x%X" % (-v))
+    if isinstance(v, float):
+        return "%.6g" % v
+    return str(v)

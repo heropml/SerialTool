@@ -1495,6 +1495,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._seq_results = [{"status": "sent", "ms": 0, "detail": ""}]
             w._seq_rounds = [{"round": 1, "ok": 1, "total": 1, "ms": 5, "pass": True},
                              {"round": 2, "ok": 1, "total": 1, "ms": 5, "pass": True}]
+            w._seq_round_snapshot_taken = True
             w._seq_summary = None
             w._seq_abort("seq_stopped")
             s = w._seq_summary
@@ -1546,14 +1547,14 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_loop_count_capped(self):
         """回归(P2)：循环次数钳到上限 _SEQ_MAX_LOOPS，防无界内存/巨表。"""
-        import main_window
+        import sequence_engine
         w = _win()
         o_open, o_send = w._is_open, w._send_text
         w._is_open = lambda: True
         w._send_text = lambda raw, **k: True
         try:
             w._seq_start([{"on": True, "send": "GO", "expect": ""}], loops=99999999)
-            self.assertEqual(w._seq_loops, main_window._SEQ_MAX_LOOPS)
+            self.assertEqual(w._seq_loops, sequence_engine.MAX_LOOPS)
         finally:
             w._seq_stop()
             w._is_open, w._send_text = o_open, o_send

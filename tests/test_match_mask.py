@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """D 位掩码/字段级匹配 —— 自动应答 HEX 匹配的解析与命中测试。
 
-覆盖 CommTool._ar_parse_hex_pat / _ar_hex_at / _ar_hit_test：
+覆盖 parse_hex_pat / _ar_hex_at / _ar_hit_test：
   整字节精确 / 整字节通配(??·XX) / 半字节通配(A?·?5·X) / 位级掩码(b:+8位[01x]) /
   跨空格 HEX 拼接(向后兼容 `A B`=0xAB) / 旧语法优先(零回归) / 坏格式 / 三种匹配模式。
 
@@ -15,20 +15,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-try:
-    from main_window import CommTool
-    _IMPORT_ERR = None
-except ModuleNotFoundError as e:            # 仅 GUI 依赖缺失才跳过；其余照常抛出
-    if (e.name or "").split(".")[0] in {"serial", "PyQt5"}:
-        CommTool = None
-        _IMPORT_ERR = e
-    else:
-        raise
+from auto_reply_core import parse_hex_pat, hex_at, hit_test
 
 
-@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class ParseHexPatTests(unittest.TestCase):
-    P = staticmethod(CommTool._ar_parse_hex_pat) if CommTool else None
+    P = staticmethod(parse_hex_pat)
 
     def test_exact_byte(self):
         self.assertEqual(self.P("AB"), [(0xAB, 0xFF)])
@@ -96,10 +87,9 @@ class ParseHexPatTests(unittest.TestCase):
         self.assertIsNone(self.P("b:1002xxxx"))  # b: 后含非 0/1/x
 
 
-@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class HexAtTests(unittest.TestCase):
-    P = staticmethod(CommTool._ar_parse_hex_pat) if CommTool else None
-    A = staticmethod(CommTool._ar_hex_at) if CommTool else None
+    P = staticmethod(parse_hex_pat)
+    A = staticmethod(hex_at)
 
     def test_bitmask_hit_miss(self):
         pat = self.P("b:1xxxxxx1")               # 最高位=1 且 最低位=1
@@ -123,12 +113,10 @@ class HexAtTests(unittest.TestCase):
         self.assertFalse(self.A(pat, bytes([0x35]), -1))  # 负偏移
 
 
-@unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class HitTestModesTests(unittest.TestCase):
     def _hit(self, match, data, mode):
         rule = {"match": match, "match_hex": True, "mode": mode}
-        inst = CommTool.__new__(CommTool)     # 不跑 __init__、不需 QApplication
-        return CommTool._ar_hit_test(inst, rule, data, "")
+        return hit_test(rule, data, "")
 
     def test_contains(self):
         self.assertTrue(self._hit("?5", bytes([0x00, 0x35, 0x99]), 0))   # 滑窗命中

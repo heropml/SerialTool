@@ -109,3 +109,26 @@ def should_roll_size(current_bytes, limit_bytes):
     if cur < 0:
         return False
     return cur >= limit
+
+
+def conn_token(proto, cfg, serial_name="Serial", tcp_client_name="TCP Client"):
+    """%port expansion value from connection signature tuple.
+
+    serial_name / tcp_client_name must match PROTO_* display strings used by UI.
+    """
+    if proto == serial_name and cfg and len(cfg) > 1 and cfg[1]:
+        return str(cfg[1])
+    if proto == tcp_client_name and cfg and len(cfg) > 2:
+        return "%s_%s" % (cfg[1], cfg[2])
+    if proto:
+        return str(proto)
+    return ""
+
+
+def safe_enter_idx(v):
+    """Enter-key mapping index: only 0/1/2 accepted, else 0."""
+    try:
+        n = int(v)
+    except (ValueError, TypeError):
+        return 0
+    return n if n in (0, 1, 2) else 0

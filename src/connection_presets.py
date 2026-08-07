@@ -262,3 +262,27 @@ def from_json(text):
                 return sanitize_list(data[key])
     raise ValueError("no preset list found")
 
+
+
+def parse_port(text):
+    """Parse a TCP/UDP port string -> int 1..65535, else None."""
+    try:
+        p = int(str(text).strip())
+    except (ValueError, TypeError):
+        return None
+    return p if 1 <= p <= 65535 else None
+
+
+def serial_signature(proto, port, baud, databits, parity, stopbits, flow):
+    """Serial connection config signature tuple."""
+    return (proto, port, baud, databits, parity, stopbits, flow)
+
+
+def tcp_client_signature(proto, ip, port):
+    """TCP client connection config signature tuple."""
+    return (proto, ip, port)
+
+
+def proto_only_signature(proto):
+    """Non-serial / non-tcp-client signature (proto only)."""
+    return (proto,)

@@ -12,6 +12,7 @@ from theme import chrome_for, THEME_DEFAULT
 import seq_context
 import sequence_dataset
 import junit_report
+import seq_report
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
@@ -2445,93 +2446,30 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         return header, body
 
     def _build_report_html(self, rows):
-        import html as _h
         t = self.app._t
         summ_line, passed = self._report_summary_line()
         header, body = self._report_table(rows)
-        th = "".join("<th>%s</th>" % _h.escape(str(x)) for x in header)
-        trs = []
-        for b in body:
-            tds = "".join("<td>%s</td>" % _h.escape(str(x)) for x in b["cells"])
-            trs.append('<tr class="%s">%s</tr>' % (b["cls"], tds))
-        meta_html = "".join(
-            "<div class='meta'>%s: %s</div>" % (_h.escape(str(k)), _h.escape(str(v)))
-            for k, v in self._report_meta_rows()
-        )
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'><title>%(title)s</title><style>"
-            "body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;margin:24px;color:#222;}"
-            "h1{font-size:20px;margin:0 0 6px;}"
-            ".meta{color:#666;font-size:13px;margin-bottom:6px;}"
-            ".verdict{display:inline-block;padding:3px 12px;border-radius:6px;color:#fff;"
-            "font-weight:600;background:%(accent)s;}"
-            "table{border-collapse:collapse;width:100%%;font-size:13px;margin-top:12px;}"
-            "th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top;"
-            "word-break:break-all;}"
-            "th{background:#f4f5f7;font-weight:600;}"
-            "tr.ok td{background:#ebfbee;}tr.fail td{background:#fff0f0;}"
-            "td:first-child,th:first-child{text-align:center;width:36px;}"
-            ".foot{color:#aaa;font-size:11px;margin-top:16px;}"
-            "</style></head><body>"
-            "<h1>%(title)s</h1>"
-            "%(meta)s"
-            "%(verdict_html)s"
-            "<table><thead><tr>%(th)s</tr></thead><tbody>%(rows)s</tbody></table>"
-            "<div class='foot'>CommTool · %(title)s</div></body></html>"
-        ) % {
-            "title": _h.escape(t("seq_report_title")),
-            "meta": meta_html,
-            "verdict_html": ("<div><span class='verdict'>%s</span></div>" % _h.escape(summ_line))
-                            if summ_line else "",
-            "accent": "#2f9e44" if passed else "#e03131",
-            "th": th, "rows": "".join(trs),
-        }
+        return seq_report.build_html(
+            t("seq_report_title"), self._report_meta_rows(),
+            summ_line, passed, header, body)
 
     def _build_report_csv(self, rows):
-        import csv, io
         t = self.app._t
         summ_line, _passed = self._report_summary_line()
         header, body = self._report_table(rows)
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow([self._csv_safe(t("seq_report_title"))])
-        for k, v in self._report_meta_rows():
-            w.writerow([self._csv_safe(k), self._csv_safe(v)])
-        if summ_line:
-            w.writerow([self._csv_safe(summ_line)])
-        w.writerow([])
-        w.writerow([self._csv_safe(x) for x in header])
-        for b in body:
-            w.writerow([self._csv_safe(x) for x in b["cells"]])
-        return buf.getvalue()
+        return seq_report.build_csv(
+            t("seq_report_title"), self._report_meta_rows(),
+            summ_line, header, body)
 
     @staticmethod
     def _csv_safe(value):
-        """Excel 会把危险前缀的 CSV 单元格当作公式；前置单引号强制按文本打开。"""
-        if not isinstance(value, str):
-            return value
-        probe = value.lstrip()
-        if value and (value[0] in "=+-@\t\r\n" or (probe and probe[0] in "=+-@")):
-            return "'" + value
-        return value
+        return seq_report.csv_safe(value)
+
 
     @staticmethod
     def _report_fmt(path, sel):
-        """决定导出格式 + 补扩展名：先看路径扩展名；扩展名不明时按对话框选中的过滤器(sel)决定
-        （部分平台/Qt 不会自动追加扩展名，避免选了 CSV 却写成 .html）。返回 (fmt, path)。"""
-        low = path.lower()
-        if low.endswith(".csv"):
-            return "csv", path
-        if low.endswith(".xml"):
-            return "junit", path
-        if low.endswith(".html") or low.endswith(".htm"):
-            return "html", path
-        sel_l = (sel or "").lower()
-        if "csv" in sel_l:
-            return "csv", path + ".csv"
-        if "xml" in sel_l or "junit" in sel_l:
-            return "junit", path + ".xml"
-        return "html", path + ".html"
+        return seq_report.report_fmt(path, sel)
+
 
     def _build_report_junit(self, rows):
         """Build JUnit XML from the latest sequence snapshot."""

@@ -205,3 +205,33 @@ class IoStatsAccumulator(object):
             "timeouts": dict(self.timeouts),
             "history_len": len(self.history),
         }
+
+
+def fmt_bytes(n):
+    """Human size: N B / X.X KB / X.XX MB."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1024:
+        return "%s B" % n
+    if n < 1024 * 1024:
+        return "%.1f KB" % (n / 1024.0)
+    return "%.2f MB" % (n / 1024.0 / 1024.0)
+
+
+def fmt_rate(bps):
+    """Bytes/sec label using fmt_bytes."""
+    return fmt_bytes(bps) + "/s"
+
+
+def format_stat_bar(label, nbytes, packets, rate, pps, errors, pkt_unit, pps_unit):
+    """One status-bar line; label is 'RX'/'TX'; units already localized."""
+    mid = "\u00b7"
+    warn = "\u26a0"
+    line = ("%s %s %s %s %s %s %s %s %s %s" % (
+        label, fmt_bytes(nbytes), mid, packets, pkt_unit,
+        mid, fmt_rate(rate), mid, pps, pps_unit))
+    if errors:
+        line += " %s %s%s" % (mid, warn, errors)
+    return line
