@@ -9,16 +9,17 @@
 发版流程：打好安装包传到下载地址 → 更新各源上的 latest.json 的 version/url/notes。
 注意：清单 URL 必须能**免登录**访问（开放的内网 HTTP，或公开仓库的 raw / Releases）。
 """
+import glob
+import json
+import logging
 import os
 import re
-import sys
-import json
-import glob
-import time
-import tempfile
 import ssl
-import urllib.request
+import sys
+import tempfile
+import time
 import urllib.error
+import urllib.request
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl, QThread
 
 # 版本清单地址，按顺序逐个尝试，第一个成功的为准。
@@ -37,6 +38,9 @@ _DOWNLOAD_STALL_MS = 30000    # 下载“停滞”超时：这么久没有新数
 # i18n 翻译钩子：main 启动时用 set_translator(主窗口._t) 注入；未注入时回退返回 key 本身。
 # updater 是独立模块、不持有语言状态，故用此钩子把少量用户可见错误文案接入多语言。
 _translate = lambda key: key
+
+
+_log = logging.getLogger(__name__)
 
 
 def set_translator(fn):
@@ -87,7 +91,7 @@ def cleanup_temp_installers():
             except OSError:
                 pass
     except Exception:
-        pass
+        _log.debug("cleanup_temp_installers failed", exc_info=True)
 
 
 # 程序化请求的 User-Agent + 系统证书：Qt 的 QNetworkAccessManager 走 OpenSSL，而 OpenSSL

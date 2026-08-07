@@ -17,6 +17,7 @@ Player 只依赖一个 `inject(bytes)` 回调，不碰 Qt 控件；定时由调�
 """
 import io
 import json
+import logging
 import math
 import time
 
@@ -26,6 +27,9 @@ _MAX_EVENTS = 200000        # 单次录制事件上限，防长跑吃内存
 _MAX_CHUNK = 65536          # 单事件字节上限
 _MAX_FILE_BYTES = 64 << 20  # 载入文件上限 64MB，防误选巨型文件卡死
 _MAX_TICK_EVENTS = 1000     # 单次 tick 派发上限，防「最快」模式一次排队几十万个 Qt 回调卡死 UI
+
+
+_log = logging.getLogger(__name__)
 
 
 class RecordError(Exception):
@@ -235,7 +239,7 @@ class Player:
         try:
             self.inject(b)
         except Exception:
-            pass
+            _log.debug("rec_replay inject failed", exc_info=True)
         if self.idx >= len(self.events):
             self.loops_done += 1
             if self.loop:

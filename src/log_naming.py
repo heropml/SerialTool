@@ -71,3 +71,41 @@ def should_roll_date(opened_at, now, template):
     if not re.search(r"%(datetime|date|time)", template or "", re.IGNORECASE):
         return False
     return opened_at.date() != now.date()
+
+
+def parse_size_limit(text):
+    """Parse a human size like '2M' / '512K' / '1.5G' into bytes.
+
+    No digits (e.g. 'none' / empty) -> 0 (unlimited). Bare number defaults to MB,
+    matching the UI combo convention used by CommTool.
+    """
+    m = re.search(r"(\d+(?:\.\d+)?)\s*([KkMmGg]?)", text or "")
+    if not m:
+        return 0
+    val = float(m.group(1))
+    mult = {"K": 1024, "M": 1024 * 1024, "G": 1024 ** 3}.get(
+        m.group(2).upper(), 1024 * 1024)
+    return int(val * mult)
+
+
+def should_roll_size(current_bytes, limit_bytes):
+    """True when the open segment has reached/exceeded the size limit.
+
+    limit_bytes <= 0 means unlimited (never roll for size). current_bytes None
+    or negative is treated as unknown -> do not roll (caller keeps writing /
+    retries later) so a failed tell() cannot cascade into a spurious rotate.
+    Non-numeric limits are treated as unlimited (do not raise).
+    """
+    try:
+        limit = int(limit_bytes)
+    except (TypeError, ValueError):
+        return False
+    if limit <= 0:
+        return False
+    try:
+        cur = int(current_bytes)
+    except (TypeError, ValueError):
+        return False
+    if cur < 0:
+        return False
+    return cur >= limit

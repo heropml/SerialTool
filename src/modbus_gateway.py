@@ -98,7 +98,7 @@ class ModbusGatewayEngine:
             if func in (0x01, 0x02, 0x03, 0x04, 0x17) and len(pdu) >= 5:
                 return _u16(pdu, 3)
         except Exception:
-            pass
+            _LOG.debug("_request_qty failed", exc_info=True)
         return 1
 
     @staticmethod

@@ -1,8 +1,25 @@
 # -*- coding: utf-8 -*-
 """串口后台线程：SerialReader / PortScannerThread / OneShotPortScanner。"""
+import logging
 import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
+
+_log = logging.getLogger(__name__)
+
+
+def _safe(func, *args):
+    """Run one cleanup/side-effect step; log failures without aborting the caller.
+
+    Same contract as net_io._safe: default debug level stays quiet unless logging is enabled.
+    """
+    try:
+        func(*args)
+        return True
+    except Exception:
+        _log.debug("serial_io step %s failed",
+                   getattr(func, "__name__", func), exc_info=True)
+        return False
 
 
 # USB-UART 转换芯片 VID/PID → 芯片型号。系统描述常是泛化的 "USB Serial Port"，
@@ -154,6 +171,7 @@ class SerialConn(QObject):
                 n = self._ser.write(data)
                 return n if n is not None else len(data)
             except Exception:
+                _log.debug("serial write failed on %s", self._port, exc_info=True)
                 return 0
         return 0
 
@@ -172,10 +190,7 @@ class SerialConn(QObject):
             self._reader.stop()
             self._reader = None
         if self._ser:
-            try:
-                self._ser.close()
-            except Exception:
-                pass
+            _safe(self._ser.close)
             self._ser = None
         self.state_changed.emit(False)
 
@@ -218,10 +233,9 @@ class SerialConn(QObject):
                 done.append(attr)
         except Exception as e:
             for attr in reversed(done):           # 回滚已改的，退回快照
-                try:
-                    setattr(self._ser, attr, snapshot[attr])
-                except Exception:
-                    pass                          # 回滚都失败 → 端口确已坏，交给掉线路径
+                if not _safe(setattr, self._ser, attr, snapshot[attr]):
+                    # 回滚都失败 → 端口确已坏，交给掉线路径
+                    pass
             self.error_occurred.emit(str(e))
             return False
         # 全部硬件赋值成功，再同步内部记录（重连真源）；flow 单独记
@@ -236,26 +250,17 @@ class SerialConn(QObject):
     def set_dtr(self, on):
         """设 DTR 输出线（高=True/低=False）。未连接则忽略。"""
         if self._ser and self._ser.is_open:
-            try:
-                self._ser.dtr = bool(on)
-            except Exception:
-                pass
+            _safe(setattr, self._ser, "dtr", bool(on))
 
     def set_rts(self, on):
         """设 RTS 输出线（高=True/低=False）。未连接则忽略。"""
         if self._ser and self._ser.is_open:
-            try:
-                self._ser.rts = bool(on)
-            except Exception:
-                pass
+            _safe(setattr, self._ser, "rts", bool(on))
 
     def send_break(self, duration=0.25):
         """发送 Break 信号（TX 线保持间隔电平 duration 秒）。未连接则忽略。"""
         if self._ser and self._ser.is_open:
-            try:
-                self._ser.send_break(duration)
-            except Exception:
-                pass
+            _safe(self._ser.send_break, duration)
 
     def read_lines(self):
         """读输入状态线 → {'cts','dsr','dcd','ri'}: bool；未连接/读失败该项为 None。
@@ -267,6 +272,7 @@ class SerialConn(QObject):
                 try:
                     out[k] = bool(getattr(self._ser, a))
                 except Exception:
+                    _log.debug("read line %s failed", k, exc_info=True)
                     out[k] = None
         return out
 
@@ -286,7 +292,7 @@ class PortScannerThread(QThread):
             try:
                 self.scan_complete.emit(_scan_ports())
             except Exception:
-                pass
+                _log.debug("port scan failed", exc_info=True)
             self.msleep(self._interval)
 
     def stop(self):
@@ -302,6 +308,7 @@ class OneShotPortScanner(QThread):
         try:
             self.scan_complete.emit(_scan_ports())
         except Exception:
+            _log.debug("one-shot port scan failed", exc_info=True)
             self.scan_complete.emit([])
 
 

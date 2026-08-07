@@ -742,6 +742,51 @@ def test_taskkill_success_skips_the_fallback(monkeypatch):
     assert not proc.dead                        # taskkill 说收完了，不再多杀一道
 
 
+
+def test_taskkill_skipped_when_pid_is_none(monkeypatch):
+    """Windows: proc.pid may be None before the child fully starts."""
+    proc = _FakeProc(pid=None)
+    runs = []
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def _run(*a, **k):
+        runs.append(a)
+
+        class _Res:
+            returncode = 0
+
+        return _Res()
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    CommTool._trg_kill_proc(proc)
+    assert runs == []
+    assert proc.dead  # fell through to terminate/kill
+
+
+def test_ar_kill_skips_taskkill_when_pid_is_none(monkeypatch):
+    from unittest import mock
+    runs = []
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def _run(*a, **k):
+        runs.append(a)
+
+        class _Res:
+            returncode = 0
+
+        return _Res()
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    proc = mock.Mock()
+    proc.pid = None
+    proc.is_alive.return_value = True
+    proc.join = mock.Mock()
+    proc.close = mock.Mock()
+    CommTool._ar_kill_worker(proc, None, group_ready=True)
+    assert runs == []
+    proc.join.assert_called()
+
+
 def test_process_registered_after_shutdown_is_killed_by_its_worker(tmp_path, monkeypatch):
     """_trg_stop_procs 可能已经扫完并返回，此后登记的句柄就无人回收了。
 

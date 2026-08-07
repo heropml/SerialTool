@@ -6,6 +6,8 @@
 顶部「启用轮询」= app._mbm_on，「传输」= app._mbm_variant（''=按连接自动 / 'rtu' / 'tcp'）。
 单实例非模态，复用主窗刷新主题/语言。读类功能码用「数量」，写类(05/06)用同一格当「写值」。
 """
+import logging
+
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
                              QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame,
@@ -16,6 +18,8 @@ from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from ui_tips import set_tooltip
 
+_log = logging.getLogger(__name__)
+
 # 功能码下拉项：(code, i18n_key)。读 01-04 / 写单 05-06 / 写多 0F-10。
 FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
               (0x04, "mbm_f4"), (0x05, "mbm_f5"), (0x06, "mbm_f6"),
@@ -24,6 +28,9 @@ FUNC_ITEMS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
               (0x11, "mbm_f17"), (0x16, "mbm_f22"),
               (0x17, "mbm_f23"), (0x2B, "mbm_f43")]
 READ_FUNCS = (0x01, 0x02, 0x03, 0x04)
+# Simplified one-shot strip: common daily poke FCs only.
+ONESHOT_FUNCS = [(0x01, "mbm_f1"), (0x02, "mbm_f2"), (0x03, "mbm_f3"),
+                 (0x04, "mbm_f4"), (0x05, "mbm_f5"), (0x06, "mbm_f6")]
 WRITE_MULTI = (0x0F, 0x10)
 
 # 固定列宽（不在可拖 splitter 内）：复选框 / 状态 / 删除。
@@ -98,6 +105,41 @@ class ModbusMasterDialog(QDialog):
         self.btn_help.clicked.connect(self._show_help)
         top.addWidget(self.btn_help)
         root.addLayout(top)
+
+        # One-shot strip: poke once without Apply/Enable/period.
+        os_row = QHBoxLayout()
+        os_row.setContentsMargins(9, 0, 0, 0)
+        os_row.setSpacing(6)
+        self.lbl_os = QLabel()
+        self.lbl_os.setObjectName("ArDesc")
+        os_row.addWidget(self.lbl_os)
+        self.ed_os_unit = QLineEdit("1")
+        self.ed_os_unit.setFixedWidth(44)
+        os_row.addWidget(self.ed_os_unit)
+        self.cb_os_func = QComboBox()
+        self.cb_os_func.setMinimumWidth(120)
+        self.cb_os_func.currentIndexChanged.connect(self._os_func_changed)
+        os_row.addWidget(self.cb_os_func)
+        self.ed_os_addr = QLineEdit("0")
+        self.ed_os_addr.setFixedWidth(64)
+        os_row.addWidget(self.ed_os_addr)
+        self.ed_os_qty = QLineEdit("1")
+        self.ed_os_qty.setFixedWidth(88)
+        os_row.addWidget(self.ed_os_qty)
+        self.btn_os_run = QPushButton()
+        self.btn_os_run.setObjectName("PlotGhostBtn")
+        self.btn_os_run.clicked.connect(self._oneshot_run)
+        os_row.addWidget(self.btn_os_run)
+        self.btn_os_cancel = QPushButton()
+        self.btn_os_cancel.setObjectName("PlotGhostBtn")
+        self.btn_os_cancel.setEnabled(False)
+        self.btn_os_cancel.clicked.connect(self._oneshot_cancel)
+        os_row.addWidget(self.btn_os_cancel)
+        self.lbl_os_result = QLabel("—")
+        self.lbl_os_result.setObjectName("ArDesc")
+        self.lbl_os_result.setMinimumWidth(160)
+        os_row.addWidget(self.lbl_os_result, 1)
+        root.addLayout(os_row)
 
         view_row = QHBoxLayout()
         self.tabs = QTabBar()
@@ -621,6 +663,94 @@ class ModbusMasterDialog(QDialog):
         self._dirty = True
         self.btn_apply.setEnabled(True)
 
+    def _os_func_changed(self, _idx=None):
+        """Swap qty field tip: read quantity vs write value."""
+        t = self.app._t
+        func = self.cb_os_func.currentData()
+        if func in (0x05, 0x06):
+            set_tooltip(self.ed_os_qty, t("mbm_os_wval_tip"))
+            self.ed_os_qty.setPlaceholderText(t("mbm_os_wval_ph"))
+        else:
+            set_tooltip(self.ed_os_qty, t("mbm_os_qty_tip"))
+            self.ed_os_qty.setPlaceholderText(t("mbm_os_qty_ph"))
+        self.lbl_os_result.setText("")
+        self.lbl_os_result.setStyleSheet("")
+
+    def _oneshot_set_busy(self, busy):
+        # Use __dict__ so __new__-constructed test stubs (no QWidget init) work.
+        btn = self.__dict__.get("btn_os_run")
+        if btn is not None:
+            btn.setEnabled(not busy)
+        btn = self.__dict__.get("btn_os_cancel")
+        if btn is not None:
+            btn.setEnabled(bool(busy))
+
+    def _oneshot_cancel(self):
+        """Abort an in-flight one-shot (slow link / long timeout)."""
+        stop = getattr(self.app, "_stop_device_scan", None)
+        if callable(stop):
+            stop(cancelled=True)
+
+    def _oneshot_run(self):
+        """One-shot read/write via the existing half-duplex engine (_start_device_scan)."""
+        if self._scan_locked():
+            return
+        try:
+            import modbus_master as _mm
+            draft = {
+                "enabled": True,
+                "name": "oneshot",
+                "unit": self.ed_os_unit.text().strip() or "1",
+                "func": self.cb_os_func.currentData(),
+                "addr": self.ed_os_addr.text().strip() or "0",
+                "period": 0x7FFFFFFF,
+            }
+            raw = self.ed_os_qty.text().strip() or "1"
+            func = draft["func"]
+            if func in (0x05, 0x06):
+                draft["wval"] = raw
+            else:
+                draft["qty"] = raw
+            rule = _mm.normalize_poll(draft)
+            if rule.get("unit") is None or rule.get("addr") is None:
+                raise ValueError("unit/addr")
+            if func in (0x05, 0x06):
+                if rule.get("wval") is None:
+                    raise ValueError("wval")
+            elif rule.get("qty") is None:
+                raise ValueError("qty")
+        except Exception:
+            self.app.toast(self.app._t("mbm_os_bad_input"), error=True)
+            return
+
+        self.lbl_os_result.setText(self.app._t("mbm_os_running"))
+        finished = {"got_result": False}
+
+        def on_result(_i, status, text):
+            finished["got_result"] = True
+            tip = status or ""
+            body = text or ""
+            self.lbl_os_result.setText(("%s  %s" % (tip, body)).strip())
+            c = chrome_for(self.app._theme_id())
+            color = c.get("accent") if tip == "ok" else c.get("text_sec")
+            if tip and tip != "ok":
+                color = c.get("danger") or c.get("text")
+            self.lbl_os_result.setStyleSheet("color: %s;" % color)
+
+        def on_done(cancelled):
+            self._oneshot_set_busy(False)
+            if cancelled and not finished["got_result"]:
+                self.lbl_os_result.setText(self.app._t("mbm_os_cancelled"))
+                c = chrome_for(self.app._theme_id())
+                self.lbl_os_result.setStyleSheet(
+                    "color: %s;" % (c.get("danger") or c.get("text")))
+
+        self._oneshot_set_busy(True)
+        ok = self.app._start_device_scan([rule], 1000, on_result, on_done)
+        if not ok:
+            self.lbl_os_result.setText(self.app._t("mbm_os_failed"))
+            self._oneshot_set_busy(False)
+
     def _scan_locked(self):
         if getattr(self.app, "_device_scan_state", None) is None:
             return False
@@ -694,7 +824,7 @@ class ModbusMasterDialog(QDialog):
                 self.app.settings.setValue("modbus_master_on", False)
                 self.app.settings.sync()
             except Exception:
-                pass
+                _log.debug("modbus_master_on persist failed", exc_info=True)
             self.app.toast(self.app._t("mbm_reconnect_first"), error=True)
             return
         self.app._set_mbm_enabled(checked)
@@ -717,7 +847,7 @@ class ModbusMasterDialog(QDialog):
             self.app.settings.setValue("modbus_master_variant", self.app._mbm_variant)
             self.app.settings.sync()
         except Exception:
-            pass
+            _log.debug("modbus_master_variant persist failed", exc_info=True)
         self.app._mbm_restart()
 
     def _on_echo(self, checked):
@@ -736,7 +866,7 @@ class ModbusMasterDialog(QDialog):
             self.app.settings.setValue("modbus_master_echo", self.app._mbm_echo)
             self.app.settings.sync()
         except Exception:
-            pass
+            _log.debug("modbus_master_echo persist failed", exc_info=True)
         self.app._mbm_restart()
 
     # ---------------- 引擎回调：刷新某行的值/状态 ----------------
@@ -816,6 +946,24 @@ class ModbusMasterDialog(QDialog):
             self._rebuild_tabs(keep=getattr(self, "_view_name", ""))
         set_tooltip(self.btn_help, t("mbm_help_btn"))
         self.lbl_hint.setText(t("mbm_hint"))
+        if hasattr(self, "lbl_os"):
+            self.lbl_os.setText(t("mbm_os_label"))
+            set_tooltip(self.lbl_os, t("mbm_os_tip"))
+            set_tooltip(self.ed_os_unit, t("mbm_col_unit"))
+            set_tooltip(self.ed_os_addr, t("mbm_col_addr"))
+            self.btn_os_run.setText(t("mbm_os_run"))
+            if hasattr(self, "btn_os_cancel"):
+                self.btn_os_cancel.setText(t("mbm_os_cancel"))
+            cur_os = self.cb_os_func.currentData()
+            self.cb_os_func.blockSignals(True)
+            self.cb_os_func.clear()
+            for code, key in ONESHOT_FUNCS:
+                self.cb_os_func.addItem(t(key), code)
+            j = next((n for n, (code, _k) in enumerate(ONESHOT_FUNCS)
+                      if code == cur_os), 2)
+            self.cb_os_func.setCurrentIndex(j)
+            self.cb_os_func.blockSignals(False)
+            self._os_func_changed()
         cur = self.cb_variant.currentData()
         self.cb_variant.blockSignals(True)
         self.cb_variant.clear()

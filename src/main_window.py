@@ -37,11 +37,17 @@ from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
                      SuffixLineEdit)
 
 _log = logging.getLogger(__name__)
+
+# setMaximumBlockCount only caps QTextBlock count. With line/packet split off,
+# a newline-free stream stays in one block forever; budget chars as
+# max_lines * _RECV_CHARS_PER_LINE.
+_RECV_CHARS_PER_LINE = 256
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip, is_local_ipv4)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
+import conn_error_tips
 from virtual_io import VirtualConn, PROTO_VIRTUAL
 import send_dsl
 import ansi
@@ -544,6 +550,7 @@ class CommTool(QMainWindow):
         self._rr_dlg = None                # 录制/回放对话框（单实例）
         self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
         self._snip_dlg = None              # 发送模板库对话框（单实例）
+        self._send_hist_dlg = None         # 发送历史搜索选择器（单实例）
         self._cpreset_dlg = None
         self._dsl_ops = None               # 命令 DSL 执行中的指令序列（None=空闲）
         self._dsl_idx = 0
@@ -2517,7 +2524,7 @@ class CommTool(QMainWindow):
                     if isinstance(parsed, list):
                         old_rules = parsed
                 except Exception:
-                    pass
+                    _log.debug("_load_keyword_groups failed", exc_info=True)
             groups = [{"name": self._t("kw_default_group"), "rules": old_rules}]
         # 生效分组按名称记忆(索引会因增删变动)
         active = -1
@@ -2911,6 +2918,14 @@ class CommTool(QMainWindow):
         self.btn_snippets.setProperty("tr_text", "snip_title")
         self.btn_snippets.clicked.connect(self.open_snippets)
         btn_row.addWidget(self.btn_snippets)
+
+        self.btn_send_hist = QPushButton(self._t("send_hist_btn"))
+        self.btn_send_hist.setObjectName("GhostBtn")
+        self.btn_send_hist.setProperty("tr_text", "send_hist_btn")
+        self.btn_send_hist.setProperty("tr_tooltip", "send_hist_tip")
+        set_tooltip(self.btn_send_hist, self._t("send_hist_tip"))
+        self.btn_send_hist.clicked.connect(self.open_send_history)
+        btn_row.addWidget(self.btn_send_hist)
 
         # 工作台页面化后「终端」不再弹功能菜单，文件传输必须保留一个直接可见入口。
         self.btn_xfer = QPushButton(self._t("xfer_title"))
@@ -3915,6 +3930,9 @@ class CommTool(QMainWindow):
         was_conn_timeout = (msg == ERR_CONN_TIMEOUT)
         if was_conn_timeout:   # net_io timeout sentinel -> localized text
             msg = self._t("err_conn_timeout")
+        else:
+            # S-5: map raw OS/Qt strings to actionable tips when recognized
+            msg = conn_error_tips.format_conn_error_detail(msg, self._t)
         self._stat_note_rx_error()           # connection/link errors count as RX errors
         if was_conn_timeout:
             _note_to = getattr(self, "_stat_note_timeout", None)
@@ -4454,6 +4472,8 @@ class CommTool(QMainWindow):
             self._rd_dlg.refresh_theme()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.refresh_theme()
+        if getattr(self, "_send_hist_dlg", None) is not None:
+            self._send_hist_dlg.refresh_theme()
         if getattr(self, "_cpreset_dlg", None) is not None:
             self._cpreset_dlg.refresh_theme()
         if getattr(self, "_triggers_dlg", None) is not None:
@@ -4570,16 +4590,20 @@ class CommTool(QMainWindow):
                     pass
             return buf.decode("gbk", errors="replace"), b""
 
+    def _rx_side(self, name, fn):
+        """RX side-channel: log failures, never abort the receive path."""
+        try:
+            fn()
+        except Exception:
+            _log.debug("rx side-channel %s failed", name, exc_info=True)
+
     def on_data_received(self, data: bytes, reply_target=None):
         # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
         # 协议传输(XMODEM/YMODEM)喂给引擎当 getc 源；原始字节流(raw)只发不收，收流直接丢弃。
         w = self._xfer_worker
         if w is not None and w.isRunning():
             if getattr(w, "takes_input", True):
-                try:
-                    w.feed(data)
-                except Exception:
-                    pass
+                self._rx_side("xfer.feed", lambda: w.feed(data))
             return
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
@@ -4592,46 +4616,28 @@ class CommTool(QMainWindow):
         # 自带异常兜底，绘图侧的问题不影响数据接收主流程
         dlg = getattr(self, "_plot_dlg", None)
         if dlg is not None and dlg.isVisible():
-            try:
-                dlg.feed(data)
-            except Exception:
-                pass
+            self._rx_side("plot.feed", lambda: dlg.feed(data))
         fdlg = getattr(self, "_frame_dlg", None)
         if fdlg is not None and fdlg.isVisible():
-            try:
-                fdlg.feed(data)
-            except Exception:
-                pass
+            self._rx_side("frame.feed", lambda: fdlg.feed(data))
         # 宏录制：录回包，供生成 expect(...)（脚本运行期间不录，同 TX 侧）
         if (self._macro.recording and not self._script_running()
                 and not self._seq_running()):
-            try:
-                self._macro.on_rx(data)
-            except Exception:
-                pass
+            self._rx_side("macro.on_rx", lambda: self._macro.on_rx(data))
         if self._recorder.recording:      # 数据录制：录原始 RX 现场
-            try:
-                self._recorder.on_rx(data)
-            except Exception:
-                pass
+            self._rx_side("recorder.on_rx", lambda: self._recorder.on_rx(data))
         # 结构化记录：复用 frame_rules 抽取普通协议字段；Modbus 标签在响应解析成功后单独写入。
-        try:
+        def _structured_feed():
             if self._mbm_inflight is None:
                 self._structured_feed_protocol(data)
-        except Exception:
-            pass
+        self._rx_side("structured.feed", _structured_feed)
         # 触发告警：命中就响铃 / 托盘通知 / 数据区打标（自带兜底，不影响收包主流程）
-        try:
-            self._triggers_feed(data, "rx", source=reply_target)
-        except Exception:
-            pass
+        self._rx_side("triggers.feed",
+                      lambda: self._triggers_feed(data, "rx", source=reply_target))
         # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
         ddlg = getattr(self, "_dash_dlg", None)
         if ddlg is not None and ddlg.isVisible():
-            try:
-                ddlg.feed(data)
-            except Exception:
-                pass
+            self._rx_side("dashboard.feed", lambda: ddlg.feed(data))
         # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）。
         # 但 Modbus 主机轮询激活时，收到的都是从机「响应」——绝不能再让自动应答(尤其内置
         # Modbus 从机)把它当请求回发，否则总线互相干扰。主机激活时整体跳过自动应答。
@@ -4643,31 +4649,24 @@ class CommTool(QMainWindow):
             # 脚本接管前若 Modbus 主机已有请求在途，完整超时窗内的字节可能是旧响应；
             # 直接丢弃，避免它被脚本第一个 expect 误认。脚本首个 send 同样会等隔离窗结束。
             if time.monotonic() >= getattr(self, "_script_quiet_until", 0.0):
-                try:
-                    self._script_worker.feed(data)
-                except Exception:
-                    pass
+                self._rx_side("script.feed",
+                              lambda: self._script_worker.feed(data))
         elif self._seq_running():
-            try:
+            def _seq_or_mbm():
                 # 序列刚启动而 Modbus 尚有在途请求时，先让原请求完整收尾；超时后的迟到响应
                 # 隔离期也继续喂 _mbm_feed（RTU 会按最后一个迟到字节重新满足 t3.5）。
                 if getattr(self, "_seq_waiting_mbm", False):
                     self._mbm_feed(data)
                 else:
                     self._seq_feed(data)
-            except Exception:
-                pass
+            self._rx_side("seq.feed", _seq_or_mbm)
         else:
             if not self._mbm_active():
-                try:
-                    self._auto_reply(data, reply_target=reply_target)
-                except Exception:
-                    pass
+                self._rx_side(
+                    "auto_reply",
+                    lambda: self._auto_reply(data, reply_target=reply_target))
             # Modbus 主机轮询：若有在途请求，把响应喂给轮询引擎切帧/解析（兜底不影响主流程）
-            try:
-                self._mbm_feed(data)
-            except Exception:
-                pass
+            self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
 
     def _on_data_received_impl(self, data: bytes, source=None):
         self._stat_note_rx(len(data))
@@ -4919,6 +4918,33 @@ class CommTool(QMainWindow):
             cursor.setCharFormat(body_fmt)
             cursor.insertText(text[pos:])
 
+    def _recv_char_budget(self):
+        """Soft character cap for the recv view (complements maximumBlockCount)."""
+        doc = self.txt_recv.document()
+        max_blocks = doc.maximumBlockCount() or 10000
+        return max(100, int(max_blocks)) * _RECV_CHARS_PER_LINE
+
+    def _trim_recv_overflow(self):
+        """Drop oldest characters when the recv document exceeds the char budget.
+
+        Needed because setMaximumBlockCount is a no-op while everything stays in
+        one QTextBlock (line_split and packet_split both off, no newlines).
+        Returns how many characters were removed from the start.
+        """
+        doc = self.txt_recv.document()
+        plain_len = max(0, doc.characterCount() - 1)
+        budget = self._recv_char_budget()
+        excess = plain_len - budget
+        if excess <= 0:
+            return 0
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        cur.setPosition(0)
+        cur.setPosition(min(excess, plain_len), QTextCursor.KeepAnchor)
+        cur.removeSelectedText()
+        cur.endEditBlock()
+        return excess
+
     def _append_block_data(self, text: str, direction: str, force_new_block: bool,
                            view_mode=None, runs=None, role=None):
         if getattr(self, "_freeze_view", False):
@@ -5013,6 +5039,13 @@ class CommTool(QMainWindow):
                     doc.markContentsDirty(blk.position(), max(1, blk.length()))
 
         # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，钉在插入前位置。
+        trimmed = self._trim_recv_overflow()
+        if trimmed:
+            body_start_pos = max(0, body_start_pos - trimmed)
+            if had_sel:
+                sel_anchor = max(0, sel_anchor - trimmed)
+                sel_pos = max(0, sel_pos - trimmed)
+
         if had_sel:
             tc = self.txt_recv.textCursor()
             tc.setPosition(sel_anchor)
@@ -5085,7 +5118,7 @@ class CommTool(QMainWindow):
                     if isinstance(parsed, list):
                         old_items = parsed
                 except Exception:
-                    pass
+                    _log.debug("_load_ms_groups failed", exc_info=True)
             groups = [{"name": self._t("kw_default_group"), "items": old_items}]
         return groups, loaded_ok
 
@@ -5106,7 +5139,7 @@ class CommTool(QMainWindow):
                 if isinstance(data, list):
                     return snippets.sanitize_list(data), True
             except Exception:
-                pass
+                _log.debug("_load_snippets failed", exc_info=True)
         return snippets.default_snippets(), False
 
     def _save_snippets(self):
@@ -5315,7 +5348,10 @@ class CommTool(QMainWindow):
                 bytes(payload).hex(" ").upper(), hex_mode=True, newline=0, checksum=0,
                 record_macro=False, allow_during_exclusive=True))
         except Exception as e:
-            self.toast(self._t("err_send_failed", e=e), error=True)
+            self.toast(self._t(
+                "err_send_failed",
+                e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
+                error=True)
         finally:
             done.set()
 
@@ -5528,7 +5564,7 @@ class CommTool(QMainWindow):
             try:
                 QApplication.beep()
             except Exception:
-                pass
+                _log.debug("trigger beep failed", exc_info=True)
         if rule.get("notify", True):
             msg = self._t("trg_fired", name=name, dir=direction.upper())
             # 托盘通知是「人不在场」的主要送达方式；没有托盘（部分 Linux 桌面）退回状态栏提示
@@ -5562,7 +5598,7 @@ class CommTool(QMainWindow):
                                             force_new_block=True, role=ROLE_TS)
                 self._last_direction = None      # 标记行不属于收发流，别让下一包接着它续行
             except Exception:
-                pass
+                _log.debug("trigger mark failed", exc_info=True)
 
         hits = 0
         try:
@@ -5724,48 +5760,50 @@ class CommTool(QMainWindow):
         """
         import subprocess
         if sys.platform == "win32":
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    capture_output=True, timeout=5)
-                if result.returncode == 0 or proc.poll() is not None:
-                    return
-                _log.debug("taskkill returned %s for pid %s",
-                           result.returncode, proc.pid)
-            except Exception:             # taskkill 不可用时退回通用路径
-                _log.debug("taskkill failed for pid %s", proc.pid, exc_info=True)
+            if proc.pid:
+                try:
+                    result = subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True, timeout=5)
+                    if result.returncode == 0 or proc.poll() is not None:
+                        return
+                    _log.debug("taskkill returned %s for pid %s",
+                               result.returncode, proc.pid)
+                except Exception:
+                    _log.debug("taskkill failed for pid %s", proc.pid, exc_info=True)
         else:
             import signal
-            # Windows 的 signal 没有 SIGKILL，这段平时不走但不能因此招 AttributeError
-            try:
-                # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
-                # 所以直接拿 proc.pid 当组号用。
-                os.killpg(proc.pid, getattr(signal, "SIGTERM", 15))
-            except Exception:
-                _log.debug("killpg SIGTERM failed for pid %s", proc.pid,
-                           exc_info=True)  # 没成组 → 走通用路径
-            else:
+            if proc.pid:
+                # Windows 的 signal 没有 SIGKILL，这段平时不走但不能因此招 AttributeError
                 try:
-                    proc.wait(timeout=0.5)
+                    # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
+                    # 所以直接拿 proc.pid 当组号用。
+                    os.killpg(proc.pid, getattr(signal, "SIGTERM", 15))
                 except Exception:
-                    _log.debug("process group leader did not exit after SIGTERM",
-                               exc_info=True)
-                try:
-                    # 父 shell 可能已经退出，但它的后代仍留在同一进程组；
-                    # 无条件补 SIGKILL，只有进程组已消失时才算完成。
-                    os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
-                except ProcessLookupError:
-                    return
-                except Exception:
-                    _log.debug("killpg SIGKILL failed for pid %s", proc.pid,
-                               exc_info=True)
+                    _log.debug("killpg SIGTERM failed for pid %s", proc.pid,
+                               exc_info=True)  # 没成组 → 走通用路径
                 else:
                     try:
-                        proc.wait(timeout=1)
+                        proc.wait(timeout=0.5)
                     except Exception:
-                        _log.debug("process group leader did not exit after SIGKILL",
+                        _log.debug("process group leader did not exit after SIGTERM",
                                    exc_info=True)
-                    return
+                    try:
+                        # 父 shell 可能已经退出，但它的后代仍留在同一进程组；
+                        # 无条件补 SIGKILL，只有进程组已消失时才算完成。
+                        os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
+                    except ProcessLookupError:
+                        return
+                    except Exception:
+                        _log.debug("killpg SIGKILL failed for pid %s", proc.pid,
+                                   exc_info=True)
+                    else:
+                        try:
+                            proc.wait(timeout=1)
+                        except Exception:
+                            _log.debug("process group leader did not exit after SIGKILL",
+                                       exc_info=True)
+                        return
         try:
             proc.terminate()
             proc.wait(timeout=2)
@@ -5915,6 +5953,20 @@ class CommTool(QMainWindow):
         dlg.activateWindow()
 
 
+    def open_send_history(self):
+        """Open send-history search picker (full-text filter + refill)."""
+        if getattr(self, "_send_hist_dlg", None) is None:
+            from send_history_dialog import SendHistoryDialog
+            self._send_hist_dlg = SendHistoryDialog(self)
+        dlg = self._send_hist_dlg
+        dlg.refresh_theme()
+        dlg.retranslate()
+        dlg._reload()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+
     # ----- connection presets -----
     def _load_connection_presets(self):
         raw = self.settings.value("connection_presets", "")
@@ -5926,7 +5978,7 @@ class CommTool(QMainWindow):
                 if isinstance(data, list):
                     return connection_presets.sanitize_list(data), True
             except Exception:
-                pass
+                _log.debug("_load_connection_presets failed", exc_info=True)
         return [], False
 
     def _save_connection_presets(self):
@@ -6443,7 +6495,7 @@ class CommTool(QMainWindow):
             try:
                 self._record_stream_tx(payload, source=self._xfer_target)
             except Exception:
-                pass
+                _log.debug("_xfer_send failed", exc_info=True)
 
     def _seq_start(self, steps, loops=1, stop_on_fail=False, dataset=None):
         """开始运行一段序列（steps=步骤 dict 列表）。loops=循环次数（整条跑几轮），
@@ -6852,7 +6904,7 @@ class CommTool(QMainWindow):
             try:
                 dlg.update_results()
             except Exception:
-                pass
+                _log.debug("_seq_notify failed", exc_info=True)
 
     def _load_ar_rules(self):
         raw = self.settings.value("autoreply_rules", "")
@@ -6862,7 +6914,7 @@ class CommTool(QMainWindow):
                 if isinstance(data, list):
                     return [r for r in data if isinstance(r, dict)]
             except Exception:
-                pass
+                _log.debug("_load_ar_rules failed", exc_info=True)
         return []
 
     def _set_ar_rules(self, rules):
@@ -6885,7 +6937,7 @@ class CommTool(QMainWindow):
                 if isinstance(d, dict):
                     cfg = d
             except Exception:
-                pass
+                _log.debug("_load_ar_frame failed", exc_info=True)
         return self._norm_ar_frame(cfg)
 
     def _norm_ar_frame(self, cfg):
@@ -6924,7 +6976,7 @@ class CommTool(QMainWindow):
                 if isinstance(d, dict):
                     cfg = d
             except Exception:
-                pass
+                _log.debug("_load_ar_fault failed", exc_info=True)
         return self._norm_ar_fault(cfg)
 
     def _norm_ar_fault(self, cfg):
@@ -6953,7 +7005,7 @@ class CommTool(QMainWindow):
                 if isinstance(d, dict):
                     cfg = d
             except Exception:
-                pass
+                _log.debug("_load_ar_sm failed", exc_info=True)
         return self._norm_ar_sm(cfg)
 
     def _norm_ar_sm(self, cfg):
@@ -7003,7 +7055,7 @@ class CommTool(QMainWindow):
                 if isinstance(d, dict):
                     cfg = d
             except Exception:
-                pass
+                _log.debug("_load_ar_modbus failed", exc_info=True)
         return self._norm_ar_modbus(cfg)
 
     def _norm_ar_modbus(self, cfg):
@@ -7123,7 +7175,7 @@ class CommTool(QMainWindow):
                 if fault:
                     self._ar_fault_note(fault)
         except Exception:
-            pass
+            _log.debug("_modbus_send failed", exc_info=True)
         finally:
             self._ar_in_flight = False
 
@@ -7400,49 +7452,75 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _ar_kill_worker(proc, conn, group_ready=False):
-        """强制回收一个脚本子进程及其整个进程组（含脚本自己起的子进程：subprocess 等）。
-        posix 走 killpg（worker 已 setsid 成组长）；Windows 走 taskkill /T 杀进程树。
-        group_ready 只能来自 ready 握手；组长已退出时进程组仍可能存在，不能仅看 is_alive()。"""
+        """Force-reclaim a script subprocess and its process group.
+
+        Cleanup is stepwise: one failed step must not skip close/join/kill that
+        still need to run (same contract as net_io._safe / serial_io._safe).
+        """
         if conn is not None:
             try:
                 conn.close()
             except Exception:
-                pass
+                _log.debug("ar_kill: conn.close failed", exc_info=True)
         if proc is None:
             return
+
+        alive = False
         try:
             alive = proc.is_alive()
-            if sys.platform == "win32":
-                if group_ready or alive:
+        except Exception:
+            _log.debug("ar_kill: is_alive failed", exc_info=True)
+
+        if sys.platform == "win32":
+            if (group_ready or alive) and proc.pid:
+                try:
                     import subprocess
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                                   capture_output=True,
-                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            else:
-                import signal
-                killed_group = False
-                if group_ready and proc.pid and proc.pid != os.getpgrp():
-                    try:
-                        # 组长退出后 os.getpgid(worker_pid) 会失败，但后代仍使用
-                        # 原 worker PID 作为 PGID；因此直接按握手记录的 PGID 清理。
-                        os.killpg(proc.pid, signal.SIGKILL)
-                        killed_group = True
-                    except ProcessLookupError:
-                        pass
-                    except Exception:
-                        pass
-                if alive and not killed_group:
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                except Exception:
+                    _log.debug("ar_kill: taskkill failed", exc_info=True)
+        else:
+            import signal
+            killed_group = False
+            if group_ready and proc.pid and proc.pid != os.getpgrp():
+                try:
+                    # After the leader exits, os.getpgid(worker_pid) can fail, but
+                    # descendants may still use the original worker PID as PGID.
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    killed_group = True
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    _log.debug("ar_kill: killpg failed", exc_info=True)
+            if alive and not killed_group:
+                try:
+                    proc.terminate()
+                except Exception:
+                    _log.debug("ar_kill: terminate failed", exc_info=True)
+
+        try:
             proc.join(0.5)
-            if proc.is_alive() and hasattr(proc, "kill"):
+        except Exception:
+            _log.debug("ar_kill: join failed", exc_info=True)
+
+        try:
+            still = proc.is_alive()
+        except Exception:
+            _log.debug("ar_kill: is_alive(after join) failed", exc_info=True)
+            still = False
+        if still and hasattr(proc, "kill"):
+            try:
                 proc.kill()
                 proc.join(0.5)
+            except Exception:
+                _log.debug("ar_kill: kill failed", exc_info=True)
+
+        try:
             proc.close()
         except Exception:
-            pass
+            _log.debug("ar_kill: proc.close failed", exc_info=True)
 
     def _ar_stop_script_worker(self):
         """回收脚本子进程（实发 + 预览两个一起收）。超时、通信故障和应用退出都走这里。"""
@@ -7560,7 +7638,7 @@ class CommTool(QMainWindow):
                         if fault:
                             self._ar_fault_note(fault)
             except Exception:
-                pass
+                _log.debug("_ar_schedule_send fire failed", exc_info=True)
             finally:
                 self._ar_in_flight = False
             if idx == 0:
@@ -7568,7 +7646,7 @@ class CommTool(QMainWindow):
                     if on_sent is not None and sent_ok:
                         on_sent()   # 首段确实发出 → 推进状态（失败/丢包则不推进）
                 except Exception:
-                    pass           # 回调异常也必须继续后续段并最终释放 pending
+                    _log.debug("_ar_schedule_send on_sent failed", exc_info=True)
             if idx + 1 < len(parts):
                 QTimer.singleShot(max(_delay(), 1), lambda: fire(idx + 1))
             else:
@@ -7644,6 +7722,7 @@ class CommTool(QMainWindow):
                         continue       # 覆盖写放不下 → 跳过（应答里需先留好占位字节）
                     buf[pos:pos + len(chk)] = chk
             except Exception:
+                _log.debug("_ar_apply_cs_segs failed", exc_info=True)
                 continue
         return buf
 
@@ -7687,7 +7766,7 @@ class CommTool(QMainWindow):
             self._append_block_data(text + "\n", direction="tx", force_new_block=True,
                                     view_mode=VIEW_TEXT)
         except Exception:
-            pass
+            _log.debug("_ar_fault_note failed", exc_info=True)
 
     def _ar_preview(self, frame: bytes):
         """A2 离线测试器：给一帧 frame，返回第一条命中规则的索引 + 应答预览。
@@ -7769,7 +7848,7 @@ class CommTool(QMainWindow):
             self._send_text(reply, hex_mode=hexmode, newline=0, checksum=cs,
                             record_macro=False)
         except Exception:
-            pass
+            _log.debug("_ar_send failed", exc_info=True)
 
     def _ar_frame_ok(self, frame: bytes, idx: int) -> bool:
         """收包校验：尾部 N 字节应等于前面内容按算法 idx 算出的校验。idx<=0 不校验直接放行。
@@ -8147,7 +8226,7 @@ class CommTool(QMainWindow):
         try:
             self._apply_loaded_settings()
         except Exception:
-            pass
+            _log.debug("import_config failed", exc_info=True)
         self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
 
     def _apply_loaded_settings(self):
@@ -8429,7 +8508,7 @@ class CommTool(QMainWindow):
         try:
             self.settings.setValue("send_history", json.dumps(self._send_hist, ensure_ascii=False))
         except Exception:
-            pass
+            _log.debug("persist send_history failed", exc_info=True)
 
     def _load_send_hist(self):
         raw = self.settings.value("send_history", "")
@@ -8440,7 +8519,7 @@ class CommTool(QMainWindow):
             if isinstance(v, list):
                 self._send_hist = [str(x) for x in v][-100:]
         except Exception:
-            pass
+            _log.debug("load send_history failed", exc_info=True)
 
     def _show_hist_at(self, idx):
         """加载历史第 idx 条到 txt_send，光标移末尾。idx=-1 时复原 _send_hist_pending（草稿）。"""
@@ -8550,7 +8629,7 @@ class CommTool(QMainWindow):
             try:
                 out.append(modbus_master.normalize_poll(r))
             except Exception:
-                pass
+                _log.debug("_load_mbm_rules failed", exc_info=True)
         return out
 
     def _mbm_save_rules(self):
@@ -8559,7 +8638,7 @@ class CommTool(QMainWindow):
                 [modbus_master.normalize_poll(r) for r in self._mbm_rules], ensure_ascii=False))
             self.settings.sync()
         except Exception:
-            pass
+            _log.debug("persist mbm_rules failed", exc_info=True)
 
     def _mbm_variant_eff(self):
         """生效变体：用户显式选优先；否则按连接类型（TCP Client→tcp，其余→rtu）。
@@ -8886,12 +8965,12 @@ class CommTool(QMainWindow):
             self._append_block_data(disp, direction="tx", force_new_block=True)
             self._last_direction = "tx"
         except Exception:
-            pass
+            _log.debug("_mbm_send_raw failed", exc_info=True)
         # Modbus 主机也是绕过 _send_text 的直发路径：录制与「发送」范围的触发规则都得盯到
         try:
             self._record_stream_tx(frame, source=send_target)
         except Exception:
-            pass
+            _log.debug("_mbm_send_raw failed", exc_info=True)
         return True
 
     def _mbm_feed(self, data):
@@ -9134,7 +9213,7 @@ class CommTool(QMainWindow):
             try:
                 dlg.update_result(i, status, text)
             except Exception:
-                pass
+                _log.debug("_mbm_set_result failed", exc_info=True)
         self._device_scan_result(i, status, text)
 
     def _start_device_scan(self, rules, timeout_ms, on_result, on_done):
@@ -9209,7 +9288,7 @@ class CommTool(QMainWindow):
         try:
             state["on_result"](index, status, text)
         except Exception:
-            pass
+            _log.debug("device_scan on_result failed", exc_info=True)
         if len(state["completed"]) >= len(state["rules"]) and not state["finishing"]:
             state["finishing"] = True
             QTimer.singleShot(0, lambda: self._stop_device_scan(cancelled=False))
@@ -9250,12 +9329,12 @@ class CommTool(QMainWindow):
                         dlg.update_result(index, result.get("status", ""),
                                           result.get("text", ""))
                     except Exception:
-                        pass
+                        _log.debug("_stop_device_scan failed", exc_info=True)
         self._sync_autoreply_ui()
         try:
             state["on_done"](bool(cancelled))
         except Exception:
-            pass
+            _log.debug("device_scan on_done failed", exc_info=True)
         self._refresh_workspace_statuses()
 
     def _structured_add(self, samples):
@@ -9265,7 +9344,7 @@ class CommTool(QMainWindow):
             try:
                 dlg.on_samples(added)
             except Exception:
-                pass
+                _log.debug("_structured_add failed", exc_info=True)
         return added
 
     def _structured_feed_modbus(self, info, result):
@@ -9310,7 +9389,7 @@ class CommTool(QMainWindow):
         try:
             dlg.feed_named_samples(picked)
         except Exception:
-            pass
+            _log.debug("_feed_named_view failed", exc_info=True)
 
     def _structured_feed_protocol(self, data):
         if not self._structured_recorder.recording:
@@ -9397,14 +9476,14 @@ class CommTool(QMainWindow):
                 try:
                     dlg.feed_named_samples(samples)
                 except Exception:
-                    pass
+                    _log.debug("_structured_replay_sample failed", exc_info=True)
         if not dash_tags:
             dlg = getattr(self, "_dash_dlg", None)
             if dlg is not None and dlg.isVisible():
                 try:
                     dlg.feed_named_samples(samples)
                 except Exception:
-                    pass
+                    _log.debug("_structured_replay_sample failed", exc_info=True)
 
     def _open_device_center(self):
         if self._device_center_dlg is None:
@@ -9516,7 +9595,10 @@ class CommTool(QMainWindow):
         except Exception as e:
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
-            self.toast(self._t("err_send_failed", e=e), error=True)
+            self.toast(self._t(
+                "err_send_failed",
+                e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
+                error=True)
             return False
         if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
             self._stat_note_tx_error()
@@ -9694,7 +9776,10 @@ class CommTool(QMainWindow):
         except Exception as e:
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
-            self.toast(self._t("err_send_failed", e=e), error=True)
+            self.toast(self._t(
+                "err_send_failed",
+                e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
+                error=True)
             return
         if sent == SEND_NO_TARGET:
             self._stat_note_tx_error()
@@ -9713,7 +9798,7 @@ class CommTool(QMainWindow):
         try:
             self._record_stream_tx(data, source=send_target)
         except Exception:
-            pass
+            _log.debug("_terminal_send failed", exc_info=True)
         if self._terminal_echo and echo:
             self._terminal_append(echo)
 
@@ -9982,14 +10067,8 @@ class CommTool(QMainWindow):
 
     # ----- 日志记录 -----
     def _parse_log_limit(self, text) -> int:
-        """把分包大小文本解析成字节；无数字(如「不分包」)返回 0。无单位默认 MB。"""
-        import re
-        m = re.search(r'(\d+(?:\.\d+)?)\s*([KkMmGg]?)', text or "")
-        if not m:
-            return 0
-        val = float(m.group(1))
-        mult = {"K": 1024, "M": 1024 * 1024, "G": 1024 ** 3}.get(m.group(2).upper(), 1024 * 1024)
-        return int(val * mult)
+        """Parse split-size combo text -> bytes (0 = unlimited)."""
+        return log_naming.parse_size_limit(text)
 
     def _on_log_split_changed(self, _text=None):
         """改分包大小：实时记录进行中也即时生效。"""
@@ -10054,16 +10133,20 @@ class CommTool(QMainWindow):
             return False
 
     def _close_log_segment(self, when):
-        """写尾注 → 刷盘 → 关闭当前分包（轮转与停止记录共用）。"""
+        """Write footer -> flush -> close. Each step is independent so a footer
+        failure cannot skip close (same contract as net_io._safe)."""
         if not self._log_file:
             return
         try:
             self._log_file.write(self._t("log_footer",
                                          time=when.strftime("%Y-%m-%d %H:%M:%S")))
-            self._log_file.flush()    # close 前先刷盘，避免 close 失败时尾部缓冲丢失
+            self._log_file.flush()
+        except Exception:
+            _log.debug("log footer/flush failed", exc_info=True)
+        try:
             self._log_file.close()
         except Exception:
-            pass
+            _log.debug("log close failed", exc_info=True)
         self._log_file = None
         self._log_ends_with_nl = True
 
@@ -10083,12 +10166,12 @@ class CommTool(QMainWindow):
             if not self._open_log_segment(self._log_segment_path(now), when=now):
                 self.sw_log_file.setChecked(False)
             return
-        if self._log_limit <= 0:
-            return
         try:
-            if self._log_file.tell() < self._log_limit:
-                return
+            cur = self._log_file.tell()
         except Exception:
+            _log.debug("log tell() failed", exc_info=True)
+            return
+        if not log_naming.should_roll_size(cur, self._log_limit):
             return
         self._close_log_segment(now)
         self._log_seg += 1
@@ -10290,7 +10373,7 @@ class CommTool(QMainWindow):
                     {"tag": "tx_pps", "value": float(self._io_stats.tx_pps)},
                 ])
         except Exception:
-            pass
+            _log.debug("_tick_rate failed", exc_info=True)
 
     def _refresh_stat_labels(self, with_tooltip=True):
         """Refresh status-bar RX/TX: bytes, packets, B/s, pps."""
@@ -10413,19 +10496,19 @@ class CommTool(QMainWindow):
                 try:
                     w.setText(self._t(k))
                 except Exception:
-                    pass
+                    _log.debug("_apply_language failed", exc_info=True)
             k = w.property("tr_placeholder")
             if k:
                 try:
                     w.setPlaceholderText(self._t(k))
                 except Exception:
-                    pass
+                    _log.debug("_apply_language failed", exc_info=True)
             k = w.property("tr_tooltip")
             if k:
                 try:
                     set_tooltip(w, self._t(k))
                 except Exception:
-                    pass
+                    _log.debug("_apply_language failed", exc_info=True)
             # 固定宽标签（网络设置左列）随语言调整列宽，避免英文被遮挡
             if w.property("tr_fixedw"):
                 w.setFixedWidth(self._label_col_width())
@@ -10551,6 +10634,8 @@ class CommTool(QMainWindow):
             self._rd_dlg.retranslate()
         if getattr(self, "_snip_dlg", None) is not None:
             self._snip_dlg.retranslate()
+        if getattr(self, "_send_hist_dlg", None) is not None:
+            self._send_hist_dlg.retranslate()
         if getattr(self, "_cpreset_dlg", None) is not None:
             self._cpreset_dlg.retranslate()
         self._rebuild_connection_preset_combo()
@@ -10604,7 +10689,7 @@ class CommTool(QMainWindow):
             try:
                 os.makedirs(cfg_dir, exist_ok=True)
             except Exception:
-                pass
+                _log.debug("_settings_file failed", exc_info=True)
             return new_ini
 
         if getattr(sys, "frozen", False):
@@ -10654,7 +10739,7 @@ class CommTool(QMainWindow):
         try:
             os.makedirs(cfg_dir, exist_ok=True)
         except Exception:
-            pass
+            _log.debug("_settings_file failed", exc_info=True)
         return new_ini
 
     def _save_settings(self, strict=False):
@@ -10794,7 +10879,7 @@ class CommTool(QMainWindow):
             if h_state:
                 self.h_splitter.restoreState(h_state)
         except Exception:
-            pass
+            _log.debug("_load_settings geometry failed", exc_info=True)
 
         try:
             size = int(s.value("recv_font_size", 10))
@@ -11138,7 +11223,7 @@ class CommTool(QMainWindow):
             try:
                 self._apply_loaded_settings()
             except Exception:
-                pass
+                _log.debug("_apply_workspace_protocol_template failed", exc_info=True)
             self._info_dlg(
                 self._t("workspace_template_title"),
                 self._t("workspace_template_fail", err=str(exc)), is_error=True)
@@ -11588,7 +11673,7 @@ class CommTool(QMainWindow):
             try:
                 replace(old)
             except Exception:
-                pass
+                _log.debug("import_config rollback failed", exc_info=True)
             raise
         return len(incoming)
 
@@ -11942,7 +12027,7 @@ class CommTool(QMainWindow):
             try:
                 old_lock.unlock()
             except Exception:
-                pass
+                _log.debug("_switch_profile failed", exc_info=True)
         # 4) 切换身份 + settings 指向新配置文件
         self._profile = profile
         self._title_suffix = "" if not profile else " (%s)" % profile
@@ -11960,7 +12045,7 @@ class CommTool(QMainWindow):
             self._restore_field_defaults()
             self._apply_loaded_settings()   # 与「导入配置」共用：整体重载新配置到 UI
         except Exception:
-            pass
+            _log.debug("_switch_profile failed", exc_info=True)
         self.restoreGeometry(geo)
         # 6) 刷新标题栏 / 任务栏 / 托盘的窗口名后缀
         self.setWindowTitle(self._t("app_title") + self._title_suffix)
@@ -12355,7 +12440,7 @@ class CommTool(QMainWindow):
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
                      "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
-                     "_snip_dlg", "_cpreset_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
+                     "_snip_dlg", "_send_hist_dlg", "_cpreset_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:

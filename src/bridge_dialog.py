@@ -5,6 +5,7 @@ _BridgeSidePanel — 一侧连接配置面板（类型选择 + 参数 + 连接/�
 BridgeDialog     — 顶层对话框（两侧面板 + BridgeEngine + 日志）
 """
 import codecs
+import logging
 import os  # noqa: F401  # needed by _dialog_list_qss
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -64,6 +65,9 @@ _LBL_W = 60  # 参数标签固定宽度
 # ═══════════════════════════════════════════════════════════════
 # _BridgeSidePanel — 一侧连接配置面板
 # ═══════════════════════════════════════════════════════════════
+
+_log = logging.getLogger(__name__)
+
 
 class _BridgeSidePanel(QWidget):
     """一侧连接配置面板：类型选择 + QStackedWidget(4 页参数) + 连接/断开按钮 + 状态。
@@ -382,7 +386,7 @@ class _BridgeSidePanel(QWidget):
             try:
                 self._conn.close()
             except Exception:
-                pass
+                _log.debug("bridge_dialog close_conn failed", exc_info=True)
             self._conn.deleteLater()
             self._conn = None
         self._update_ui_state(False)

@@ -115,11 +115,11 @@
 
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
-| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **235 处宽泛 `except`、其中 84 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算，别手数）。`net_io.py` 已完成（9 处静默归零，回归见 `tests/test_net_io_cleanup.py`），`bridge.py` 的网关 tick 同步改为记日志 + 一次性 `error_occurred`；`main_window.py`（146/68）、`serial_io.py`（12/6）待做 |
+| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 逐模块收敛宽泛 `except` 与静默 `pass`；清理型代码改分步兜底，前一步失败不跳过后续步骤。当前 **228 处宽泛 `except`、其中 9 处静默 `pass`**（跑 `python scripts/count_exception_handling.py` 重算）。`net_io.py`/`serial_io.py` 静默已归零；`main_window.py` 静默 68→6（余下多为窗口几何/原生事件/`_shutdown` 等清理路径，暂不改行为），本轮再收敛 load/persist/AR/Modbus/语言切换等约 39 处为 `_log.debug(..., exc_info=True)` |
 | S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 按连接、数据区、发送、Modbus、序列分块外移，每块有独立测试；顺带满足 P2 的前置条件 |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | 补 soak（持续运行）与吞吐压力用例，覆盖内存增长、缓冲上限、断线重连。当前 1023 个用例全是短平快功能验证，无一条长跑 |
-| S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | `log_naming.py` 现只有按日轮转（`should_roll_date`），补按大小切分及两者组合 |
-| S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 错误提示给出可操作建议而非原始 `errorString`；常用 Modbus 读写收敛成简化表单；补发送历史全文搜索 |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线已落地：RX 突发吞吐 + max-lines 文档上界 + 自动重连 schedule/cancel/次数帺 + RX/TX 计数混合突发（`tests/test_soak_throughput.py`）；延长 soak 用 `COMMTOOL_SOAK=<seconds>` 开启；多小时真 soak/真机断线仍待夜间任务 |
+| S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
+| S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
 
 > 已具备、不要重复投入：连接预设与最近使用（`connection_presets.py`，含 `recent`/`last_used`）、
 > 发送历史 FIFO 100 与上下键导航（`_send_hist`）、快捷发送栏（`_ms_quick_host`）、
@@ -205,6 +205,12 @@
 - **I（v1.4 S-1 首块）** `net_io.py` 异常收敛：9 处静默 `except Exception: pass` 归零。清理动作改为分步兜底（`_safe`）——
   退组或 abort 失败不再连带跳过 `close`/`deleteLater`（原会泄漏 socket 且没退组），半帧污染的客户端先摘表再释放
   （原 abort 抛异常会把它留在客户端表里继续接收后续写入）；回归见 `tests/test_net_io_cleanup.py`
+- **Q（v1.4 P1）** 无换行连续收包时单 QTextBlock 无限膨胀：`setMaximumBlockCount` 只限制 block 数；`_append_block_data` 补 `_trim_recv_overflow`（预算 = max_lines × 256 字符）。回归见 `test_recv_char_budget_without_newlines` / `COMMTOOL_SOAK` 延长跑。
+- **P（v1.4 S-3）** 扩展 `test_soak_throughput`：修正 CommTool 拆卸（停计时器/port_scanner）避免 Qt AV；补 max-lines 上界、重连 churn、RX/TX 计数混合突发与 `COMMTOOL_SOAK` 可选延长跑。
+- **O（v1.4 S-1）** `main_window.py` 再收敛约 39 处静默 `except` 为 debug 日志（含嵌套 `_ar_schedule_send` / `_load_settings` geometry / `import_config` rollback）；同时收敛 `modbus_master_dialog`/`bridge_dialog`/`rec_replay`/`updater`/`modbus_gateway` 共 7 处；全仓静默 54→9，`main_window` 44→6（余下为窗口/启动环境路径）。
+- **N（v1.4 S-1/S-3）** 持久化/日志关闭/触发器/扫描回调改 debug 日志；`test_soak_throughput` 短跑骨架。
+- **M（v1.4 S-4/S-5）** 日志 parse_size_limit/should_roll_size；Modbus 主机「单次读写」条（FC01-06，复用 _start_device_scan）。回归见 tests/test_s4_s5_next.py。
+
 - **J** 发布前收尾三项：
   - 地址基与阈值接通到界面。设备中心地址列按 `display_address` 显示、存回时换算回 0 基（解码与匹配始终用协议地址）；
     `level` / `display_address` 进结构化记录与 CSV，记录表新增「级别」列；仪表盘按 `level` 着色（报警闪红、预警稳定琥珀色）
