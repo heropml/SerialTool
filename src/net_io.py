@@ -279,6 +279,16 @@ class TcpServerConn(NetConn):
     def bridge_ready(self):
         return self.is_open and bool(self._clients)
 
+    @property
+    def bound_port(self):
+        # Actual listen port (useful when open() used port 0).
+        if self._server is None:
+            return 0
+        try:
+            return int(self._server.serverPort())
+        except Exception:
+            return 0
+
 
 # ============== TCP Client ==============
 class TcpClientConn(NetConn):
@@ -451,6 +461,16 @@ class UdpConn(NetConn):
     @property
     def is_open(self):
         return self._sock is not None
+
+    @property
+    def bound_port(self):
+        # OS-assigned local port after bind (port 0 friendly).
+        if self._sock is None:
+            return 0
+        try:
+            return int(self._sock.localPort())
+        except Exception:
+            return 0
 
     @property
     def bridge_ready(self):

@@ -10,6 +10,9 @@ Default suite stays under a few seconds:
 Set COMMTOOL_SOAK=<seconds> (e.g. 30) to enable an extended RX loop.
 Set COMMTOOL_SOAK_DISCONNECT=1 for VirtualConn mid-session drop loops.
 Set COMMTOOL_SOAK_SERIAL=COMx[,COMy] for optional real-port soak (skipped if unset).
+PC closed-loop (Virtual TX->RX / TCP echo / UDP pair, no hardware):
+  see tests/test_local_loopback_soak.py and scripts/soak_local.bat
+  optional COMMTOOL_SOAK_METRICS=<json-path> writes a small summary.
 True multi-hour soak belongs in a nightly job, not default CI.
 """
 import gc
