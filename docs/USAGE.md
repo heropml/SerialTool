@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.4.2
+
+Official wrap-up on the v1.4.1 maintainability baseline; v1.4 mainline is feature-frozen:
+
+- **S-2 R43–R55** -- runtime orchestration (reconnect / Modbus poll / sequence / AR gate / RX-TX / Modbus feed) plus display/settings/conn helpers (`config_io` / `view_format` / `connection_presets` / `term_vt`); Qt/QSS/i18n shells stay in `CommTool`.
+- **S-3** -- `VirtualConn.simulate_link_drop` baselines; optional `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL` / `COMMTOOL_SOAK_NIGHTLY` gates.
+- **Boundary** -- P2 (CLI / REST / plugin dissector) remains deferred.
+- **Tests** -- 1185 passed / 6 skipped / 291 subtests.
+
+---
+
 ## What's New in v1.4.1
 
 Official maintainability release on top of v1.4.0 capabilities:
@@ -770,7 +781,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.4.1`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.4.2`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
