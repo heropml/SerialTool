@@ -10,8 +10,12 @@ from config_keys import CFG_KEYS, PROJECT_PERSONAL_KEYS
 
 
 def parse_json_list(raw):
-    """JSON string or list -> list; missing/invalid/non-list -> None."""
-    if not raw:
+    """JSON string or list -> list; missing/invalid/non-list -> None.
+
+    An empty list ``[]`` is a valid value (user intentionally cleared all
+    items) and is returned as-is, **not** as ``None``.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
@@ -238,8 +242,12 @@ def resolve_combo_text(value, options, editable=False):
 
 
 def parse_json_dict(raw):
-    """JSON string or dict -> dict; missing/invalid/non-dict -> None."""
-    if not raw:
+    """JSON string or dict -> dict; missing/invalid/non-dict -> None.
+
+    An empty dict ``{}`` is a valid value and is returned as-is, **not** as
+    ``None`` (same empty-vs-missing rule as parse_json_list).
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw

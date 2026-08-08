@@ -31,6 +31,10 @@ def test_normalize_and_combo_helpers():
 
 def test_parse_json_dict_and_object_list():
     assert cio.parse_json_dict("") is None
+    assert cio.parse_json_dict("   ") is None
+    assert cio.parse_json_dict(None) is None
+    assert cio.parse_json_dict("{}") == {}
+    assert cio.parse_json_dict({}) == {}
     assert cio.parse_json_dict('{"a": 1}') == {"a": 1}
     assert cio.parse_json_dict([1, 2]) is None
     assert cio.parse_json_dict({"a": 1}) == {"a": 1}

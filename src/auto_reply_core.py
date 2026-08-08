@@ -5,7 +5,7 @@ Extracted from main_window.CommTool for S-2: keep matching and
 checksum algorithms testable without PyQt5.
 """
 import re
-import time  # noqa: F401  # reserved for future subst helpers
+import time
 
 def crc_impl(data, width=16, poly=0x1021, init=0x0000,
                  refin=False, refout=False, xorout=0x0000, byteorder="big"):
@@ -195,41 +195,41 @@ def compute_checksum(data: bytes, index: int) -> bytes:
             x ^= b
         return bytes([x])
     if index == 4:  # CRC8 (poly 0x07)
-        crc = 0
+        reg = 0
         for b in data:
-            crc ^= b
+            reg ^= b
             for _ in range(8):
-                crc = ((crc << 1) ^ 0x07) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
-        return bytes([crc])
+                reg = ((reg << 1) ^ 0x07) & 0xFF if (reg & 0x80) else (reg << 1) & 0xFF
+        return bytes([reg])
     if index == 5:  # ModbusCRC16
-        crc = 0xFFFF
+        reg = 0xFFFF
         for b in data:
-            crc ^= b
+            reg ^= b
             for _ in range(8):
-                crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
-        return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+                reg = (reg >> 1) ^ 0xA001 if (reg & 1) else (reg >> 1)
+        return bytes([reg & 0xFF, (reg >> 8) & 0xFF])
     if index == 6:  # CCITT-CRC16
-        crc = 0xFFFF
+        reg = 0xFFFF
         for b in data:
-            crc ^= (b << 8)
+            reg ^= (b << 8)
             for _ in range(8):
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
-        return bytes([(crc >> 8) & 0xFF, crc & 0xFF])
+                reg = ((reg << 1) ^ 0x1021) & 0xFFFF if (reg & 0x8000) else (reg << 1) & 0xFFFF
+        return bytes([(reg >> 8) & 0xFF, reg & 0xFF])
     if index == 7:  # CRC32
         import zlib
-        crc = zlib.crc32(data) & 0xFFFFFFFF
-        return bytes([(crc >> 24) & 0xFF, (crc >> 16) & 0xFF,
-                      (crc >> 8) & 0xFF, crc & 0xFF])
+        val = zlib.crc32(data) & 0xFFFFFFFF
+        return bytes([(val >> 24) & 0xFF, (val >> 16) & 0xFF,
+                      (val >> 8) & 0xFF, val & 0xFF])
     if index == 8:  # ADD16
         s = sum(data) & 0xFFFF
         return bytes([(s >> 8) & 0xFF, s & 0xFF])
     if index == 9:  # MOBUS: CRC8 with poly 0x31
-        crc = 0
+        reg = 0
         for b in data:
-            crc ^= b
+            reg ^= b
             for _ in range(8):
-                crc = ((crc << 1) ^ 0x31) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
-        return bytes([crc])
+                reg = ((reg << 1) ^ 0x31) & 0xFF if (reg & 0x80) else (reg << 1) & 0xFF
+        return bytes([reg])
     return b""
 
 
@@ -470,7 +470,6 @@ def subst_reply(reply, data, hex_mode, seq=0, ts_ms=None):
     {seq} advances seq only when present. ts_ms defaults to None -> 0 bytes path
     uses provided ms (caller supplies wall clock).
     """
-    import time as _time
     data = bytes(data or b"")
     reply = reply or ""
     sep = " " if hex_mode else ""
@@ -485,7 +484,7 @@ def subst_reply(reply, data, hex_mode, seq=0, ts_ms=None):
         return int(s, 16) if s.lower().startswith("0x") else int(s)
 
     if ts_ms is None:
-        ts_ms = int(_time.time() * 1000) & 0xFFFFFFFF
+        ts_ms = int(time.time() * 1000) & 0xFFFFFFFF
     else:
         ts_ms = int(ts_ms) & 0xFFFFFFFF
     ts_bytes = bytes([

@@ -116,7 +116,7 @@
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成：静默 pass 9→8（本轮结构化侧路改 debug）；余下 8 处为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 33 knives landed: R31-R33 serial_params / JSON loaders / workspace catalog; CommTool thin wrappers. Next: larger GUI build_* |
+| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 42 knives: GUI build_* factories DONE (R34-R42); remaining bulk is CommTool business logic |
 | S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端切换突发已落地；COMMTOOL_SOAK 延长跑，COMMTOOL_SOAK_NIGHTLY=1 可至 4h；真机断线 soak 仍待夜间任务 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
@@ -238,7 +238,19 @@
 - **R31 (v1.4 S-2)** thirty-first knife: extract `src/serial_params.py` (pyserial maps/options); dedupe bridge_dialog.
 - **R32 (v1.4 S-2)** thirty-second knife: thin remaining JSON loaders via `config_io.parse_json_list`.
 - **R33 (v1.4 S-2)** thirty-third knife: expand `project_templates` workspace catalog; add `tests/test_s2_r31_r33.py`.
-- **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool · title` -> `CommTool - title`; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch).
+- **R34 (v1.4 S-2)** thirty-fourth knife: extract `src/ui_options.py` (view/encoding/numview/ts/nl/log/search catalogs); `build_data_options_card` / `build_send_options_card` / `_apply_language` use shared lists; add `tests/test_s2_r34_ui_options.py`.
+- **R35 (v1.4 S-2)** thirty-fifth knife: extract src/conn_ui.py (PROTO_SERIAL/CONN_TYPES/open_btn_key/field_visibility); _update_net_fields thin applicator; add 	ests/test_s2_r35_conn_ui.py.
+- **R36 (v1.4 S-2)** thirty-sixth knife: extract src/send_options_card.py (build + term_section_expanded); CommTool.build_send_options_card thin wrapper; add 	ests/test_s2_r36_send_options.py.
+- **R37 (v1.4 S-2)** thirty-seventh knife: extract src/data_options_card.py (build); CommTool.build_data_options_card thin wrapper; add 	ests/test_s2_r37_data_options.py.
+- **R38 (v1.4 S-2)** thirty-eighth knife: extract src/settings_card.py (connection settings build); CommTool.build_settings_card thin wrapper; add 	ests/test_s2_r38_settings_card.py.
+- **R39 (v1.4 S-2)** thirty-ninth knife: extract src/receive_card.py (build + build_search_bar).
+- **R40 (v1.4 S-2)** fortieth knife: extract src/send_card.py (build).
+- **R41 (v1.4 S-2)** forty-first knife: extract src/sidebar.py (assemble settings/data/send option cards).
+- **R42 (v1.4 S-2)** forty-second knife: extract src/workspace_ui.py (protocol panel / workspace page / workbench bar / project menu); add 	ests/test_s2_r39_r42_ui.py.
+- **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. Remaining size is runtime business logic (RX/TX/Modbus/sequence/settings I/O), not UI construction.
+
+- **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool - title` (was middle-dot); `apply_fault` returns `(frame, tags_list)` not localized string; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch).
+- **S-2 review (post R33):** logic/dead-code/imports/DAG/tests clean; no bug regressions vs last commit. Low-pri polish: drop unused top-level time noqa + rename compute_checksum locals (done); `print_function` kept as project convention; R17 `subst_reply`/`build_parts` covered in `tests/test_s2_r17_r18.py` (not r14_r16).
 - **Q（v1.4 P1）** 无换行连续收包时单 QTextBlock 无限膨胀：`setMaximumBlockCount` 只限制 block 数；`_append_block_data` 补 `_trim_recv_overflow`（预算 = max_lines × 256 字符）。回归见 `test_recv_char_budget_without_newlines` / `COMMTOOL_SOAK` 延长跑。
 - **P（v1.4 S-3）** 扩展 `test_soak_throughput`：修正 CommTool 拆卸（停计时器/port_scanner）避免 Qt AV；补 max-lines 上界、重连 churn、RX/TX 计数混合突发与 `COMMTOOL_SOAK` 可选延长跑。
 - **O（v1.4 S-1）** `main_window.py` 再收敛约 39 处静默 `except` 为 debug 日志（含嵌套 `_ar_schedule_send` / `_load_settings` geometry / `import_config` rollback）；同时收敛 `modbus_master_dialog`/`bridge_dialog`/`rec_replay`/`updater`/`modbus_gateway` 共 7 处；全仓静默 54→9，`main_window` 44→6（余下为窗口/启动环境路径）。

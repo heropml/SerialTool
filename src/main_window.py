@@ -15,7 +15,6 @@ import types
 import multiprocessing
 from collections import deque
 from datetime import datetime
-import serial
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
 from PyQt5.QtGui import (QColor, QTextCursor, QTextCharFormat, QFont,
                          QFontMetrics, QTextFormat, QPalette, QKeySequence)
@@ -127,8 +126,19 @@ from ui_tips import set_tooltip
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
 # 虚拟连接排最后：它不接硬件，作为一种类型接入后，自动应答 / Modbus / 序列 / 脚本 /
 # 波形图 等全部机制都能在离线下直接跑，无需各自改造。
-PROTO_SERIAL = "Serial"
-CONN_TYPES = [PROTO_SERIAL] + PROTOCOLS + [PROTO_VIRTUAL]
+from conn_ui import (
+    PROTO_SERIAL,
+    CONN_TYPES,
+    field_visibility as _conn_field_vis,
+)
+
+import send_options_card as _send_options_card
+import data_options_card as _data_options_card
+import settings_card as _settings_card
+import receive_card as _receive_card
+import send_card as _send_card
+import sidebar as _sidebar
+import workspace_ui as _workspace_ui
 
 # Sequence engine limits (S-2: owned by sequence_engine; re-exported for callers).
 from sequence_engine import (
@@ -204,6 +214,12 @@ from project_templates import (
     workspace_template_options as _ws_template_options,
 )
 
+from ui_options import (
+    VIEW_MODE_ITEMS as _ui_view_mode_items,
+    TS_FORMAT_ITEMS as _ui_ts_format_items,
+    SEARCH_MODE_ITEMS as _ui_search_mode_items,
+)
+
 
 # 数据区正文的实际渲染格式。切换视图不会重排历史，所以格式必须跟着字符保存，不能只看当前开关。
 VIEW_PROP = QTextFormat.UserProperty + 2
@@ -219,15 +235,6 @@ ANSI_FG_PROP = QTextFormat.UserProperty + 3
 ANSI_BG_PROP = QTextFormat.UserProperty + 4
 
 from serial_params import (
-    PARITY_MAP as _PARITY_MAP,
-    STOPBITS_MAP as _STOPBITS_MAP,
-    DATABITS_MAP as _DATABITS_MAP,
-    FLOW_MAP as _FLOW_MAP,
-    BAUD_RATES as _BAUD_RATES,
-    DATABITS_OPTIONS as _DATABITS_OPTIONS,
-    PARITY_OPTIONS as _PARITY_OPTIONS,
-    STOPBITS_OPTIONS as _STOPBITS_OPTIONS,
-    FLOW_OPTIONS as _FLOW_OPTIONS,
     resolve_pyserial as _resolve_serial_params,
 )
 
@@ -1119,825 +1126,48 @@ class CommTool(QMainWindow):
             pass
 
     def build_sidebar(self):
-        host = QWidget()
-        host.setObjectName("SidebarHost")
-        v = QVBoxLayout(host)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
-        v.addWidget(self.build_settings_card())
-        # 数据区 options 卡片 stretch=1，吃多余高度（保存/清空按钮始终贴卡片底部）
-        v.addWidget(self.build_data_options_card(), 1)
-        # 发送区卡片：自然高度，贴侧边栏底部
-        self._left_send_card = self.build_send_options_card()
-        v.addWidget(self._left_send_card)
-        # 不加底部 stretch — 让发送区和右侧 send_card 同样贴底
-
-        scroll = QScrollArea()
-        scroll.setWidget(host)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setObjectName("Sidebar")
-        # 最小宽从 260 提到 305：数据区「显示方式」行要同时容下 模式下拉 + 附属参数/彩色开关
-        # 两列（原来那一列只放 40px 开关）。横向滚动条是关的，宽度不够不会出滚动条、
-        # 而是直接把最右一列（开关 / 下拉 / 「清空」按钮）切掉，所以必须用最小宽兜住。
-        scroll.setMinimumWidth(305)
-        scroll.setMaximumWidth(380)
-        return scroll
+        return _sidebar.build(self)
 
     def build_settings_card(self):
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(6)
-        layout.addWidget(self._tr_label("conn_settings", 12, bold=True))
-
-        def make_row(label_key, field):
-            """一行：固定宽标签 + 字段，整行包成 QWidget 便于按协议显隐。"""
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(6)
-            lbl = self._tr_label(label_key, color=COLOR_TEXT_SECONDARY)
-            lbl.setFixedWidth(self._label_col_width())
-            lbl.setProperty("tr_fixedw", True)
-            rl.addWidget(lbl)
-            rl.addWidget(field, 1)
-            layout.addWidget(row)
-            return row
-
-        # connection presets row
-        preset_box = QWidget()
-        pbl_preset = QHBoxLayout(preset_box)
-        pbl_preset.setContentsMargins(0, 0, 0, 0)
-        pbl_preset.setSpacing(6)
-        self.cb_conn_preset = QComboBox()
-        self.cb_conn_preset.setMinimumWidth(100)
-        self.cb_conn_preset.setSizeAdjustPolicy(
-            QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.cb_conn_preset.setMinimumContentsLength(12)
-        self.cb_conn_preset.activated.connect(self._on_connection_preset_activated)
-        pbl_preset.addWidget(self.cb_conn_preset, 1)
-        self.btn_cpreset_save = QPushButton(self._t("cpreset_save_btn"))
-        self.btn_cpreset_save.setObjectName("GhostBtnSm")
-        self.btn_cpreset_save.setProperty("tr_text", "cpreset_save_btn")
-        self.btn_cpreset_save.setProperty("tr_tooltip", "cpreset_save_btn_tip")
-        set_tooltip(self.btn_cpreset_save, self._t("cpreset_save_btn_tip"))
-        self.btn_cpreset_save.clicked.connect(
-            lambda *_: self.save_connection_preset_from_ui(prompt_name=True))
-        pbl_preset.addWidget(self.btn_cpreset_save)
-        self.btn_cpreset_manage = QPushButton(self._t("cpreset_manage_btn"))
-        self.btn_cpreset_manage.setObjectName("GhostBtnSm")
-        self.btn_cpreset_manage.setProperty("tr_text", "cpreset_manage_btn")
-        self.btn_cpreset_manage.setProperty("tr_tooltip", "cpreset_manage_btn_tip")
-        set_tooltip(self.btn_cpreset_manage, self._t("cpreset_manage_btn_tip"))
-        self.btn_cpreset_manage.clicked.connect(self.open_connection_presets)
-        pbl_preset.addWidget(self.btn_cpreset_manage)
-        self.row_conn_preset = make_row("cpreset_label", preset_box)
-
-        # 连接类型：串口 + 网络协议，统一进一个下拉
-        self.cb_proto = QComboBox()
-        self.cb_proto.addItems(CONN_TYPES)
-        self.cb_proto.currentIndexChanged.connect(lambda _: self._update_net_fields())
-        make_row("protocol_type", self.cb_proto)
-
-        # ===== 串口字段（仅 Serial 类型显示）=====
-        # 端口：下拉 + ⟳ 刷新按钮，包成一个容器塞进 make_row 的字段位
-        port_box = QWidget()
-        pbl = QHBoxLayout(port_box)
-        pbl.setContentsMargins(0, 0, 0, 0)
-        pbl.setSpacing(6)
-        self.cb_port = QComboBox()
-        self.cb_port.setMinimumWidth(100)
-        self.cb_port.activated.connect(self._on_serial_port_selected)
-        pbl.addWidget(self.cb_port, 1)
-        self.btn_refresh = QPushButton("⟳")
-        self.btn_refresh.setObjectName("IconBtn")
-        self.btn_refresh.setFixedSize(30, 26)
-        self.btn_refresh.clicked.connect(self.refresh_ports)
-        pbl.addWidget(self.btn_refresh)
-        self.row_port = make_row("port", port_box)
-
-        self.cb_baud = QComboBox()
-        self.cb_baud.setEditable(True)
-        for b in _BAUD_RATES:
-            self.cb_baud.addItem(b)
-        self.cb_baud.setCurrentText("115200")
-        self.row_baud = make_row("baud_rate", self.cb_baud)
-
-        self.cb_databits = QComboBox()
-        self.cb_databits.addItems(list(_DATABITS_OPTIONS))
-        self.cb_databits.setCurrentText("8")
-        self.row_databits = make_row("data_bits", self.cb_databits)
-
-        self.cb_parity = QComboBox()
-        self.cb_parity.addItems(list(_PARITY_OPTIONS))
-        self.row_parity = make_row("parity", self.cb_parity)
-
-        self.cb_stopbits = QComboBox()
-        self.cb_stopbits.addItems(list(_STOPBITS_OPTIONS))
-        self.cb_stopbits.setCurrentText("1")
-        self.row_stopbits = make_row("stop_bits", self.cb_stopbits)
-
-        # 硬件/软件流控：None / RTS-CTS（硬件）/ XON-XOFF（软件）
-        self.cb_flow = QComboBox()
-        self.cb_flow.addItems(list(_FLOW_OPTIONS))
-        self.cb_flow.setCurrentText("None")
-        self.cb_flow.currentIndexChanged.connect(self._on_flow_changed)
-        self.row_flow = make_row("flow_control", self.cb_flow)
-
-        # 串口参数连接期间可改、改动即应用（见 _apply_serial_params_live）。
-        # 刻意只挂 activated（用户在下拉里点选）与 editingFinished（波特率手输后回车/失焦）：
-        # currentTextChanged 会在手输过程中逐字符触发（1→11→115…），把中间值打进串口；
-        # 程序化 setCurrentText（切配置/导入）也会触发 currentIndexChanged —— 都不能用。
-        for _cb in (self.cb_baud, self.cb_databits, self.cb_parity,
-                    self.cb_stopbits, self.cb_flow):
-            _cb.activated.connect(self._apply_serial_params_live)
-        self.cb_baud.lineEdit().editingFinished.connect(self._apply_serial_params_live)
-
-        # 本地 IP（TCP Server / UDP）— 下拉本机网卡 IP，可编辑
-        self.cb_local_ip = QComboBox()
-        self.cb_local_ip.setEditable(True)
-        self.cb_local_ip.setMinimumWidth(100)
-        self.cb_local_ip.addItems(local_ipv4_list())
-        self.row_local_ip = make_row("local_ip", self.cb_local_ip)
-
-        # 组播地址（仅 UDP Multicast）
-        self.ed_group = QLineEdit("239.0.0.1")
-        self.row_group = make_row("group_addr", self.ed_group)
-
-        # 本地端口
-        self.ed_local_port = QLineEdit("8080")
-        self.row_local_port = make_row("local_port", self.ed_local_port)
-
-        # 指定远程 开关（仅 UDP）：关=回复最近对端；开=固定发往下面的远程地址
-        self.sw_udp_remote = IOSSwitch(False)
-        self.sw_udp_remote.toggled.connect(lambda _=False: self._update_net_fields())
-        sw_row = QWidget()
-        swl = QHBoxLayout(sw_row)
-        swl.setContentsMargins(0, 0, 0, 0)
-        swl.setSpacing(6)
-        sw_lbl = self._tr_label("use_remote", color=COLOR_TEXT_SECONDARY)
-        sw_lbl.setFixedWidth(self._label_col_width())
-        sw_lbl.setProperty("tr_fixedw", True)
-        swl.addWidget(sw_lbl)
-        swl.addWidget(self.sw_udp_remote)
-        swl.addStretch(1)
-        layout.addWidget(sw_row)
-        self.row_udp_remote = sw_row
-
-        # 远程 IP（TCP Client 必填 / UDP 由「指定远程」开关启用）
-        self.ed_remote_ip = QLineEdit()
-        self.row_remote_ip = make_row("remote_ip", self.ed_remote_ip)
-
-        # 远程端口
-        self.ed_remote_port = QLineEdit()
-        self.row_remote_port = make_row("remote_port", self.ed_remote_port)
-
-        # 目标客户端（仅 TCP Server 监听后显示）
-        self.cb_target = QComboBox()
-        self.row_target = make_row("target_client", self.cb_target)
-
-        # 回环 开关（仅虚拟连接）：开=发出去的数据原样当成收到的回来，可离线自测规则/脚本
-        self.sw_vconn_loop = IOSSwitch(False)
-        self.sw_vconn_loop.toggled.connect(self._on_vconn_loop_toggled)
-        vrow = QWidget()
-        vl = QHBoxLayout(vrow)
-        vl.setContentsMargins(0, 0, 0, 0)
-        vl.setSpacing(6)
-        v_lbl = self._tr_label("vconn_loopback", color=COLOR_TEXT_SECONDARY)
-        v_lbl.setFixedWidth(self._label_col_width())
-        v_lbl.setProperty("tr_fixedw", True)
-        v_lbl.setProperty("tr_tooltip", "vconn_tip")
-        set_tooltip(v_lbl, self._t("vconn_tip"))
-        vl.addWidget(v_lbl)
-        vl.addWidget(self.sw_vconn_loop)
-        self.sw_vconn_loop.setProperty("tr_tooltip", "vconn_tip")
-        set_tooltip(self.sw_vconn_loop, self._t("vconn_tip"))
-        vl.addStretch(1)
-        layout.addWidget(vrow)
-        self.row_vconn_loop = vrow
-
-        # 动作按钮（文案随协议/状态变化）
-        self.btn_open = QPushButton(self._t("btn_listen"))
-        self.btn_open.setObjectName("PrimaryBtn")
-        self.btn_open.setMinimumHeight(34)
-        self.btn_open.clicked.connect(self.toggle_conn)
-        layout.addWidget(self.btn_open)
-
-        # 控制线（仅串口 + 已连接时显示）：DTR/RTS 输出开关 + 复位脉冲 + CTS/DSR/DCD/RI 状态灯
-        self.box_ctrl = QWidget()
-        cl = QVBoxLayout(self.box_ctrl)
-        cl.setContentsMargins(0, 8, 0, 0)
-        cl.setSpacing(6)
-        self.lbl_ctrl_head = self._tr_label("ctrl_line", 12, bold=True)
-        cl.addWidget(self.lbl_ctrl_head)
-        # DTR / RTS 输出开关 + 复位 / Break 按钮同一行（紧凑排布，按钮用小号 GhostBtnSm 省横向空间）
-        r_out = QHBoxLayout()
-        r_out.setSpacing(4)
-        self.sw_dtr = IOSSwitch(True)
-        self.sw_dtr.toggled.connect(self._on_dtr_toggled)
-        self.sw_dtr.setProperty("tr_tooltip", "ctrl_dtr_tip")
-        set_tooltip(self.sw_dtr, self._t("ctrl_dtr_tip"))
-        self.sw_rts = IOSSwitch(True)
-        self.sw_rts.toggled.connect(self._on_rts_toggled)
-        self.sw_rts.setProperty("tr_tooltip", "ctrl_rts_tip")
-        set_tooltip(self.sw_rts, self._t("ctrl_rts_tip"))
-        _dtr_l = QLabel("DTR"); _dtr_l.setObjectName("CtrlLbl")
-        _rts_l = QLabel("RTS"); _rts_l.setObjectName("CtrlLbl")
-        self.btn_reset = QPushButton(self._t("ctrl_reset"))
-        self.btn_reset.setObjectName("GhostBtnSm")
-        self.btn_reset.setProperty("tr_text", "ctrl_reset")
-        self.btn_reset.setProperty("tr_tooltip", "ctrl_reset_tip")
-        set_tooltip(self.btn_reset, self._t("ctrl_reset_tip"))
-        self.btn_reset.clicked.connect(self._pulse_reset)
-        self.btn_break = QPushButton(self._t("ctrl_break"))
-        self.btn_break.setObjectName("GhostBtnSm")
-        self.btn_break.setProperty("tr_text", "ctrl_break")
-        self.btn_break.setProperty("tr_tooltip", "ctrl_break_tip")
-        set_tooltip(self.btn_break, self._t("ctrl_break_tip"))
-        self.btn_break.clicked.connect(self._send_break)
-        # DTR / RTS / 复位 / 中断 四组两端对齐、均匀铺满整行（与下方 CTS/DSR/DCD/RI 状态灯行同分布，上下一致）
-        r_out.addWidget(_dtr_l); r_out.addWidget(self.sw_dtr)
-        r_out.addStretch(1)
-        r_out.addWidget(_rts_l); r_out.addWidget(self.sw_rts)
-        r_out.addStretch(1)
-        r_out.addWidget(self.btn_reset)
-        r_out.addStretch(1)
-        r_out.addWidget(self.btn_break)
-        cl.addLayout(r_out)
-        r_in = QHBoxLayout()
-        r_in.setSpacing(0)
-        self._ctrl_dots = {}
-        _dot_keys = ("cts", "dsr", "dcd", "ri")
-        for _i, k in enumerate(_dot_keys):
-            lb = QLabel(k.upper()); lb.setObjectName("CtrlLbl")
-            dot = QLabel("●"); dot.setObjectName("CtrlDot")
-            self._ctrl_dots[k] = dot
-            r_in.addWidget(lb)
-            r_in.addSpacing(5)               # 标签与其状态点之间固定小间距
-            r_in.addWidget(dot)
-            if _i < len(_dot_keys) - 1:
-                r_in.addStretch(1)           # 组间等分弹簧 → 四组两端对齐、均匀铺满整行
-        cl.addLayout(r_in)
-        layout.addWidget(self.box_ctrl)
-        # 输入状态线轮询定时器（连接期间 ~5Hz 刷新状态灯）
-        self._ctrl_poll_timer = QTimer(self)
-        self._ctrl_poll_timer.setInterval(200)
-        self._ctrl_poll_timer.timeout.connect(self._poll_ctrl_lines)
-        self._reset_timer = None   # 复位脉冲的单次定时器（懒建、挂 self 上，关窗随之销毁，不会在已析构对象上回调）
-
-        self._update_net_fields()
-        self._rebuild_connection_preset_combo()
-        return card
+        return _settings_card.build(self)
 
     def _update_net_fields(self):
-        """按当前连接类型 + 连接状态，显隐字段行并刷新动作按钮文案。"""
+        """Show/hide connection fields and refresh open-button text."""
         proto = self.cb_proto.currentText()
         engaged = self.conn is not None
-        is_serial = proto == PROTO_SERIAL
-        if hasattr(self, "box_ctrl"):           # 控制线小节：仅串口 + 已连接时显示
-            self.box_ctrl.setVisible(is_serial and engaged)
-        is_srv = proto == PROTO_TCP_SERVER
-        is_cli = proto == PROTO_TCP_CLIENT
-        is_udp = proto == PROTO_UDP
-        is_grp = proto == PROTO_UDP_MULTICAST
-        is_virt = proto == PROTO_VIRTUAL
-        if hasattr(self, "row_vconn_loop"):     # 「回环」开关：仅虚拟连接显示
-            self.row_vconn_loop.setVisible(is_virt)
-        # 串口字段：仅串口类型显示
+        has_targets = (
+            hasattr(self, "cb_target") and self.cb_target.count() > 0)
+        udp_remote_on = (
+            hasattr(self, "sw_udp_remote") and self.sw_udp_remote.isChecked())
+        vis = _conn_field_vis(
+            proto, engaged,
+            has_targets=has_targets, udp_remote_on=udp_remote_on)
+        if hasattr(self, "box_ctrl"):
+            self.box_ctrl.setVisible(vis["ctrl_box"])
+        if hasattr(self, "row_vconn_loop"):
+            self.row_vconn_loop.setVisible(vis["vconn_loop"])
         for row in (self.row_port, self.row_baud, self.row_databits,
                     self.row_parity, self.row_stopbits, self.row_flow):
-            row.setVisible(is_serial)
-        if is_virt:
-            # 虚拟连接无任何地址/端口字段，网络行全隐藏
-            for row in (self.row_local_ip, self.row_group, self.row_local_port,
-                        self.row_udp_remote, self.row_remote_ip, self.row_remote_port,
-                        self.row_target):
-                row.setVisible(False)
-            self.btn_open.setText(self._t("btn_vconn_close" if engaged else "btn_vconn_open"))
-            return
-        if is_serial:
-            # 串口类型下网络行全部隐藏，按钮文案走串口键，提前返回
-            for row in (self.row_local_ip, self.row_group, self.row_local_port,
-                        self.row_udp_remote, self.row_remote_ip, self.row_remote_port,
-                        self.row_target):
-                row.setVisible(False)
-            self.btn_open.setText(self._t("btn_serial_close" if engaged else "btn_serial_open"))
-            return
-        self.row_local_ip.setVisible(is_srv or is_udp or is_grp)   # 组播时=出网卡
-        self.row_group.setVisible(is_grp)
-        self.row_local_port.setVisible(is_srv or is_udp or is_grp)
-        self.row_udp_remote.setVisible(is_udp)        # 「指定远程」开关仅普通 UDP
-        self.row_remote_ip.setVisible(is_cli or is_udp)
-        self.row_remote_port.setVisible(is_cli or is_udp)
-        # 「目标」行仅在 TCP Server 已监听**且**有客户端连入(cb_target 已填充)时显示，
-        # 避免刚监听、还没客户端时露出一个空下拉
-        self.row_target.setVisible(is_srv and engaged and self.cb_target.count() > 0)
-        # 远程框启用：TCP Client 恒启用；UDP 看「指定远程」开关；连接期间整体锁定(灰)
-        remote_en = (not engaged) and (is_cli or (is_udp and self.sw_udp_remote.isChecked()))
-        self.ed_remote_ip.setEnabled(remote_en)
-        self.ed_remote_port.setEnabled(remote_en)
-        if engaged:
-            key = {PROTO_TCP_SERVER: "btn_listen_stop",
-                   PROTO_TCP_CLIENT: "btn_disconnect",
-                   PROTO_UDP: "btn_udp_close",
-                   PROTO_UDP_MULTICAST: "btn_udp_close"}[proto]
-        else:
-            key = {PROTO_TCP_SERVER: "btn_listen",
-                   PROTO_TCP_CLIENT: "btn_connect",
-                   PROTO_UDP: "btn_udp_open",
-                   PROTO_UDP_MULTICAST: "btn_udp_open"}[proto]
-        self.btn_open.setText(self._t(key))
+            row.setVisible(vis["serial_rows"])
+        self.row_local_ip.setVisible(vis["local_ip"])
+        self.row_group.setVisible(vis["group"])
+        self.row_local_port.setVisible(vis["local_port"])
+        self.row_udp_remote.setVisible(vis["udp_remote"])
+        self.row_remote_ip.setVisible(vis["remote_ip"])
+        self.row_remote_port.setVisible(vis["remote_port"])
+        self.row_target.setVisible(vis["target"])
+        self.ed_remote_ip.setEnabled(vis["remote_enabled"])
+        self.ed_remote_port.setEnabled(vis["remote_enabled"])
+        self.btn_open.setText(self._t(vis["open_btn_key"]))
 
     def build_data_options_card(self):
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(6)
-        layout.addWidget(self._tr_label("data_area", 12, bold=True))
-
-        MAIN_W = 90
-        grid = QGridLayout()
-        # 开关列与下拉列锁同宽：同一张卡片里的折叠组是另一个网格，两边共用这套列宽，
-        # 各行的开关 / 下拉才会纵向对齐（否则每个网格按自己最长的标签各算各的，整组会错位）。
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnMinimumWidth(1, MAIN_W)
-        grid.setColumnMinimumWidth(2, MAIN_W)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(6)
-
-        def lbl(key):
-            w = self._tr_label(key, color=COLOR_TEXT_SECONDARY)
-            # 用列表存：同一 i18n key 可能在多个卡片各有一个标签（如 encoding），避免相互覆盖
-            self._setting_labels.setdefault(key, []).append(w)
-            return w
-
-        def sw_row(row, key, sw):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(sw, row, 2, alignment=Qt.AlignRight)
-
-        def sw_extra_row(row, key, sw, extra):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(sw, row, 1, alignment=Qt.AlignRight)
-            grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
-
-        def extra_row(row, key, extra):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
-
-        row = 0
-        # ── 显示方式：文本 / HEX / HEX 转储 / 数值 ──
-        # 这四者本来就互斥（都是「数据区正文怎么渲染」的取值），过去是三个开关 + 一套互相灰掉
-        # 的逻辑，既占三行又让人困惑「为什么开了没反应 / 为什么是灰的」。合成一个下拉后互斥
-        # 由类型天然保证。三个开关保留为状态源（不显示）：全仓十几处 isChecked() 读取与
-        # rx_hex/hexdump_view/numview 三个配置键因此都不用动，老配置也照常读回。
-        self.sw_rx_hex = IOSSwitch(False)
-        # 切 HEX/文本 显示时复位增量解码状态。HEX 分支的字节不进文本解码流(见
-        # _on_data_received_impl)，若不复位，文本模式残留的半个多字节会和切回文本后的
-        # 新数据错位拼接 → 整段乱码。代价仅是丢掉那个正好跨切换点、注定要被劈开的字符
-        # ——两害取其轻，是有意行为，勿当 bug 移除（移除会把"丢一字符"换成"乱码一片"）。
-        self.sw_rx_hex.toggled.connect(self._on_hex_display_changed)
-        self.sw_hexdump = IOSSwitch(self._hexdump_on)
-        self.sw_hexdump.toggled.connect(self._on_hexdump_toggled)
-        self.sw_numview = IOSSwitch(self._numview_on)
-        self.sw_numview.toggled.connect(self._on_numview_toggled)
-        for _sw in (self.sw_rx_hex, self.sw_hexdump, self.sw_numview):
-            _sw.hide()                      # 只作状态源，界面上由 cb_view_mode 代表
-
-        self.cb_view_mode = QComboBox()
-        # 项名用短词（行标签已经说了「显示方式」，不必再带「视图 / 显示」后缀）：
-        # 原来复用 hexdump_view / numview 那两个长键，英文 "Numeric view" 会被下拉宽度裁掉。
-        for _key, _data in (("view_text", "text"), ("view_hex", "hex"),
-                            ("view_dump", "dump"), ("view_num", "num")):
-            self.cb_view_mode.addItem(self._t(_key), _data)
-        self.cb_view_mode.setFixedWidth(MAIN_W)
-        self.cb_view_mode.setProperty("tr_tooltip", "view_mode_tip")
-        set_tooltip(self.cb_view_mode, self._t("view_mode_tip"))
-        self.cb_view_mode.currentIndexChanged.connect(self._on_view_mode_changed)
-
-        # 附属参数（每行字节数 / 数值类型）跟着模式换：同一格用 QStackedLayout 叠三页，
-        # 选文本/HEX 时是空页 —— 比过去「常驻但灰着」少一份视觉噪音。
-        self.cb_hexdump_width = QComboBox()
-        self.cb_hexdump_width.addItems(["8", "16", "32", "64"])
-        self.cb_hexdump_width.setCurrentText("16")
-        self.cb_hexdump_width.setFixedWidth(MAIN_W)
-        self.cb_hexdump_width.setProperty("tr_tooltip", "hexdump_width_tip")
-        set_tooltip(self.cb_hexdump_width, self._t("hexdump_width_tip"))
-        self.cb_hexdump_width.currentIndexChanged.connect(self._on_hexdump_width_changed)
-
-        self.cb_numview_type = QComboBox()
-        for _t_, _e_ in (("u8", ""), ("i8", ""),
-                         ("u16", "le"), ("u16", "be"), ("i16", "le"), ("i16", "be"),
-                         ("u32", "le"), ("u32", "be"), ("i32", "le"), ("i32", "be"),
-                         ("f32", "le"), ("f32", "be")):
-            self.cb_numview_type.addItem(
-                _t_ if not _e_ else "%s %s" % (_t_, _e_.upper()), (_t_, _e_ or "le"))
-        self.cb_numview_type.setFixedWidth(MAIN_W)
-        self.cb_numview_type.setProperty("tr_tooltip", "numview_type_tip")
-        set_tooltip(self.cb_numview_type, self._t("numview_type_tip"))
-        self.cb_numview_type.currentIndexChanged.connect(self._on_numview_type_changed)
-
-        # ANSI 着色只对「按文本渲染」有意义（文本 与 终端模式），故不再单占一行 ——
-        # 直接放进本行附属参数格：选文本时才露面，选 HEX / 转储 / 数值时自动消失，
-        # 比过去「常驻但灰着」更省一行也更少困惑。
-        self.sw_ansi = IOSSwitch(self._ansi_on)
-        self.sw_ansi.toggled.connect(self._on_ansi_toggled)
-        _ansi_page = QWidget()
-        _ansi_page.setFixedWidth(MAIN_W)   # 与其余页（下拉）同宽，本列各行才对得齐
-        _ah = QHBoxLayout(_ansi_page)
-        _ah.setContentsMargins(0, 0, 0, 0)
-        _ah.setSpacing(4)
-        self.lbl_ansi = make_label(self._t("ansi_color"), color=COLOR_TEXT_SECONDARY)
-        _ah.addStretch(1)
-        _ah.addWidget(self.lbl_ansi)
-        _ah.addWidget(self.sw_ansi)
-        for _w in (_ansi_page, self.lbl_ansi, self.sw_ansi):
-            set_tooltip(_w, self._t("ansi_tip"))
-        _ansi_page.setProperty("tr_tooltip", "ansi_tip")
-        self.sw_ansi.setProperty("tr_tooltip", "ansi_tip")
-
-        # Host first: QStackedLayout shows page 0 as soon as it is inserted,
-        # and a page with no parent yet would flash as a real top-level window.
-        _extra_host = QWidget()
-        _extra_host.setFixedWidth(MAIN_W)
-        self._view_extra = QStackedLayout(_extra_host)
-        self._view_extra.setContentsMargins(0, 0, 0, 0)
-        _blank = QWidget(); _blank.setFixedWidth(MAIN_W)
-        self._view_extra.addWidget(_ansi_page)             # 0 = 文本：ANSI 着色开关
-        self._view_extra.addWidget(_blank)                 # 1 = HEX：无附属参数
-        self._view_extra.addWidget(self.cb_hexdump_width)  # 2 = HEX 转储
-        self._view_extra.addWidget(self.cb_numview_type)   # 3 = 数值
-
-        grid.addWidget(lbl("view_mode"), row, 0)
-        # 主选项固定放在最右列，与下面的字符编码 / 开关右边缘对齐；模式附属项
-        # （ANSI、转储列宽、数值类型）放在中间列。这样 HEX 模式没有附属项时，
-        # 下拉也不会孤零零停在中间、右侧留出一整列空白。
-        grid.addWidget(_extra_host, row, 1, alignment=Qt.AlignRight)
-        grid.addWidget(self.cb_view_mode, row, 2, alignment=Qt.AlignRight)
-        row += 1
-
-        # 协议高亮开关不在此卡片——挪进「帧解析」对话框（复用其 frame_rules、不常用），见
-        # FrameParseDialog.chk_highlight 与 set_proto_highlight()。
-
-        # 字符编码 — 影响 RX 解码、TX 编码、文件加载
-        self.cb_encoding = QComboBox()
-        self.cb_encoding.addItem(self._t("encoding_auto"), "auto")
-        for codec_name in ("UTF-8", "GBK", "GB2312", "GB18030", "Big5", "ASCII", "Latin-1"):
-            self.cb_encoding.addItem(codec_name, codec_name.lower())
-        self.cb_encoding.setFixedWidth(MAIN_W)
-        self.cb_encoding.currentIndexChanged.connect(lambda _: self._on_encoding_changed())
-        extra_row(row, "encoding", self.cb_encoding); row += 1
-
-        self.sw_wrap = IOSSwitch(True)
-        self.sw_wrap.toggled.connect(self.on_wrap_toggled)
-        sw_row(row, "auto_wrap", self.sw_wrap); row += 1
-
-        self.sw_show_timestamp = IOSSwitch(False)
-        self.cb_ts_format = QComboBox()
-        self.cb_ts_format.blockSignals(True)
-        for data, key in (("absolute", "ts_fmt_absolute"), ("time", "ts_fmt_time"),
-                          ("relative", "ts_fmt_relative"), ("epoch", "ts_fmt_epoch")):
-            self.cb_ts_format.addItem(self._t(key), data)
-        self.cb_ts_format.blockSignals(False)
-        self.cb_ts_format.setFixedWidth(MAIN_W)
-        self.cb_ts_format.currentIndexChanged.connect(self._on_ts_format_changed)
-        sw_extra_row(row, "show_timestamp", self.sw_show_timestamp, self.cb_ts_format); row += 1
-
-        # 时间分包留在常显区：调试时常按包间隔切分显示，属于要反复调的项。
-        # 超时并进同一行 —— 它本来就只在分包开启时有意义，单占一行是浪费。
-        # 「ms」内嵌进输入框右端（不再框外单占一格），行更紧凑、数字与单位也连成一体。
-        self.sw_packet_split = IOSSwitch(False)
-        self.ed_packet_timeout = SuffixLineEdit("20", "ms")
-        self.ed_packet_timeout.setFixedWidth(MAIN_W)
-        sw_extra_row(row, "packet_split", self.sw_packet_split,
-                     self.ed_packet_timeout); row += 1
-
-        layout.addLayout(grid)
-
-        # ── 「更多」折叠组：分包 / 记录 这类设一次就不再动的选项 ──
-        # 设置项只增不减，全平铺会把侧栏顶穿。常调的（显示方式 / 编码 / 换行 / 时间戳）留在
-        # 外面，其余收进来；展开状态持久化，习惯把它开着的人不用每次点。
-        more = QGridLayout()
-        # 折叠组是独立网格，列宽本来各算各的 → 与上面的常显行错位。三处对齐：
-        # ①边距清零（布局装到 widget 上会自动拿样式的默认边距，整组会被推右 ~9px）；
-        # ②两个网格用同一套列最小宽，开关列 / 下拉列的左右边缘才落在同一条竖线上；
-        # ③列拉伸也一致，多余空间统一由标签列吃掉。
-        more.setContentsMargins(0, 0, 0, 0)
-        more.setColumnStretch(0, 1)
-        more.setColumnMinimumWidth(1, MAIN_W)
-        more.setColumnMinimumWidth(2, MAIN_W)
-        more.setHorizontalSpacing(6)
-        more.setVerticalSpacing(6)
-        grid, mrow = more, 0     # 下面沿用同一套 sw_row/extra_row 辅助函数（闭包读 grid）
-
-        self.sw_line_split = IOSSwitch(False)
-        self.cb_line_nl = QComboBox()
-        self.cb_line_nl.addItem(self._t("nl_auto"))
-        self.cb_line_nl.addItem("CRLF")
-        self.cb_line_nl.addItem("LF")
-        self.cb_line_nl.addItem("CR")
-        self.cb_line_nl.setFixedWidth(MAIN_W)
-        # 切换换行模式时把待定 \r 冲出来（防止从 CRLF 切到 LF/CR 后旧 \r 永远见不到）
-        self.cb_line_nl.currentIndexChanged.connect(lambda _: self._flush_pending_cr())
-        sw_extra_row(mrow, "line_split", self.sw_line_split, self.cb_line_nl); mrow += 1
-
-        self.sw_log_file = IOSSwitch(False)
-        # 文件名变量说明挂在开关上：用户是在这里开功能、随后才看到文件对话框，
-        # 到了对话框里再想起有变量可用就晚了
-        set_tooltip(self.sw_log_file, self._t("log_vars_tip"))
-        self.sw_log_file.setProperty("tr_tooltip", "log_vars_tip")
-        self.sw_log_file.toggled.connect(self.on_log_file_toggled)
-        # 实时记录按文件大小分包：到设定大小切到新文件（可编辑自定义，如 3M）
-        self.cb_log_split = QComboBox()
-        self.cb_log_split.setEditable(True)
-        self.cb_log_split.addItem(self._t("log_split_none"))   # 不分包
-        for s in ("1M", "2M", "5M", "10M", "20M", "50M", "100M"):
-            self.cb_log_split.addItem(s)
-        self.cb_log_split.setCurrentIndex(0)
-        self.cb_log_split.setFixedWidth(MAIN_W)
-        set_tooltip(self.cb_log_split, self._t("log_split_tip"))
-        self.cb_log_split.setProperty("tr_tooltip", "log_split_tip")
-        self.cb_log_split.currentTextChanged.connect(self._on_log_split_changed)
-        sw_extra_row(mrow, "real_time_log", self.sw_log_file, self.cb_log_split); mrow += 1
-
-        self.ed_max_lines = QLineEdit("10000")
-        self.ed_max_lines.setAlignment(Qt.AlignRight)
-        self.ed_max_lines.setFixedWidth(MAIN_W)
-        self.ed_max_lines.editingFinished.connect(self._on_max_lines_changed)
-        extra_row(mrow, "max_lines", self.ed_max_lines); mrow += 1
-
-        self.sw_freeze_view = IOSSwitch(False)
-        self.sw_freeze_view.setProperty("tr_tooltip", "freeze_view_tip")
-        set_tooltip(self.sw_freeze_view, self._t("freeze_view_tip"))
-        self.sw_freeze_view.toggled.connect(self._on_freeze_view_toggled)
-        sw_row(mrow, "freeze_view", self.sw_freeze_view); mrow += 1
-
-        self.sec_recv_more = CollapsibleSection(
-            self._t("more_settings"),
-            expanded=self.settings.value("sec_recv_more", False, type=bool))
-        self.sec_recv_more.setContentLayout(more)
-        self.sec_recv_more.toggled.connect(
-            lambda on: self.settings.setValue("sec_recv_more", on))
-        layout.addWidget(self.sec_recv_more)
-        layout.addStretch(1)  # 卡片被拉伸时吃掉多余空间，让按钮始终贴卡片底部
-
-        # 保存 / 清空：保存贴左，清空贴右
-        btns = QHBoxLayout()
-        btns.setContentsMargins(0, 0, 0, 0)
-        btns.setSpacing(6)
-
-        self.btn_save = QPushButton(self._t("save"))
-        self.btn_save.setObjectName("GhostBtn")
-        self.btn_save.setFixedWidth(MAIN_W)
-        self.btn_save.setProperty("tr_text", "save")
-        self.btn_save.clicked.connect(self.save_recv)
-        btns.addWidget(self.btn_save)
-
-        btns.addStretch(1)
-
-        self.btn_clear_rx = QPushButton(self._t("clear"))
-        self.btn_clear_rx.setObjectName("GhostBtn")
-        self.btn_clear_rx.setFixedWidth(MAIN_W)
-        self.btn_clear_rx.setProperty("tr_text", "clear")
-        self.btn_clear_rx.clicked.connect(self.clear_recv)
-        btns.addWidget(self.btn_clear_rx)
-
-        layout.addLayout(btns)
-        return card
+        return _data_options_card.build(self)
 
     def build_send_options_card(self):
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(6)
-        layout.addWidget(self._tr_label("send_area", 12, bold=True))
-
-        MAIN_W = 90
-        grid = QGridLayout()
-        # 开关列与下拉列锁同宽：同一张卡片里的折叠组是另一个网格，两边共用这套列宽，
-        # 各行的开关 / 下拉才会纵向对齐（否则每个网格按自己最长的标签各算各的，整组会错位）。
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnMinimumWidth(1, MAIN_W)
-        grid.setColumnMinimumWidth(2, MAIN_W)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(6)
-
-        def lbl(key):
-            w = self._tr_label(key, color=COLOR_TEXT_SECONDARY)
-            # 用列表存：同一 i18n key 可能在多个卡片各有一个标签（如 encoding），避免相互覆盖
-            self._setting_labels.setdefault(key, []).append(w)
-            return w
-
-        def sw_row(row, key, sw):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(sw, row, 2, alignment=Qt.AlignRight)
-
-        def sw_extra_row(row, key, sw, extra):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(sw, row, 1, alignment=Qt.AlignRight)
-            grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
-
-        def extra_row(row, key, extra):
-            grid.addWidget(lbl(key), row, 0)
-            grid.addWidget(extra, row, 2, alignment=Qt.AlignRight)
-
-        row = 0
-        self.sw_tx_hex = IOSSwitch(False)
-        sw_row(row, "hex_send", self.sw_tx_hex); row += 1
-
-        self.sw_append_newline = IOSSwitch(False)
-        self.cb_append_nl = QComboBox()
-        self.cb_append_nl.addItem("CRLF")
-        self.cb_append_nl.addItem("LF")
-        self.cb_append_nl.addItem("CR")
-        self.cb_append_nl.setFixedWidth(MAIN_W)
-        sw_extra_row(row, "append_newline", self.sw_append_newline, self.cb_append_nl); row += 1
-
-        self.sw_period = IOSSwitch(False)
-        self.sw_period.toggled.connect(self.on_period_toggled)
-        self.ed_period_ms = SuffixLineEdit("1000", "ms")   # 单位内嵌，同「时间分包」那行
-        self.ed_period_ms.setFixedWidth(MAIN_W)
-        sw_extra_row(row, "period", self.sw_period, self.ed_period_ms); row += 1
-
-        self.cb_checksum = QComboBox()
-        for ck_key in CHECKSUM_KEYS:
-            self.cb_checksum.addItem(self._t(ck_key))
-        self.cb_checksum.setFixedWidth(MAIN_W)
-        extra_row(row, "checksum", self.cb_checksum); row += 1
-
-        layout.addLayout(grid)
-
-        # 终端模式相关设置单独框成一组（终端模式 / 本地回显 / 回车），视觉上与上面的通用发送设置
-        # 区分开 —— 它自成一类，故保留边框；框内比外层缩进一点是有框分组该有的样子，
-        # 不去跟外面的列强行对齐。
-        term_frame = QFrame()
-        term_frame.setObjectName("SettingsGroup")
-        # 只要边框、不要底色；用强调蓝边框醒目地框出这一组（明暗主题都协调、无需跟随主题重刷）
-        term_frame.setStyleSheet(
-            "QFrame#SettingsGroup{border:1px solid rgba(0,122,255,0.7);border-radius:8px;"
-            "background:transparent;}")
-        tg = QGridLayout(term_frame)
-        tg.setContentsMargins(10, 6, 10, 6)
-        tg.setColumnStretch(0, 1)
-        tg.setColumnMinimumWidth(2, MAIN_W)   # 框内自己的下拉列锁同宽，三行之间对齐
-        tg.setHorizontalSpacing(6)
-        tg.setVerticalSpacing(6)
-
-        self.sw_terminal = IOSSwitch(self._terminal_on)
-        self.sw_terminal.toggled.connect(self._set_terminal_enabled)
-        tg.addWidget(lbl("term_mode"), 0, 0)
-        tg.addWidget(self.sw_terminal, 0, 2, alignment=Qt.AlignRight)
-
-        self.sw_term_echo = IOSSwitch(self._terminal_echo)
-        self.sw_term_echo.toggled.connect(self._on_term_echo_changed)
-        tg.addWidget(lbl("term_echo"), 1, 0)
-        tg.addWidget(self.sw_term_echo, 1, 2, alignment=Qt.AlignRight)
-
-        self.cb_term_enter = QComboBox()
-        self.cb_term_enter.addItem("CR")
-        self.cb_term_enter.addItem("LF")
-        self.cb_term_enter.addItem("CRLF")
-        self.cb_term_enter.setCurrentIndex(self._terminal_enter)
-        self.cb_term_enter.setFixedWidth(MAIN_W)
-        self.cb_term_enter.currentIndexChanged.connect(self._on_term_enter_changed)
-        tg.addWidget(lbl("term_enter"), 2, 0)
-        tg.addWidget(self.cb_term_enter, 2, 2, alignment=Qt.AlignRight)
-
-        # 终端整组收进折叠section：它是「切一次就长期不动」的模式开关，平时占三行不划算。
-        # 展开状态持久化；开着终端模式时强制展开 —— 正处在终端里却把开关折起来，
-        # 会让人找不到怎么退出。
-        self.sec_send_term = CollapsibleSection(
-            self._t("term_mode"),
-            expanded=self.settings.value("sec_send_term", False, type=bool) or self._terminal_on)
-        _tl = QVBoxLayout()
-        _tl.setContentsMargins(0, 0, 0, 0)
-        _tl.addWidget(term_frame)
-        self.sec_send_term.setContentLayout(_tl)
-        self.sec_send_term.toggled.connect(
-            lambda on: self.settings.setValue("sec_send_term", on))
-        layout.addWidget(self.sec_send_term)
-        return card
+        return _send_options_card.build(self)
 
     def build_receive_card(self):
-        """右侧主区域：数据区"""
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(10)
-
-        title_row = QHBoxLayout()
-        title_row.addWidget(self._tr_label("data_area", 13, bold=True))
-        title_row.addSpacing(10)
-        self.legend_label = QLabel(
-            f'<span style="color:{COLOR_TEXT_SECONDARY};">{self._t("legend_rx")}</span>'
-            f'&nbsp;&nbsp;'
-            f'<span style="color:{COLOR_BLUE};">{self._t("legend_tx")}</span>'
-        )
-        self.legend_label.setFont(ui_font(10))
-        self.legend_label.setStyleSheet("background: transparent;")
-        title_row.addWidget(self.legend_label)
-        title_row.addStretch(1)
-
-        # 生效分组下拉（顶部「（关闭）」+ 各分组）—— 选哪个分组就按哪个分组高亮
-        self.cb_kw_group = QComboBox()
-        self.cb_kw_group.setMinimumWidth(96)
-        self.cb_kw_group.currentIndexChanged.connect(self._on_kw_group_changed)
-        title_row.addWidget(self.cb_kw_group)
-        title_row.addSpacing(6)
-
-        self.btn_keyword = QPushButton(self._t("kw_highlight"))
-        self.btn_keyword.setObjectName("GhostBtn")
-        self.btn_keyword.setProperty("tr_text", "kw_highlight")
-        self.btn_keyword.clicked.connect(self.open_keyword_highlight)
-        title_row.addWidget(self.btn_keyword)
-        title_row.addSpacing(6)
-
-        # 只显高亮行：可切换按钮，开启后数据区只保留命中关键字的行（折叠其余）
-        self.btn_filter_hl = QPushButton(self._t("filter_highlight"))
-        self.btn_filter_hl.setObjectName("GhostBtn")
-        self.btn_filter_hl.setCheckable(True)
-        self.btn_filter_hl.setProperty("tr_text", "filter_highlight")
-        self.btn_filter_hl.toggled.connect(self._on_filter_hl_toggled)
-        title_row.addWidget(self.btn_filter_hl)
-        title_row.addSpacing(6)
-
-        # 波形图 / 帧解析 / Modbus 主机 已挪到标题栏「功能」菜单（见 _show_titlebar_func_menu），
-        # 数据区工具栏只留数据显示相关（关键字高亮 / 只显高亮行 / 字号）。
-        title_row.addSpacing(2)
-
-        self.btn_font_dec = QPushButton("A−")
-        self.btn_font_dec.setObjectName("IconBtn")
-        self.btn_font_dec.setFixedSize(34, 30)
-        self.btn_font_dec.setProperty("tr_tooltip", "font_dec")
-        set_tooltip(self.btn_font_dec, self._t("font_dec"))
-        self.btn_font_dec.clicked.connect(lambda: self.change_recv_font_size(-1))
-        title_row.addWidget(self.btn_font_dec)
-
-        self.btn_font_inc = QPushButton("A+")
-        self.btn_font_inc.setObjectName("IconBtn")
-        self.btn_font_inc.setFixedSize(34, 30)
-        self.btn_font_inc.setProperty("tr_tooltip", "font_inc")
-        set_tooltip(self.btn_font_inc, self._t("font_inc"))
-        self.btn_font_inc.clicked.connect(lambda: self.change_recv_font_size(+1))
-        title_row.addWidget(self.btn_font_inc)
-
-        layout.addLayout(title_row)
-
-        self.txt_recv = QTextEdit()
-        self.txt_recv.setReadOnly(True)
-        self.txt_recv.setObjectName("RecvBox")
-        self.txt_recv.setFont(mono_font(self._recv_font_size))
-        self.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
-        # 「选中即算校验和」的发现性入口：状态栏那个标签平时是隐藏的（没选区就没内容），
-        # 提示挂在数据区自己身上，用户才可能碰到。协议高亮模式下会被它自己的字段气泡接管
-        # （见 eventFilter 的 ToolTip 分支），那是有意的——那种模式有更具体的东西要说。
-        self.txt_recv.setProperty("tr_tooltip", "sel_chk_hint")
-        set_tooltip(self.txt_recv, self._t("sel_chk_hint"))
-        self.txt_recv.document().setMaximumBlockCount(10000)
-        layout.addWidget(self.txt_recv, 1)
-        self._build_search_bar()
-
-        # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
-        self._recv_highlight_line = -1
-        self._bookmarks = []  # QTextCursor list (session-scoped)
-        self._bookmark_idx = -1          # bookmark nav index, -1 = none yet
-        # 关键字高亮分组: [{name, rules:[{pattern,mode,scope,color,enabled}]}]，_keyword_active=生效分组(-1关闭)
-        self._keyword_groups, self._keyword_active, _kw_ok = self._load_keyword_groups()
-        if not _kw_ok:      # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
-            self._save_keyword_groups()
-        self._rebuild_kw_group_combo()      # 填充标题栏分组下拉
-        # 节流定时器：收数据高频，关键字重扫合并到 ~150ms 一次，避免卡顿
-        self._kw_timer = QTimer(self)
-        self._kw_timer.setSingleShot(True)
-        self._kw_timer.setInterval(150)
-        self._kw_timer.timeout.connect(self._refresh_extra_selections)
-        # 选中即算校验和：selectionChanged 在拖选过程中逐字符触发，节流到 ~120ms 一次，
-        # 否则每动一格就跑 9 遍纯 Python 校验循环，长选区拖选会明显掉帧
-        self._sel_chk_timer = QTimer(self)
-        self._sel_chk_timer.setSingleShot(True)
-        self._sel_chk_timer.setInterval(120)
-        self._sel_chk_timer.timeout.connect(self._update_sel_checksum)
-        self.txt_recv.selectionChanged.connect(self._sel_chk_timer.start)
-        # 浮动「回到底部」按钮：做成 txt_recv 子控件，悬在右下角；翻到上面才显示
-        self.btn_to_bottom = QPushButton(self._t("to_bottom"), self.txt_recv)
-        self.btn_to_bottom.setObjectName("ToBottomBtn")
-        self.btn_to_bottom.setProperty("tr_text", "to_bottom")
-        self.btn_to_bottom.setCursor(Qt.PointingHandCursor)
-        self.btn_to_bottom.clicked.connect(self._scroll_recv_to_bottom)
-        self.btn_to_bottom.hide()
-        # 滚动条变化时判断是否在底部，决定按钮显隐
-        self.txt_recv.verticalScrollBar().valueChanged.connect(self._on_recv_scroll)
-        # 监听 viewport 点击(行高亮) 和 txt_recv 尺寸变化(重定位按钮)
-        self.txt_recv.viewport().installEventFilter(self)
-        self.txt_recv.installEventFilter(self)
-        # 自定义右键菜单（跟随程序语言）：在 eventFilter 拦截 ContextMenu 事件弹出
-        # （QTextEdit 的右键事件发往 viewport，CustomContextMenu 信号路由不稳，故走 eventFilter）
-        self.txt_recv.setContextMenuPolicy(Qt.PreventContextMenu)
-
-        return card
+        return _receive_card.build(self)
 
     def _recv_context_menu(self, global_pos):
         """数据区右键菜单：复制 / 全选 / 清空 / 保存，文字跟随程序语言。"""
@@ -2187,65 +1417,7 @@ class CommTool(QMainWindow):
 
     # ----- 数据区：内嵌浮动查找栏（浏览器 Ctrl+F 风格）-----
     def _build_search_bar(self):
-        """创建悬浮在 txt_recv 右上角的查找栏（默认隐藏）。"""
-        self._search_term = ""
-        self._search_matches = []     # 存 QTextCursor
-        self._search_idx = -1
-        self._search_match_capped = False
-        self._search_mode = "plain"   # plain / regex / hex
-        self._search_case = False     # 大小写敏感
-        self._search_bar = QWidget(self.txt_recv)
-        row = QHBoxLayout(self._search_bar)
-        row.setContentsMargins(8, 6, 8, 6)
-        row.setSpacing(6)
-        self.ed_search = QLineEdit()
-        self.ed_search.setProperty("tr_placeholder", "search_ph")
-        self.ed_search.setPlaceholderText(self._t("search_ph"))
-        self.ed_search.setFixedWidth(180)
-        self.ed_search.textChanged.connect(self._do_search)
-        self.ed_search.returnPressed.connect(self._search_next)
-        self.cb_search_mode = QComboBox()
-        self.cb_search_mode.setProperty("tr_tooltip", "search_mode")
-        set_tooltip(self.cb_search_mode, self._t("search_mode"))
-        self.cb_search_mode.setFixedWidth(54)
-        self.cb_search_mode.blockSignals(True)
-        for data, key in (("plain", "search_mode_plain"), ("regex", "search_mode_regex"),
-                          ("hex", "search_mode_hex")):
-            self.cb_search_mode.addItem(self._t(key), data)
-        self.cb_search_mode.blockSignals(False)
-        self.cb_search_mode.currentIndexChanged.connect(lambda *_: self._on_search_mode_changed())
-        self.btn_search_case = QPushButton("Aa")
-        self.btn_search_case.setProperty("tr_tooltip", "search_case")
-        set_tooltip(self.btn_search_case, self._t("search_case"))
-        self.btn_search_case.setCheckable(True)
-        self.btn_search_case.setFixedWidth(30)
-        self.btn_search_case.toggled.connect(self._on_search_case_toggled)
-        self.lbl_search_cnt = QLabel("")
-        self.btn_search_prev = QPushButton("▲")
-        self.btn_search_prev.setProperty("tr_tooltip", "search_prev")
-        set_tooltip(self.btn_search_prev, self._t("search_prev"))
-        self.btn_search_prev.setCursor(Qt.PointingHandCursor)
-        self.btn_search_prev.setFixedSize(26, 26)
-        self.btn_search_prev.clicked.connect(self._search_prev)
-        self.btn_search_next = QPushButton("▼")
-        self.btn_search_next.setProperty("tr_tooltip", "search_next")
-        set_tooltip(self.btn_search_next, self._t("search_next"))
-        self.btn_search_next.setCursor(Qt.PointingHandCursor)
-        self.btn_search_next.setFixedSize(26, 26)
-        self.btn_search_next.clicked.connect(self._search_next)
-        self.btn_search_close = QPushButton("✕")
-        self.btn_search_close.setCursor(Qt.PointingHandCursor)
-        self.btn_search_close.setFixedSize(26, 26)
-        self.btn_search_close.clicked.connect(self._close_search)
-        row.addWidget(self.ed_search)
-        row.addWidget(self.cb_search_mode)
-        row.addWidget(self.btn_search_case)
-        row.addWidget(self.lbl_search_cnt)
-        row.addWidget(self.btn_search_prev)
-        row.addWidget(self.btn_search_next)
-        row.addWidget(self.btn_search_close)
-        self._style_search_bar()
-        self._search_bar.hide()
+        return _receive_card.build_search_bar(self)
 
     def _style_search_bar(self):
         """按当前主题给查找栏上色（卡片底 + ghost 按钮）。"""
@@ -2875,151 +2047,7 @@ class CommTool(QMainWindow):
             self.txt_recv.setUpdatesEnabled(True)
 
     def build_send_card(self):
-        """右侧主区域：发送区"""
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(10)
-        layout.addWidget(self._tr_label("send_area", 13, bold=True))
-
-        # ---- 多条发送快捷栏：选分组 + ▶/■ 循环 + 命令平铺直接发 ----
-        self._ms_groups, _ms_ok = self._load_ms_groups()
-        try:
-            self._ms_group_idx = int(self.settings.value("multi_send_group_idx", 0))
-        except (ValueError, TypeError):
-            self._ms_group_idx = 0
-        if not (0 <= self._ms_group_idx < len(self._ms_groups)):
-            self._ms_group_idx = 0
-        if not _ms_ok:    # 迁移/首次/损坏 → 落盘，避免每次启动重复迁移
-            self._save_ms_groups()
-        # 发送模板库：常用命令随手取用，数据存这里、SnippetsDialog 只是编辑器
-        self._snippets, _snip_ok = self._load_snippets()
-        if not _snip_ok:
-            self._save_snippets()
-        self._connection_presets, _cpreset_ok = self._load_connection_presets()
-        if not _cpreset_ok:
-            self._save_connection_presets()
-        self._rebuild_connection_preset_combo()
-        self._ms_cycle_seq = []
-        self._ms_cycle_idx = 0
-        self._ms_cycle_timer = QTimer(self)
-        self._ms_cycle_timer.setSingleShot(True)
-        self._ms_cycle_timer.timeout.connect(self._ms_cycle_step)
-
-        ms_bar = QHBoxLayout()
-        ms_bar.setSpacing(6)
-        self.btn_multi = QPushButton(self._t("multi_send"))
-        self.btn_multi.setObjectName("GhostBtn")
-        self.btn_multi.setProperty("tr_text", "multi_send")
-        self.btn_multi.clicked.connect(self.open_multi_send)
-        ms_bar.addWidget(self.btn_multi)
-        self.btn_ms_cycle = QPushButton(self._t("ms_cycle"))
-        self.btn_ms_cycle.setObjectName("GhostBtn")
-        self.btn_ms_cycle.clicked.connect(self._ms_toggle_cycle)
-        ms_bar.addWidget(self.btn_ms_cycle)
-        self.cb_ms_group = QComboBox()
-        self.cb_ms_group.setMinimumWidth(110)
-        # 高度跟左右 GhostBtn 等高：用 setFixedHeight 而非 setMinimumHeight——后者会被 QComboBox 在
-        # styleSheet apply 期间的内部 sizePolicy 计算覆盖回默认 (~22px)
-        self.cb_ms_group.setFixedHeight(28)
-        self.cb_ms_group.currentIndexChanged.connect(self._on_ms_group_changed)
-        ms_bar.addWidget(self.cb_ms_group)
-        self._ms_quick_host = QWidget()
-        self._ms_quick_host.setObjectName("MsQuickHost")
-        self._ms_quick_h = QHBoxLayout(self._ms_quick_host)
-        self._ms_quick_h.setContentsMargins(0, 0, 0, 0)
-        self._ms_quick_h.setSpacing(6)
-        self._ms_quick_host.setAutoFillBackground(False)
-        ms_qscroll = QScrollArea()
-        ms_qscroll.setObjectName("MsQuickScroll")
-        ms_qscroll.setWidget(self._ms_quick_host)
-        ms_qscroll.setWidgetResizable(True)
-        ms_qscroll.setFrameShape(QFrame.NoFrame)
-        ms_qscroll.setFixedHeight(38)
-        ms_qscroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        ms_qscroll.viewport().setAutoFillBackground(False)
-        ms_bar.addWidget(ms_qscroll, 1)
-        layout.addLayout(ms_bar)
-        self._rebuild_ms_group_combo()
-        self._rebuild_ms_quick_bar()
-
-        self.txt_send = QTextEdit()
-        self.txt_send.setObjectName("SendBox")
-        self.txt_send.setFont(mono_font(10))
-        # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
-        self.txt_send.setFixedHeight(64)
-        # 占位文案随终端模式而定（启动恢复 terminal_mode=True 时也用对的那句）；
-        # tr_placeholder 属性供语言切换 _apply_language 刷新，终端模式时由 _set_terminal_enabled 改它。
-        _ph = "term_send_ph" if self._terminal_on else "send_placeholder"
-        self.txt_send.setProperty("tr_placeholder", _ph)
-        self.txt_send.installEventFilter(self)   # ↑↓ 历史导航（在 eventFilter 里处理）
-        self.txt_send.setPlaceholderText(self._t(_ph))
-        # 悬浮提示：动态字段语法 + ↑↓ 历史；语言切换由 _apply_language 通过 tr_tooltip 刷新
-        self.txt_send.setProperty("tr_tooltip", "send_box_tip")
-        set_tooltip(self.txt_send, self._t("send_box_tip"))
-        layout.addWidget(self.txt_send)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)        # 与上一行 ms_bar 同 spacing → 两行同列按钮右边缘对齐
-        self.btn_load = QPushButton(self._t("read_file"))
-        self.btn_load.setObjectName("GhostBtn")
-        self.btn_load.setProperty("tr_text", "read_file")
-        self.btn_load.clicked.connect(self.load_file_to_send)
-        btn_row.addWidget(self.btn_load)
-
-        self.btn_clear_tx = QPushButton(self._t("clear"))
-        self.btn_clear_tx.setObjectName("GhostBtn")
-        self.btn_clear_tx.setProperty("tr_text", "clear")
-        self.btn_clear_tx.clicked.connect(lambda: self.txt_send.clear())
-        btn_row.addWidget(self.btn_clear_tx)
-
-        # 自动应答（紧挨清空；启用时按钮高亮：动态属性 arActive 配 QSS [arActive="true"]）
-        # 单击 → _ar_btn_clicked 延时打开对话框；双击（eventFilter 捕获）→ 翻转总开关。
-        self.btn_autoreply = QPushButton(self._t("ar_open"))
-        self.btn_autoreply.setObjectName("GhostBtn")
-        self.btn_autoreply.setProperty("tr_text", "ar_open")
-        self.btn_autoreply.setProperty("arActive", "true" if self._ar_on else "false")
-        set_tooltip(self.btn_autoreply, self._t("ar_btn_tip"))
-        self.btn_autoreply.setProperty("tr_tooltip", "ar_btn_tip")   # 语言切换时由 _apply_language 刷新
-        self.btn_autoreply.clicked.connect(self._ar_btn_clicked)
-        self.btn_autoreply.installEventFilter(self)
-        btn_row.addWidget(self.btn_autoreply)
-
-        # 工作台页面化后，发送模板库也需要在终端保留直接可见入口。
-        self.btn_snippets = QPushButton(self._t("snip_title"))
-        self.btn_snippets.setObjectName("GhostBtn")
-        self.btn_snippets.setProperty("tr_text", "snip_title")
-        self.btn_snippets.clicked.connect(self.open_snippets)
-        btn_row.addWidget(self.btn_snippets)
-
-        self.btn_send_hist = QPushButton(self._t("send_hist_btn"))
-        self.btn_send_hist.setObjectName("GhostBtn")
-        self.btn_send_hist.setProperty("tr_text", "send_hist_btn")
-        self.btn_send_hist.setProperty("tr_tooltip", "send_hist_tip")
-        set_tooltip(self.btn_send_hist, self._t("send_hist_tip"))
-        self.btn_send_hist.clicked.connect(self.open_send_history)
-        btn_row.addWidget(self.btn_send_hist)
-
-        # 工作台页面化后「终端」不再弹功能菜单，文件传输必须保留一个直接可见入口。
-        self.btn_xfer = QPushButton(self._t("xfer_title"))
-        self.btn_xfer.setObjectName("GhostBtn")
-        self.btn_xfer.setProperty("tr_text", "xfer_title")
-        self.btn_xfer.clicked.connect(self.open_xfer)
-        btn_row.addWidget(self.btn_xfer)
-        # 前三列仍与上一行多条发送控件对齐；模板库与文件传输作为快捷动作依次排在后面。
-
-        btn_row.addStretch(1)
-
-        self.btn_send = QPushButton(self._t("send_btn"))
-        self.btn_send.setObjectName("PrimaryBtn")
-        self.btn_send.setMinimumHeight(36)
-        self.btn_send.setMinimumWidth(120)
-        self.btn_send.setProperty("tr_text", "send_btn")
-        self.btn_send.clicked.connect(self.do_send)
-        btn_row.addWidget(self.btn_send)
-
-        layout.addLayout(btn_row)
-        return card
+        return _send_card.build(self)
 
     def apply_style(self):
         """根据当前主题构建全局 QSS — light/dark 模式整体切换"""
@@ -7905,12 +6933,12 @@ class CommTool(QMainWindow):
     # ----- 发送命令历史 -----
     def _push_send_hist(self, text):
         """Push successful send into FIFO; adjacent-dedupe; cap 100; persist."""
+        self._send_hist_idx = -1
+        self._send_hist_pending = ""
         if not (text or "").rstrip("\r\n"):
             return
         new_hist, changed = _hist_push(self._send_hist, text)
         self._send_hist = new_hist
-        self._send_hist_idx = -1
-        self._send_hist_pending = ""
         if not changed:
             return
         try:
@@ -9818,8 +8846,7 @@ class CommTool(QMainWindow):
             data = self.cb_ts_format.currentData()
             self.cb_ts_format.blockSignals(True)
             self.cb_ts_format.clear()
-            for d, key in (("absolute", "ts_fmt_absolute"), ("time", "ts_fmt_time"),
-                           ("relative", "ts_fmt_relative"), ("epoch", "ts_fmt_epoch")):
+            for d, key in _ui_ts_format_items:
                 self.cb_ts_format.addItem(self._t(key), d)
             idx = self.cb_ts_format.findData(data)
             self.cb_ts_format.setCurrentIndex(idx if idx >= 0 else 0)
@@ -9828,8 +8855,7 @@ class CommTool(QMainWindow):
             data = self.cb_search_mode.currentData()
             self.cb_search_mode.blockSignals(True)
             self.cb_search_mode.clear()
-            for d, key in (("plain", "search_mode_plain"), ("regex", "search_mode_regex"),
-                           ("hex", "search_mode_hex")):
+            for d, key in _ui_search_mode_items:
                 self.cb_search_mode.addItem(self._t(key), d)
             idx = self.cb_search_mode.findData(data)
             self.cb_search_mode.setCurrentIndex(idx if idx >= 0 else 0)
@@ -9838,7 +8864,7 @@ class CommTool(QMainWindow):
         if hasattr(self, "cb_line_nl"):
             self.cb_line_nl.setItemText(0, self._t("nl_auto"))
         if hasattr(self, "cb_view_mode"):
-            for i, k in enumerate(("view_text", "view_hex", "view_dump", "view_num")):
+            for i, (k, _) in enumerate(_ui_view_mode_items):
                 self.cb_view_mode.setItemText(i, self._t(k))
         if hasattr(self, "sec_recv_more"):
             self.sec_recv_more.setTitle(self._t("more_settings"))
@@ -10371,41 +9397,7 @@ class CommTool(QMainWindow):
         return _ws_template_options()
 
     def _build_protocol_template_panel(self):
-        panel = QFrame()
-        panel.setObjectName("WorkspaceTemplatePanel")
-        layout = QHBoxLayout(panel)
-        layout.setContentsMargins(18, 13, 14, 13)
-        layout.setSpacing(12)
-        icon = QLabel("T")
-        icon.setObjectName("WorkspaceToolIcon")
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setFixedSize(42, 42)
-        layout.addWidget(icon)
-        text_box = QVBoxLayout()
-        text_box.setSpacing(2)
-        title = QLabel(self._t("workspace_template_title"))
-        title.setObjectName("WorkspaceToolTitle")
-        title.setProperty("tr_text", "workspace_template_title")
-        text_box.addWidget(title)
-        self.lbl_workspace_template_preview = QLabel()
-        self.lbl_workspace_template_preview.setObjectName("WorkspaceTemplatePreview")
-        text_box.addWidget(self.lbl_workspace_template_preview)
-        layout.addLayout(text_box, 1)
-        self.cb_workspace_template = QComboBox()
-        self.cb_workspace_template.setMinimumWidth(150)
-        for text_key, template_id in self._workspace_template_options():
-            self.cb_workspace_template.addItem(self._t(text_key), template_id)
-        self.cb_workspace_template.currentIndexChanged.connect(
-            self._update_workspace_template_preview)
-        layout.addWidget(self.cb_workspace_template)
-        apply_btn = QPushButton(self._t("workspace_template_apply"))
-        apply_btn.setObjectName("WorkspaceOpenBtn")
-        apply_btn.setProperty("tr_text", "workspace_template_apply")
-        apply_btn.setFixedHeight(30)
-        apply_btn.clicked.connect(self._apply_workspace_protocol_template)
-        layout.addWidget(apply_btn)
-        self._update_workspace_template_preview()
-        return panel
+        return _workspace_ui.build_protocol_template_panel(self)
 
     def _update_workspace_template_preview(self, *_):
         combo = getattr(self, "cb_workspace_template", None)
@@ -10487,64 +9479,7 @@ class CommTool(QMainWindow):
         self.toast(self._t("workspace_template_applied", name=template_name))
 
     def _build_workspace_page(self, key):
-        page = QWidget()
-        page.setObjectName("WorkspacePage")
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(34, 28, 34, 28)
-        outer.setSpacing(8)
-        title = QLabel(self._t("wb_" + key))
-        title.setObjectName("WorkspacePageTitle")
-        title.setProperty("tr_text", "wb_" + key)
-        outer.addWidget(title)
-        subtitle_key = "workspace_" + key + "_tip"
-        subtitle = QLabel(self._t(subtitle_key))
-        subtitle.setObjectName("WorkspacePageSubtitle")
-        subtitle.setProperty("tr_text", subtitle_key)
-        subtitle.setWordWrap(True)
-        outer.addWidget(subtitle)
-        outer.addSpacing(16)
-        if key == "protocol":
-            outer.addWidget(self._build_protocol_template_panel())
-            outer.addSpacing(8)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
-        for column in range(3):
-            grid.setColumnStretch(column, 1)
-        for index, (title_key, icon_text, callback) in enumerate(self._workspace_specs(key)):
-            card = QFrame()
-            card.setObjectName("WorkspaceToolCard")
-            card.setMinimumHeight(86)
-            card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(18, 14, 18, 14)
-            card_layout.setSpacing(12)
-            icon = QLabel(icon_text)
-            icon.setObjectName("WorkspaceToolIcon")
-            icon.setAlignment(Qt.AlignCenter)
-            icon.setFixedSize(42, 42)
-            card_layout.addWidget(icon, 0, Qt.AlignVCenter)
-            tool_title = QLabel(self._t(title_key))
-            tool_title.setObjectName("WorkspaceToolTitle")
-            tool_title.setProperty("tr_text", title_key)
-            tool_title.setWordWrap(True)
-            card_layout.addWidget(tool_title, 1, Qt.AlignVCenter)
-            status_badge = QLabel()
-            status_badge.setObjectName("WorkspaceStatusBadge")
-            status_badge.setProperty("tool_key", title_key)
-            status_badge.setAlignment(Qt.AlignCenter)
-            status_badge.hide()
-            card_layout.addWidget(status_badge, 0, Qt.AlignVCenter)
-            open_btn = QPushButton(self._t("workspace_open"))
-            open_btn.setObjectName("WorkspaceOpenBtn")
-            open_btn.setProperty("tr_text", "workspace_open")
-            open_btn.setCursor(Qt.PointingHandCursor)
-            open_btn.setFixedHeight(30)
-            open_btn.clicked.connect(lambda _checked=False, cb=callback: cb())
-            card_layout.addWidget(open_btn, 0, Qt.AlignVCenter)
-            grid.addWidget(card, index // 3, index % 3)
-        outer.addLayout(grid)
-        outer.addStretch(1)
-        return page
+        return _workspace_ui.build_workspace_page(self, key)
 
     def _workspace_status_info(self, tool_key):
         """返回 (文案, 是否活跃)；None 表示该工具没有可展示的运行状态。"""
@@ -10607,45 +9542,7 @@ class CommTool(QMainWindow):
             self.settings.setValue("active_workspace", key)
 
     def _build_workbench_bar(self):
-        """Top workbench nav: feature group menus + project menu."""
-        bar = QWidget(self)
-        bar.setObjectName("WorkbenchBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 5, 20, 5)
-        layout.setSpacing(6)
-
-        label = QLabel(self._t("workbench_label"))
-        label.setObjectName("WorkbenchLabel")
-        label.setProperty("tr_text", "workbench_label")
-        layout.addWidget(label)
-
-        self._workbench_buttons = {}
-        for key in ("terminal", "protocol", "simulation", "automation", "data", "bridge"):
-            btn = QPushButton(self._t("wb_" + key))
-            btn.setObjectName("WorkbenchBtn")
-            btn.setProperty("tr_text", "wb_" + key)
-            btn.setProperty("active", "false")
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setFixedHeight(30)
-            btn.clicked.connect(lambda _checked=False, k=key: self._switch_workspace(k))
-            layout.addWidget(btn)
-            self._workbench_buttons[key] = btn
-        layout.addStretch(1)
-
-        project_sep = QFrame()
-        project_sep.setObjectName("WorkbenchSeparator")
-        project_sep.setFrameShape(QFrame.VLine)
-        layout.addWidget(project_sep)
-        self.btn_project_menu = QPushButton(self._t("project_menu"))
-        self.btn_project_menu.setObjectName("ProjectBtn")
-        self.btn_project_menu.setCursor(Qt.PointingHandCursor)
-        self.btn_project_menu.setFixedHeight(30)
-        self.btn_project_menu.setMinimumWidth(76)
-        self.btn_project_menu.setMaximumWidth(200)
-        self.btn_project_menu.clicked.connect(self._show_project_menu)
-        layout.addWidget(self.btn_project_menu)
-        self._update_project_label()
-        return bar
+        return _workspace_ui.build_workbench_bar(self)
 
     def _update_project_label(self, dirty=None):
         if not hasattr(self, "btn_project_menu"):
@@ -10664,65 +9561,7 @@ class CommTool(QMainWindow):
         set_tooltip(self.btn_project_menu, self._project_path or name)
 
     def _build_project_menu(self):
-        menu = QMenu(self)
-        c = chrome_for(self._theme_id())
-        menu.setStyleSheet(f"""
-            QMenu {{ background-color: {c['card_bg']}; color: {c['text']};
-                     border: 1px solid {c['separator']}; border-radius: 8px; padding: 4px; }}
-            QMenu::item {{ padding: 6px 18px; border-radius: 5px; }}
-            QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
-            QMenu::separator {{ height: 1px; background-color: {c['separator']};
-                                margin: 5px 10px; }}
-            QWidget#ProjectRestoreRow {{ background: transparent; border-radius: 5px; }}
-            QLabel#ProjectRestoreLabel {{ color: {c['text']}; background: transparent;
-                                           font-family: 'Segoe UI'; font-size: 12px; }}
-        """)
-        for text_key, callback in (("project_new", self.new_project),
-                                   ("project_open", self.open_project)):
-            menu.addAction(self._t(text_key)).triggered.connect(
-                lambda _checked=False, cb=callback: cb())
-        recent = self._recent_projects()
-        if recent:
-            recent_menu = menu.addMenu(self._t("project_recent"))
-            recent_menu.setToolTipsVisible(True)
-            for path in recent:
-                action = recent_menu.addAction(os.path.basename(path))
-                set_tooltip(action, path)
-                action.triggered.connect(
-                    lambda _checked=False, p=path: self._open_project_path(p))
-            recent_menu.addSeparator()
-            recent_menu.addAction(self._t("project_recent_clear")).triggered.connect(
-                self._clear_recent_projects)
-        menu.addSeparator()
-        menu.addAction(self._t("project_save")).triggered.connect(
-            lambda *_: self.save_project())
-        menu.addAction(self._t("project_save_as")).triggered.connect(
-            lambda *_: self.save_project(save_as=True))
-        if self._project_name or self._project_path:
-            menu.addSeparator()
-            menu.addAction(self._t("project_close")).triggered.connect(
-                lambda *_: self.close_project())
-        menu.addSeparator()
-        restore_action = QWidgetAction(menu)
-        restore_row = QWidget()
-        restore_row.setObjectName("ProjectRestoreRow")
-        restore_layout = QHBoxLayout(restore_row)
-        # QMenu 本身有 4px padding，普通菜单项另有 18px 左内边距。
-        # QWidgetAction 的内容从 action 矩形起点直接布局，因此这里用 19px
-        # （含 1px 的样式边界补偿），让文字起点与“新建 / 打开 / 保存”一致。
-        restore_layout.setContentsMargins(19, 5, 10, 5)
-        restore_layout.setSpacing(18)
-        restore_label = QLabel(self._t("project_restore_on_startup"))
-        restore_label.setObjectName("ProjectRestoreLabel")
-        restore_layout.addWidget(restore_label, 1)
-        restore_switch = IOSSwitch(
-            self.settings.value("restore_last_project", True, type=bool))
-        restore_switch.set_theme_colors(c['separator'], "#FFFFFF")
-        restore_switch.toggled.connect(self._set_restore_last_project)
-        restore_layout.addWidget(restore_switch)
-        restore_action.setDefaultWidget(restore_row)
-        menu.addAction(restore_action)
-        return menu
+        return _workspace_ui.build_project_menu(self)
 
     def _show_project_menu(self):
         dirty = self._project_is_dirty()
