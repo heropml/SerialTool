@@ -43,8 +43,9 @@ Official wrap-up on the v1.4.1 maintainability baseline; v1.4 mainline is featur
 
 - **S-2 R43–R55** -- runtime orchestration (reconnect / Modbus poll / sequence / AR gate / RX-TX / Modbus feed) plus display/settings/conn helpers (`config_io` / `view_format` / `connection_presets` / `term_vt`); Qt/QSS/i18n shells stay in `CommTool`.
 - **S-3** -- `VirtualConn.simulate_link_drop` baselines; optional `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL` / `COMMTOOL_SOAK_NIGHTLY` gates.
+- **Usability** -- send-history dialog can delete entries (button / Delete / Backspace); history and file-transfer buttons match MultiSend ghost/primary styles.
 - **Boundary** -- P2 (CLI / REST / plugin dissector) remains deferred.
-- **Tests** -- 1185 passed / 6 skipped / 291 subtests.
+- **Tests** -- 1186 passed / 6 skipped / 291 subtests.
 
 ---
 

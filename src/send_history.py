@@ -72,3 +72,39 @@ def push(hist, text, cap=HIST_CAP):
 def dumps(hist):
     """Serialize FIFO for QSettings."""
     return json.dumps(list(hist or []), ensure_ascii=False)
+
+
+def remove_at(hist, idx):
+    """Delete one FIFO entry by index. Returns (new_hist, changed)."""
+    out = list(hist or [])
+    try:
+        i = int(idx)
+    except (TypeError, ValueError):
+        return out, False
+    if not (0 <= i < len(out)):
+        return out, False
+    del out[i]
+    return out, True
+
+
+def nav_idx_after_remove(nav_idx, removed_idx):
+    """Adjust Up/Down navigation cursor after deleting removed_idx.
+
+    - Invalid / idle nav (-1) stays idle.
+    - Deleting the current entry leaves navigation (caller may clear pending).
+    - Entries after the hole shift down by one.
+    """
+    try:
+        nav = int(nav_idx)
+        rem = int(removed_idx)
+    except (TypeError, ValueError):
+        return -1
+    if nav < 0:
+        return -1
+    if rem < 0:
+        return nav
+    if nav == rem:
+        return -1
+    if nav > rem:
+        return nav - 1
+    return nav

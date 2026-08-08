@@ -96,6 +96,8 @@ from send_history import (
     push as _hist_push,
     load_list as _hist_load_list,
     dumps as _hist_dumps,
+    remove_at as _hist_remove_at,
+    nav_idx_after_remove as _hist_nav_after_remove,
 )
 from multi_send import (
     load_groups as _ms_load_groups,
@@ -6974,6 +6976,21 @@ class CommTool(QMainWindow):
             self.settings.setValue("send_history", _hist_dumps(self._send_hist))
         except Exception:
             _log.debug("persist send_history failed", exc_info=True)
+
+    def _delete_send_hist(self, idx):
+        """Remove one send-history entry and persist; adjust Up/Down cursor."""
+        new_hist, changed = _hist_remove_at(self._send_hist, idx)
+        if not changed:
+            return False
+        self._send_hist_idx = _hist_nav_after_remove(self._send_hist_idx, idx)
+        if self._send_hist_idx < 0:
+            self._send_hist_pending = ""
+        self._send_hist = new_hist
+        try:
+            self.settings.setValue("send_history", _hist_dumps(self._send_hist))
+        except Exception:
+            _log.debug("persist send_history failed", exc_info=True)
+        return True
 
     def _load_send_hist(self):
         raw = self.settings.value("send_history", "")

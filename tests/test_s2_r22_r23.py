@@ -65,3 +65,14 @@ def test_send_history_fifo():
     big = list(range(hist.HIST_CAP + 5))
     assert len(hist.sanitize_list(big)) == hist.HIST_CAP
     assert hist.dumps(["a"]) == '["a"]'
+
+
+def test_send_history_remove_at_and_nav():
+    h, ok = hist.remove_at(["a", "b", "c"], 1)
+    assert ok and h == ["a", "c"]
+    assert hist.remove_at(["a"], 9)[1] is False
+    assert hist.remove_at(["a"], "x")[1] is False
+    assert hist.nav_idx_after_remove(-1, 0) == -1
+    assert hist.nav_idx_after_remove(2, 0) == 1
+    assert hist.nav_idx_after_remove(0, 0) == -1
+    assert hist.nav_idx_after_remove(1, 2) == 1

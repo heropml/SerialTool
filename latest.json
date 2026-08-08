@@ -5,5 +5,5 @@
     "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.4.2/CommTool_v1.4.2.dmg",
     "https://github.com/heropml/SerialTool/releases/download/comm-v1.4.2/CommTool_v1.4.2.dmg"
   ],
-  "notes": "v1.4.2 正式版：S-2 R43–R55 运行时/显示抽离收尾 + S-3 断线与真机 soak；v1.4 主线功能冻结"
+  "notes": "v1.4.2 正式版：S-2 R43–R55 收尾 + S-3 soak；发送历史可删除；历史/文件传输按钮样式对齐；v1.4 主线功能冻结"
 }

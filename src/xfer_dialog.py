@@ -127,7 +127,7 @@ class XferDialog(QDialog):
         top.addWidget(self.lbl_hint, 1)
         self.btn_help = QPushButton("?")
         self.btn_help.setObjectName("ArHelpBtn")
-        self.btn_help.setFixedSize(24, 24)
+        self.btn_help.setFixedSize(26, 26)
         self.btn_help.setCursor(Qt.PointingHandCursor)
         self.btn_help.clicked.connect(lambda *_: self._show_help_dlg())
         top.addWidget(self.btn_help, 0, Qt.AlignTop)
@@ -190,7 +190,8 @@ class XferDialog(QDialog):
         self.ed_path = QLineEdit()
         self.ed_path.setReadOnly(True)
         self.btn_browse = QPushButton()
-        self.btn_browse.setObjectName("PlotGhostBtn")
+        self.btn_browse.setObjectName("MsGhostBtn")
+        self.btn_browse.setMinimumHeight(30)
         self.btn_browse.clicked.connect(self._browse)
         r_file.addWidget(self.lbl_file)
         r_file.addSpacing(8)
@@ -214,11 +215,12 @@ class XferDialog(QDialog):
         r_btn = QHBoxLayout()
         r_btn.addStretch(1)
         self.btn_start = QPushButton()
-        self.btn_start.setObjectName("PrimaryBtn")
+        self.btn_start.setObjectName("MsPrimaryBtn")
         self.btn_start.setMinimumHeight(32)
         self.btn_start.clicked.connect(self._start)
         self.btn_cancel = QPushButton()
-        self.btn_cancel.setObjectName("PlotGhostBtn")
+        self.btn_cancel.setObjectName("MsGhostBtn")
+        self.btn_cancel.setMinimumHeight(30)
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_cancel.setEnabled(False)
         r_btn.addWidget(self.btn_start)
@@ -397,7 +399,8 @@ class XferDialog(QDialog):
         scroll.setFrameShape(QScrollArea.NoFrame)
         v.addWidget(scroll, 1)
         btn = QPushButton(self.app._t("dlg_close"))
-        btn.setObjectName("PlotGhostBtn")
+        btn.setObjectName("MsGhostBtn")
+        btn.setMinimumHeight(30)
         btn.clicked.connect(dlg.accept)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -409,9 +412,9 @@ class XferDialog(QDialog):
             "QLabel {{ color: {txt}; background: transparent; font-family: 'Segoe UI'; font-size: 12px; }}"
             "QScrollArea {{ background: transparent; border: 1px solid {sep}; border-radius: 6px; }}"
             "QScrollArea > QWidget > QWidget {{ background: transparent; }}"
-            "QPushButton#PlotGhostBtn {{ background-color: {gb}; color: {txt}; border: 0px;"
-            " border-radius: 8px; font-size: 12px; padding: 6px 16px; }}"
-            "QPushButton#PlotGhostBtn:hover {{ background-color: {gh}; }}".format(
+            "QPushButton#MsGhostBtn {{ background-color: {gb}; color: {txt}; border: 0px;"
+            " border-radius: 8px; font-family: 'Segoe UI'; font-size: 12px; padding: 5px 10px; }}"
+            "QPushButton#MsGhostBtn:hover {{ background-color: {gh}; }}".format(
                 bg=c["window_bg"], txt=c["text"], sep=c["separator"], gb=c["ghost_bg"], gh=c["ghost_hover"])))
         _set_win_titlebar_dark(dlg, c)
         dlg.exec_()
@@ -449,11 +452,20 @@ class XferDialog(QDialog):
             QProgressBar {{ border: 1px solid {sep}; border-radius: 6px; background-color: {panel};
                 height: 16px; text-align: center; color: {txt}; }}
             QProgressBar::chunk {{ background-color: {acc}; border-radius: 5px; }}
+            QPushButton#MsPrimaryBtn {{
+                background-color: {acc}; color: white; border: 0px;
+                border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px; font-weight: 600;
+                padding: 6px 14px; }}
+            QPushButton#MsPrimaryBtn:hover {{ background-color: {acc_h}; }}
+            QPushButton#MsPrimaryBtn:pressed {{ background-color: {acc_p}; }}
+            QPushButton#MsPrimaryBtn:disabled {{ background-color: {sep}; color: {sub}; }}
+            QPushButton#MsGhostBtn:disabled {{ color: {sub}; }}
             QPushButton#ArHelpBtn {{ background-color: {gb}; color: {sub}; border: 0px;
-                border-radius: 12px; font-family: 'Segoe UI'; font-size: 14px; font-weight: 600; }}
+                border-radius: 13px; font-family: 'Segoe UI'; font-size: 14px; font-weight: 600; }}
             QPushButton#ArHelpBtn:hover {{ background-color: {gh}; color: {txt}; }}
         """.format(sub=c["text_sec"], panel=c["card_bg"], txt=c["text"], sep=c["separator"],
-                   acc=c["accent"], gb=c["ghost_bg"], gh=c["ghost_hover"])))
+                   acc=c["accent"], acc_h=c["accent_hover"], acc_p=c["accent_pressed"],
+                   gb=c["ghost_bg"], gh=c["ghost_hover"])))
         for cb in self.findChildren(QComboBox):
             if cb.view() and cb.view().window():
                 cb.view().window().setStyleSheet("background-color: %s;" % c["combo_dropdown_bg"])
