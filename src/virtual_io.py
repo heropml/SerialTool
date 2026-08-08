@@ -50,6 +50,19 @@ class VirtualConn(QObject):
         self._open = False
         self.state_changed.emit(False)
 
+    def simulate_link_drop(self, reason="device disconnected"):
+        """Inject a mid-session link drop for soak / offline demos.
+
+        Emits error_occurred then closes (state_changed False), matching how
+        serial/network backends report sudden disconnects.
+        """
+        if not self._open:
+            return False
+        msg = str(reason or "device disconnected")
+        self.error_occurred.emit(msg)
+        self.close()
+        return True
+
     def send(self, data, target=None):
         """「发出」数据：无硬件，直接算全部写成功。开了回环则异步回灌成 RX。"""
         if not self._open:

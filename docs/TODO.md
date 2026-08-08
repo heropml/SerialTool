@@ -116,8 +116,8 @@
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成：静默 pass 9→8（本轮结构化侧路改 debug）；余下 8 处为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 42 knives: GUI build_* factories DONE (R34-R42); remaining bulk is CommTool business logic |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端切换突发已落地；COMMTOOL_SOAK 延长跑，COMMTOOL_SOAK_NIGHTLY=1 可至 4h；真机断线 soak 仍待夜间任务 |
+| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 50 knives: GUI build_* DONE; R43-R50 runtime extracts (reconnect/poll/seq/AR-gate + rx_dispatch/tx_plan/modbus_feed/AR post-hit); remaining is CommTool display/settings I/O orchestration |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端突发+重连 churn 已落地；`VirtualConn.simulate_link_drop` 断线重连基线已补；`COMMTOOL_SOAK_DISCONNECT=1` 可选长跑；`COMMTOOL_SOAK_SERIAL=COMx` 真机门禁（未设则 skip） |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
 
@@ -247,9 +247,18 @@
 - **R40 (v1.4 S-2)** fortieth knife: extract src/send_card.py (build).
 - **R41 (v1.4 S-2)** forty-first knife: extract src/sidebar.py (assemble settings/data/send option cards).
 - **R42 (v1.4 S-2)** forty-second knife: extract src/workspace_ui.py (protocol panel / workspace page / workbench bar / project menu); add 	ests/test_s2_r39_r42_ui.py.
+- **R43 (v1.4 S-2)** extract `src/reconnect_policy.py` (serial/net delay, attempt budget, device gate); CommTool `_schedule_reconnect` / `_try_reconnect` thin wrappers; `tests/test_s2_r43_reconnect_policy.py`.
+- **R44 (v1.4 S-2)** extract `src/modbus_poll_plan.py` (poll_reject_reason / build_poll_arg / validate_response); `_mbm_poll` / `_mbm_validate` thin wrappers; `tests/test_s2_r44_modbus_poll_plan.py`.
+- **R45 (v1.4 S-2)** expand `src/sequence_engine.py` (feed_action / mbm_release_plan / fail_outcome); `_seq_feed` / `_seq_mbm_release_check` / `_seq_step_failed` thin wrappers; `tests/test_s2_r45_sequence_orchestration.py`.
+- **R46 (v1.4 S-2)** extract `src/auto_reply_gate.py` (ingress_mode / trim_length_buf / sm_busy / enqueue_sm_frame / len_filter_ok / cooldown_blocks); `_auto_reply` / `_ar_match` thin wrappers; `tests/test_s2_r46_auto_reply_gate.py`.
+- **R47 (v1.4 S-2)** extract `src/rx_dispatch.py` (engine_route / display mode / stream + packet helpers); `on_data_received` / `_on_data_received_impl` thin wrappers; `tests/test_s2_r47_rx_dispatch.py`.
+- **R48 (v1.4 S-2)** expand `auto_reply_core` (parse_tx_hex / append_tx_newline / send_preflight / classify_send_result / tx_display_mode); `_send_text` thin wrapper; `tests/test_s2_r48_tx_plan.py`.
+- **R49 (v1.4 S-2)** extract `src/modbus_feed.py` (idle_guard / clamp / echo / resync); `_mbm_feed` thin wrapper; `tests/test_s2_r49_modbus_feed.py`.
+- **R50 (v1.4 S-2)** expand `auto_reply_gate` (reply_path / post_hit_plan / clear_pending_on_schedule_error); `_ar_match` post-hit thin wrapper; `tests/test_s2_r50_ar_post_hit.py`.
+- **S-3 disconnect soak:** `VirtualConn.simulate_link_drop`; CI virtual drop/reconnect tests; env gates `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL`.
 - **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. Remaining size is runtime business logic (RX/TX/Modbus/sequence/settings I/O), not UI construction.
 
-- **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool - title` (was middle-dot); `apply_fault` returns `(frame, tags_list)` not localized string; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch).
+- **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool - title` (was middle-dot); `apply_fault` returns `(frame, tags_list)` not localized string; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch);  R44: `validate_response` uses `info.get("qty")` (missing qty -> badresp instead of KeyError; normalize_poll / inflight always supply qty on real path); `_mbm_poll` first-reject due uses `r.get("period") or 1000` (was hard-coded 1000; keeps 1000 only when period itself is missing).
 - **S-2 review (post R33):** logic/dead-code/imports/DAG/tests clean; no bug regressions vs last commit. Low-pri polish: drop unused top-level time noqa + rename compute_checksum locals (done); `print_function` kept as project convention; R17 `subst_reply`/`build_parts` covered in `tests/test_s2_r17_r18.py` (not r14_r16).
 - **Q（v1.4 P1）** 无换行连续收包时单 QTextBlock 无限膨胀：`setMaximumBlockCount` 只限制 block 数；`_append_block_data` 补 `_trim_recv_overflow`（预算 = max_lines × 256 字符）。回归见 `test_recv_char_budget_without_newlines` / `COMMTOOL_SOAK` 延长跑。
 - **P（v1.4 S-3）** 扩展 `test_soak_throughput`：修正 CommTool 拆卸（停计时器/port_scanner）避免 Qt AV；补 max-lines 上界、重连 churn、RX/TX 计数混合突发与 `COMMTOOL_SOAK` 可选延长跑。

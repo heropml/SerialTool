@@ -367,23 +367,92 @@ import re as _re
 import random as _random
 
 
-def reply_hex_bytes(text):
-    """Parse hex-mode reply text -> bytes; bad hex -> None.
+def parse_tx_hex(raw):
+    """Parse manual-send / AR hex text into a typed result.
 
-    Strips /* */ // # comments, 0x prefixes, and common separators.
+    Returns dict:
+      ok: bool
+      data: bytes
+      error: None | "empty" | "bad_chars" | "odd_length" | "value_error"
+      bad_chars: sorted unique invalid characters (for i18n)
     """
-    s = _re.sub(r"/\*.*?\*/", "", text or "", flags=_re.DOTALL)
+    s = _re.sub(r"/\*.*?\*/", "", raw or "", flags=_re.DOTALL)
     s = _re.sub(r"//[^\n]*", "", s)
     s = _re.sub(r"#[^\n]*", "", s)
     s = s.replace("0x", "").replace("0X", "")
     s = "".join(c for c in s if c not in " \t\r\n-:,;")
-    if not s or len(s) % 2:
-        return None
+    if not s:
+        return {"ok": False, "data": b"", "error": "empty", "bad_chars": ()}
+    bad = tuple(sorted(set(c for c in s if c not in "0123456789abcdefABCDEF")))
+    if bad:
+        return {"ok": False, "data": b"", "error": "bad_chars", "bad_chars": bad}
+    if len(s) % 2 != 0:
+        return {"ok": False, "data": b"", "error": "odd_length", "bad_chars": ()}
     try:
-        return bytes.fromhex(s)
+        return {"ok": True, "data": bytes.fromhex(s), "error": None, "bad_chars": ()}
     except ValueError:
-        return None
+        return {"ok": False, "data": b"", "error": "value_error", "bad_chars": ()}
 
+
+def reply_hex_bytes(text):
+    """Parse hex-mode reply text -> bytes; bad hex -> None.
+
+    Thin adapter over parse_tx_hex (AR path stays silent on errors).
+    """
+    r = parse_tx_hex(text)
+    return r["data"] if r.get("ok") else None
+
+
+NL_GLOBAL = {0: b"\r\n", 1: b"\n", 2: b"\r"}
+NL_OVERRIDE = {1: b"\r\n", 2: b"\n", 3: b"\r"}
+
+
+def append_tx_newline(data, *, newline=None, global_on=False, global_idx=0):
+    """Append CRLF/LF/CR per global switch or explicit override index."""
+    raw = bytes(data or b"")
+    if newline is None:
+        if global_on:
+            return raw + NL_GLOBAL.get(int(global_idx), b"\r\n")
+        return raw
+    return raw + NL_OVERRIDE.get(int(newline), b"")
+
+
+def send_preflight(*, exclusive_blocked, is_open, raw_empty):
+    """None if send may proceed; else 'exclusive' | 'not_open' | 'empty'."""
+    if exclusive_blocked:
+        return "exclusive"
+    if not is_open:
+        return "not_open"
+    if raw_empty:
+        return "empty"
+    return None
+
+
+def classify_send_result(*, sent, payload_len, no_target_sentinel, strict_full_write):
+    """Classify conn.send outcome.
+
+    Returns: "ok" | "no_target" | "fail_empty" | "fail_partial" | "fail_mismatch"
+    """
+    sent = int(sent)
+    n = int(payload_len)
+    if sent == int(no_target_sentinel):
+        return "no_target"
+    if sent <= 0:
+        return "fail_empty"
+    if strict_full_write and sent != n:
+        return "fail_partial" if 0 < sent < n else "fail_mismatch"
+    return "ok"
+
+
+def tx_display_mode(*, hexdump_on, numview_on, rx_hex):
+    """Post-send display mode (follows RX view switches)."""
+    if hexdump_on:
+        return "hexdump"
+    if numview_on:
+        return "numview"
+    if rx_hex:
+        return "hex"
+    return "text"
 
 def reply_bytes(text, hexmode, encode_fn):
     """Reply text -> bytes; hexmode uses reply_hex_bytes, else encode_fn(text)."""

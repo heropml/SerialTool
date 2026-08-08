@@ -165,7 +165,11 @@ from sequence_engine import (
     clip_rx_hex as _seq_engine_clip_rx_hex,
     detail_from_extracted as _seq_engine_detail_extracted,
     initial_results as _seq_engine_initial_results,
+    feed_action as _seq_engine_feed_action,
+    mbm_release_plan as _seq_engine_mbm_release_plan,
+    fail_outcome as _seq_engine_fail_outcome,
 )
+
 
 from modbus_timing import (
     serial_char_bits as _mbm_timing_char_bits,
@@ -176,6 +180,15 @@ from modbus_timing import (
     span_bad as _mbm_timing_span_bad,
 )
 
+import reconnect_policy as _reconnect_policy
+import auto_reply_gate as _ar_gate
+import rx_dispatch as _rx_dispatch
+import modbus_feed as _mbm_feed_plan
+from modbus_poll_plan import (
+    poll_reject_reason as _mbm_poll_reject_reason,
+    build_poll_arg as _mbm_build_poll_arg,
+    validate_response as _mbm_validate_response,
+)
 from modbus_scheduler import (
     pick_next_due as _mbm_sched_pick_next,
     schedule_delay_ms as _mbm_sched_delay_ms,
@@ -263,6 +276,11 @@ from auto_reply_core import (
     build_parts as _ar_core_build_parts,
     state_ok as _ar_core_state_ok,
     next_state as _ar_core_next_state,
+    parse_tx_hex as _ar_core_parse_tx_hex,
+    append_tx_newline as _ar_core_append_tx_newline,
+    send_preflight as _ar_core_send_preflight,
+    classify_send_result as _ar_core_classify_send,
+    tx_display_mode as _ar_core_tx_display_mode,
 )
 
 
@@ -795,7 +813,7 @@ class CommTool(QMainWindow):
         self._serial_missing_limit = 3
         self._available_serial_devices = set()  # 最近一次后台扫描枚举到的真实设备名
         self._serial_reconnect_cfg = None        # 掉线前的串口签名；重连只允许回到这个设备/参数
-        self._serial_reconnect_limit = 10        # 串口退避 0.5s 递增到 5s，第 10 次后停止
+        self._serial_reconnect_limit = _reconnect_policy.SERIAL_RECONNECT_LIMIT        # 串口退避 0.5s 递增到 5s，第 10 次后停止
         # 自动重连：串口 0.5s 线性递增到 5s；网络指数退避（上限 30s）。主动关闭/退出时跳过。
         self._user_closing = False
         self._reconnect_attempts = 0
@@ -3024,27 +3042,27 @@ class CommTool(QMainWindow):
             self._schedule_reconnect()
 
     def _schedule_reconnect(self):
-        """非主动断开后排队重连；串口 0.5s 线性退避，网络指数退避。主动断开/退出时跳过。"""
-        if self._user_closing:
+        """Non-user disconnect -> queue reconnect; policy in reconnect_policy."""
+        plan = _reconnect_policy.plan_schedule(
+            user_closing=self._user_closing,
+            auto_reconnect=self.settings.value("auto_reconnect", True, type=bool),
+            timer_active=self._reconnect_timer.isActive(),
+            serial_retry=self._serial_reconnect_cfg is not None,
+            attempts=self._reconnect_attempts,
+            serial_limit=self._serial_reconnect_limit,
+        )
+        action = plan.get("action")
+        if action == "skip":
             return
-        if not self.settings.value("auto_reconnect", True, type=bool):
+        if action == "exhausted":
+            if plan.get("clear_serial_target"):
+                self._serial_reconnect_cfg = None
+            if plan.get("reset_attempts"):
+                self._reconnect_attempts = 0
             return
-        if self._reconnect_timer.isActive():
-            return     # 已排队 → 同事件被 state_changed 和 error_occurred 同时触发也只算一次，
-                       # 否则会跳过本级退避（attempts 多加 1、delay 直接翻倍）
-        serial_retry = self._serial_reconnect_cfg is not None
-        if serial_retry and self._reconnect_attempts >= self._serial_reconnect_limit:
-            self._serial_reconnect_cfg = None
-            self._reconnect_attempts = 0
-            return     # 第十次仍未恢复：静默放弃，界面已经是断开状态
-        n = self._reconnect_attempts
-        if serial_retry:
-            delay = min(5000, 500 * (n + 1))   # 0.5s→1.0s→...→5.0s，共 10 次
-        else:
-            delay = min(30000, 1000 * (2 ** n))  # 网络：1s→2s→4s→...→cap 30s
-        if not serial_retry:
-            self._reconnect_attempts = n + 1
-        if not serial_retry:
+        delay = int(plan.get("delay_ms") or 0)
+        if plan.get("bump_attempts"):
+            self._reconnect_attempts = int(self._reconnect_attempts or 0) + 1
             self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
         self._reconnect_timer.start(delay)
 
@@ -3053,28 +3071,30 @@ class CommTool(QMainWindow):
             self._reconnect_timer.stop()
 
     def _try_reconnect(self):
-        if self.conn is not None or self._user_closing:
-            return     # 期间已连上 / 用户主动关，撤销
-        if not self.settings.value("auto_reconnect", True, type=bool):
-            return
         reconnect_cfg = self._serial_reconnect_cfg
-        if reconnect_cfg:
-            # 每次定时器触发只消耗一个全局重连时隙；端口缺失和真实打开失败共用 10 次上限，
-            # 避免两套计数叠加后超过 0.5+1+...+5 = 27.5 秒的承诺窗口。
+        plan = _reconnect_policy.plan_try(
+            conn_open=self.conn is not None,
+            user_closing=self._user_closing,
+            auto_reconnect=self.settings.value("auto_reconnect", True, type=bool),
+            serial_cfg=reconnect_cfg,
+            device_available=self._available_serial_devices,
+        )
+        action = plan.get("action")
+        if action == "noop":
+            return
+        if plan.get("bump_attempts"):
+            # One global budget tick per timer fire (missing port + failed open).
             self._reconnect_attempts += 1
-            device = reconnect_cfg[1]
-            if device not in self._available_serial_devices:
-                self._schedule_reconnect()  # 原端口还没重新枚举，继续退避等待，绝不尝试其他口
-                return
-        if not reconnect_cfg:
+        if action == "wait_device":
+            self._schedule_reconnect()
+            return
+        if plan.get("toast_try"):
             self.toast(self._t("auto_reconnect_try", n=self._reconnect_attempts))
         self.open_conn(reconnect_cfg=reconnect_cfg)
-        # open_conn 同步失败(端口不存在/baud非法/绑定失败)：conn 仍为 None 且无 state_changed
-        # 触发，需手动再排队；若是异步失败(如 TcpClient 连不上)会另走 _on_conn_state_changed 路径
         if self.conn is None and not self._user_closing:
-            # 串口第 10 次失败会在 _on_conn_error → _schedule_reconnect 中清掉目标；这里不能
-            # 再把 target=None 当成网络重连排队，否则会读取 UI 端口并突破次数上限。
-            if reconnect_cfg is None or self._serial_reconnect_cfg is not None:
+            if _reconnect_policy.should_reschedule_after_open_fail(
+                    serial_cfg=reconnect_cfg,
+                    serial_target_still_set=self._serial_reconnect_cfg is not None):
                 self._schedule_reconnect()
 
     def _on_conn_state_changed(self, up):
@@ -3651,7 +3671,8 @@ class CommTool(QMainWindow):
         # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
         # 协议传输(XMODEM/YMODEM)喂给引擎当 getc 源；原始字节流(raw)只发不收，收流直接丢弃。
         w = self._xfer_worker
-        if w is not None and w.isRunning():
+        if _rx_dispatch.xfer_owns(
+                xfer_running=(w is not None and w.isRunning())):
             if getattr(w, "takes_input", True):
                 self._rx_side("xfer.feed", lambda: w.feed(data))
             return
@@ -3678,7 +3699,8 @@ class CommTool(QMainWindow):
             self._rx_side("recorder.on_rx", lambda: self._recorder.on_rx(data))
         # 结构化记录：复用 frame_rules 抽取普通协议字段；Modbus 标签在响应解析成功后单独写入。
         def _structured_feed():
-            if self._mbm_inflight is None:
+            if _rx_dispatch.structured_feed_ok(
+                    mbm_inflight=self._mbm_inflight is not None):
                 self._structured_feed_protocol(data)
         self._rx_side("structured.feed", _structured_feed)
         # 触发告警：命中就响铃 / 托盘通知 / 数据区打标（自带兜底，不影响收包主流程）
@@ -3695,28 +3717,31 @@ class CommTool(QMainWindow):
         # 序列是主动驱动方；序列结束后自动恢复，不改它们的开关）。
         # 脚本控制台运行中：脚本是主动驱动方，独占收流（expect 从这里拿数据），
         # 同样临时抑制自动应答 / Modbus 主机，结束后由 _script_end 恢复。
-        if self._script_running():
-            # 脚本接管前若 Modbus 主机已有请求在途，完整超时窗内的字节可能是旧响应；
-            # 直接丢弃，避免它被脚本第一个 expect 误认。脚本首个 send 同样会等隔离窗结束。
-            if time.monotonic() >= getattr(self, "_script_quiet_until", 0.0):
+        route = _rx_dispatch.engine_route(
+            script_running=self._script_running(),
+            script_quiet_until=getattr(self, "_script_quiet_until", 0.0),
+            now=time.monotonic(),
+            seq_running=self._seq_running(),
+            seq_waiting_mbm=bool(getattr(self, "_seq_waiting_mbm", False)),
+        )
+        if route == "script":
+            if _rx_dispatch.should_feed_script(
+                    route=route, now=time.monotonic(),
+                    quiet_until=getattr(self, "_script_quiet_until", 0.0)):
                 self._rx_side("script.feed",
                               lambda: self._script_worker.feed(data))
-        elif self._seq_running():
-            def _seq_or_mbm():
-                # 序列刚启动而 Modbus 尚有在途请求时，先让原请求完整收尾；超时后的迟到响应
-                # 隔离期也继续喂 _mbm_feed（RTU 会按最后一个迟到字节重新满足 t3.5）。
-                if getattr(self, "_seq_waiting_mbm", False):
-                    self._mbm_feed(data)
-                else:
-                    self._seq_feed(data)
-            self._rx_side("seq.feed", _seq_or_mbm)
+        elif route == "seq_mbm":
+            self._rx_side("seq.feed", lambda: self._mbm_feed(data))
+        elif route == "seq":
+            self._rx_side("seq.feed", lambda: self._seq_feed(data))
         else:
-            if not self._mbm_active():
+            if _rx_dispatch.should_feed_auto_reply(
+                    route=route, mbm_active=self._mbm_active()):
                 self._rx_side(
                     "auto_reply",
                     lambda: self._auto_reply(data, reply_target=reply_target))
-            # Modbus 主机轮询：若有在途请求，把响应喂给轮询引擎切帧/解析（兜底不影响主流程）
-            self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
+            if _rx_dispatch.should_feed_mbm(route=route):
+                self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
 
     def _on_data_received_impl(self, data: bytes, source=None):
         self._stat_note_rx(len(data))
@@ -3724,13 +3749,16 @@ class CommTool(QMainWindow):
         # 不每包重建文案 + setText（会触发状态栏重排），高吞吐下避免无谓的 GUI 线程开销。
 
         # 终端模式：纯字节流直接追加显示，绕过 HEX / 时间戳 / 方向 / 分行 / 分包 等所有装饰。
-        if self._terminal_on:
+        mode = _rx_dispatch.rx_display_mode(
+            terminal_on=self._terminal_on,
+            hexdump_on=self._hexdump_on,
+            numview_on=self._numview_on,
+        )
+        if mode == "terminal":
             self._terminal_append(self._decode_rx(data, source=source), source=source)
             return
 
-        # HEX dump 视图：每个收包整段转储为「偏移 + HEX + ASCII」多行块（各块 force_new：独立起行、
-        # 可选时间戳/箭头头，偏移按块从 0 起），优先于 HEX/文本/分行/分包 的文本渲染。
-        if self._hexdump_on:
+        if mode == "hexdump":
             self._append_block_data(self._hexdump_block(data), direction="rx",
                                     force_new_block=True)
             self._last_direction = "rx"
@@ -3738,13 +3766,8 @@ class CommTool(QMainWindow):
             self._pending_line_break = False
             return
 
-        # 数值视图：整段按选定类型/字节序解读成数值序列（同 hexdump 各块 force_new 独立起行）。
-        # 尾部凑不满一个数的字节由 _numview_block 留作余数带到下一包，此时本包可能一个数都凑不出
-        # → 文本为空，跳过追加（否则平白多出一个空块 / 一行时间戳）。
-        if self._numview_on:
-            # 串口/TCP/虚拟连接是连续流，允许跨底层 chunk 补齐一个数；UDP 回调是完整数据报，
-            # 报文边界不可跨越，尾字节由 _numview_block 直接以 HEX 标出。
-            carry = self._conn_proto not in (PROTO_UDP, PROTO_UDP_MULTICAST)
+        if mode == "numview":
+            carry = _rx_dispatch.numview_carry(conn_proto=self._conn_proto)
             block = self._numview_block(data, carry=carry, source=source)
             if block:
                 self._append_block_data(block, direction="rx", force_new_block=True)
@@ -3753,8 +3776,9 @@ class CommTool(QMainWindow):
             self._pending_line_break = False
             return
 
-        use_hex = self.sw_rx_hex.isChecked()
-        use_line_split = self.sw_line_split.isChecked() and not use_hex
+        use_hex, use_line_split = _rx_dispatch.stream_flags(
+            rx_hex=self.sw_rx_hex.isChecked(),
+            line_split=self.sw_line_split.isChecked())
         now = time.monotonic()
 
         ansi_spans = None      # ANSI 着色：[(起, 止, 样式)]，下标相对下面这个 text
@@ -3774,7 +3798,9 @@ class CommTool(QMainWindow):
                 # 快速通道：没有转义符、没有残片、上一包也没留下颜色时，逐字符解析纯属
                 # 白跑（每包热路径）。三个条件缺一不可——有残片要拼收尾；上一包颜色
                 # 未复位时，本包纯文本也要继续着那个色，跳过解析会掉色。
-                if pd0 or "\x1b" in text or (st0 is not None and not st0.is_default()):
+                if _rx_dispatch.ansi_needs_parse(
+                        pending=pd0, text=text,
+                        state_is_default=(st0 is None or st0.is_default())):
                     runs, state, pending = ansi.parse(text, st0, pd0)
                     if stream_source is None:
                         self._ansi_state, self._ansi_pending = state, pending
@@ -3835,23 +3861,23 @@ class CommTool(QMainWindow):
             is_last = (i == len(segments) - 1)
 
             if is_first:
-                force_new_block = (
-                    (self._last_direction != "rx")
-                    or self._pending_line_break
-                    or cross_chunk_crlf  # 跨包 CRLF 也算上一次换行
-                )
-                if not force_new_block and self.sw_packet_split.isChecked():
-                    try:
-                        timeout_ms = max(1, int(self.ed_packet_timeout.text()))
-                    except ValueError:
-                        timeout_ms = 20
-                    gap_ms = (now - self._last_recv_time) * 1000.0
-                    if gap_ms > timeout_ms:
-                        force_new_block = True
+                packet_split = self.sw_packet_split.isChecked()
+                timeout_ms = (
+                    _rx_dispatch.packet_timeout_ms(self.ed_packet_timeout.text())
+                    if packet_split else 0)
+                force_new_block = _rx_dispatch.force_new_block_first(
+                    last_direction=self._last_direction,
+                    pending_line_break=self._pending_line_break,
+                    cross_chunk_crlf=cross_chunk_crlf,
+                    packet_split=packet_split,
+                    gap_ms=(now - self._last_recv_time) * 1000.0,
+                    timeout_ms=timeout_ms)
             else:
                 force_new_block = True
 
-            if is_last and seg == "" and use_line_split and len(segments) > 1:
+            if _rx_dispatch.skip_empty_trailing_seg(
+                    is_last=is_last, seg=seg, use_line_split=use_line_split,
+                    n_segments=len(segments)):
                 continue
 
             # ANSI 着色：把整段的颜色区间切出属于本行的部分（分行后下标要换算成行内偏移）
@@ -3864,10 +3890,8 @@ class CommTool(QMainWindow):
             if use_hex and self._proto_hl_on and body_pos is not None:
                 self._add_proto_fields(data, body_pos)
 
-        if use_line_split:
-            self._pending_line_break = (segments[-1] == "" and len(segments) > 1)
-        else:
-            self._pending_line_break = False
+        self._pending_line_break = _rx_dispatch.next_pending_line_break(
+            use_line_split=use_line_split, segments=segments)
         self._last_recv_time = now
 
     @staticmethod
@@ -5298,23 +5322,29 @@ class CommTool(QMainWindow):
         """在途 Modbus 已结束后，等迟到响应隔离期彻底结束，再启动序列第 0 步。"""
         if gen is None:
             gen = self._seq_gen
-        if (not self._seq_on or gen != self._seq_gen
-                or not getattr(self, "_seq_waiting_mbm", False)):
-            return
-        if self._mbm_inflight is not None:       # 仍在正常等响应/超时，由 Modbus 回调再次触发本检查
-            return
         deadline = self._seq_wait_mbm_until
         if self._seq_wait_mbm_variant in ("rtu", "ascii"):
             deadline = max(deadline, self._mbm_guard_until)
-        remain = deadline - time.monotonic()
-        if remain > 0:
-            delay = min(self._MBM_QTIMER_MAX_MS, max(1, int(remain * 1000) + 1))
-            QTimer.singleShot(delay, lambda: self._seq_mbm_release_check(gen))
+        plan = _seq_engine_mbm_release_plan(
+            seq_on=self._seq_on,
+            gen_ok=(gen == self._seq_gen),
+            waiting_mbm=bool(getattr(self, "_seq_waiting_mbm", False)),
+            inflight=self._mbm_inflight,
+            deadline=deadline,
+            qtimer_max_ms=self._MBM_QTIMER_MAX_MS,
+        )
+        action = plan.get("action")
+        if action in ("noop", "still_inflight"):
+            return
+        if action == "wait":
+            QTimer.singleShot(
+                int(plan["delay_ms"]),
+                lambda: self._seq_mbm_release_check(gen))
             return
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
         self._seq_wait_mbm_until = 0.0
-        self._seq_round_t0 = time.monotonic()   # Modbus 隔离结束、真正开跑：本轮计时从此刻起（不含隔离等待）
+        self._seq_round_t0 = time.monotonic()
         self._seq_run_from(0)
 
     def _seq_resume_peer_engines(self):
@@ -5557,11 +5587,12 @@ class CommTool(QMainWindow):
         if not (0 <= i < len(self._seq_results)):
             return
         status = self._seq_results[i].get("status")
-        if status == "retry":
-            # 上次尝试的迟到响应不参与新尝试匹配；每个迟到数据块都重置安静窗。
-            self._seq_retry_quiet_until = time.monotonic() + _SEQ_RETRY_GUARD_MS / 1000.0
+        action = _seq_engine_feed_action(status)
+        if action == "extend_quiet":
+            self._seq_retry_quiet_until = (
+                time.monotonic() + _SEQ_RETRY_GUARD_MS / 1000.0)
             return
-        if status != "waiting":
+        if action != "accumulate":
             return
         self._seq_buf += bytes(data)
         match_step = getattr(self, "_seq_runtime_step", None) or self._seq_steps[i]
@@ -5571,7 +5602,8 @@ class CommTool(QMainWindow):
             extracted = self._seq_capture_vars(self._seq_steps[i], self._seq_buf)
             detail = _seq_engine_detail_extracted(extracted)
             rx_hex = _seq_engine_clip_rx_hex(self._seq_buf)
-            self._seq_set_result(i, "pass", ms, detail, "", self._seq_attempt, rx_hex=rx_hex)
+            self._seq_set_result(
+                i, "pass", ms, detail, "", self._seq_attempt, rx_hex=rx_hex)
             if extracted and 0 <= i < len(self._seq_results):
                 self._seq_results[i]["extracted"] = dict(extracted)
             self._seq_schedule_next(self._seq_steps[i])
@@ -5593,7 +5625,9 @@ class CommTool(QMainWindow):
         i = self._seq_idx
         step = self._seq_steps[i]
         ms = int((time.monotonic() - self._seq_step_total_t0) * 1000)
-        if _seq_engine_should_retry(self._seq_attempt, step.get("retry", 0)):
+        if _seq_engine_fail_outcome(
+                attempt=self._seq_attempt,
+                retry_limit=step.get("retry", 0)) == "retry":
             plan = _seq_engine_plan_retry(
                 step, self._seq_attempt,
                 guard_ms=_SEQ_RETRY_GUARD_MS,
@@ -5989,29 +6023,36 @@ class CommTool(QMainWindow):
           3. 每包即时（默认）：上层一个接收块直接当一帧匹配。
         B4：Modbus 从机模式开启时整条引擎让位给 Modbus（按功能码自动应答，规则/状态机不参与；
         此时即使没有任何规则也生效）。"""
-        if not self._ar_on or not self._is_open():
+        mode = _ar_gate.ingress_mode(
+            ar_on=self._ar_on,
+            is_open=self._is_open(),
+            modbus_on=bool(self._ar_modbus.get("on")),
+            has_rules=bool(self._ar_rules),
+            frame_on=bool(self._ar_frame.get("on")),
+            has_header=bool(self._ar_frame.get("_header")),
+            gap_ms=self._ar_gap,
+        )
+        if mode == "noop":
             return
-        if self._ar_modbus.get("on"):          # B4 Modbus 从机：独占处理（长度感知组帧）
+        if mode == "modbus":
             self._modbus_feed(bytes(data), reply_target=reply_target)
             return
-        if not self._ar_rules:
+        if mode == "no_rules":
             return
-        fc = self._ar_frame
-        if fc.get("on") and fc.get("_header"):
+        if mode == "length_frame":
+            fc = self._ar_frame
             self._ar_buf += bytes(data)
             frames, self._ar_buf = binproto.iter_length_frames(
                 self._ar_buf, fc["_header"], fc["len_off"], fc["len_width"],
                 fc["len_extra"], fc["len_be"])
-            # 防御：缓冲异常增长（帧头一直不出现 / 全是坏长度）时截断，避免无界吃内存
-            if len(self._ar_buf) > 8192:
-                self._ar_buf = self._ar_buf[-512:]
+            self._ar_buf, _ = _ar_gate.trim_length_buf(self._ar_buf)
             for f in frames:
                 self._ar_match(f)
-        elif self._ar_gap > 0:
-            self._ar_buf += bytes(data)            # 累积；静默 _ar_gap ms 后视作整帧
+        elif mode == "gap":
+            self._ar_buf += bytes(data)
             self._ar_gap_timer.start(self._ar_gap)
         else:
-            self._ar_match(bytes(data))            # 每包即时匹配
+            self._ar_match(bytes(data))
 
     def _ar_flush(self):
         """整包静默超时：把累积缓冲当一整帧匹配。Modbus 模式下不走规则匹配（防止切到 Modbus 后
@@ -6024,11 +6065,12 @@ class CommTool(QMainWindow):
         # 状态转移的整条多段应答尚未完成时，后续完整帧先入 FIFO。直接继续匹配会让多个随机延迟
         # 任务共享同一旧状态并按定时器先后 goto；直接丢弃又会漏掉同一接收块里的后续合法帧。
         q = self._ar_sm_queue
-        busy = (getattr(self, "_ar_sm_pending", None) is not None
-                or (q and not getattr(self, "_ar_sm_draining", False)))
-        if self._ar_sm.get("on") and busy:
-            if len(q) < 256:       # 有界防御：保留最早到达的 256 帧，过载时丢弃最新帧
-                q.append(bytes(data))
+        if _ar_gate.sm_busy(
+                sm_on=bool(self._ar_sm.get("on")),
+                pending=getattr(self, "_ar_sm_pending", None),
+                queue_len=len(q),
+                draining=bool(getattr(self, "_ar_sm_draining", False))):
+            _ar_gate.enqueue_sm_frame(q, data)
             if self._ar_sm_pending is None:
                 self._ar_drain_sm_queue()
             return
@@ -6047,11 +6089,10 @@ class CommTool(QMainWindow):
             if not self._ar_hit_test(rule, data, text_cache or ""):
                 continue
             # 长度过滤（⑤）：min_len/max_len 任一>0 时启用；剔除毛刺/超长帧。无 UI、手填 ini/json。0=不限
-            min_len = self._ar_to_int(rule.get("min_len", 0))
-            max_len = self._ar_to_int(rule.get("max_len", 0))
-            if min_len > 0 and len(data) < min_len:
-                continue
-            if max_len > 0 and len(data) > max_len:
+            if not _ar_gate.len_filter_ok(
+                    len(data),
+                    self._ar_to_int(rule.get("min_len", 0)),
+                    self._ar_to_int(rule.get("max_len", 0))):
                 continue
             if not self._ar_state_ok(rule):
                 continue     # C8 状态机：当前状态不满足该规则「仅状态」→ 跳过、试下一条
@@ -6063,36 +6104,33 @@ class CommTool(QMainWindow):
             rule["_hit_time"] = now
             # 冷却（rate-limit）：同一规则在冷却窗口内不再触发。delay 是 turnaround 输出延时，
             # 跟冷却是两回事——delay=200 表示「200ms 后回」、cooldown=200 表示「200ms 内不再触发」。
-            cooldown = self._ar_to_int(rule.get("cooldown", 0))
-            if cooldown > 0 and (now - rule.get("_last", 0.0)) * 1000 < cooldown:
+            if _ar_gate.cooldown_blocks(
+                    now, rule.get("_last", 0.0),
+                    self._ar_to_int(rule.get("cooldown", 0))):
                 return
             rule["_last"] = now      # 运行态，不持久化
             # B5：有脚本则跑脚本动态生成应答（脚本拥有整帧、不叠校验段/尾校验）；否则走静态模板
             # （④ 多帧 | 分段、占位符替换、校验段）。两路都经故障注入 + 延时发送、共用 goto 回调。
-            script = str(rule.get("script") or "").strip()   # str() 容错：script 非字符串也不崩
-            if script and rule.get("script_on", True):
-                parts, serr = self._ar_script_eval(rule, data)
-                if serr:
-                    self._ar_fault_note(self._t("ar_script_err", e=serr))   # 脚本错误：数据区留痕、不崩
-                if not parts:
-                    return
-                hexmode, cs, cs_segs = True, 0, []
+            path = _ar_gate.reply_path(rule)
+            script_err = None
+            if path == "script":
+                parts, script_err = self._ar_script_eval(rule, data)
             else:
                 parts = self._ar_build_parts(rule, data)
-                if not parts:
-                    return
-                hexmode = bool(rule.get("reply_hex", True))
-                cs = self._ar_to_int(rule.get("cs", 0))
-                cs_segs = rule.get("cs_segs", []) or []    # 内层/额外校验段（在尾部 cs 之前算）
-            delay = self._ar_parse_delay(rule.get("delay", 0))   # C7：(min,max)，每次发随机取
-            # C8：goto 推进绑定到「首段真正发出」回调，而非排程瞬间 —— 延时未到/连接断/故障丢包
-            # 时不推进。带 goto 的规则同时占用 pending 门闩，整条多段应答完成前把后续帧排入 FIFO，
-            # 防止延迟不同的任务乱序 goto，也避免 A1|A2 被下一状态的 B1 插队。
+            plan = _ar_gate.post_hit_plan(
+                rule, sm_on=bool(self._ar_sm.get("on")),
+                parts=parts, from_script=(path == "script"),
+                script_err=script_err)
+            if plan["note_script_err"]:
+                self._ar_fault_note(self._t("ar_script_err", e=script_err))
+            if plan["action"] != "schedule":
+                return
+            hexmode, cs, cs_segs = plan["hexmode"], plan["cs"], plan["cs_segs"]
+            delay = self._ar_parse_delay(rule.get("delay", 0))
             pending = None
             on_sent = None
             on_done = None
-            goto = str(rule.get("goto", "") or "").strip()
-            if self._ar_sm.get("on") and goto:
+            if plan["arm_goto"]:
                 pending = object()
                 self._ar_sm_pending = pending
 
@@ -6108,10 +6146,12 @@ class CommTool(QMainWindow):
                 self._ar_schedule_send(parts, hexmode, cs, cs_segs, delay,
                                        on_sent=on_sent, on_done=on_done)
             except Exception:
-                if pending is not None and self._ar_sm_pending is pending:
+                if _ar_gate.clear_pending_on_schedule_error(
+                        pending=pending, current_pending=self._ar_sm_pending):
                     self._ar_sm_pending = None
                 raise
-            return      # 命中即停：一帧最多回一条（按规则顺序取第一条命中的）
+            return
+
 
     def _ar_drain_sm_queue(self):
         """按收帧顺序消费 pending 期间积压的完整帧；遇到下一条延迟状态转移时自然暂停。"""
@@ -7191,79 +7231,19 @@ class CommTool(QMainWindow):
         """构造并发出第 i 行的请求帧，登记在途请求 + 启动响应超时。"""
         r = modbus_master.normalize_poll(self._mbm_rules[i])
         variant = self._mbm_variant_eff()
-        if (r["unit"] is None or r["addr"] is None or r["period"] is None
-                or (r["func"] in modbus_master.READ_FUNCS + (0x17,) and r["qty"] is None)
-                or (r["func"] == 0x17 and r.get("write_addr") is None)
-                or (variant in ("rtu", "ascii") and r["unit"] > 247)):
-            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), 1000)
-            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
+        reject = _mbm_poll_reject_reason(r, variant)
+        if reject:
+            self._mbm_set_result(i, "err", self._t(reject))
+            period = r.get("period") or 1000
+            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), period)
+            self._mbm_sched.start(0)
             return
-        # 写值守卫：输入空白/非法/越界 → 报错、不发送（绝不静默截断或写 0）
-        if self._mbm_span_bad(r):
-            # 连续读写范围不能跨出 16 位地址空间。构帧层 _check_address_span 也会拦，
-            # 但那条是未本地化的异常文本，这里统一成「参数非法」。
-            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
+        arg, reject = _mbm_build_poll_arg(r)
+        if reject:
+            self._mbm_set_result(i, "err", self._t(reject))
             self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
             self._mbm_sched.start(0)
             return
-        if r["func"] == 0x08 and (r.get("diag_sub") is None or r.get("diag_data") is None):
-            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-            self._mbm_sched.start(0)
-            return
-        if r["func"] == 0x16 and (r.get("and_mask") is None or r.get("or_mask") is None):
-            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-            self._mbm_sched.start(0)
-            return
-        if r["func"] == 0x2B and (r.get("read_code") is None or r.get("object_id") is None):
-            self._mbm_set_result(i, "err", self._t("mbm_st_badparam"))
-            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-            self._mbm_sched.start(0)
-            return
-        if ((r["func"] in modbus_master.WRITE_SINGLE and r["wval"] is None)
-                or (r["func"] in modbus_master.WRITE_MULTI and not r["wvals"])):
-            self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
-            self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-            self._mbm_sched.start(0)   # 异步排下次：避免大量非法/广播规则同步递归致栈溢出
-            return
-        # RTU/ASCII unit 0 = broadcast: only single/multi write allowed (no response).
-        # Reject reads and non-broadcastable FCs (08/0B/11/17, etc.).
-        if variant in ("rtu", "ascii") and r["unit"] == 0:
-            if r["func"] not in (modbus_master.WRITE_SINGLE
-                                 + modbus_master.WRITE_MULTI + (0x16,)):
-                self._mbm_set_result(i, "err", self._t("mbm_st_broadcast_nowrite"))
-                self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-                self._mbm_sched.start(0)
-                return
-        if r["func"] in modbus_master.READ_FUNCS:
-            arg = r["qty"]
-        elif r["func"] in modbus_master.WRITE_MULTI:
-            arg = r["wvals"]
-        elif r["func"] == 0x08:
-            arg = (int(r.get("diag_sub") or 0), int(r.get("diag_data")))
-        elif r["func"] == 0x16:
-            arg = (int(r["and_mask"]), int(r["or_mask"]))
-        elif r["func"] == 0x2B:
-            arg = {"mei": 0x0E,
-                   "read_code": int(r.get("read_code") or 1),
-                   "object_id": int(r.get("object_id") or 0)}
-        elif r["func"] in (0x0B, 0x11):
-            arg = 0
-        elif r["func"] == 0x17:
-            arg = r.get("rw") or {
-                "read_addr": r["addr"], "read_qty": r["qty"],
-                "write_addr": r.get("write_addr", r["addr"]),
-                "write_vals": r.get("wvals") or [],
-            }
-            if not arg.get("write_vals"):
-                self._mbm_set_result(i, "err", self._t("mbm_st_noval"))
-                self._mbm_due[i] = _mbm_sched_next_due(time.monotonic(), r["period"])
-                self._mbm_sched.start(0)
-                return
-        else:
-            arg = r["wval"]
         try:
             if variant == "tcp":
                 self._mbm_tid = (self._mbm_tid + 1) & 0xFFFF
@@ -7364,22 +7344,21 @@ class CommTool(QMainWindow):
         """收到数据：若有在途轮询请求，累积并尝试切出一帧响应、解析、更新该行结果。
         坏帧/串口本地回显/杂散字节用「丢 1 字节重同步」处理，而非清空整缓冲——避免请求回显
         与合法响应粘包后把响应一并丢掉（RS-485 半双工本地回显常见）。"""
-        if self._mbm_inflight is None:
-            # 超时隔离期间若迟到字节开始到达：RTU 从最后一字节起重新满足 t3.5 确保整帧排空；
-            # ASCII 无 t3.5 概念但同样需要丢掉隔离窗内的迟到字节（无 TID 可辨新旧请求）。
-            veff = self._mbm_variant_eff()
-            if time.monotonic() < self._mbm_guard_until and veff in ("rtu", "ascii"):
-                if veff == "rtu":
-                    self._mbm_guard_until = max(
-                        self._mbm_guard_until,
-                        time.monotonic() + self._mbm_rtu_silent_ms() / 1000.0)
+        plan = _mbm_feed_plan.idle_guard_plan(
+            has_inflight=self._mbm_inflight is not None,
+            now=time.monotonic(),
+            guard_until=self._mbm_guard_until,
+            variant_eff=self._mbm_variant_eff(),
+            rtu_silent_s=self._mbm_rtu_silent_ms() / 1000.0,
+        )
+        self._mbm_guard_until = plan["guard_until"]
+        if plan["action"] == "idle_return":
             return
         self._mbm_buf += bytes(data)
-        if len(self._mbm_buf) > 4096:                 # 防异常流无界增长
-            self._mbm_buf = self._mbm_buf[-4096:]
+        self._mbm_buf = _mbm_feed_plan.clamp_rx_buf(self._mbm_buf)
         info = self._mbm_inflight
-        if info["variant"] == "tcp":
-            # 按 MBAP 完整帧跳过迟到的旧 TID/Unit，再找当前响应；只对畸形 MBAP/PDU 清缓冲。
+        variant = _mbm_feed_plan.feed_variant(info)
+        if variant == "tcp":
             try:
                 result, consumed = modbus_master.take_tcp_response_matching(
                     self._mbm_buf, info["tid"], info["func"], info["unit"])
@@ -7394,18 +7373,13 @@ class CommTool(QMainWindow):
                 if result is not None:
                     self._mbm_apply(info, result)
             return
-        if info["variant"] == "ascii":
-            # 本地回显模式（半双工 RS-485 适配器会回显刚发的 ASCII 请求帧）：先剥掉一份与请求
-            # 完全相同的前导回显，再解析真正响应。完整回显出现前保留缓冲继续等（与 RTU 分支一致）。
-            if self._mbm_echo and info.get("echo") and not info.get("echo_done"):
+        if variant == "ascii":
+            if _mbm_feed_plan.echo_needed(info, echo_enabled=self._mbm_echo):
                 rest, found = modbus_master.strip_local_echo(self._mbm_buf, info["echo"])
-                if not found:
+                if _mbm_feed_plan.after_echo_strip(found) == "wait":
                     return
                 self._mbm_buf = rest
                 info["echo_done"] = True
-            # 循环重同步：单 chunk 内可能坏帧+好帧粘在一起（串口 readyRead 多帧/TCP Nagle 合包），
-            # 或线噪声 ':' 夹在真响应前。坏帧（LRC 错/unit 不符/格式错）丢到本帧 \n 后继续试下一帧，
-            # 直到无可解析帧（返回 None 等更多字节）或缓冲空——与 RTU 分支的"丢1字节重同步"对齐。
             while self._mbm_buf:
                 try:
                     out = modbus_master.take_ascii_response(
@@ -7415,32 +7389,22 @@ class CommTool(QMainWindow):
                     self._mbm_finish_inflight()
                     return
                 except ValueError:
-                    nl = self._mbm_buf.find(b"\n")
-                    self._mbm_buf = self._mbm_buf[nl + 1:] if nl >= 0 else b""
-                    continue                       # 丢掉坏帧，继续试后续
+                    self._mbm_buf = _mbm_feed_plan.ascii_resync_on_value_error(self._mbm_buf)
+                    continue
                 if out is None:
-                    return                         # 还需更多字节
+                    return
                 result, consumed = out
                 self._mbm_buf = self._mbm_buf[consumed:]
-                # 记录响应帧长度（含 ':'、CRLF、LRC）：低速串口下 _mbm_finish_inflight 用它
-                # 算出"整帧含帧界完全离线上"的 guard 时长，避免尾字节迟到串到下一请求。
                 info["resp_len"] = consumed
                 self._mbm_apply(info, result)
                 return
-        # RTU「本地回显模式」：串口适配器会回显发出的帧时，先剥掉一份与请求完全相同的前导回显，
-        # 再解析真正的从机响应。写功能码 05/06 的成功响应与请求同形——仅此法能把回显与
-        # 「写成功 / 写异常(86 xx)」区分开（内容判不了，故由用户按硬件实际声明）。
-        if self._mbm_echo and info.get("echo") and not info.get("echo_done"):
-            # 回显前可能夹有线噪声/上次通信残留，不能只看 startswith；否则下面的通用
-            # resync 会落到 05/06 请求回显上，并把它误判成从机写成功。完整回显出现前
-            # 保留缓冲继续等（本地回显模式由用户按硬件声明，未见回显则最终按超时处理）。
+            return
+        if _mbm_feed_plan.echo_needed(info, echo_enabled=self._mbm_echo):
             rest, found = modbus_master.strip_local_echo(self._mbm_buf, info["echo"])
-            if not found:
+            if _mbm_feed_plan.after_echo_strip(found) == "wait":
                 return
             self._mbm_buf = rest
             info["echo_done"] = True
-        # RTU：每次失败必丢 1 字节，缓冲又有 4096 上限，因此循环天然有限；不另设较小 guard，
-        # 避免大量残留字节后已经到达的完整响应被搁在缓冲里、因没有新数据事件而最终超时。
         while self._mbm_buf:
             try:
                 out = modbus_master.take_rtu_response(
@@ -7450,10 +7414,10 @@ class CommTool(QMainWindow):
                 self._mbm_finish_inflight()
                 return
             except ValueError:
-                self._mbm_buf = self._mbm_buf[1:]     # 坏帧/回显/杂散 → 丢 1 字节重同步
+                self._mbm_buf = _mbm_feed_plan.rtu_resync_on_value_error(self._mbm_buf)
                 continue
             if out is None:
-                return                                # 还需更多字节
+                return
             self._mbm_apply(info, out[0])
             return
 
@@ -7471,27 +7435,9 @@ class CommTool(QMainWindow):
             self._mbm_finish_inflight()
 
     def _mbm_validate(self, info, result):
-        """对结构合法的响应做语义核对：读回的数量是否够、写回显地址/值是否相符。
-        返回错误文案；None=通过。"""
-        if "regs" in result:
-            if len(result["regs"]) != info["qty"]:
-                return self._t("mbm_st_badresp")
-        elif "bits" in result:
-            expected = ((info["qty"] + 7) // 8) * 8
-            if len(result["bits"]) != expected:
-                return self._t("mbm_st_badresp")
-        elif "echo" in result:
-            exp = info.get("exp_write")
-            if exp is not None and tuple(result["echo"]) != tuple(exp):
-                return self._t("mbm_st_badresp")
-        elif "diag" in result:
-            exp = info.get("exp_diag")
-            if exp is not None:
-                sub, data = result["diag"]
-                # 非 0 子功能的数据字段按规范是计数值等，不能按请求数据核对。
-                if sub != exp[0] or (exp[0] == 0 and data != exp[1]):
-                    return self._t("mbm_st_badresp")
-        return None
+        """Semantic response check; returns localized error or None."""
+        key = _mbm_validate_response(info, result)
+        return self._t(key) if key else None
 
     def _mbm_finish_inflight(self):
         self._mbm_to.stop()
@@ -7911,64 +7857,55 @@ class CommTool(QMainWindow):
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
           checksum: None=全局; 否则校验项索引(0=无…)
         成功返回 True"""
-        if (not allow_during_exclusive
-                and self._manual_send_blocked(allow_running_dsl=allow_running_dsl)):
+        blocked = (not allow_during_exclusive
+                   and self._manual_send_blocked(allow_running_dsl=allow_running_dsl))
+        pre = _ar_core_send_preflight(
+            exclusive_blocked=blocked,
+            is_open=self._is_open(),
+            raw_empty=not raw,
+        )
+        if pre == "exclusive":
             self.toast(self._t("io_exclusive_busy"), error=True)
             return False
-        if not self._is_open():
+        if pre == "not_open":
             self.toast(self._t("net_not_open"), error=True)
             return False
-        if not raw:
+        if pre == "empty":
             return False
         use_hex = self.sw_tx_hex.isChecked() if hex_mode is None else hex_mode
 
         try:
             if use_hex:
-                import re as _re
-                # 1. 先剥掉注释 — 否则注释里 "face" "dead" "beef" 这些 a-f 字符会被当数据
-                cleaned = _re.sub(r'/\*.*?\*/', '', raw, flags=_re.DOTALL)   # 块注释
-                cleaned = _re.sub(r'//[^\n]*', '', cleaned)                    # 行注释 //
-                cleaned = _re.sub(r'#[^\n]*', '', cleaned)                     # 行注释 #
-                # 2. 去掉 0x/0X 前缀
-                cleaned = cleaned.replace("0x", "").replace("0X", "")
-                # 3. 移除允许的分隔符（空白、- : , ;）
-                allowed_seps = set(" \t\r\n-:,;")
-                filtered = "".join(c for c in cleaned if c not in allowed_seps)
-                if not filtered:
+                parsed = _ar_core_parse_tx_hex(raw)
+                if parsed["error"] == "empty":
                     return False
-                # 4. 检查剩下的必须全是 hex —— 出现 ZZ / G 这种就报错，不再静默丢弃
-                bad_chars = sorted(set(c for c in filtered
-                                       if c not in "0123456789abcdefABCDEF"))
-                if bad_chars:
+                if parsed["error"] == "bad_chars":
                     err = self._t(
                         "err_hex_invalid_chars",
-                        chars=" ".join(repr(c) for c in bad_chars),
+                        chars=" ".join(repr(c) for c in parsed["bad_chars"]),
                     )
-                    self.toast(
-                        self._t("err_hex_bad", e=err),
-                        error=True,
-                    )
+                    self.toast(self._t("err_hex_bad", e=err), error=True)
                     return False
-                if len(filtered) % 2 != 0:
+                if parsed["error"] == "odd_length":
                     self.toast(self._t("err_hex_odd"), error=True)
                     return False
-                data = bytes.fromhex(filtered)
+                if not parsed["ok"]:
+                    self.toast(self._t("err_hex_bad", e="value_error"), error=True)
+                    return False
+                data = parsed["data"]
             else:
-                # 按选定编码发送（默认 UTF-8）— 让用户能给 GBK 设备发中文
                 data = raw.encode(self._send_codec(), errors="replace")
         except ValueError as e:
             self.toast(self._t("err_hex_bad", e=e), error=True)
             return False
 
-        # 追加换行 - HEX 和 ASCII 模式都生效
-        if newline is None:
-            if self.sw_append_newline.isChecked():
-                nl_idx = self.cb_append_nl.currentIndex()  # 0=CRLF,1=LF,2=CR
-                data += {0: b"\r\n", 1: b"\n", 2: b"\r"}.get(nl_idx, b"\r\n")
-        else:
-            data += {1: b"\r\n", 2: b"\n", 3: b"\r"}.get(newline, b"")  # 0=无
+        data = _ar_core_append_tx_newline(
+            data,
+            newline=newline,
+            global_on=self.sw_append_newline.isChecked(),
+            global_idx=self.cb_append_nl.currentIndex(),
+        )
 
-        # 追加校验
         cs_idx = self.cb_checksum.currentIndex() if checksum is None else checksum
         try:
             data = data + self.compute_checksum(data, cs_idx)
@@ -7987,16 +7924,19 @@ class CommTool(QMainWindow):
                 e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
                 error=True)
             return False
-        if sent == SEND_NO_TARGET:   # UDP 无对端 / TCP Server 无客户端
+        strict_full_write = getattr(self, "_conn_proto", None) in (PROTO_SERIAL, PROTO_TCP_CLIENT)
+        outcome = _ar_core_classify_send(
+            sent=sent, payload_len=len(data),
+            no_target_sentinel=SEND_NO_TARGET,
+            strict_full_write=strict_full_write,
+        )
+        if outcome == "no_target":
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
             return False
-        strict_full_write = getattr(self, "_conn_proto", None) in (PROTO_SERIAL, PROTO_TCP_CLIENT)
-        if sent <= 0 or (strict_full_write and sent != len(data)):
-            # 串口/TCP Client 都是一条字节流，部分写入不能算整包成功；TCP 半帧会污染后续
-            # MBAP/应用帧边界，必须断开重建。统计只记底层明确接收的实际字节数。
-            if 0 < sent < len(data):
+        if outcome != "ok":
+            if outcome == "fail_partial":
                 self.tx_bytes += sent
                 acc = getattr(self, "_io_stats", None)
                 if acc is not None:
@@ -8008,19 +7948,21 @@ class CommTool(QMainWindow):
             return False
 
         self._stat_note_tx(len(data))
-        # 同收包路径：成功发送只累加计数器，标签刷新交 1Hz 定时器（多帧连发时不每帧重排状态栏）。
 
         if record_macro:
             self._macro_record_tx(data)
-        self._record_stream_tx(data, source=send_target)  # 录线路现场，与 record_macro 无关
+        self._record_stream_tx(data, source=send_target)
 
-        # 显示到数据区 — 只看「HEX 显示」开关(数据区显示格式)，和发送模式无关：
-        # 接收按 HEX 显示，发送也按 HEX 显示，RX/TX 统一
-        if self._hexdump_on:
+        disp = _ar_core_tx_display_mode(
+            hexdump_on=self._hexdump_on,
+            numview_on=self._numview_on,
+            rx_hex=self.sw_rx_hex.isChecked(),
+        )
+        if disp == "hexdump":
             display = self._hexdump_block(data)
-        elif self._numview_on:
+        elif disp == "numview":
             display = self._numview_block(data, carry=False)
-        elif self.sw_rx_hex.isChecked():
+        elif disp == "hex":
             display = self._bytes_to_hex(data) + " "
         else:
             display = data.decode(self._send_codec(), errors="replace")
@@ -8028,7 +7970,6 @@ class CommTool(QMainWindow):
         self._last_direction = "tx"
         return True
 
-    # ----- 终端模式（轻量串口终端：逐字符即时发送 + 基础 VT 行编辑 / ANSI SGR）-----
     @staticmethod
     def _safe_enter_idx(v):
         """Enter-key mapping index: only 0/1/2, else 0."""

@@ -262,3 +262,52 @@ def initial_results(steps):
         {"status": ("pending" if s.get("on", True) else "skip"), "ms": 0, "detail": ""}
         for s in (steps or [])
     ]
+
+
+def feed_action(status):
+    """Decide how RX bytes interact with the current sequence step.
+
+    Returns:
+      "extend_quiet" - late RX during retry isolation (bump quiet window)
+      "accumulate"   - waiting for expect; append and try match
+      "ignore"       - not waiting / not retry
+    """
+    if status == "retry":
+        return "extend_quiet"
+    if status == "waiting":
+        return "accumulate"
+    return "ignore"
+
+
+def mbm_release_plan(
+    *,
+    seq_on,
+    gen_ok,
+    waiting_mbm,
+    inflight,
+    deadline,
+    now=None,
+    qtimer_max_ms=None,
+):
+    """After Modbus in-flight ends, decide wait vs start sequence step 0.
+
+    Returns dict with action:
+      "noop" | "still_inflight" | "wait" | "ready"
+    and delay_ms when action is "wait".
+    """
+    if not seq_on or not gen_ok or not waiting_mbm:
+        return {"action": "noop"}
+    if inflight is not None:
+        return {"action": "still_inflight"}
+    now = time.monotonic() if now is None else float(now)
+    remain = float(deadline) - now
+    if remain > 0:
+        cap = QTIMER_MAX_MS if qtimer_max_ms is None else int(qtimer_max_ms)
+        delay = min(cap, max(1, int(remain * 1000) + 1))
+        return {"action": "wait", "delay_ms": delay}
+    return {"action": "ready"}
+
+
+def fail_outcome(attempt, retry_limit):
+    """After a step fail: "retry" if budget remains, else "fail"."""
+    return "retry" if should_retry(attempt, retry_limit) else "fail"

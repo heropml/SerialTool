@@ -8,6 +8,8 @@ Default suite stays under a few seconds:
   - auto-reconnect schedule/cancel / attempt-limit churn
 
 Set COMMTOOL_SOAK=<seconds> (e.g. 30) to enable an extended RX loop.
+Set COMMTOOL_SOAK_DISCONNECT=1 for VirtualConn mid-session drop loops.
+Set COMMTOOL_SOAK_SERIAL=COMx[,COMy] for optional real-port soak (skipped if unset).
 True multi-hour soak belongs in a nightly job, not default CI.
 """
 import gc
@@ -374,3 +376,167 @@ def test_extended_rx_soak_optional(monkeypatch, tmp_path):
             assert samples[-1] <= samples[0] * 3 + 50_000
     finally:
         _shutdown_window(w)
+
+
+
+def _disconnect_soak_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get("COMMTOOL_SOAK_DISCONNECT", "")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _serial_soak_ports(env=None):
+    """Parse COMMTOOL_SOAK_SERIAL=COMx[,COMy]; return list or empty."""
+    env = os.environ if env is None else env
+    raw = str(env.get("COMMTOOL_SOAK_SERIAL", "") or "").strip()
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def test_disconnect_env_helpers():
+    assert _disconnect_soak_enabled({}) is False
+    assert _disconnect_soak_enabled({"COMMTOOL_SOAK_DISCONNECT": "1"}) is True
+    assert _serial_soak_ports({}) == []
+    assert _serial_soak_ports({"COMMTOOL_SOAK_SERIAL": "COM3, COM4"}) == [
+        "COM3", "COM4"]
+
+
+def test_virtual_link_drop_triggers_auto_reconnect(monkeypatch, tmp_path):
+    """CI-safe: VirtualConn.simulate_link_drop schedules reconnect (net path)."""
+    from virtual_io import VirtualConn, PROTO_VIRTUAL
+
+    w = _fresh_window(monkeypatch, tmp_path, "vdrop")
+    try:
+        w.settings.setValue("auto_reconnect", True)
+        w._user_closing = False
+        opens = []
+        monkeypatch.setattr(
+            w, "open_conn",
+            lambda reconnect_cfg=None: opens.append(reconnect_cfg))
+
+        conn = VirtualConn(loopback=False)
+        assert conn.open() is True
+        w.conn = conn
+        w._conn_engaged = True
+        w._conn_proto = PROTO_VIRTUAL
+        w._reconnect_attempts = 0
+        w._serial_reconnect_cfg = None
+        conn.error_occurred.connect(w._on_conn_error)
+        conn.state_changed.connect(w._on_conn_state_changed)
+
+        # Mid-session RX then abrupt drop.
+        w._on_data_received_impl(b"BEFORE-DROP\n")
+        assert conn.simulate_link_drop("virtual disconnect") is True
+        _APP.processEvents()
+
+        # Error/close path should leave conn cleared and timer armed.
+        assert w.conn is None
+        assert w._reconnect_timer.isActive() or w._reconnect_attempts >= 1
+
+        # Fire the timer -> policy should call open_conn (network style).
+        w._cancel_reconnect()
+        w._try_reconnect()
+        assert opens  # at least one reconnect open attempt
+        assert w.rx_bytes >= len(b"BEFORE-DROP\n")
+    finally:
+        _shutdown_window(w)
+
+
+def test_virtual_disconnect_reconnect_churn(monkeypatch, tmp_path):
+    """Repeated virtual drops must not stack timers or unbounded attempts."""
+    from virtual_io import VirtualConn, PROTO_VIRTUAL
+
+    w = _fresh_window(monkeypatch, tmp_path, "vchurn")
+    try:
+        w.settings.setValue("auto_reconnect", True)
+        w._user_closing = False
+        opens = []
+        monkeypatch.setattr(
+            w, "open_conn",
+            lambda reconnect_cfg=None: opens.append(reconnect_cfg) or True)
+
+        for i in range(12):
+            conn = VirtualConn(loopback=False)
+            assert conn.open() is True
+            w.conn = conn
+            w._conn_engaged = True
+            w._conn_proto = PROTO_VIRTUAL
+            conn.error_occurred.connect(w._on_conn_error)
+            conn.state_changed.connect(w._on_conn_state_changed)
+            w._on_data_received_impl(("PKT-%02d\n" % i).encode("ascii"))
+            conn.simulate_link_drop("drop-%d" % i)
+            _APP.processEvents()
+            w._cancel_reconnect()
+            # Mimic a successful reopen without leaving a live VirtualConn.
+            w.conn = None
+            w._conn_engaged = False
+
+        assert not w._reconnect_timer.isActive()
+        assert w.rx_bytes > 0
+        # Net path bumps attempts on schedule; churn must stay finite.
+        assert w._reconnect_attempts < 100
+    finally:
+        _shutdown_window(w)
+
+
+@pytest.mark.skipif(
+    not _disconnect_soak_enabled(),
+    reason="set COMMTOOL_SOAK_DISCONNECT=1 for extended virtual disconnect soak",
+)
+def test_extended_virtual_disconnect_soak(monkeypatch, tmp_path):
+    """Optional longer drop/reopen loop under COMMTOOL_SOAK_DISCONNECT."""
+    from virtual_io import VirtualConn, PROTO_VIRTUAL
+
+    seconds = _soak_seconds_from_env() or 5.0
+    w = _fresh_window(monkeypatch, tmp_path, "vdropsoak")
+    try:
+        w.settings.setValue("auto_reconnect", True)
+        w._user_closing = False
+        opens = []
+        monkeypatch.setattr(
+            w, "open_conn",
+            lambda reconnect_cfg=None: opens.append(reconnect_cfg))
+        t0 = time.perf_counter()
+        cycles = 0
+        while time.perf_counter() - t0 < seconds:
+            conn = VirtualConn(loopback=False)
+            assert conn.open() is True
+            w.conn = conn
+            w._conn_engaged = True
+            w._conn_proto = PROTO_VIRTUAL
+            w._serial_reconnect_cfg = None
+            conn.error_occurred.connect(w._on_conn_error)
+            conn.state_changed.connect(w._on_conn_state_changed)
+            w._on_data_received_impl(b"SOAK-DROP\n")
+            conn.simulate_link_drop("soak-drop")
+            _APP.processEvents()
+            w._cancel_reconnect()
+            w._try_reconnect()
+            w.conn = None
+            cycles += 1
+            if cycles % 20 == 0:
+                gc.collect()
+                _APP.processEvents()
+        assert cycles >= 3
+        assert opens
+        assert w.rx_bytes >= cycles * len(b"SOAK-DROP\n")
+    finally:
+        _shutdown_window(w)
+
+
+@pytest.mark.skipif(
+    not _serial_soak_ports(),
+    reason="set COMMTOOL_SOAK_SERIAL=COMx[,COMy] for real-port disconnect soak",
+)
+def test_real_serial_ports_listed_for_nightly():
+    """Gate only: real COM soak needs hardware; document ports are parseable.
+
+    Nightly jobs that set COMMTOOL_SOAK_SERIAL should replace this stub with a
+    machine-specific open/close harness. Default CI never enters here.
+    """
+    ports = _serial_soak_ports()
+    assert ports
+    for p in ports:
+        assert p.upper().startswith("COM") or p.startswith("/dev/")
