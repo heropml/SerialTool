@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Send-history helpers (Qt-free): fuzzy filter for the history picker.
+"""Send-history helpers (Qt-free).
 
-History itself stays in MainWindow (_send_hist FIFO); this module only
-filters/display-previews so the dialog and tests stay thin.
+Filter/preview for the history picker; FIFO push/load for persistence.
 """
+import json
+
+HIST_CAP = 100
 
 
 def match_hist(text, query):
@@ -29,3 +31,44 @@ def preview_hist(text, max_len=72):
     if len(s) <= max_len:
         return s
     return s[: max_len - 1] + "\u2026"
+
+
+def sanitize_list(items, cap=HIST_CAP):
+    """Coerce to str list and keep the newest `cap` entries."""
+    return [str(x) for x in (items or [])][-cap:]
+
+
+def load_list(raw, cap=HIST_CAP):
+    """Parse send_history JSON; missing/invalid/non-list -> None."""
+    if not raw:
+        return None
+    try:
+        v = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(v, list):
+        return None
+    return sanitize_list(v, cap)
+
+
+def push(hist, text, cap=HIST_CAP):
+    """Append after rstrip; adjacent-dedupe; cap FIFO.
+
+    Returns (new_hist, changed). changed=False when empty or adjacent duplicate
+    (caller still resets navigation state on duplicate).
+    """
+    text = (text or "").rstrip("\r\n")
+    if not text:
+        return list(hist or []), False
+    out = list(hist or [])
+    if out and out[-1] == text:
+        return out, False
+    out.append(text)
+    if len(out) > cap:
+        out = out[-cap:]
+    return out, True
+
+
+def dumps(hist):
+    """Serialize FIFO for QSettings."""
+    return json.dumps(list(hist or []), ensure_ascii=False)

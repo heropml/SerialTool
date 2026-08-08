@@ -153,3 +153,54 @@ def recommended_views(template_id):
         "plot": False,
         "dashboard": False,
     }
+
+# Workspace page catalog (title_key, icon); callbacks stay in CommTool.
+WORKSPACE_TEMPLATE_OPTIONS = (
+    ("project_proto_raw", "raw"),
+    ("project_proto_modbus_rtu", "modbus_rtu"),
+    ("project_proto_modbus_tcp", "modbus_tcp"),
+    ("project_proto_nmea", "nmea"),
+    ("project_proto_at", "at"),
+    ("project_proto_header", "fixed_header"),
+    ("project_proto_delimiter", "delimiter"),
+    ("project_proto_custom", "custom"),
+)
+
+WORKSPACE_TOOL_ENTRIES = {
+    "protocol": (
+        ("fb_title", "◇+"),
+        ("frame_open", "<>"),
+        ("tb_title", "#"),
+        ("mbm_open", "M"),
+        ("device_title", "R"),
+    ),
+    "simulation": (
+        ("ar_title", "↩"),
+        ("rr_title", "◷"),
+    ),
+    "automation": (
+        ("seq_title", "▶"),
+        ("sc_title", "{}"),
+        ("trg_title", "!"),
+    ),
+    "data": (
+        ("plot_open", "∿"),
+        ("dash_open", "▦"),
+        ("rr_title", "◷"),
+        ("rd_title", "≠"),
+        ("structured_title", "Σ"),
+    ),
+    "bridge": (
+        ("bg_title", "⇄"),
+    ),
+}
+
+
+def workspace_tool_entries(key):
+    """Return ((title_key, icon), ...) for a workspace card key."""
+    return WORKSPACE_TOOL_ENTRIES.get(key, ())
+
+
+def workspace_template_options():
+    """Return ((title_key, template_id), ...) for the protocol template panel."""
+    return WORKSPACE_TEMPLATE_OPTIONS

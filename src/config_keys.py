@@ -53,3 +53,8 @@ CFG_KEYS = (
     # 杂项
     "auto_reconnect", "auto_update_check",
 )
+
+# Keys kept local to the machine / user preference (not in project snapshot).
+PROJECT_PERSONAL_KEYS = frozenset((
+    "theme", "language", "auto_update_check",
+))

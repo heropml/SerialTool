@@ -116,7 +116,7 @@
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成：静默 pass 9→8（本轮结构化侧路改 debug）；余下 8 处为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 21 knives landed: R19 multi_send + R20 AR state_ok/next_state + R21 view_mode helpers; CommTool thin wrappers. Next: larger GUI build_* / settings (core pure-logic mostly done) |
+| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 33 knives landed: R31-R33 serial_params / JSON loaders / workspace catalog; CommTool thin wrappers. Next: larger GUI build_* |
 | S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端切换突发已落地；COMMTOOL_SOAK 延长跑，COMMTOOL_SOAK_NIGHTLY=1 可至 4h；真机断线 soak 仍待夜间任务 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
@@ -226,6 +226,18 @@
 - **R19 (v1.4 S-2)** nineteenth knife: extract `src/multi_send.py` (load_groups/active_items/build_cycle_seq/groups_json); CommTool thin wrappers.
 - **R20 (v1.4 S-2)** twentieth knife: expand `auto_reply_core` (state_ok/next_state).
 - **R21 (v1.4 S-2)** twenty-first knife: expand `view_format` (view_mode_of_state/view_extra_index); add `tests/test_s2_r19_r21.py`.
+- **R22 (v1.4 S-2)** twenty-second knife: extract `src/config_io.py` (import gates/export/coerce); CommTool thin wrappers.
+- **R23 (v1.4 S-2)** twenty-third knife: expand `send_history` (push/load_list/dumps); add `tests/test_s2_r22_r23.py`.
+- **R24 (v1.4 S-2)** twenty-fourth knife: expand `config_keys.PROJECT_PERSONAL_KEYS` + `config_io` (settings_to_bool/snapshot/fingerprint).
+- **R25 (v1.4 S-2)** twenty-fifth knife: expand `config_io` (clamp_recv_font_size/profile_cascade_offset); add `tests/test_s2_r24_r25.py`.
+- **R26 (v1.4 S-2)** twenty-sixth knife: expand `config_io` (ts/encoding/combo/view mutex/resolve_combo_text).
+- **R27 (v1.4 S-2)** twenty-seventh knife: expand `config_io` (parse_json_dict/object_list); AR loaders thin wrappers.
+- **R28 (v1.4 S-2)** twenty-eighth knife: expand `config_io` (RESET_*/capture_field_defaults); add `tests/test_s2_r26_r28.py`.
+- **R29 (v1.4 S-2)** twenty-ninth knife: expand `connection_presets` (parse_baud/validate_open); open_conn thin wrappers.
+- **R30 (v1.4 S-2)** thirtieth knife: expand `config_io.clamp_max_lines`; add `tests/test_s2_r29_r30.py`.
+- **R31 (v1.4 S-2)** thirty-first knife: extract `src/serial_params.py` (pyserial maps/options); dedupe bridge_dialog.
+- **R32 (v1.4 S-2)** thirty-second knife: thin remaining JSON loaders via `config_io.parse_json_list`.
+- **R33 (v1.4 S-2)** thirty-third knife: expand `project_templates` workspace catalog; add `tests/test_s2_r31_r33.py`.
 - **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool · title` -> `CommTool - title`; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch).
 - **Q（v1.4 P1）** 无换行连续收包时单 QTextBlock 无限膨胀：`setMaximumBlockCount` 只限制 block 数；`_append_block_data` 补 `_trim_recv_overflow`（预算 = max_lines × 256 字符）。回归见 `test_recv_char_budget_without_newlines` / `COMMTOOL_SOAK` 延长跑。
 - **P（v1.4 S-3）** 扩展 `test_soak_throughput`：修正 CommTool 拆卸（停计时器/port_scanner）避免 Qt AV；补 max-lines 上界、重连 churn、RX/TX 计数混合突发与 `COMMTOOL_SOAK` 可选延长跑。

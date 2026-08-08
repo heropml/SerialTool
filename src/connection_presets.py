@@ -286,3 +286,99 @@ def tcp_client_signature(proto, ip, port):
 def proto_only_signature(proto):
     """Non-serial / non-tcp-client signature (proto only)."""
     return (proto,)
+
+
+def parse_baud(text):
+    """Parse baud-rate text -> positive int, else None."""
+    try:
+        baud = int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+    return baud if baud > 0 else None
+
+
+def _toast_err(key):
+    return {"ok": False, "toast": key}
+
+
+def _dialog_err(title_key, body_key):
+    return {"ok": False, "dialog": (title_key, body_key)}
+
+
+def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv4):
+    """Validate connection UI fields before constructing a Conn.
+
+    Returns {"ok": True, ...payload} or
+            {"ok": False, "toast": err_key} or
+            {"ok": False, "dialog": (title_key, body_key)}.
+
+    Payload keys by proto:
+      Serial: port, baud
+      Virtual: (empty)
+      TCP Server: local_ip, port
+      TCP Client: ip, port
+      UDP Multicast: local_ip, group, port
+      UDP: local_ip, lport, rip, rport
+    """
+    fields = fields or {}
+    proto = proto or ""
+
+    if proto == "Serial":
+        port = fields.get("port")
+        if not port:
+            return _toast_err("err_no_port")
+        baud = parse_baud(fields.get("baud"))
+        if baud is None:
+            return _toast_err("err_bad_baud")
+        return {"ok": True, "port": port, "baud": baud}
+
+    if proto == "Virtual":
+        return {"ok": True}
+
+    if proto == "TCP Server":
+        local_ip = str(fields.get("local_ip") or "").strip()
+        if not is_local_ipv4(local_ip):
+            return _dialog_err("err_not_local_ip_title", "err_not_local_ip")
+        port = parse_port(fields.get("local_port"))
+        if port is None:
+            return _toast_err("err_bad_port")
+        return {"ok": True, "local_ip": local_ip, "port": port}
+
+    if proto == "TCP Client":
+        ip = str(fields.get("remote_ip") or "").strip()
+        port = parse_port(fields.get("remote_port"))
+        if not is_valid_ip(ip):
+            return _toast_err("err_bad_ip")
+        if port is None:
+            return _toast_err("err_bad_port")
+        return {"ok": True, "ip": ip, "port": port}
+
+    if proto == "UDP Multicast":
+        local_ip = str(fields.get("local_ip") or "").strip()
+        if not is_local_ipv4(local_ip):
+            return _dialog_err("err_not_local_ip_title", "err_not_local_ip")
+        port = parse_port(fields.get("local_port"))
+        if port is None:
+            return _toast_err("err_bad_port")
+        group = str(fields.get("group") or "").strip()
+        if not is_multicast_ipv4(group):
+            return _toast_err("err_not_multicast")
+        return {"ok": True, "local_ip": local_ip, "group": group, "port": port}
+
+    # UDP (default / else)
+    local_ip = str(fields.get("local_ip") or "").strip()
+    if not is_local_ipv4(local_ip):
+        return _dialog_err("err_not_local_ip_title", "err_not_local_ip")
+    lport = parse_port(fields.get("local_port"))
+    if lport is None:
+        return _toast_err("err_bad_port")
+    if fields.get("use_remote"):
+        rip = str(fields.get("remote_ip") or "").strip()
+        rport = parse_port(fields.get("remote_port"))
+        if not is_valid_ip(rip):
+            return _toast_err("err_bad_ip")
+        if rport is None:
+            return _toast_err("err_bad_port")
+    else:
+        rip, rport = "", 0
+    return {"ok": True, "local_ip": local_ip, "lport": lport, "rip": rip, "rport": rport}

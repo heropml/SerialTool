@@ -36,23 +36,19 @@ _BAUD_LIST = [
     "115200", "230400", "256000", "460800", "500000", "512000",
     "600000", "750000", "921600", "1000000", "1500000", "2000000",
 ]
-_DATABITS_LIST = ["5", "6", "7", "8"]
-_PARITY_LIST = ["None", "Even", "Odd", "Mark", "Space"]
-_STOPBITS_LIST = ["1", "1.5", "2"]
-
-_PARITY_MAP = {
-    "None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
-    "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
-    "Space": serial.PARITY_SPACE,
-}
-_STOPBITS_MAP = {
-    "1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
-    "2": serial.STOPBITS_TWO,
-}
-_DATABITS_MAP = {
-    "5": serial.FIVEBITS, "6": serial.SIXBITS,
-    "7": serial.SEVENBITS, "8": serial.EIGHTBITS,
-}
+from serial_params import (
+    PARITY_MAP as _PARITY_MAP,
+    STOPBITS_MAP as _STOPBITS_MAP,
+    DATABITS_MAP as _DATABITS_MAP,
+    PARITY_OPTIONS,
+    STOPBITS_OPTIONS,
+    DATABITS_OPTIONS,
+    BAUD_RATES,
+    FLOW_OPTIONS,
+)
+_PARITY_LIST = list(PARITY_OPTIONS)
+_STOPBITS_LIST = list(STOPBITS_OPTIONS)
+_DATABITS_LIST = list(DATABITS_OPTIONS)
 
 _BRIDGE_PROTO_SERIAL = 0
 _BRIDGE_PROTO_TCP_CLIENT = 1

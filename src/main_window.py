@@ -57,6 +57,42 @@ import convert
 import snippets
 import connection_presets
 from config_keys import CFG_KEYS as _CFG_KEYS_MOD
+from config_io import (
+    parse_json_list as _cfg_parse_json_list,
+    settings_to_bool as _cfg_to_bool,
+    project_fingerprint as _cfg_project_fingerprint,
+    snapshot_project_settings as _cfg_snapshot_project,
+    clamp_recv_font_size as _cfg_clamp_font,
+    profile_cascade_offset as _cfg_profile_offset,
+    trigger_external_count as _cfg_trigger_ext_count,
+    strip_trigger_externals as _cfg_strip_trigger_ext,
+    script_lib_code_count as _cfg_script_lib_count,
+    drop_script_lib as _cfg_drop_script_lib,
+    ar_script_count as _cfg_ar_script_count,
+    strip_ar_scripts as _cfg_strip_ar_scripts,
+    collect_export_settings as _cfg_collect_export,
+    build_export_payload as _cfg_export_payload,
+    coerce_setting_value as _cfg_coerce_value,
+    coerce_imported_settings as _cfg_coerce_map,
+    dumps_list as _cfg_dumps_list,
+    normalize_ts_format as _cfg_norm_ts,
+    normalize_encoding as _cfg_norm_enc,
+    clamp_combo_index as _cfg_clamp_combo,
+    try_combo_index as _cfg_try_combo,
+    resolve_view_mutex as _cfg_view_mutex,
+    resolve_combo_text as _cfg_resolve_combo,
+    parse_json_dict as _cfg_parse_json_dict,
+    parse_json_object_list as _cfg_parse_obj_list,
+    capture_field_defaults as _cfg_capture_defaults,
+    RESET_LINE_EDITS as _CFG_RESET_LINE_EDITS,
+    RESET_COMBOS as _CFG_RESET_COMBOS,
+    clamp_max_lines as _cfg_clamp_lines,
+)
+from send_history import (
+    push as _hist_push,
+    load_list as _hist_load_list,
+    dumps as _hist_dumps,
+)
 from multi_send import (
     load_groups as _ms_load_groups,
     active_items as _ms_active_items_fn,
@@ -64,6 +100,8 @@ from multi_send import (
     groups_json as _ms_groups_json,
 )
 from connection_presets import parse_port as _conn_parse_port
+from connection_presets import parse_baud as _conn_parse_baud
+from connection_presets import validate_open as _conn_validate_open
 from connection_presets import (
     serial_signature as _conn_serial_sig,
     tcp_client_signature as _conn_tcp_sig,
@@ -161,6 +199,10 @@ from keyword_groups import (
     active_rules as _kw_active_rules,
     save_fields as _kw_save_fields,
 )
+from project_templates import (
+    workspace_tool_entries as _ws_tool_entries,
+    workspace_template_options as _ws_template_options,
+)
 
 
 # 数据区正文的实际渲染格式。切换视图不会重排历史，所以格式必须跟着字符保存，不能只看当前开关。
@@ -176,16 +218,18 @@ VIEW_TERMINAL = 5
 ANSI_FG_PROP = QTextFormat.UserProperty + 3
 ANSI_BG_PROP = QTextFormat.UserProperty + 4
 
-# 串口参数：UI 文案 → pyserial 常量。open_conn 建连接与 _apply_serial_params_live
-# 动态改参数共用同一份，两处解释绝不允许分叉。
-_PARITY_MAP = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN,
-               "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK,
-               "Space": serial.PARITY_SPACE}
-_STOPBITS_MAP = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE,
-                 "2": serial.STOPBITS_TWO}
-_DATABITS_MAP = {"5": serial.FIVEBITS, "6": serial.SIXBITS,
-                 "7": serial.SEVENBITS, "8": serial.EIGHTBITS}
-_FLOW_MAP = {"None": "none", "RTS/CTS": "rtscts", "XON/XOFF": "xonxoff"}
+from serial_params import (
+    PARITY_MAP as _PARITY_MAP,
+    STOPBITS_MAP as _STOPBITS_MAP,
+    DATABITS_MAP as _DATABITS_MAP,
+    FLOW_MAP as _FLOW_MAP,
+    BAUD_RATES as _BAUD_RATES,
+    DATABITS_OPTIONS as _DATABITS_OPTIONS,
+    PARITY_OPTIONS as _PARITY_OPTIONS,
+    STOPBITS_OPTIONS as _STOPBITS_OPTIONS,
+    FLOW_OPTIONS as _FLOW_OPTIONS,
+    resolve_pyserial as _resolve_serial_params,
+)
 
 
 from auto_reply_core import (
@@ -1176,30 +1220,28 @@ class CommTool(QMainWindow):
 
         self.cb_baud = QComboBox()
         self.cb_baud.setEditable(True)
-        for b in ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
-                  "115200", "230400", "256000", "460800", "500000", "512000",
-                  "600000", "750000", "921600", "1000000", "1500000", "2000000"]:
+        for b in _BAUD_RATES:
             self.cb_baud.addItem(b)
         self.cb_baud.setCurrentText("115200")
         self.row_baud = make_row("baud_rate", self.cb_baud)
 
         self.cb_databits = QComboBox()
-        self.cb_databits.addItems(["5", "6", "7", "8"])
+        self.cb_databits.addItems(list(_DATABITS_OPTIONS))
         self.cb_databits.setCurrentText("8")
         self.row_databits = make_row("data_bits", self.cb_databits)
 
         self.cb_parity = QComboBox()
-        self.cb_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        self.cb_parity.addItems(list(_PARITY_OPTIONS))
         self.row_parity = make_row("parity", self.cb_parity)
 
         self.cb_stopbits = QComboBox()
-        self.cb_stopbits.addItems(["1", "1.5", "2"])
+        self.cb_stopbits.addItems(list(_STOPBITS_OPTIONS))
         self.cb_stopbits.setCurrentText("1")
         self.row_stopbits = make_row("stop_bits", self.cb_stopbits)
 
         # 硬件/软件流控：None / RTS-CTS（硬件）/ XON-XOFF（软件）
         self.cb_flow = QComboBox()
-        self.cb_flow.addItems(["None", "RTS/CTS", "XON/XOFF"])
+        self.cb_flow.addItems(list(_FLOW_OPTIONS))
         self.cb_flow.setCurrentText("None")
         self.cb_flow.currentIndexChanged.connect(self._on_flow_changed)
         self.row_flow = make_row("flow_control", self.cb_flow)
@@ -3662,87 +3704,72 @@ class CommTool(QMainWindow):
         return _conn_proto_sig(proto)
 
     def open_conn(self, reconnect_cfg=None):
-        """打开当前 UI 连接；自动重连串口时传入掉线前签名，禁止漂移到别的端口/参数。"""
+        """Open the connection described by the current UI (or reconnect_cfg)."""
         proto = reconnect_cfg[0] if reconnect_cfg else self.cb_proto.currentText()
         if proto == PROTO_SERIAL:
             port = reconnect_cfg[1] if reconnect_cfg else self.cb_port.currentData()
-            # cb_port 不可编辑，currentData 即设备名；无串口/未扫描时为空
-            if not port:
-                self.toast(self._t("err_no_port"), error=True)
-                return
-            try:
-                baud = int(reconnect_cfg[2] if reconnect_cfg else self.cb_baud.currentText())
-            except (ValueError, TypeError):
-                self.toast(self._t("err_bad_baud"), error=True)
-                return
+            baud_text = reconnect_cfg[2] if reconnect_cfg else self.cb_baud.currentText()
+            fields = {"port": port, "baud": baud_text}
+        elif proto == PROTO_VIRTUAL:
+            fields = {}
+        elif proto == PROTO_TCP_CLIENT:
+            fields = {
+                "remote_ip": self.ed_remote_ip.text(),
+                "remote_port": self.ed_remote_port.text(),
+            }
+        elif proto == PROTO_UDP_MULTICAST:
+            fields = {
+                "local_ip": self.cb_local_ip.currentText(),
+                "local_port": self.ed_local_port.text(),
+                "group": self.ed_group.text(),
+            }
+        elif proto == PROTO_TCP_SERVER:
+            fields = {
+                "local_ip": self.cb_local_ip.currentText(),
+                "local_port": self.ed_local_port.text(),
+            }
+        else:  # UDP
+            fields = {
+                "local_ip": self.cb_local_ip.currentText(),
+                "local_port": self.ed_local_port.text(),
+                "use_remote": self.sw_udp_remote.isChecked(),
+                "remote_ip": self.ed_remote_ip.text(),
+                "remote_port": self.ed_remote_port.text(),
+            }
+        checked = _conn_validate_open(
+            proto, fields,
+            is_valid_ip=is_valid_ip,
+            is_local_ipv4=is_local_ipv4,
+            is_multicast_ipv4=is_multicast_ipv4)
+        if not checked.get("ok"):
+            dlg = checked.get("dialog")
+            if dlg:
+                self._info_dlg(self._t(dlg[0]), self._t(dlg[1]), is_error=True)
+            else:
+                self.toast(self._t(checked.get("toast", "err_bad_port")), error=True)
+            return
+        if proto == PROTO_SERIAL:
             databits = reconnect_cfg[3] if reconnect_cfg else self.cb_databits.currentText()
             parity = reconnect_cfg[4] if reconnect_cfg else self.cb_parity.currentText()
             stopbits = reconnect_cfg[5] if reconnect_cfg else self.cb_stopbits.currentText()
-            flow = reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6 else self.cb_flow.currentText()
-            conn = SerialConn(port, baud, _DATABITS_MAP[databits], _PARITY_MAP[parity],
-                              _STOPBITS_MAP[stopbits], flow=_FLOW_MAP.get(flow, "none"))
+            flow = (reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6
+                    else self.cb_flow.currentText())
+            sp = _resolve_serial_params(databits, parity, stopbits, flow)
+            conn = SerialConn(
+                checked["port"], checked["baud"], sp["bytesize"],
+                sp["parity"], sp["stopbits"], flow=sp["flow"])
         elif proto == PROTO_VIRTUAL:
-            # 离线模式：无参数可校验，直接建环回连接（回环开关随用随切）
             conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
         elif proto == PROTO_TCP_SERVER:
-            local_ip = self.cb_local_ip.currentText().strip()
-            if not is_local_ipv4(local_ip):
-                self._info_dlg(self._t("err_not_local_ip_title"),
-                               self._t("err_not_local_ip"), is_error=True)
-                return
-            port = self._parse_port(self.ed_local_port.text())
-            if port is None:
-                self.toast(self._t("err_bad_port"), error=True)
-                return
-            conn = TcpServerConn(local_ip, port)
+            conn = TcpServerConn(checked["local_ip"], checked["port"])
         elif proto == PROTO_TCP_CLIENT:
-            ip = self.ed_remote_ip.text().strip()
-            port = self._parse_port(self.ed_remote_port.text())
-            if not is_valid_ip(ip):
-                self.toast(self._t("err_bad_ip"), error=True)
-                return
-            if port is None:
-                self.toast(self._t("err_bad_port"), error=True)
-                return
-            conn = TcpClientConn(ip, port)
+            conn = TcpClientConn(checked["ip"], checked["port"])
         elif proto == PROTO_UDP_MULTICAST:
-            local_ip = self.cb_local_ip.currentText().strip()
-            if not is_local_ipv4(local_ip):
-                self._info_dlg(self._t("err_not_local_ip_title"),
-                               self._t("err_not_local_ip"), is_error=True)
-                return
-            port = self._parse_port(self.ed_local_port.text())
-            if port is None:
-                self.toast(self._t("err_bad_port"), error=True)
-                return
-            group = self.ed_group.text().strip()
-            if not is_multicast_ipv4(group):
-                self.toast(self._t("err_not_multicast"), error=True)
-                return
-            conn = UdpGroupConn(local_ip, group, port)
-        else:  # UDP
-            local_ip = self.cb_local_ip.currentText().strip()
-            if not is_local_ipv4(local_ip):
-                self._info_dlg(self._t("err_not_local_ip_title"),
-                               self._t("err_not_local_ip"), is_error=True)
-                return
-            lport = self._parse_port(self.ed_local_port.text())
-            if lport is None:
-                self.toast(self._t("err_bad_port"), error=True)
-                return
-            if self.sw_udp_remote.isChecked():
-                # 指定远程：IP/端口必填且合法，固定发往该地址
-                rip = self.ed_remote_ip.text().strip()
-                rport = self._parse_port(self.ed_remote_port.text())
-                if not is_valid_ip(rip):   # 校验 IP 字面量，挡掉 "not.a.valid.ip" 之类
-                    self.toast(self._t("err_bad_ip"), error=True)
-                    return
-                if rport is None:
-                    self.toast(self._t("err_bad_port"), error=True)
-                    return
-            else:
-                rip, rport = "", 0   # 不指定远程：回复最近发来数据的对端
-            conn = UdpConn(local_ip, lport, rip, rport)
+            conn = UdpGroupConn(checked["local_ip"], checked["group"], checked["port"])
+        else:
+            conn = UdpConn(
+                checked["local_ip"], checked["lport"],
+                checked["rip"], checked["rport"])
 
         # TCP Server 额外携带来源客户端 key，让协议自动应答能精确回给请求方；
         # 其余连接仍走原有单参数信号。
@@ -3830,23 +3857,23 @@ class CommTool(QMainWindow):
         if (getattr(self, "_conn_proto", None) != PROTO_SERIAL
                 or self.conn is None or not getattr(self.conn, "is_open", False)):
             return
-        try:
-            baud = int(str(self.cb_baud.currentText()).strip())
-            if baud <= 0:
-                raise ValueError(baud)
-        except (ValueError, TypeError):
+        baud = _conn_parse_baud(self.cb_baud.currentText())
+        if baud is None:
             self.toast(self._t("err_bad_baud"), error=True)
             return
         sig = self._conn_config_signature(PROTO_SERIAL)
         if sig == self._conn_cfg:
             return      # editingFinished 失焦也会来一次；值没变就不重复应用、不重复提示
         flow = self.cb_flow.currentText()
+        sp = _resolve_serial_params(
+            self.cb_databits.currentText(), self.cb_parity.currentText(),
+            self.cb_stopbits.currentText(), flow)
         ok = self.conn.apply_params(
             baud=baud,
-            bytesize=_DATABITS_MAP[self.cb_databits.currentText()],
-            parity=_PARITY_MAP[self.cb_parity.currentText()],
-            stopbits=_STOPBITS_MAP[self.cb_stopbits.currentText()],
-            flow=_FLOW_MAP.get(flow, "none"))
+            bytesize=sp["bytesize"],
+            parity=sp["parity"],
+            stopbits=sp["stopbits"],
+            flow=sp["flow"])
         if not ok:
             return      # 失败已由 conn 的 error_occurred 走统一错误提示/掉线路径
         self._conn_cfg = sig
@@ -4511,9 +4538,9 @@ class CommTool(QMainWindow):
 
     # ----- 接收 -----
     def _get_codec(self) -> str:
-        """当前 RX/TX/文件 编码模式 — 'auto' 或具体 codec 名"""
+        """Current RX/TX/file codec mode -- 'auto' or concrete codec name."""
         if hasattr(self, "cb_encoding"):
-            return self.cb_encoding.currentData() or "auto"
+            return _cfg_norm_enc(self.cb_encoding.currentData())
         return "auto"
 
     def _send_codec(self) -> str:
@@ -5071,17 +5098,10 @@ class CommTool(QMainWindow):
         self.settings.remove("multi_send_items")
 
     def _load_snippets(self):
-        """加载发送模板库；返回 (list, loaded_ok)。空/损坏时给示例模板（loaded_ok=False → 落盘）。"""
-        raw = self.settings.value("snippets", "")
-        if raw:
-            try:
-                data = json.loads(raw)
-                # [] 是合法且有意义的配置：用户明确删除了全部模板，不能在下次启动时
-                # 又把示例模板塞回来。只有键缺失、JSON 损坏或根节点不是列表才走默认值。
-                if isinstance(data, list):
-                    return snippets.sanitize_list(data), True
-            except Exception:
-                _log.debug("_load_snippets failed", exc_info=True)
+        """Load send templates; return (list, loaded_ok)."""
+        items = _cfg_parse_json_list(self.settings.value("snippets", ""))
+        if items is not None:
+            return snippets.sanitize_list(items), True
         return snippets.default_snippets(), False
 
     def _save_snippets(self):
@@ -5387,11 +5407,8 @@ class CommTool(QMainWindow):
 
     # ---------------- 触发告警：命中规则 → 响铃 / 托盘通知 / 数据区打标 ----------------
     def _load_triggers(self):
-        raw = self.settings.value("triggers", "")
-        try:
-            return triggers.sanitize_list(json.loads(raw)) if raw else []
-        except (ValueError, TypeError):
-            return []       # 配置坏掉退回空表，不因一条坏规则让整个功能不可用
+        items = _cfg_parse_json_list(self.settings.value("triggers", ""))
+        return triggers.sanitize_list(items or [])
 
     def _save_triggers(self):
         """落盘 + 让引擎换上新规则（换规则会清命中统计，故调用方已做编辑去抖）。"""
@@ -5875,13 +5892,9 @@ class CommTool(QMainWindow):
         raw = self.settings.value("connection_presets", "")
         if isinstance(raw, list):
             return connection_presets.sanitize_list(raw), True
-        if isinstance(raw, str) and raw.strip():
-            try:
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    return connection_presets.sanitize_list(data), True
-            except Exception:
-                _log.debug("_load_connection_presets failed", exc_info=True)
+        items = _cfg_parse_json_list(raw)
+        if items is not None:
+            return connection_presets.sanitize_list(items), True
         return [], False
 
     def _save_connection_presets(self):
@@ -5946,14 +5959,15 @@ class CommTool(QMainWindow):
             self.cb_proto.setCurrentText(proto)
 
         def set_combo_text(cb, value):
-            if value is None:
+            opts = [cb.itemText(i) for i in range(cb.count())]
+            decision = _cfg_resolve_combo(value, opts, editable=cb.isEditable())
+            if decision is None:
                 return
-            text_v = str(value)
-            i = cb.findText(text_v)
-            if i >= 0:
-                cb.setCurrentIndex(i)
-            elif cb.isEditable():
-                cb.setCurrentText(text_v)
+            kind, payload = decision
+            if kind == "index":
+                cb.setCurrentIndex(payload)
+            else:
+                cb.setCurrentText(payload)
 
         set_combo_text(self.cb_baud, fields.get("ser_baud"))
         set_combo_text(self.cb_databits, fields.get("ser_databits"))
@@ -6221,13 +6235,9 @@ class CommTool(QMainWindow):
 
     # ================= 自动化测试序列（send → 等回包匹配 → 通过/失败） =================
     def _load_seq_rules(self):
-        """从 settings 读序列步骤列表（JSON）。每步 dict：见 SequenceDialog（发送/期望/超时…）。"""
-        raw = self.settings.value("sequence_rules", "")
-        try:
-            rules = json.loads(raw) if raw else []
-            return rules if isinstance(rules, list) else []
-        except Exception:
-            return []
+        """Load sequence step list from settings."""
+        items = _cfg_parse_json_list(self.settings.value("sequence_rules", ""))
+        return items if items is not None else []
 
     def _seq_running(self):
         return getattr(self, "_seq_on", False)
@@ -6749,15 +6759,8 @@ class CommTool(QMainWindow):
                 _log.debug("_seq_notify failed", exc_info=True)
 
     def _load_ar_rules(self):
-        raw = self.settings.value("autoreply_rules", "")
-        if raw:
-            try:
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    return [r for r in data if isinstance(r, dict)]
-            except Exception:
-                _log.debug("_load_ar_rules failed", exc_info=True)
-        return []
+        rules = _cfg_parse_obj_list(self.settings.value("autoreply_rules", ""))
+        return rules if rules is not None else []
 
     def _set_ar_rules(self, rules):
         """对话框编辑后回调：更新内存规则并落盘。内存保留 _ 前缀运行态键（_hits/_hit_time/
@@ -6770,16 +6773,8 @@ class CommTool(QMainWindow):
         self.settings.sync()
 
     def _load_ar_frame(self):
-        """读「帧头+长度组帧」全局配置（QSettings 单 JSON 键 autoreply_frame）。"""
-        raw = self.settings.value("autoreply_frame", "")
-        cfg = {}
-        if raw:
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict):
-                    cfg = d
-            except Exception:
-                _log.debug("_load_ar_frame failed", exc_info=True)
+        """Load framing config JSON from QSettings."""
+        cfg = _cfg_parse_json_dict(self.settings.value("autoreply_frame", "")) or {}
         return self._norm_ar_frame(cfg)
 
     def _norm_ar_frame(self, cfg):
@@ -6796,15 +6791,7 @@ class CommTool(QMainWindow):
 
     # ----- C6 全局故障注入（autoreply_fault：丢包/错CRC/错长度 概率，压测主机重传/容错）-----
     def _load_ar_fault(self):
-        raw = self.settings.value("autoreply_fault", "")
-        cfg = {}
-        if raw:
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict):
-                    cfg = d
-            except Exception:
-                _log.debug("_load_ar_fault failed", exc_info=True)
+        cfg = _cfg_parse_json_dict(self.settings.value("autoreply_fault", "")) or {}
         return self._norm_ar_fault(cfg)
 
     def _norm_ar_fault(self, cfg):
@@ -6821,15 +6808,7 @@ class CommTool(QMainWindow):
     #   复位到 init + 代际 +1（作废在途延迟/多段应答）。_ar_reset_buf 只清半包缓冲、不复位状态、不动代际；
     #   『编辑规则/组帧』只调 _ar_reset_buf —— 不打断进行中的握手、在途应答照常发完 -----
     def _load_ar_sm(self):
-        raw = self.settings.value("autoreply_sm", "")
-        cfg = {}
-        if raw:
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict):
-                    cfg = d
-            except Exception:
-                _log.debug("_load_ar_sm failed", exc_info=True)
+        cfg = _cfg_parse_json_dict(self.settings.value("autoreply_sm", "")) or {}
         return self._norm_ar_sm(cfg)
 
     def _norm_ar_sm(self, cfg):
@@ -6863,15 +6842,7 @@ class CommTool(QMainWindow):
             bool(self._ar_sm.get("on")), rule, self._ar_state)
 
     def _load_ar_modbus(self):
-        raw = self.settings.value("autoreply_modbus", "")
-        cfg = {}
-        if raw:
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict):
-                    cfg = d
-            except Exception:
-                _log.debug("_load_ar_modbus failed", exc_info=True)
+        cfg = _cfg_parse_json_dict(self.settings.value("autoreply_modbus", "")) or {}
         return self._norm_ar_modbus(cfg)
 
     def _norm_ar_modbus(self, cfg):
@@ -7578,14 +7549,9 @@ class CommTool(QMainWindow):
         # 主界面很多值（发送框文本、HEX 开关、串口/网络字段等）只在退出 _shutdown 时落盘；
         # 用户刚改完立即导出会拿到旧值。先强制落一次盘保证导出是当前最新状态。
         self._save_settings()
-        s = self.settings
-        payload = {"_app": "CommTool", "_version": APP_VERSION, "settings": {}}
-        for k in self._CFG_KEYS:
-            v = s.value(k, None)
-            if v is None:
-                continue
-            # QSettings 在 ini 里把 bool 存为 'true'/'false' 字符串，原样写入即可；list/json 字符串透传
-            payload["settings"][k] = v
+        payload = _cfg_export_payload(
+            _cfg_collect_export(lambda k: self.settings.value(k, None), self._CFG_KEYS),
+            app="CommTool", version=APP_VERSION)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -7600,84 +7566,46 @@ class CommTool(QMainWindow):
                                  cancel_text=lm("否", "No", "否"))
 
     def _gate_imported_trigger_actions(self, data):
-        """Same bar as the script gates: imported triggers can run local
-        commands or POST captured data outward, so ask before keeping them.
-        Declining strips only the external actions; the rules import normally."""
-        raw = data.get("triggers")
-        if not raw:
+        """Ask before keeping imported trigger external actions."""
+        rules = _cfg_parse_json_list(data.get("triggers"))
+        if rules is None:
             return data
-        try:
-            rules = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(rules, list):
-                return data
-        except Exception:
-            return data
-
-        def _external(r):
-            return isinstance(r, dict) and bool(str(r.get("run_cmd") or "").strip()
-                                                or str(r.get("webhook_url") or "").strip())
-
-        n = sum(1 for r in rules if _external(r))
+        n = _cfg_trigger_ext_count(rules)
         if n == 0:
             return data
         if self._ar_confirm(self._t("trg_import_title"),
                             self._t("trg_import_warn", n=n)):
             return data
-        for r in rules:
-            if isinstance(r, dict):
-                for key in ("run_cmd", "run_cmd_on", "webhook", "webhook_url"):
-                    r.pop(key, None)
         new = dict(data)
-        new["triggers"] = json.dumps(rules, ensure_ascii=False)
+        new["triggers"] = _cfg_dumps_list(_cfg_strip_trigger_ext(rules))
         return new
 
     def _gate_imported_script_lib(self, data):
-        """脚本控制台库的导入门禁：导入配置若含非空脚本，征求同意；拒绝则整个丢掉 script_lib
-        （脚本会在本机以本程序权限执行，与「脚本应答」同等对待）。返回处理后的 data。"""
-        raw = data.get("script_lib")
-        if not raw:
+        """Ask before keeping imported script console library."""
+        items = _cfg_parse_json_list(data.get("script_lib"))
+        if items is None:
             return data
-        try:
-            items = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(items, list):
-                return data
-        except Exception:
-            return data
-        n = sum(1 for it in items
-                if isinstance(it, dict) and str(it.get("code") or "").strip())
+        n = _cfg_script_lib_count(items)
         if n == 0:
             return data
         if self._ar_confirm(self._t("sc_import_title"),
                             self._t("sc_import_warn", n=n)):
-            return data                     # 信任 → 保留
-        new = dict(data)                    # 拒绝 → 丢掉脚本库，其余配置照常导入
-        new.pop("script_lib", None)
-        new.pop("script_active", None)
-        return new
+            return data
+        return _cfg_drop_script_lib(data)
 
     def _ar_gate_imported_scripts(self, data):
-        """B5 安全门禁：导入配置若含非空脚本，征求同意；拒绝则清空所有脚本字段后再导入其余。
-        返回处理后的 data（autoreply_rules 字符串可能被改写）。"""
-        raw = data.get("autoreply_rules")
-        if not raw:
+        """Ask before keeping imported autoreply scripts."""
+        rules = _cfg_parse_json_list(data.get("autoreply_rules"))
+        if rules is None:
             return data
-        try:
-            rules = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(rules, list):
-                return data
-        except Exception:
-            return data
-        n = sum(1 for r in rules if isinstance(r, dict) and str(r.get("script") or "").strip())
+        n = _cfg_ar_script_count(rules)
         if n == 0:
             return data
         if self._ar_confirm(self._t("ar_script_import_title"),
                             self._t("ar_script_import_warn", n=n)):
-            return data            # 信任 → 保留脚本
-        for r in rules:            # 拒绝 → 清空脚本字段，其余配置照常导入
-            if isinstance(r, dict):
-                r.pop("script", None)
+            return data
         new = dict(data)
-        new["autoreply_rules"] = json.dumps(rules, ensure_ascii=False)
+        new["autoreply_rules"] = _cfg_dumps_list(_cfg_strip_ar_scripts(rules))
         return new
 
     def import_config(self):
@@ -7703,9 +7631,7 @@ class CommTool(QMainWindow):
         n = 0
         for k, v in data.items():
             if k in self._CFG_KEYS:
-                if isinstance(v, (dict, list)):   # B5#4：原生 JSON 对象 → 字符串（各 loader 都按 JSON 字符串读，否则规则全丢）
-                    v = json.dumps(v, ensure_ascii=False)
-                s.setValue(k, v)
+                s.setValue(k, _cfg_coerce_value(v))
                 n += 1
         s.sync()
         # 立刻刷 UI（兜底 try：刷新失败不该让导入本身报错）
@@ -7978,34 +7904,29 @@ class CommTool(QMainWindow):
 
     # ----- 发送命令历史 -----
     def _push_send_hist(self, text):
-        """成功发送后入栈：去重相邻、cap 100、落盘。重置导航态以便下次 ↑ 从最新开始。"""
-        text = text.rstrip("\r\n")
-        if not text:
+        """Push successful send into FIFO; adjacent-dedupe; cap 100; persist."""
+        if not (text or "").rstrip("\r\n"):
             return
-        if self._send_hist and self._send_hist[-1] == text:
-            self._send_hist_idx = -1
-            self._send_hist_pending = ""
-            return
-        self._send_hist.append(text)
-        if len(self._send_hist) > 100:
-            self._send_hist.pop(0)
+        new_hist, changed = _hist_push(self._send_hist, text)
+        self._send_hist = new_hist
         self._send_hist_idx = -1
         self._send_hist_pending = ""
+        if not changed:
+            return
         try:
-            self.settings.setValue("send_history", json.dumps(self._send_hist, ensure_ascii=False))
+            self.settings.setValue("send_history", _hist_dumps(self._send_hist))
         except Exception:
             _log.debug("persist send_history failed", exc_info=True)
 
     def _load_send_hist(self):
         raw = self.settings.value("send_history", "")
-        if not raw:
-            return
         try:
-            v = json.loads(raw)
-            if isinstance(v, list):
-                self._send_hist = [str(x) for x in v][-100:]
+            loaded = _hist_load_list(raw)
         except Exception:
             _log.debug("load send_history failed", exc_info=True)
+            return
+        if loaded is not None:
+            self._send_hist = loaded
 
     def _show_hist_at(self, idx):
         """加载历史第 idx 条到 txt_send，光标移末尾。idx=-1 时复原 _send_hist_pending（草稿）。"""
@@ -8055,22 +7976,12 @@ class CommTool(QMainWindow):
 
     def _load_device_registers(self):
         from device_resources import normalize_registers
-        raw = self.settings.value("device_registers", "")
-        try:
-            data = json.loads(raw) if raw else []
-        except Exception:
-            data = []
+        data = _cfg_parse_json_list(self.settings.value("device_registers", "")) or []
         return normalize_registers(data)
 
     def _load_device_link(self, key):
-        """读寄存器→绘图/仪表盘 联动标签集（JSON 列表 → set），坏值容错。"""
-        try:
-            raw = self.settings.value(key, "")
-            data = json.loads(raw) if raw else []
-        except Exception:
-            data = []
-        if not isinstance(data, list):
-            return set()
+        """Load device->plot/dash tag set from a JSON list setting."""
+        data = _cfg_parse_json_list(self.settings.value(key, "")) or []
         return {str(t) for t in data if t}
 
     def _save_device_link(self):
@@ -9612,7 +9523,7 @@ class CommTool(QMainWindow):
 
     def change_recv_font_size(self, delta):
         new_size = self._recv_font_size + delta
-        new_size = max(7, min(28, new_size))
+        new_size = _cfg_clamp_font(new_size)
         if new_size == self._recv_font_size:
             return
         self._recv_font_size = new_size
@@ -9623,17 +9534,16 @@ class CommTool(QMainWindow):
         if not hasattr(self, 'ed_max_lines'):
             return
         try:
-            n = int(self.ed_max_lines.text())
+            raw_n = int(self.ed_max_lines.text())
         except ValueError:
-            n = self.txt_recv.document().maximumBlockCount() or 10000
-        n = max(100, min(1_000_000, n))
+            raw_n = self.txt_recv.document().maximumBlockCount() or 10000
+        n = _cfg_clamp_lines(raw_n)
         self.ed_max_lines.setText(str(n))
         if hasattr(self, 'txt_recv'):
             self.txt_recv.document().setMaximumBlockCount(n)
 
     def _on_ts_format_changed(self):
-        data = self.cb_ts_format.currentData()
-        self._ts_format = data if data in ("absolute", "time", "relative", "epoch") else "absolute"
+        self._ts_format = _cfg_norm_ts(self.cb_ts_format.currentData())
         # 切到相对时间时重置会话锚点，让新格式从此刻起算
         if self._ts_format == "relative":
             self._ts_anchor = None
@@ -10223,35 +10133,27 @@ class CommTool(QMainWindow):
         self._load_send_hist()      # 发送命令历史(↑↓ 导航)
         self._reload_section_states()
 
-        def to_bool(v, default=False):
-            if isinstance(v, bool):
-                return v
-            if isinstance(v, str):
-                return v.lower() in ("true", "1", "yes")
-            return default
+        to_bool = _cfg_to_bool
 
         def restore_combo(combo, key):
-            v = s.value(key, None)
-            if v is None or v == "":
+            opts = [combo.itemText(i) for i in range(combo.count())]
+            decision = _cfg_resolve_combo(
+                s.value(key, None), opts, editable=combo.isEditable())
+            if decision is None:
                 return
-            v = str(v)
-            idx = combo.findText(v)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            elif combo.isEditable():
-                combo.setEditText(v)
+            kind, payload = decision
+            if kind == "index":
+                combo.setCurrentIndex(payload)
+            else:
+                combo.setEditText(payload)
 
         try:
             geo = s.value("geometry")
             if geo:
                 self.restoreGeometry(geo)
             elif self._profile:
-                # 新配置(无保存位置)：按 profile 序号层叠偏移，避免多窗口完全重叠、看着像只开了一个
-                try:
-                    n = int(self._profile)
-                except (ValueError, TypeError):
-                    n = 2
-                off = 40 * max(1, min(n - 1, 8))   # 钳 1..8 档，防 PID 型 profile 偏出屏幕
+                # New profile without saved geometry: cascade by profile index.
+                off = _cfg_profile_offset(self._profile)
                 self.move(self.x() + off, self.y() + off)
             h_state = s.value("h_splitter")
             if h_state:
@@ -10259,12 +10161,8 @@ class CommTool(QMainWindow):
         except Exception:
             _log.debug("_load_settings geometry failed", exc_info=True)
 
-        try:
-            size = int(s.value("recv_font_size", 10))
-            self._recv_font_size = max(7, min(28, size))
-            self.txt_recv.setFont(mono_font(self._recv_font_size))
-        except (ValueError, TypeError):
-            pass
+        self._recv_font_size = _cfg_clamp_font(s.value("recv_font_size", 10))
+        self.txt_recv.setFont(mono_font(self._recv_font_size))
 
         legacy_ts = s.value("timestamp", None)
         show_ts_raw = s.value("show_timestamp", legacy_ts if legacy_ts is not None else False)
@@ -10272,23 +10170,17 @@ class CommTool(QMainWindow):
         self.sw_rx_hex.setChecked(to_bool(s.value("rx_hex", False)), animate=False)
         hexdump_on = to_bool(s.value("hexdump_view", False))
         numview_on = to_bool(s.value("numview", False))
-        if hexdump_on and numview_on:
-            # 两种模式都接管整个数据区；导入/手改配置冲突时沿用既有渲染优先级：HEX 转储获胜。
-            # 同时修正持久值，避免下次启动再次进入冲突态。
-            numview_on = False
+        _h2, _n2 = _cfg_view_mutex(hexdump_on, numview_on)
+        if (_h2, _n2) != (hexdump_on, numview_on):
             s.setValue("numview", False)
+        hexdump_on, numview_on = _h2, _n2
         self.sw_hexdump.setChecked(hexdump_on, animate=False)
         self._hexdump_on = self.sw_hexdump.isChecked()
         restore_combo(self.cb_hexdump_width, "hexdump_width")
         # 数值视图：先钳好下拉再置开关——setChecked 会触发 _on_numview_toggled 走一遍
         # _refresh_hex_toggle_state / _reset_recv_state，此时类型下拉必须已是本配置的值
-        nv_idx = s.value("numview_type", 2)          # 默认 u16 LE（下拉第 3 项）
-        try:
-            nv_idx = int(nv_idx)
-        except (TypeError, ValueError):
-            nv_idx = 2
-        if not 0 <= nv_idx < self.cb_numview_type.count():
-            nv_idx = 2
+        nv_idx = _cfg_clamp_combo(
+            s.value("numview_type", 2), self.cb_numview_type.count(), default=2)
         self.cb_numview_type.setCurrentIndex(nv_idx)
         self.sw_numview.setChecked(numview_on, animate=False)
         self._numview_on = self.sw_numview.isChecked()
@@ -10321,15 +10213,10 @@ class CommTool(QMainWindow):
         log_split = s.value("log_split", None)
         if log_split is not None:
             self.cb_log_split.setCurrentText(str(log_split))
-        try:
-            nl_idx = int(s.value("line_nl_mode", 0))
-            if 0 <= nl_idx < self.cb_line_nl.count():
-                self.cb_line_nl.setCurrentIndex(nl_idx)
-        except (ValueError, TypeError):
-            pass
-        ts_fmt = s.value("ts_format", "absolute") or "absolute"
-        if ts_fmt not in ("absolute", "time", "relative", "epoch"):
-            ts_fmt = "absolute"
+        nl_idx = _cfg_try_combo(s.value("line_nl_mode", 0), self.cb_line_nl.count())
+        if nl_idx is not None:
+            self.cb_line_nl.setCurrentIndex(nl_idx)
+        ts_fmt = _cfg_norm_ts(s.value("ts_format", "absolute"))
         self._ts_format = ts_fmt
         self._ts_anchor = None      # 相对时间戳的会话起点（首次用时惰性定）
         idx = self.cb_ts_format.findData(ts_fmt)
@@ -10339,7 +10226,7 @@ class CommTool(QMainWindow):
         freeze_saved = s.value("freeze_view", False, type=bool)
         self.sw_freeze_view.setChecked(freeze_saved, animate=False)
         # 字符编码 — 按 codec name 查 itemData 找回上次选项
-        enc_saved = s.value("encoding", "auto") or "auto"
+        enc_saved = _cfg_norm_enc(s.value("encoding", "auto"))
         for i in range(self.cb_encoding.count()):
             if self.cb_encoding.itemData(i) == enc_saved:
                 self.cb_encoding.setCurrentIndex(i)
@@ -10361,12 +10248,9 @@ class CommTool(QMainWindow):
         QTimer.singleShot(0, self._on_theme_changed)
         self.sw_tx_hex.setChecked(to_bool(s.value("tx_hex", False)), animate=False)
         self.sw_append_newline.setChecked(to_bool(s.value("append_newline", False)), animate=False)
-        try:
-            nl_idx = int(s.value("append_nl_mode", 0))
-            if 0 <= nl_idx < self.cb_append_nl.count():
-                self.cb_append_nl.setCurrentIndex(nl_idx)
-        except (ValueError, TypeError):
-            pass
+        nl_idx = _cfg_try_combo(s.value("append_nl_mode", 0), self.cb_append_nl.count())
+        if nl_idx is not None:
+            self.cb_append_nl.setCurrentIndex(nl_idx)
         self.on_wrap_toggled(self.sw_wrap.isChecked())
 
         # 数字字段也用 is not None：导入空串场景下要能清字段（后续编辑/打开走默认逻辑兜底）
@@ -10385,12 +10269,9 @@ class CommTool(QMainWindow):
         if v is not None:
             self.txt_send.setPlainText(str(v))
 
-        try:
-            ck_idx = int(s.value("checksum_idx", 0))
-            if 0 <= ck_idx < self.cb_checksum.count():
-                self.cb_checksum.setCurrentIndex(ck_idx)
-        except (ValueError, TypeError):
-            pass
+        ck_idx = _cfg_try_combo(s.value("checksum_idx", 0), self.cb_checksum.count())
+        if ck_idx is not None:
+            self.cb_checksum.setCurrentIndex(ck_idx)
         # 连接设置恢复（类型下拉含串口+网络协议）。同样用 is not None 支持空串导入清空
         restore_combo(self.cb_proto, "net_proto")
         v = s.value("net_local_ip", None)
@@ -10460,38 +10341,34 @@ class CommTool(QMainWindow):
 
 
     def _workspace_specs(self, key):
-        """工作区卡片定义；标题沿用各工具现有翻译。"""
-        return {
-            "protocol": (("fb_title", "◇+", self.open_frame_builder),
-                         ("frame_open", "<>", self.open_frame_parse),
-                         ("tb_title", "#", self.open_toolbox),
-                         ("mbm_open", "M", self._open_modbus_master),
-                         ("device_title", "R", self._open_device_center)),
-            "simulation": (("ar_title", "↩", self.open_auto_reply),
-                           ("rr_title", "◷", self.open_rec_replay)),
-            "automation": (("seq_title", "▶", self.open_sequence),
-                           ("sc_title", "{}", self.open_script_console),
-                           ("trg_title", "!", self.open_triggers)),
-            "data": (("plot_open", "∿", self.open_plot),
-                     ("dash_open", "▦", self.open_dashboard),
-                     ("rr_title", "◷", self.open_rec_replay),
-                     ("rd_title", "≠", self.open_rec_diff),
-                     ("structured_title", "Σ", self._open_structured_record)),
-            "bridge": (("bg_title", "⇄", self.open_bridge),),
-        }.get(key, ())
+        """Workspace card entries; titles reuse existing i18n keys."""
+        bind = {
+            "fb_title": self.open_frame_builder,
+            "frame_open": self.open_frame_parse,
+            "tb_title": self.open_toolbox,
+            "mbm_open": self._open_modbus_master,
+            "device_title": self._open_device_center,
+            "ar_title": self.open_auto_reply,
+            "rr_title": self.open_rec_replay,
+            "seq_title": self.open_sequence,
+            "sc_title": self.open_script_console,
+            "trg_title": self.open_triggers,
+            "plot_open": self.open_plot,
+            "dash_open": self.open_dashboard,
+            "rd_title": self.open_rec_diff,
+            "structured_title": self._open_structured_record,
+            "bg_title": self.open_bridge,
+        }
+        out = []
+        for title_key, icon in _ws_tool_entries(key):
+            cb = bind.get(title_key)
+            if cb is not None:
+                out.append((title_key, icon, cb))
+        return tuple(out)
 
     @staticmethod
     def _workspace_template_options():
-        return (
-            ("project_proto_raw", "raw"),
-            ("project_proto_modbus_rtu", "modbus_rtu"),
-            ("project_proto_modbus_tcp", "modbus_tcp"),
-            ("project_proto_nmea", "nmea"),
-            ("project_proto_at", "at"),
-            ("project_proto_header", "fixed_header"),
-            ("project_proto_delimiter", "delimiter"),
-            ("project_proto_custom", "custom"),
-        )
+        return _ws_template_options()
 
     def _build_protocol_template_panel(self):
         panel = QFrame()
@@ -10917,16 +10794,12 @@ class CommTool(QMainWindow):
 
     @staticmethod
     def _project_fingerprint(settings):
-        return json.dumps(settings or {}, ensure_ascii=False, sort_keys=True, default=str)
+        return _cfg_project_fingerprint(settings)
 
     def _snapshot_project_settings(self):
         """Read project keys already in QSettings (no flush / no UI write-back)."""
-        personal = {"theme", "language", "auto_update_check"}
-        return {
-            k: self.settings.value(k, None)
-            for k in self._CFG_KEYS
-            if k not in personal and self.settings.value(k, None) is not None
-        }
+        return _cfg_snapshot_project(
+            lambda k: self.settings.value(k, None), self._CFG_KEYS)
 
     def _refresh_project_dirty_label(self):
         if not (self._project_name or self._project_path):
@@ -11019,13 +10892,7 @@ class CommTool(QMainWindow):
             data = self._ar_gate_imported_scripts(data)
             data = self._gate_imported_script_lib(data)
             data = self._gate_imported_trigger_actions(data)
-        converted = {}
-        for key, value in data.items():
-            if key not in self._CFG_KEYS:
-                continue
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value, ensure_ascii=False)
-            converted[key] = value
+        converted = _cfg_coerce_map(data, self._CFG_KEYS)
 
         old = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
         from project_model import prepare_project_settings
@@ -11436,24 +11303,21 @@ class CommTool(QMainWindow):
 
     # 「缺失键则不改控件」的字段（见 _load_settings：这些用 is not None/restore_combo，缺失就不动）。
     # 切换配置到不完整配置前先复位它们，避免残留上一配置的值。line edit→.text；combo→.currentText。
-    _RESET_LINE_EDITS = ("ed_packet_timeout", "ed_max_lines", "ed_period_ms",
-                         "ed_local_port", "ed_remote_ip", "ed_remote_port", "ed_group")
-    _RESET_COMBOS = ("cb_local_ip", "cb_proto", "cb_baud", "cb_databits",
-                     "cb_parity", "cb_stopbits", "cb_log_split")
+    _RESET_LINE_EDITS = _CFG_RESET_LINE_EDITS
+    _RESET_COMBOS = _CFG_RESET_COMBOS
 
     def _capture_field_defaults(self):
-        """在首次 _load_settings 覆盖前，记录上述字段的构建期默认值（= 全新配置该显示的值）。
-        供 _switch_profile 切到不完整配置时先复位，避免残留上一配置的发送文本/地址/串口参数等。"""
-        d = {"txt_send": self.txt_send.toPlainText()}
+        """Snapshot build-time defaults before _load_settings overwrites."""
+        values = {"txt_send": self.txt_send.toPlainText()}
         for n in self._RESET_LINE_EDITS:
             w = getattr(self, n, None)
             if w is not None:
-                d[n] = w.text()
+                values[n] = w.text()
         for n in self._RESET_COMBOS:
             w = getattr(self, n, None)
             if w is not None:
-                d[n] = w.currentText()
-        self._field_defaults = d
+                values[n] = w.currentText()
+        self._field_defaults = _cfg_capture_defaults(values)
 
     def _restore_field_defaults(self):
         """把 _capture_field_defaults 记录的默认值写回控件（切换配置前调用）。"""
