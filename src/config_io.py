@@ -281,3 +281,39 @@ def capture_field_defaults(values):
 def clamp_max_lines(v, default=10000):
     """Receive max-lines spin (100..1_000_000)."""
     return clamp_int(v, 100, 1_000_000, default=default)
+
+
+# --- S-2 R51/R52: settings path + apply-loaded gates ---
+
+
+def settings_ini_name(profile=""):
+    """settings.ini or settings-<profile>.ini."""
+    return "settings.ini" if not profile else "settings-%s.ini" % profile
+
+
+def clamp_group_idx(idx, n_groups):
+    """Clamp multi-send / keyword group index into [0, n) or 0."""
+    try:
+        i = int(idx)
+    except (TypeError, ValueError):
+        i = 0
+    n = int(n_groups or 0)
+    if n <= 0:
+        return 0
+    return i if 0 <= i < n else 0
+
+
+def normalize_mbm_variant(v):
+    """Whitelist Modbus master variant; unknown -> empty string."""
+    s = "" if v is None else str(v)
+    return s if s in ("", "rtu", "tcp", "ascii") else ""
+
+
+def mbm_import_enabled(requested, is_open):
+    """Import may enable master only when no live connection is open."""
+    return bool(requested) and not bool(is_open)
+
+
+def ar_mbm_mutex_disable_ar(ar_on, mbm_on):
+    """True when both AR and MBM are on after load (master wins -> disable AR)."""
+    return bool(ar_on) and bool(mbm_on)

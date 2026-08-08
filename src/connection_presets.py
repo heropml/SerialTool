@@ -382,3 +382,48 @@ def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv
     else:
         rip, rport = "", 0
     return {"ok": True, "local_ip": local_ip, "lport": lport, "rip": rip, "rport": rport}
+
+
+def open_fields_from_ui(proto, ui):
+    """Build validate_open fields dict from a flat UI snapshot."""
+    u = ui if isinstance(ui, dict) else {}
+    proto = str(proto or "")
+    if proto == "Serial":
+        return {"port": u.get("port"), "baud": u.get("baud")}
+    if proto == "Virtual":
+        return {}
+    if proto == "TCP Client":
+        return {"remote_ip": u.get("remote_ip"), "remote_port": u.get("remote_port")}
+    if proto == "UDP Multicast":
+        return {
+            "local_ip": u.get("local_ip"), "local_port": u.get("local_port"),
+            "group": u.get("group"),
+        }
+    if proto == "TCP Server":
+        return {"local_ip": u.get("local_ip"), "local_port": u.get("local_port")}
+    return {
+        "local_ip": u.get("local_ip"), "local_port": u.get("local_port"),
+        "use_remote": u.get("use_remote"),
+        "remote_ip": u.get("remote_ip"), "remote_port": u.get("remote_port"),
+    }
+
+
+def open_fields_from_reconnect(reconnect_cfg):
+    """Serial reconnect_cfg tuple -> (proto, fields)."""
+    cfg = tuple(reconnect_cfg or ())
+    if not cfg:
+        return "", {}
+    proto = cfg[0]
+    if proto == "Serial" and len(cfg) >= 3:
+        return proto, {"port": cfg[1], "baud": cfg[2]}
+    return proto, {}
+
+
+def serial_extras_from_reconnect(reconnect_cfg):
+    """(databits, parity, stopbits, flow) or None if incomplete."""
+    cfg = tuple(reconnect_cfg or ())
+    if len(cfg) < 6:
+        return None
+    flow = cfg[6] if len(cfg) > 6 else None
+    return cfg[3], cfg[4], cfg[5], flow
+

@@ -86,6 +86,11 @@ from config_io import (
     RESET_LINE_EDITS as _CFG_RESET_LINE_EDITS,
     RESET_COMBOS as _CFG_RESET_COMBOS,
     clamp_max_lines as _cfg_clamp_lines,
+    clamp_group_idx as _cfg_clamp_group_idx,
+    normalize_mbm_variant as _cfg_normalize_mbm_variant,
+    mbm_import_enabled as _cfg_mbm_import_enabled,
+    ar_mbm_mutex_disable_ar as _cfg_ar_mbm_mutex_disable_ar,
+    settings_ini_name as _cfg_settings_ini_name,
 )
 from send_history import (
     push as _hist_push,
@@ -101,6 +106,9 @@ from multi_send import (
 from connection_presets import parse_port as _conn_parse_port
 from connection_presets import parse_baud as _conn_parse_baud
 from connection_presets import validate_open as _conn_validate_open
+from connection_presets import open_fields_from_ui as _conn_open_fields_from_ui
+from connection_presets import open_fields_from_reconnect as _conn_open_fields_from_reconnect
+from connection_presets import serial_extras_from_reconnect as _conn_serial_extras
 from connection_presets import (
     serial_signature as _conn_serial_sig,
     tcp_client_signature as _conn_tcp_sig,
@@ -183,6 +191,7 @@ from modbus_timing import (
 import reconnect_policy as _reconnect_policy
 import auto_reply_gate as _ar_gate
 import rx_dispatch as _rx_dispatch
+import term_vt as _term_vt
 import modbus_feed as _mbm_feed_plan
 from modbus_poll_plan import (
     poll_reject_reason as _mbm_poll_reject_reason,
@@ -202,6 +211,10 @@ from view_format import (
     timestamp_prefix as _view_timestamp_prefix,
     view_mode_of_state as _view_mode_of_state,
     view_extra_index as _view_extra_index,
+    recv_view_prop as _view_recv_prop,
+    force_block_prefix_plan as _view_force_prefix,
+    log_block_pieces as _view_log_pieces,
+    offsets_after_trim as _view_offsets_after_trim,
 )
 
 from rx_text import (
@@ -654,7 +667,7 @@ class CommTool(QMainWindow):
         self._mbm_rules = self._load_mbm_rules()
         self._mbm_views = self._load_mbm_views()
         self._mbm_on = self.settings.value("modbus_master_on", False, type=bool)
-        if self._mbm_on and self._ar_on:
+        if _cfg_ar_mbm_mutex_disable_ar(self._ar_on, self._mbm_on):
             self._ar_on = False       # 主机/自动应答共用同一收流，启动时主机模式优先，禁止假双开
             self.settings.setValue("autoreply_on", False)
         self._mbm_variant = self.settings.value("modbus_master_variant", "", type=str)  # ""=按连接自动
@@ -2074,8 +2087,7 @@ class CommTool(QMainWindow):
         t = THEMES.get(tid, THEMES[THEME_DEFAULT])
 
         # Tooltip 在 dark mode 用浅色 (反差)，light 用深色
-        tooltip_bg = "#F2F2F7" if t.get("mode") == "dark" else "#1C1C1E"
-        tooltip_fg = "#1C1C1E" if t.get("mode") == "dark" else "#FFFFFF"
+        tooltip_bg, tooltip_fg = _term_vt.tooltip_colors(t.get("mode"))
 
         qss = f"""
         QMainWindow, QWidget#Central, QWidget#Content {{
@@ -2751,37 +2763,23 @@ class CommTool(QMainWindow):
 
     def open_conn(self, reconnect_cfg=None):
         """Open the connection described by the current UI (or reconnect_cfg)."""
-        proto = reconnect_cfg[0] if reconnect_cfg else self.cb_proto.currentText()
-        if proto == PROTO_SERIAL:
-            port = reconnect_cfg[1] if reconnect_cfg else self.cb_port.currentData()
-            baud_text = reconnect_cfg[2] if reconnect_cfg else self.cb_baud.currentText()
-            fields = {"port": port, "baud": baud_text}
-        elif proto == PROTO_VIRTUAL:
-            fields = {}
-        elif proto == PROTO_TCP_CLIENT:
-            fields = {
-                "remote_ip": self.ed_remote_ip.text(),
-                "remote_port": self.ed_remote_port.text(),
-            }
-        elif proto == PROTO_UDP_MULTICAST:
-            fields = {
-                "local_ip": self.cb_local_ip.currentText(),
-                "local_port": self.ed_local_port.text(),
-                "group": self.ed_group.text(),
-            }
-        elif proto == PROTO_TCP_SERVER:
-            fields = {
-                "local_ip": self.cb_local_ip.currentText(),
-                "local_port": self.ed_local_port.text(),
-            }
-        else:  # UDP
-            fields = {
-                "local_ip": self.cb_local_ip.currentText(),
-                "local_port": self.ed_local_port.text(),
-                "use_remote": self.sw_udp_remote.isChecked(),
-                "remote_ip": self.ed_remote_ip.text(),
-                "remote_port": self.ed_remote_port.text(),
-            }
+        ui_fields = {
+            "port": self.cb_port.currentData(),
+            "baud": self.cb_baud.currentText(),
+            "remote_ip": self.ed_remote_ip.text(),
+            "remote_port": self.ed_remote_port.text(),
+            "local_ip": self.cb_local_ip.currentText(),
+            "local_port": self.ed_local_port.text(),
+            "group": self.ed_group.text(),
+            "use_remote": self.sw_udp_remote.isChecked(),
+        }
+        if reconnect_cfg:
+            proto, fields = _conn_open_fields_from_reconnect(reconnect_cfg)
+            if not fields:
+                fields = _conn_open_fields_from_ui(proto, ui_fields)
+        else:
+            proto = self.cb_proto.currentText()
+            fields = _conn_open_fields_from_ui(proto, ui_fields)
         checked = _conn_validate_open(
             proto, fields,
             is_valid_ip=is_valid_ip,
@@ -2794,15 +2792,21 @@ class CommTool(QMainWindow):
             else:
                 self.toast(self._t(checked.get("toast", "err_bad_port")), error=True)
             return
+        port = checked.get("port") if proto == PROTO_SERIAL else None
         if proto == PROTO_SERIAL:
-            databits = reconnect_cfg[3] if reconnect_cfg else self.cb_databits.currentText()
-            parity = reconnect_cfg[4] if reconnect_cfg else self.cb_parity.currentText()
-            stopbits = reconnect_cfg[5] if reconnect_cfg else self.cb_stopbits.currentText()
-            flow = (reconnect_cfg[6] if reconnect_cfg and len(reconnect_cfg) > 6
-                    else self.cb_flow.currentText())
+            extras = _conn_serial_extras(reconnect_cfg) if reconnect_cfg else None
+            if extras is not None:
+                databits, parity, stopbits, flow = extras
+                if flow is None:
+                    flow = self.cb_flow.currentText()
+            else:
+                databits = self.cb_databits.currentText()
+                parity = self.cb_parity.currentText()
+                stopbits = self.cb_stopbits.currentText()
+                flow = self.cb_flow.currentText()
             sp = _resolve_serial_params(databits, parity, stopbits, flow)
             conn = SerialConn(
-                checked["port"], checked["baud"], sp["bytesize"],
+                port, checked["baud"], sp["bytesize"],
                 sp["parity"], sp["stopbits"], flow=sp["flow"])
         elif proto == PROTO_VIRTUAL:
             conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
@@ -4010,22 +4014,24 @@ class CommTool(QMainWindow):
         cursor.movePosition(QTextCursor.End)
 
         prefix = ""
-        if force_new_block:
-            if not self._txt_ends_with_nl:
-                cursor.insertText("\n")
-                self._txt_ends_with_nl = True
-            if self.sw_show_timestamp.isChecked():
-                # 箭头跟时间戳绑一起：时间戳关掉时也不显示，纯数据更干净
-                prefix = self._timestamp_prefix(direction)
-            if prefix:
-                # 时间戳 + 箭头用 ts 灰色（淡化）
-                ts_fmt = QTextCharFormat()
-                # 时间戳色朝正文 fg 靠拢 40%，提高对比度（原 ts 偏淡看不清）
-                ts_fmt.setForeground(QColor(self._role_color(ROLE_TS, theme)))
-                ts_fmt.setProperty(ROLE_PROP, ROLE_TS)
-                cursor.setCharFormat(ts_fmt)
-                cursor.insertText(prefix)
-                self._txt_ends_with_nl = False
+        plan = _view_force_prefix(
+            force_new_block=force_new_block,
+            ends_with_nl=self._txt_ends_with_nl,
+            show_timestamp=self.sw_show_timestamp.isChecked())
+        if plan["need_leading_nl"]:
+            cursor.insertText("\n")
+            self._txt_ends_with_nl = True
+        if plan["want_ts"]:
+            prefix = self._timestamp_prefix(direction)
+        if prefix:
+            # 时间戳 + 箭头用 ts 灰色（淡化）
+            ts_fmt = QTextCharFormat()
+            # 时间戳色朝正文 fg 靠拢 40%，提高对比度（原 ts 偏淡看不清）
+            ts_fmt.setForeground(QColor(self._role_color(ROLE_TS, theme)))
+            ts_fmt.setProperty(ROLE_PROP, ROLE_TS)
+            cursor.setCharFormat(ts_fmt)
+            cursor.insertText(prefix)
+            self._txt_ends_with_nl = False
 
         # 正文用 body_color；role 可由调用方指定 —— 告警标记这类「我们自己插的说明行」
         # 要用装饰角色(ROLE_TS)，否则会被当成设备发来的 RX 正文参与关键字过滤与统计。
@@ -4036,14 +4042,8 @@ class CommTool(QMainWindow):
         body_fmt.setForeground(QColor(body_color))
         body_fmt.setProperty(ROLE_PROP, body_role)
         if view_mode is None:
-            if self._hexdump_on:
-                view_mode = VIEW_HEXDUMP
-            elif self._numview_on:
-                view_mode = VIEW_NUMERIC
-            elif self.sw_rx_hex.isChecked():
-                view_mode = VIEW_HEX
-            else:
-                view_mode = VIEW_TEXT
+            view_mode = _view_recv_prop(
+                self._hexdump_on, self._numview_on, self.sw_rx_hex.isChecked())
         body_fmt.setProperty(VIEW_PROP, view_mode)
         cursor.setCharFormat(body_fmt)
         first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
@@ -4082,10 +4082,10 @@ class CommTool(QMainWindow):
         # 恢复用户选区(防末尾插入把选区端点推后、延伸覆盖新数据)。按原绝对偏移重建，钉在插入前位置。
         trimmed = self._trim_recv_overflow()
         if trimmed:
-            body_start_pos = max(0, body_start_pos - trimmed)
+            body_start_pos, = _view_offsets_after_trim(trimmed, body_start_pos)
             if had_sel:
-                sel_anchor = max(0, sel_anchor - trimmed)
-                sel_pos = max(0, sel_pos - trimmed)
+                sel_anchor, sel_pos = _view_offsets_after_trim(
+                    trimmed, sel_anchor, sel_pos)
 
         if had_sel:
             tc = self.txt_recv.textCursor()
@@ -4113,20 +4113,13 @@ class CommTool(QMainWindow):
         if not self._log_file:
             return
         try:
-            pieces = []
-            if force_new_block:
-                if not getattr(self, "_log_ends_with_nl", True):
-                    pieces.append("\n")
-                    self._log_ends_with_nl = True
-                if self.sw_show_timestamp.isChecked():
-                    if prefix is None:
-                        prefix = self._timestamp_prefix(direction)
-                    if prefix:
-                        pieces.append(prefix)
-                        self._log_ends_with_nl = False
-            pieces.append(text)
-            if text:
-                self._log_ends_with_nl = text.endswith("\n")
+            if force_new_block and self.sw_show_timestamp.isChecked() and prefix is None:
+                prefix = self._timestamp_prefix(direction)
+            pieces, self._log_ends_with_nl = _view_log_pieces(
+                text=text, force_new_block=force_new_block,
+                log_ends_with_nl=getattr(self, "_log_ends_with_nl", True),
+                prefix=prefix,
+                show_timestamp=self.sw_show_timestamp.isChecked())
             self._log_file.write("".join(pieces))
             self._log_file.flush()
             self._maybe_rotate_log()    # 超过分包上限则切到下一个文件
@@ -6745,13 +6738,13 @@ class CommTool(QMainWindow):
         if requested_mbm_on != self._mbm_on:
             s.setValue("modbus_master_on", False)
             s.sync()
-        variant = s.value("modbus_master_variant", "", type=str)
-        self._mbm_variant = variant if variant in ("", "rtu", "tcp", "ascii") else ""
+        self._mbm_variant = _cfg_normalize_mbm_variant(
+            s.value("modbus_master_variant", "", type=str))
         self._mbm_echo = s.value("modbus_master_echo", False, type=bool)
         self._device_registers = self._load_device_registers()
         self._device_plot_tags = self._load_device_link("device_plot_tags")
         self._device_dash_tags = self._load_device_link("device_dash_tags")
-        if self._mbm_on and self._ar_on:
+        if _cfg_ar_mbm_mutex_disable_ar(self._ar_on, self._mbm_on):
             # 加载结果也保持互斥（主机优先）。走 _set_autoreply_enabled 而非手设标志，
             # 才能一并复位状态机 + 同步「打开着的」自动应答对话框 checkbox（否则对话框
             # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
@@ -6761,12 +6754,8 @@ class CommTool(QMainWindow):
         # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
         # 后续编辑（commit 走旧内存）把加载的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
         self._ms_groups, _ = self._load_ms_groups()
-        try:
-            self._ms_group_idx = int(s.value("multi_send_group_idx", 0))
-        except (ValueError, TypeError):
-            self._ms_group_idx = 0
-        if not (0 <= self._ms_group_idx < len(self._ms_groups)):
-            self._ms_group_idx = 0
+        self._ms_group_idx = _cfg_clamp_group_idx(
+            s.value("multi_send_group_idx", 0), len(self._ms_groups))
         self._rebuild_ms_group_combo()
         self._rebuild_ms_quick_bar()
         self._snippets, snippets_ok = self._load_snippets()
@@ -7133,7 +7122,7 @@ class CommTool(QMainWindow):
 
     def _mbm_import_enabled(self, requested):
         """连接期间导入只加载规则，不继承“启用”状态，避免导入动作直接产生总线写入。"""
-        return bool(requested and not self._is_open())
+        return _cfg_mbm_import_enabled(requested, self._is_open())
 
     def _mbm_restart(self):
         """开关/连接/规则/变体变化后：复位运行态并按需启动轮询。"""
@@ -8142,25 +8131,22 @@ class CommTool(QMainWindow):
         else:
             cur.movePosition(QTextCursor.End)
         stream_source = source if self._conn_proto == PROTO_TCP_SERVER else None
-        if stream_source is None:
-            term_sgr = self._term_sgr
-            esc = self._term_esc          # 跨块残留的未完成转义序列
+        st = _term_vt.resolve_stream_state(
+            getattr(self, "_term_streams", {}), stream_source,
+            global_sgr=self._term_sgr, global_esc=self._term_esc,
+            global_discard_csi=self._term_discard_csi,
+            global_discard_osc=self._term_discard_osc,
+            global_osc_prev_esc=self._term_osc_prev_esc)
+        term_sgr = st["sgr"]
+        esc = st["esc"]
+        discard_csi = st["discard_csi"]
+        discard_osc = st["discard_osc"]
+        osc_prev_esc = st["osc_prev_esc"]
+        if st["use_global"]:
             self._term_esc = ""
-            discard_csi = self._term_discard_csi
             self._term_discard_csi = False
-            discard_osc = self._term_discard_osc
             self._term_discard_osc = False
-            osc_prev_esc = self._term_osc_prev_esc
             self._term_osc_prev_esc = False
-        else:
-            # 多客户端共用一个显示文档，但协议解析状态不能共用：否则 A 的半条 ESC[
-            # 会吃掉 B 的正文，A 的红色 SGR 也会把 B 的日志染红。
-            stream = self._term_streams.get(stream_source, {})
-            term_sgr = stream.get("sgr")
-            esc = stream.get("esc", "")
-            discard_csi = stream.get("discard_csi", False)
-            discard_osc = stream.get("discard_osc", False)
-            osc_prev_esc = stream.get("osc_prev_esc", False)
         buf = []
         # 基础格式必须从零构造，不能沿用光标处的格式：光标停在上一段带色文字后面时，
         # 继承来的格式会连 ANSI 的颜色和属性一起带上 —— 关掉 ANSI 着色后新文字仍是红的。
@@ -8256,27 +8242,23 @@ class CommTool(QMainWindow):
         _flush()
         if stream_source is None:
             self._term_sgr = term_sgr
-            self._term_esc = esc          # 未完成的转义序列留到下次拼接
+            self._term_esc = esc
             self._term_discard_csi = discard_csi
             self._term_discard_osc = discard_osc
             self._term_osc_prev_esc = osc_prev_esc
         else:
-            self._term_streams[stream_source] = {
-                "sgr": term_sgr,
-                "esc": esc,
-                "discard_csi": discard_csi,
-                "discard_osc": discard_osc,
-                "osc_prev_esc": osc_prev_esc,
-            }
+            self._term_streams = _term_vt.store_stream_state(
+                self._term_streams, stream_source,
+                sgr=term_sgr, esc=esc, discard_csi=discard_csi,
+                discard_osc=discard_osc, osc_prev_esc=osc_prev_esc)
         self._term_pos = cur.position()
         # Terminal bypasses _append_block_data; apply the same char budget and
         # keep _term_pos valid after a head trim (P1: no-newline growth).
         trimmed = self._trim_recv_overflow()
         if trimmed and self._term_pos is not None:
-            self._term_pos = max(0, self._term_pos - trimmed)
             last = self.txt_recv.document().characterCount() - 1
-            if self._term_pos > last:
-                self._term_pos = max(0, last)
+            self._term_pos = _term_vt.term_pos_after_trim(
+                self._term_pos, trimmed, last)
         # Keep line-end flag in sync for non-terminal RX after leaving terminal.
         self._txt_ends_with_nl = self.txt_recv.document().lastBlock().text() == ""
         if was_bottom:
@@ -8931,7 +8913,7 @@ class CommTool(QMainWindow):
         profile：多窗口配置隔离。""=主配置 settings.ini（含旧版路径兼容）；其余=settings-<profile>.ini
         （只放主可写位置，不做旧版兼容——是新开的独立会话，本就该从默认起）。
         """
-        name = "settings.ini" if not profile else "settings-%s.ini" % profile
+        name = _cfg_settings_ini_name(profile)
         if sys.platform == "darwin":
             cfg_dir = os.path.join(
                 os.path.expanduser("~/Library/Application Support"), "CommTool")
@@ -9092,7 +9074,8 @@ class CommTool(QMainWindow):
                 s.value("sec_recv_more", False, type=bool), emit=False)
         if hasattr(self, "sec_send_term"):
             term_on = s.value("terminal_mode", getattr(self, "_terminal_on", False), type=bool)
-            expanded = s.value("sec_send_term", False, type=bool) or term_on
+            expanded = _send_options_card.term_section_expanded(
+                s.value("sec_send_term", False, type=bool), term_on)
             self.sec_send_term.setExpanded(expanded, emit=False)
 
     def _load_settings(self):

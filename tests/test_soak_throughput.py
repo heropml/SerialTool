@@ -530,13 +530,37 @@ def test_extended_virtual_disconnect_soak(monkeypatch, tmp_path):
     not _serial_soak_ports(),
     reason="set COMMTOOL_SOAK_SERIAL=COMx[,COMy] for real-port disconnect soak",
 )
-def test_real_serial_ports_listed_for_nightly():
-    """Gate only: real COM soak needs hardware; document ports are parseable.
+def test_real_serial_open_close_soak():
+    """Optional hardware gate: open/close each listed COM (skip if busy).
 
-    Nightly jobs that set COMMTOOL_SOAK_SERIAL should replace this stub with a
-    machine-specific open/close harness. Default CI never enters here.
+    Default CI never enters here. Nightly: COMMTOOL_SOAK_SERIAL=COMx[,COMy]
+    and optionally COMMTOOL_SOAK_NIGHTLY=1 for more cycles.
     """
+    import serial
+    from serial_io import SerialConn
+
     ports = _serial_soak_ports()
     assert ports
-    for p in ports:
-        assert p.upper().startswith("COM") or p.startswith("/dev/")
+    cycles = 20 if str(os.environ.get("COMMTOOL_SOAK_NIGHTLY", "")).strip().lower() in (
+        "1", "true", "yes", "on") else 3
+    opened_any = False
+    for port in ports:
+        assert port.upper().startswith("COM") or port.startswith("/dev/")
+        conn = SerialConn(
+            port, 115200, serial.EIGHTBITS, serial.PARITY_NONE,
+            serial.STOPBITS_ONE, flow="none")
+        if not conn.open():
+            continue
+        opened_any = True
+        try:
+            assert conn.is_open
+            for _ in range(cycles):
+                conn.close()
+                assert not conn.is_open
+                assert conn.open() is True
+                _APP.processEvents()
+                time.sleep(0.02)
+        finally:
+            conn.close()
+    if not opened_any:
+        pytest.skip("listed serial ports unavailable/busy: %s" % ",".join(ports))

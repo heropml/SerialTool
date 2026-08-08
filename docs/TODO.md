@@ -116,8 +116,8 @@
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成：静默 pass 9→8（本轮结构化侧路改 debug）；余下 8 处为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 50 knives: GUI build_* DONE; R43-R50 runtime extracts (reconnect/poll/seq/AR-gate + rx_dispatch/tx_plan/modbus_feed/AR post-hit); remaining is CommTool display/settings I/O orchestration |
-| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端突发+重连 churn 已落地；`VirtualConn.simulate_link_drop` 断线重连基线已补；`COMMTOOL_SOAK_DISCONNECT=1` 可选长跑；`COMMTOOL_SOAK_SERIAL=COMx` 真机门禁（未设则 skip） |
+| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 55 knives DONE: GUI build_* + R43-R55 runtime/display/settings/conn extracts; main_window keeps Qt/QSS/i18n shells and thin wrappers (intentional; not further knife targets) |
+| S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端突发+重连 churn 已落地；`VirtualConn.simulate_link_drop` 断线重连基线已补；`COMMTOOL_SOAK_DISCONNECT=1` 可选长跑；`COMMTOOL_SOAK_SERIAL=COMx[,COMy]` 真机 open/close soak （未设/占用则 skip）；`COMMTOOL_SOAK_NIGHTLY=1` 加密循环 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
 
@@ -255,8 +255,13 @@
 - **R48 (v1.4 S-2)** expand `auto_reply_core` (parse_tx_hex / append_tx_newline / send_preflight / classify_send_result / tx_display_mode); `_send_text` thin wrapper; `tests/test_s2_r48_tx_plan.py`.
 - **R49 (v1.4 S-2)** extract `src/modbus_feed.py` (idle_guard / clamp / echo / resync); `_mbm_feed` thin wrapper; `tests/test_s2_r49_modbus_feed.py`.
 - **R50 (v1.4 S-2)** expand `auto_reply_gate` (reply_path / post_hit_plan / clear_pending_on_schedule_error); `_ar_match` post-hit thin wrapper; `tests/test_s2_r50_ar_post_hit.py`.
-- **S-3 disconnect soak:** `VirtualConn.simulate_link_drop`; CI virtual drop/reconnect tests; env gates `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL`.
-- **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. Remaining size is runtime business logic (RX/TX/Modbus/sequence/settings I/O), not UI construction.
+- **R51 (v1.4 S-2)** expand `config_io` (settings_ini_name / clamp_group_idx / normalize_mbm_variant / mbm_import_enabled / ar_mbm_mutex_disable_ar); settings load thin wrappers.
+- **R52 (v1.4 S-2)** wire `send_options_card.term_section_expanded` in `_reload_section_states`.
+- **R53 (v1.4 S-2)** expand `view_format` (recv_view_prop / force_block_prefix_plan / log_block_pieces / offsets_after_trim); `_append_block_data` / `_write_log_block` thin wrappers.
+- **R54 (v1.4 S-2)** expand `connection_presets` (open_fields_from_ui / open_fields_from_reconnect / serial_extras_from_reconnect); `open_conn` field harvest thin wrappers.
+- **R55 (v1.4 S-2)** extract `src/term_vt.py` (resolve/store stream state / term_pos_after_trim / tooltip_colors); `_terminal_append` / `apply_style` thin wrappers.
+- **S-3 disconnect soak:** `VirtualConn.simulate_link_drop`; CI virtual drop/reconnect tests; env gates `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL` (real COM open/close harness, busy->skip).
+- **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. Remaining size is intentional Qt shells (QSS/`_apply_language` widget walks, `_settings_file` path I/O, VT parse loop) plus thin wrappers over extracted helpers.
 
 - **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool - title` (was middle-dot); `apply_fault` returns `(frame, tags_list)` not localized string; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch);  R44: `validate_response` uses `info.get("qty")` (missing qty -> badresp instead of KeyError; normalize_poll / inflight always supply qty on real path); `_mbm_poll` first-reject due uses `r.get("period") or 1000` (was hard-coded 1000; keeps 1000 only when period itself is missing).
 - **S-2 review (post R33):** logic/dead-code/imports/DAG/tests clean; no bug regressions vs last commit. Low-pri polish: drop unused top-level time noqa + rename compute_checksum locals (done); `print_function` kept as project convention; R17 `subst_reply`/`build_parts` covered in `tests/test_s2_r17_r18.py` (not r14_r16).

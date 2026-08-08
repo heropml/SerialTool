@@ -89,3 +89,55 @@ def view_extra_index(mode, terminal_on=False):
     if terminal_on:
         return 0
     return {"text": 0, "hex": 1, "dump": 2, "num": 3}.get(mode, 0)
+
+# CharFormat VIEW_* ints (parallel to view_mode_of_state string ids).
+VIEW_TEXT = 1
+VIEW_HEX = 2
+VIEW_HEXDUMP = 3
+VIEW_NUMERIC = 4
+VIEW_TERMINAL = 5
+
+
+def recv_view_prop(hexdump_on, numview_on, rx_hex):
+    """Map receive toggles -> QTextFormat VIEW_* int."""
+    if hexdump_on:
+        return VIEW_HEXDUMP
+    if numview_on:
+        return VIEW_NUMERIC
+    if rx_hex:
+        return VIEW_HEX
+    return VIEW_TEXT
+
+
+def force_block_prefix_plan(*, force_new_block, ends_with_nl, show_timestamp):
+    """Decide leading newline / timestamp for a new display block."""
+    if not force_new_block:
+        return {"need_leading_nl": False, "want_ts": False}
+    return {
+        "need_leading_nl": not bool(ends_with_nl),
+        "want_ts": bool(show_timestamp),
+    }
+
+
+def log_block_pieces(*, text, force_new_block, log_ends_with_nl, prefix, show_timestamp):
+    """Build pieces for one log write; return (pieces, new_ends)."""
+    pieces = []
+    ends = bool(log_ends_with_nl)
+    if force_new_block:
+        if not ends:
+            pieces.append("\n")
+            ends = True
+        if show_timestamp and prefix:
+            pieces.append(prefix)
+            ends = False
+    pieces.append(text or "")
+    if text:
+        ends = text.endswith("\n")
+    return pieces, ends
+
+
+def offsets_after_trim(trimmed, *positions):
+    """Subtract trimmed chars from absolute positions (floor at 0)."""
+    n = max(0, int(trimmed or 0))
+    return tuple(max(0, int(p) - n) for p in positions)
+
