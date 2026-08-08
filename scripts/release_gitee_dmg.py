@@ -16,6 +16,7 @@ Setup.exe」（见 release_gitee.py），dmg 与 onefile 只发 GitHub。仅在�
 """
 import os
 import sys
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from release_gitee import OWNER, REPO, get_token, get_version, api, upload, die  # noqa: E402
@@ -33,11 +34,13 @@ def main():
     fname = os.path.basename(dmg)
     print(f">> Gitee 补传 macOS 包到 {tag}：{fname}")
 
-    # 1. 找已有 release（不新建：Windows 版应已建好；找不到就报错，避免发出没有 .exe 的残缺 release）
-    st, rels = api("GET", "/releases", {"access_token": token})
-    if st != 200 or not isinstance(rels, list):
-        die(f"查 release 列表失败：HTTP {st} {rels}")
-    rel = next((r for r in rels if r.get("tag_name") == tag), None)
+    # 1. 按 tag 精确查询已有 release。Release 列表会分页，不能只扫描首页。
+    st, rel = api("GET", f"/releases/tags/{quote(tag, safe='')}",
+                  {"access_token": token})
+    if st == 404 or (st == 200 and rel is None):
+        rel = None
+    elif st != 200 or not isinstance(rel, dict):
+        die(f"按 tag 查询 release 失败：HTTP {st} {rel}")
     if not rel:
         die(f"Gitee 上没有 Release {tag}（请先发 Windows 版 / 建好该 Release）")
     rid = rel["id"]
