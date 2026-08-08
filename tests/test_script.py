@@ -6457,12 +6457,14 @@ class SerialLiveParamsUiTests(unittest.TestCase):
 
     def test_maps_shared_with_open_conn(self):
         """建连接与动态改参数必须共用同一份映射，两处解释不允许分叉。"""
-        import main_window as MW
         import serial
-        self.assertEqual(MW._PARITY_MAP["Even"], serial.PARITY_EVEN)
-        self.assertEqual(MW._DATABITS_MAP["8"], serial.EIGHTBITS)
-        self.assertEqual(MW._STOPBITS_MAP["1.5"], serial.STOPBITS_ONE_POINT_FIVE)
-        self.assertEqual(MW._FLOW_MAP["RTS/CTS"], "rtscts")
+        from serial_params import (
+            PARITY_MAP, DATABITS_MAP, STOPBITS_MAP, FLOW_MAP,
+        )
+        self.assertEqual(PARITY_MAP["Even"], serial.PARITY_EVEN)
+        self.assertEqual(DATABITS_MAP["8"], serial.EIGHTBITS)
+        self.assertEqual(STOPBITS_MAP["1.5"], serial.STOPBITS_ONE_POINT_FIVE)
+        self.assertEqual(FLOW_MAP["RTS/CTS"], "rtscts")
 
     def test_live_flow_change_toggles_rts_switch(self):
         """改流控后手动 RTS 开关的启用态要跟着变——RTS/CTS 下硬件接管、禁用手动开关。

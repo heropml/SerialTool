@@ -37,6 +37,17 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 
 ---
 
+## What's New in v1.4.1
+
+Official maintainability release on top of v1.4.0 capabilities:
+
+- **S-2 architecture** -- extract Qt-free service modules (R1–R33) and GUI `build_*` factories (R34–R42); `CommTool` stays a thin assembler.
+- **S-1 / S-3 / S-4 / S-5** -- quieter exception logging, soak/reconnect burst harness, size-based log roll, actionable connection/send toasts, send-history search, Modbus master one-shot R/W.
+- **Fixes** -- empty `[]`/`{}` JSON parse no longer becomes `None`; empty send still resets history nav; dead imports cleaned; single-block RX overflow trim without newlines.
+- **Tests** -- 1148 passed / 4 skipped / 291 subtests.
+
+---
+
 ## What's New in v1.4.0
 
 Official stability release:
@@ -759,7 +770,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.4.0`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.4.1`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
