@@ -252,7 +252,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._is_open = lambda: True
             w._send_target = lambda: None
             w._conn_proto = "TCP Client"
-            w.close_conn = lambda: closed.append(True)
+            w.close_conn = lambda *_a, **_k: closed.append(True)
             w._schedule_reconnect = lambda: reconnects.append(True)
             self.assertFalse(w._mbm_send_raw(frame))
             self.assertEqual((w.tx_bytes, w.tx_packets), (old_bytes, old_packets))
@@ -3183,7 +3183,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                w._conn_cfg, w._serial_reconnect_cfg)
         try:
             w._schedule_reconnect = lambda: n.__setitem__("reconnect", n["reconnect"] + 1)
-            w.close_conn = lambda: None
+            w.close_conn = lambda *_a, **_k: None
             w.toast = lambda *a, **k: None
             w._refresh_stat_labels = lambda *a, **k: None
             w.conn = None
@@ -3215,7 +3215,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                w.close_conn, w.toast, w._schedule_reconnect, w._conn_cfg,
                w._serial_reconnect_cfg, w._available_serial_devices)
         try:
-            w.close_conn = lambda: calls.__setitem__("close", calls["close"] + 1)
+            w.close_conn = lambda *_a, **_k: calls.__setitem__(
+                "close", calls["close"] + 1)
             w.toast = lambda *a, **k: calls.__setitem__("toast", calls["toast"] + 1)
             w._schedule_reconnect = lambda: calls.__setitem__("reconnect", calls["reconnect"] + 1)
             w.conn = object()                      # 假装已连接
@@ -3465,7 +3466,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._conn_engaged = True
             w._reconnect_attempts = 3  # 即使计数异常残留，首次掉线仍必须提示
             w._serial_reconnect_cfg = None
-            w.close_conn = lambda: None
+            w.close_conn = lambda *_a, **_k: None
             w.toast = lambda *a, **k: calls.__setitem__("toast", calls["toast"] + 1)
             w._schedule_reconnect = lambda: calls.__setitem__("schedule", calls["schedule"] + 1)
             w._refresh_stat_labels = lambda *a, **k: None
@@ -5329,6 +5330,15 @@ class VirtualConnTests(unittest.TestCase):
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))
 class OfflineIntegrationTests(unittest.TestCase):
     """虚拟连接 + 录制/回放 + DSL 在主窗里的接线。"""
+
+    @classmethod
+    def setUpClass(cls):
+        # Earlier GUI-heavy classes deliberately share one CommTool.  Reusing
+        # that same native Qt window for another integration block can retain
+        # mutated widget/session state and terminate the Windows process without
+        # a Python traceback.  This class tests a fresh offline runtime.
+        global _WIN
+        _WIN = None
 
     def _virtual(self, loopback=False):
         from virtual_io import PROTO_VIRTUAL

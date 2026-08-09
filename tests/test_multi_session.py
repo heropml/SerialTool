@@ -422,6 +422,78 @@ def test_restore_sessions_is_idempotent(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
+def test_restore_first_session_uses_complete_persisted_state(monkeypatch, tmp_path):
+    """The reused first tab must restore the same fields as later tabs."""
+    w = _window(monkeypatch, tmp_path, "restore-first-complete")
+    first = w.active_session().to_persist()
+    first.update({
+        "id": "persisted-first",
+        "title": "stale-default-label",
+        "title_index": 7,
+        "send_count": 259,
+        "send_target": "client-a",
+    })
+    w.settings.setValue("sessions_v1", json.dumps([first]))
+
+    w._restore_sessions_settings()
+
+    restored = w.active_session()
+    assert restored.id == "persisted-first"
+    assert restored.title_index == 7
+    assert restored.tab_label() == "%s-7" % w._t("session_default")
+    assert restored._send_count == 3
+    assert restored.send_target == "client-a"
+    assert restored.txt_recv.property("session_id") == restored.id
+    w._close_all_sessions()
+
+
+def test_restore_repairs_duplicate_ids_and_malformed_fields(monkeypatch, tmp_path):
+    """One damaged entry must not break startup or session-id routing."""
+    w = _window(monkeypatch, tmp_path, "restore-repair")
+    base = w.active_session().to_persist()
+    first = dict(base, id="duplicate", title_index="bad",
+                 conn_fields={"net_proto": ["bad"], "net_use_remote": "false"},
+                 send_draft=["bad"], period_on="false", log_wanted="false",
+                 log_base_path=["bad"], display_opts={"line_nl": "bad"})
+    second = dict(base, id="duplicate", title="Second", title_index=None)
+    w.settings.setValue(
+        "sessions_v1", json.dumps([first, "bad-entry", second]))
+
+    w._restore_sessions_settings()
+
+    sessions = w.sessions()
+    assert len(sessions) == 2
+    assert len({s.id for s in sessions}) == 2
+    assert sessions[0].conn_fields == {"net_use_remote": False}
+    assert sessions[0].send_draft == ""
+    assert sessions[0].log_base_path == ""
+    assert sessions[0].period_on is False
+    assert sessions[0].log_wanted is False
+    assert w.cb_line_nl.currentIndex() == 0
+    assert w.close_session(sessions[0].id) is True
+    assert len(w.sessions()) == 1
+    w._close_all_sessions()
+
+
+def test_default_title_index_continues_after_restore_per_window(
+        monkeypatch, tmp_path):
+    w1 = _window(monkeypatch, tmp_path, "title-restore-window-1")
+    base = w1.active_session().to_persist()
+    payload = [dict(base, id="s%d" % n, title_index=i)
+               for n, i in enumerate((1, 2, 2), 1)]
+    w1.settings.setValue("sessions_v1", json.dumps(payload))
+    w1._restore_sessions_settings()
+    assert [s.title_index for s in w1.sessions()] == [1, 2, 3]
+    added1 = w1.add_session(activate=False)
+    assert added1.title_index == 4
+
+    w2 = _window(monkeypatch, tmp_path, "title-restore-window-2")
+    added2 = w2.add_session(activate=False)
+    assert added2.title_index == 2
+    w1._close_all_sessions()
+    w2._close_all_sessions()
+
+
 def test_reset_sessions_closes_every_connection(monkeypatch, tmp_path):
     """Profile replacement must not leave hidden old-profile links running."""
     w = _window(monkeypatch, tmp_path, "reset-all")
@@ -471,6 +543,52 @@ def test_background_rx_uses_own_display_options(monkeypatch, tmp_path):
     assert w.switch_session(s1.id)
     assert "A" in s1.txt_recv.toPlainText()
     assert "41" not in s1.txt_recv.toPlainText()
+    w._close_all_sessions()
+
+
+def test_background_rx_missing_options_never_fall_back_to_active_view(
+        monkeypatch, tmp_path):
+    """Old/incomplete snapshots use stable defaults, not the visible tab UI."""
+    w = _window(monkeypatch, tmp_path, "bg-format-defaults")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+
+    s1.display_opts = {}
+    w.sw_hexdump.setChecked(True)
+    s1.conn.inject(b"AB")
+    _pump()
+    assert "AB" in s1.txt_recv.toPlainText()
+    assert "00000000" not in s1.txt_recv.toPlainText()
+
+    s1.txt_recv.clear()
+    w.sw_hexdump.setChecked(False)
+    s1.display_opts = {"hexdump_on": True, "hexdump_width": "8"}
+    s1.conn.inject(b"CD")
+    _pump()
+    assert "00000000" in s1.txt_recv.toPlainText()
+    assert w.active_session() is s2
+    w._close_all_sessions()
+
+
+def test_background_decoder_init_does_not_reset_window_triggers(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "bg-codec-trigger-isolation")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    s1.display_opts = {"encoding": "utf-8"}
+    s1._inc_decoder = None
+    resets = []
+    monkeypatch.setattr(
+        w, "_reset_trigger_decoders", lambda: resets.append(True))
+
+    s1.conn.inject("中".encode("utf-8"))
+    _pump()
+
+    assert "中" in s1.txt_recv.toPlainText()
+    assert resets == []
     w._close_all_sessions()
 
 
@@ -535,7 +653,7 @@ def test_session_tab_connection_markers_differ(monkeypatch, tmp_path):
     closed_image = w._session_tab_bar.tabIcon(0).pixmap(12, 12).toImage()
     closed_color = closed_image.pixelColor(
         closed_image.width() // 2, closed_image.height() // 2)
-    assert not w._session_tab_bar.tabText(0).startswith(("○ ", "● "))
+    assert not w._session_tab_bar.tabText(0).startswith(("\u25cb ", "\u25cf "))
     _open_virtual(w)
     w._refresh_session_tab_styles()
     open_image = w._session_tab_bar.tabIcon(0).pixmap(12, 12).toImage()
@@ -717,10 +835,94 @@ def test_close_session_disposes_owned_timers(monkeypatch, tmp_path):
 
     w = _window(monkeypatch, tmp_path, "session-timer-dispose")
     closing = w.add_session(activate=False)
-    timers = (closing._reconnect_timer, closing._ar_gap_timer)
+    timers = (closing._reconnect_timer, closing._ar_gap_timer,
+              closing._period_timer)
     assert w.close_session(closing.id)
     _APP.sendPostedEvents(None, QEvent.DeferredDelete)
     assert all(sip.isdeleted(timer) for timer in timers)
+    w._close_all_sessions()
+
+
+def test_max_lines_applies_to_existing_and_new_sessions(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "max-lines-all-sessions")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+
+    w.ed_max_lines.setText("321")
+    w._on_max_lines_changed()
+    assert first.txt_recv.document().maximumBlockCount() == 321
+    assert second.txt_recv.document().maximumBlockCount() == 321
+
+    third = w.add_session(activate=False)
+    assert third.txt_recv.document().maximumBlockCount() == 321
+    w._close_all_sessions()
+
+
+def test_wrap_mode_applies_to_existing_and_new_sessions(monkeypatch, tmp_path):
+    from PyQt5.QtWidgets import QTextEdit
+
+    w = _window(monkeypatch, tmp_path, "wrap-all-sessions")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+
+    w.sw_wrap.setChecked(False, animate=False)
+    w.on_wrap_toggled(False)
+    assert first.txt_recv.lineWrapMode() == QTextEdit.NoWrap
+    assert second.txt_recv.lineWrapMode() == QTextEdit.NoWrap
+
+    third = w.add_session(activate=False)
+    assert third.txt_recv.lineWrapMode() == QTextEdit.NoWrap
+    w._close_all_sessions()
+
+
+def test_missing_display_options_do_not_inherit_previous_tab(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "display-default-isolation")
+    w.sw_tx_hex.setChecked(True, animate=False)
+    w.sw_append_newline.setChecked(True, animate=False)
+    w.sw_rx_hex.setChecked(True, animate=False)
+    w.sw_line_split.setChecked(True, animate=False)
+    first = w.active_session()
+    second = w.add_session(activate=False)
+    second.display_opts = {}
+
+    assert w.switch_session(second.id)
+    assert w.sw_tx_hex.isChecked() is False
+    assert w.sw_append_newline.isChecked() is False
+    assert w.sw_rx_hex.isChecked() is False
+    assert w.sw_line_split.isChecked() is False
+    assert first.display_opts["tx_hex"] is True
+    assert first.display_opts["append_nl_on"] is True
+    assert first.display_opts["rx_hex"] is True
+    assert first.display_opts["line_split"] is True
+    w._close_all_sessions()
+
+
+def test_relative_timestamp_anchor_is_session_owned(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "timestamp-anchor-isolation")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+
+    with w._with_session(first):
+        w._ts_anchor = 101.5
+    with w._with_session(second):
+        assert w._ts_anchor is None
+        w._ts_anchor = 202.5
+    assert first._ts_anchor == 101.5
+    assert second._ts_anchor == 202.5
+    w._close_all_sessions()
+
+
+def test_protocol_field_cursor_cache_is_session_owned(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "protocol-field-cache-isolation")
+    first = w.active_session()
+    first._proto_fields.append({"label": "first"})
+    second = w.add_session(activate=True)
+
+    assert list(w._proto_fields) == []
+    w._proto_fields.append({"label": "second"})
+    assert w.switch_session(first.id)
+    assert [item["label"] for item in w._proto_fields] == ["first"]
+    assert [item["label"] for item in second._proto_fields] == ["second"]
     w._close_all_sessions()
 
 
@@ -1125,4 +1327,534 @@ def test_udp_tab_label_ignores_leftover_serial_port(monkeypatch, tmp_path):
     serial = w.add_session(activate=False)
     serial.conn_fields = {"net_proto": "Serial", "ser_port": "COM1"}
     assert serial.tab_label() == "COM1"
+    w._close_all_sessions()
+
+
+def test_concurrent_session_logs_keep_writing_in_background(monkeypatch, tmp_path):
+    """Each session owns a log handle; switching tabs must not close others."""
+    w = _window(monkeypatch, tmp_path, "dual-log")
+    _open_virtual(w)
+    s1 = w.active_session()
+    log1 = tmp_path / "s1.log"
+    s1.log_base_path = str(log1)
+    s1.log_seg = 0
+    assert w._open_log_segment(str(log1), session=s1)
+    s1.display_opts = dict(s1.display_opts or {}, show_timestamp=False)
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    log2 = tmp_path / "s2.log"
+    s2.log_base_path = str(log2)
+    s2.log_seg = 0
+    assert w._open_log_segment(str(log2), session=s2)
+    w.sw_show_timestamp.setChecked(True)
+    w._save_ui_into_session(s2)
+    assert s1._log_file is not None
+    assert s2._log_file is not None
+
+    before1 = log1.read_text(encoding="utf-8")
+    s1.conn.inject(b"BG-LOG-1")
+    _pump()
+    after1 = log1.read_text(encoding="utf-8")
+    assert "BG-LOG-1" in after1
+    assert after1 != before1
+    bg_line = next(line for line in after1.splitlines() if "BG-LOG-1" in line)
+    assert not bg_line.startswith("[")
+    assert "BG-LOG-1" not in log2.read_text(encoding="utf-8")
+
+    w.txt_send.setPlainText("FG-LOG-2")
+    w.do_send()
+    _pump()
+    assert "FG-LOG-2" in log2.read_text(encoding="utf-8")
+
+    w.switch_session(s1.id)
+    assert s1._log_file is not None
+    assert s2._log_file is not None
+    w._close_all_sessions()
+    assert s1._log_file is None
+    assert s2._log_file is None
+
+
+def test_background_period_log_uses_own_timestamp(monkeypatch, tmp_path):
+    """Background period TX logging must not inherit the active tab timestamp."""
+    w = _window(monkeypatch, tmp_path, "bg-period-log-ts")
+    _open_virtual(w)
+    s1 = w.active_session()
+    path = tmp_path / "period.log"
+    s1.log_base_path = str(path)
+    assert w._open_log_segment(str(path), session=s1)
+    # Become background first - switch_session would overwrite draft/opts/period.
+    w.add_session(activate=True)
+    if hasattr(w, "sw_show_timestamp"):
+        w.sw_show_timestamp.setChecked(True)
+    s1.send_draft = "PLOG"
+    s1.display_opts = dict(
+        s1.display_opts or {},
+        show_timestamp=False, append_nl_on=False, tx_hex=False, checksum=0)
+    s1.period_on = True
+
+    w._period_send_for(s1.id)
+    text = path.read_text(encoding="utf-8")
+    assert "PLOG" in text
+    line = next(part for part in text.splitlines() if "PLOG" in part)
+    assert not line.startswith("[")
+    w._close_all_sessions()
+
+
+def test_switch_away_while_disconnected_keeps_reconnect_intent(
+        monkeypatch, tmp_path):
+    """Saving UI on a down tab must not clear preserved AA reconnect intent."""
+    w = _window(monkeypatch, tmp_path, "switch-keep-intent")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s1.period_on = True
+    s1._period_timer.start(60000)
+    path = tmp_path / "keep-intent.log"
+    s1.log_base_path = str(path)
+    assert w._open_log_segment(str(path), session=s1)
+    snapshot = dict(s1._reconnect_snapshot)
+
+    s2 = w.add_session(activate=True)
+    w._route_session_state(s1.id, False)
+    assert s1.period_on is True
+    assert s1.log_wanted is True
+
+    # Visit the disconnected session then leave. Period switch is shown off
+    # while down; that must not clear period_on. Log may cold-restore on load.
+    w.switch_session(s1.id)
+    assert not s1.is_open()
+    if hasattr(w, "sw_period"):
+        assert w.sw_period.isChecked() is False
+    w.switch_session(s2.id)
+    assert s1.period_on is True
+    assert s1.log_wanted is True
+
+    s1._reconnect_timer.stop()
+    with w._with_session(s1):
+        w.open_conn(reconnect_snapshot=snapshot)
+    assert s1._period_timer.isActive()
+    assert s1._log_file is not None
+    w._close_all_sessions()
+
+
+def test_user_disables_log_clears_reconnect_intent(monkeypatch, tmp_path):
+    """Explicitly turning logging off must not reopen after auto-reconnect."""
+    w = _window(monkeypatch, tmp_path, "log-off-intent")
+    _open_virtual(w)
+    s1 = w.active_session()
+    path = tmp_path / "log-off.log"
+    s1.log_base_path = str(path)
+    assert w._open_log_segment(str(path), session=s1)
+    assert s1.log_wanted is True
+    # _open_log_segment does not flip the switch; simulate a user toggle off.
+    w.sw_log_file.blockSignals(True)
+    w.sw_log_file.setChecked(True)
+    w.sw_log_file.blockSignals(False)
+    w.sw_log_file.setChecked(False)
+    assert s1.log_wanted is False
+    assert s1._log_file is None
+    snapshot = dict(s1._reconnect_snapshot)
+
+    w.add_session(activate=True)
+    w._route_session_state(s1.id, False)
+    assert s1.log_wanted is False
+    s1._reconnect_timer.stop()
+    with w._with_session(s1):
+        w.open_conn(reconnect_snapshot=snapshot)
+    assert s1.log_wanted is False
+    assert s1._log_file is None
+    w._close_all_sessions()
+
+
+def test_background_reconnect_restores_period_and_log_intent(
+        monkeypatch, tmp_path):
+    """An automatic reconnect resumes only the owning session's AA runtime."""
+    w = _window(monkeypatch, tmp_path, "reconnect-aa-intent")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s1.send_draft = "KEEP-RUNNING"
+    s1.period_ms = "60000"
+    s1.period_on = True
+    s1._period_timer.start(60000)
+    path = tmp_path / "reconnect.log"
+    s1.log_base_path = str(path)
+    assert w._open_log_segment(str(path), session=s1)
+    snapshot = dict(s1._reconnect_snapshot)
+
+    s2 = w.add_session(activate=True)
+    w._route_session_state(s1.id, False)
+    assert s1.conn is None
+    assert s1.period_on is True
+    assert not s1._period_timer.isActive()
+    assert s1.log_wanted is True
+    assert s1._log_file is None
+    assert s1._reconnect_timer.isActive()
+
+    s1._reconnect_timer.stop()
+    with w._with_session(s1):
+        w.open_conn(reconnect_snapshot=snapshot)
+    assert s1.is_open()
+    assert s1._period_timer.isActive()
+    assert s1.log_wanted is True
+    assert s1._log_file is not None
+    assert w.active_session() is s2
+    w._close_all_sessions()
+
+
+def test_manual_close_clears_period_and_log_intent(monkeypatch, tmp_path):
+    """Only automatic reconnect preserves AA runtime; user close is final."""
+    w = _window(monkeypatch, tmp_path, "manual-close-intent")
+    _open_virtual(w)
+    session = w.active_session()
+    session.period_on = True
+    session._period_timer.start(60000)
+    path = tmp_path / "manual-close.log"
+    session.log_base_path = str(path)
+    assert w._open_log_segment(str(path), session=session)
+
+    w.close_conn()
+    assert session.period_on is False
+    assert not session._period_timer.isActive()
+    assert session.log_wanted is False
+    assert session._log_file is None
+    w._close_all_sessions()
+
+
+def test_concurrent_period_send_keeps_running_in_background(monkeypatch, tmp_path):
+    """Period timers are per-session; leaving a tab must not stop others."""
+    w = _window(monkeypatch, tmp_path, "dual-period")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.txt_send.setPlainText("TICK-A")
+    s1.send_draft = "TICK-A"
+    s1.period_ms = "40"
+    s1.period_on = True
+    s1.display_opts = {"tx_hex": False}
+    w.ed_period_ms.setText("40")
+    w.sw_period.blockSignals(True)
+    w.sw_period.setChecked(True)
+    w.sw_period.blockSignals(False)
+    w._sync_session_period_timer(s1)
+    assert s1._period_timer.isActive()
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    w.txt_send.setPlainText("TICK-B")
+    s2.send_draft = "TICK-B"
+    s2.period_ms = "40"
+    s2.period_on = True
+    s2.display_opts = {"tx_hex": False}
+    w.ed_period_ms.setText("40")
+    w.sw_period.blockSignals(True)
+    w.sw_period.setChecked(True)
+    w.sw_period.blockSignals(False)
+    w._sync_session_period_timer(s2)
+
+    assert s1._period_timer.isActive()
+    assert s2._period_timer.isActive()
+    before_s1_tx = s1.tx_bytes
+    before_s2_tx = s2.tx_bytes
+    _pump(25, 0.02)
+    assert s1.tx_bytes > before_s1_tx
+    assert s2.tx_bytes > before_s2_tx
+    assert s1._period_timer.isActive()
+    w._close_all_sessions()
+    assert not s1._period_timer.isActive()
+    assert not s2._period_timer.isActive()
+
+
+def test_log_path_conflict_rejects_second_session(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "log-conflict")
+    s1 = w.active_session()
+    path = str(tmp_path / "shared.log")
+    s1.log_base_path = path
+    assert w._open_log_segment(path, session=s1)
+    s2 = w.add_session(activate=True)
+    s2.log_base_path = path
+    assert w._open_log_segment(path, session=s2) is False
+    assert s2._log_file is None
+    assert s1._log_file is not None
+    w._close_all_sessions()
+
+
+def test_default_session_title_follows_language(monkeypatch, tmp_path):
+    """Default tab titles use session_default and refresh on language change."""
+    w = _window(monkeypatch, tmp_path, "session-title-i18n")
+    s1 = w.active_session()
+    assert s1.title_index == 1
+    w._lang = "zh"
+    w._L = __import__("i18n", fromlist=["TR"]).TR["zh"]
+    assert s1.tab_label() == w._t("session_default")
+    s2 = w.add_session(activate=False)
+    assert s2.title_index >= 2
+    assert s2.tab_label() == "%s-%d" % (w._t("session_default"), s2.title_index)
+    w._lang = "en"
+    w._L = __import__("i18n", fromlist=["TR"]).TR["en"]
+    w._apply_language()
+    assert s1.tab_label() == "Session"
+    assert s2.tab_label().startswith("Session-")
+    w._close_all_sessions()
+
+
+def test_active_period_tick_does_not_snapshot_entire_ui(monkeypatch, tmp_path):
+    """The minimum-interval hot path reads TX controls without full UI capture."""
+    w = _window(monkeypatch, tmp_path, "active-period-hot-path")
+    _open_virtual(w)
+    session = w.active_session()
+    w.txt_send.setPlainText("PING")
+    session.display_opts = {"append_nl_on": False, "append_nl": 0}
+    w.sw_append_newline.setChecked(True)
+    w.cb_append_nl.setCurrentIndex(1)  # LF; differs from the stale snapshot.
+    session.period_on = True
+    captures = []
+    monkeypatch.setattr(
+        w, "_save_ui_into_session", lambda *_a, **_k: captures.append(True))
+
+    w._period_send_for(session.id)
+
+    assert captures == []
+    assert session.send_draft == "PING"
+    assert session.conn.tx_log[-1] == b"PING\n"
+    w._close_all_sessions()
+
+
+def test_background_period_skips_window_recording_and_triggers(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "bg-period-window-engines")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1.send_draft = "BACKGROUND"
+    s1.display_opts = {"tx_hex": False}
+    s1.period_on = True
+    fed = []
+    monkeypatch.setattr(
+        w, "_record_stream_tx",
+        lambda data, source=None: fed.append((bytes(data), source)))
+
+    w._period_send_for(s1.id)
+
+    assert s1.conn.tx_log[-1] == b"BACKGROUND"
+    assert fed == []
+    assert w.active_session() is s2
+    w._close_all_sessions()
+
+
+def test_background_non_server_never_reads_active_target(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "bg-period-no-target-leak")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    w.cb_proto.setCurrentText("TCP Server")
+    w._update_net_fields()
+    w.cb_target.clear()
+    w.cb_target.addItem("client B", "client-b")
+    s1.send_draft = "BACKGROUND"
+    s1.send_target = "keep-me"
+    s1.display_opts = {"tx_hex": False}
+    s1.period_on = True
+
+    w._period_send_for(s1.id)
+
+    assert s1.conn.tx_log[-1] == b"BACKGROUND"
+    assert s1.send_target == "keep-me"
+    w._close_all_sessions()
+
+
+def test_background_period_failure_does_not_touch_active_ui(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "bg-period-silent-error")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1.send_draft = "ZZ"
+    s1.display_opts = {"tx_hex": True}
+    s1.period_on = True
+    notices = []
+    refreshes = []
+    monkeypatch.setattr(
+        w, "toast", lambda msg, error=False: notices.append((msg, error)))
+    monkeypatch.setattr(
+        w, "_refresh_stat_labels", lambda *a, **k: refreshes.append(True))
+    errors_before = s1.tx_errors
+
+    w._period_send_for(s1.id)
+
+    assert s1.period_on is False
+    assert s1.tx_errors == errors_before + 1
+    assert notices == []
+    assert refreshes == []
+    assert w.active_session() is s2
+    w._close_all_sessions()
+
+
+def test_background_period_uses_own_tx_options(monkeypatch, tmp_path):
+    """Background period TX must use owning session encoding/format/{count}."""
+    w = _window(monkeypatch, tmp_path, "bg-period-opts")
+    _open_virtual(w)
+    s1 = w.active_session()
+    # Snapshot via UI before leave — switch_session saves txt_send/opts into s1.
+    w.txt_send.setPlainText("\u4e2d{count}")
+    if hasattr(w, "sw_append_newline"):
+        w.sw_append_newline.setChecked(True)
+    if hasattr(w, "cb_append_nl"):
+        w.cb_append_nl.setCurrentIndex(1)  # LF
+    if hasattr(w, "cb_checksum"):
+        w.cb_checksum.setCurrentIndex(1)
+    if hasattr(w, "cb_encoding"):
+        idx = w.cb_encoding.findData("gbk")
+        assert idx >= 0
+        w.cb_encoding.setCurrentIndex(idx)
+    w._save_ui_into_session(s1)
+    s1._send_count = 0
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    # Active tab uses different encoding/append/checksum; none may leak into s1.
+    if hasattr(w, "sw_append_newline"):
+        w.sw_append_newline.setChecked(False)
+    if hasattr(w, "cb_checksum"):
+        w.cb_checksum.setCurrentIndex(0)
+    if hasattr(w, "cb_encoding"):
+        idx = w.cb_encoding.findData("utf-8")
+        if idx >= 0:
+            w.cb_encoding.setCurrentIndex(idx)
+    s2._send_count = 40
+
+    s1.period_on = True
+    w._period_send_for(s1.id)
+    base = "\u4e2d\x01".encode("gbk") + b"\n"
+    expected = base + w.compute_checksum(base, 1)
+    assert s1.conn.tx_log[-1] == expected
+    assert s1._send_count == 1
+    assert s2._send_count == 40  # not crossed
+    w._close_all_sessions()
+
+
+def test_background_period_uses_own_send_target(monkeypatch, tmp_path):
+    """TCP Server period TX must address the owning session's send_target."""
+    w = _window(monkeypatch, tmp_path, "bg-period-target")
+    s1 = w.active_session()
+    # Become background first — switch_session would overwrite draft/target from UI.
+    s2 = w.add_session(activate=True)
+    s1._conn_proto = "TCP Server"
+    s1.send_target = "client-a"
+    s1.send_draft = "PING"
+    s1.display_opts = {"tx_hex": False, "append_nl_on": False, "checksum": 0}
+    s1.period_on = True
+    seen = []
+
+    class _Conn:
+        is_open = True
+
+        def send(self, data, target=None):
+            seen.append((bytes(data), target))
+            return len(data)
+
+        def deleteLater(self):
+            pass
+
+    s1.conn = _Conn()
+    # Active UI would pick a different target if _send_target read the combo.
+    if hasattr(w, "cb_target"):
+        w.cb_target.blockSignals(True)
+        w.cb_target.clear()
+        w.cb_target.addItem("all", "__all__")
+        w.cb_target.addItem("other", "client-b")
+        w.cb_target.setCurrentIndex(1)
+        w.cb_target.blockSignals(False)
+    w._period_send_for(s1.id)
+    assert seen == [(b"PING", "client-a")]
+    s1.conn = None
+    w._close_all_sessions()
+
+
+def test_tcp_server_target_survives_tab_switch(monkeypatch, tmp_path):
+    """Rebuilding the shared target combo must not overwrite the tab's choice."""
+    w = _window(monkeypatch, tmp_path, "target-switch")
+    s1 = w.active_session()
+    s1._conn_proto = "TCP Server"
+    s1.clients = [("client-a", "client A")]
+    s1.send_target = "client-a"
+    w._restore_session_network_ui(s1)
+    assert w.cb_target.currentData() == "client-a"
+
+    s2 = w.add_session(activate=True)
+    s2._conn_proto = "TCP Server"
+    s2.clients = [("client-b", "client B")]
+    s2.send_target = "client-b"
+    w._restore_session_network_ui(s2)
+
+    assert w.switch_session(s1.id)
+    assert s1.send_target == "client-a"
+    assert w.cb_target.currentData() == "client-a"
+    w._close_all_sessions()
+
+
+def test_io_task_busy_periodic_is_context_session(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "busy-period-ctx")
+    s1 = w.active_session()
+    s1.period_on = True
+    s1._period_timer.start(1000)
+    s2 = w.add_session(activate=True)
+    # Active s2 has no period; busy(periodic) must be False for s2 context.
+    assert w._session_period_active(s2) is False
+    assert w._io_task_busy() is False
+    with w._with_session(s1):
+        assert w._session_period_active() is True
+        assert w._io_task_busy(exclude=("periodic",)) is False
+    s1._period_timer.stop()
+    w._close_all_sessions()
+
+
+def test_terminal_mode_stops_all_session_period_timers(monkeypatch, tmp_path):
+    """Entering terminal mode must halt every session period timer."""
+    w = _window(monkeypatch, tmp_path, "term-stop-all-period")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s1.period_on = True
+    s1._period_timer.start(60000)
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    s2.period_on = True
+    s2._period_timer.start(60000)
+    assert s1._period_timer.isActive()
+    w._set_terminal_enabled(True)
+    assert s1.period_on is False
+    assert s2.period_on is False
+    assert not s1._period_timer.isActive()
+    assert not s2._period_timer.isActive()
+    w._set_terminal_enabled(False)
+    w._close_all_sessions()
+
+
+def test_background_period_encoding_defaults_without_snapshot(
+        monkeypatch, tmp_path):
+    """Missing session encoding must not inherit the active tab combo."""
+    w = _window(monkeypatch, tmp_path, "bg-period-enc-default")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    if hasattr(w, "cb_encoding"):
+        idx = w.cb_encoding.findData("gbk")
+        if idx >= 0:
+            w.cb_encoding.setCurrentIndex(idx)
+    s1.send_draft = "\u4e2d"
+    s1.display_opts = {"tx_hex": False, "append_nl_on": False, "checksum": 0}
+    s1.period_on = True
+    seen = []
+
+    class _Conn:
+        is_open = True
+
+        def send(self, data, target=None):
+            seen.append(bytes(data))
+            return len(data)
+
+        def deleteLater(self):
+            pass
+
+    s1.conn = _Conn()
+    w._period_send_for(s1.id)
+    assert seen == ["\u4e2d".encode("utf-8")]
+    s1.conn = None
     w._close_all_sessions()

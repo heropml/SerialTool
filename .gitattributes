@@ -1,0 +1,14 @@
+# Force consistent text handling for Python sources.
+# Prevents editors/tools on Chinese Windows from silently rewriting
+# working-tree files as GBK while the header still says utf-8.
+*.py text working-tree-encoding=UTF-8 eol=lf
+*.md text working-tree-encoding=UTF-8 eol=lf
+*.json text working-tree-encoding=UTF-8 eol=lf
+*.toml text working-tree-encoding=UTF-8 eol=lf
+*.yml text working-tree-encoding=UTF-8 eol=lf
+*.yaml text working-tree-encoding=UTF-8 eol=lf
+
+# Keep Windows scripts CRLF if present.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

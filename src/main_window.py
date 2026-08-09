@@ -636,8 +636,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._serial_empty_selection = False
         self._connection_presets = []
 
-        self.send_timer = QTimer(self)
-        self.send_timer.timeout.connect(self.do_send)
+        self._send_timer_fallback = QTimer(self)
+        # Period TX uses per-session _period_timer (send_timer property).
 
         # 收发速率采样：1Hz 取字节增量近似 B/s + 记录峰值，并刷新状态栏统计
         # （start 推迟到 init_ui 之后，确保首个 tick 触发时 lbl_rx_stat 已创建）
@@ -2986,6 +2986,10 @@ class CommTool(SessionHostMixin, QMainWindow):
                 cur.period_on = period_intent
             if cur is not None:
                 self._restore_session_periodic(cur)
+        elif session is not None:
+            self._sync_session_period_timer(session)
+        if session is not None:
+            self._restore_session_log_intent(session)
         self._refresh_session_tab_styles()
         self._serial_device = port if proto == PROTO_SERIAL else None
         self._serial_missing_count = 0
@@ -3170,7 +3174,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         in_retry = self._reconnect_attempts > 0
         serial_cfg = self._conn_cfg if proto == PROTO_SERIAL else None
         if self.conn is not None:
-            self.close_conn(update_ui=(self._session_ctx() is self.active_session()))
+            self.close_conn(
+                update_ui=(self._session_ctx() is self.active_session()),
+                preserve_session_intent=True)
         # 只在「曾连上又断了」(运行时掉线) 或「正在重连周期内」时自动重连。
         # 手动打开失败（端口占用/服务器离线/绑定失败）不该陷入无限重试。
         # 串口重连保存掉线前的完整签名，不读取可能已回落到其他设备的下拉框。
@@ -3292,7 +3298,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._mbm_restart()         # 连上 → 若 Modbus 主机轮询开启则启动
         elif self.conn is not None:
             self.toast(self._t("net_peer_closed"))
-            self.close_conn(update_ui=(self._session_ctx() is self.active_session()))
+            self.close_conn(
+                update_ui=(self._session_ctx() is self.active_session()),
+                preserve_session_intent=True)
             self._schedule_reconnect()  # 非主动断开 → 走自动重连
 
     def _on_clients_changed(self, clients):
@@ -3335,7 +3343,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         idx = self.cb_target.findData(cur) if cur else 0
         self.cb_target.setCurrentIndex(idx if idx >= 0 else 0)
         self.cb_target.blockSignals(False)
-        self._update_net_fields()   # 客户端 0↔有 变化时同步「目标」行的显隐
+        session = self._session_ctx() or self.active_session()
+        if session is not None:
+            session.send_target = self.cb_target.currentData()
+        self._update_net_fields()   # 客户端 0?有 变化时同步「目标」行的显隐
 
     def _on_udp_peer_changed(self, ip, port):
         """UDP 收到新对端时，若「指定远程」关闭(回复模式)，把灰显的远程框刷成最近对端地址。
@@ -3385,17 +3396,28 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._set_state_color(opened=True)
 
     def _send_target(self):
-        """TCP Server 模式下，当前选中的发送目标客户端 key（"__all__"=全部）；其余协议返回 None。"""
+        """TCP Server send target key ("__all__"=all); other protocols None.
+
+        Background sessions use their own send_target, not the active tab combo.
+        """
+        session = self._session_ctx()
+        if session is not None and session is not self.active_session():
+            return (session.send_target
+                    if "Server" in str(session._conn_proto or "") else None)
         if (self.cb_proto.currentText() == PROTO_TCP_SERVER
                 and hasattr(self, "cb_target") and self.cb_target.count() > 0):
-            return self.cb_target.currentData()
+            data = self.cb_target.currentData()
+            if session is not None:
+                session.send_target = data
+            return data
         return None
 
-    def _abort_partial_tcp_stream(self, sent, expected):
+    def _abort_partial_tcp_stream(self, sent, expected, update_ui=True):
         """TCP 短写后流中已留下半帧，不能继续复用；立即断开，交自动重连重建干净流。"""
         if (0 < sent < expected
                 and getattr(self, "_conn_proto", None) == PROTO_TCP_CLIENT):
-            self.close_conn()
+            self.close_conn(
+                update_ui=update_ui, preserve_session_intent=True)
             self._schedule_reconnect()
             return True
         return False
@@ -3412,8 +3434,23 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._append_block_data("\r", direction="rx", force_new_block=force_new)
         self._last_direction = "rx"
 
-    def close_conn(self, update_ui=True):
+    def close_conn(self, update_ui=True, preserve_session_intent=False):
         # Window-level engines/UI only when tearing down the active/context view.
+        session = self._session_ctx()
+        if session is not None:
+            if not preserve_session_intent:
+                session.period_on = False
+            if session._period_timer.isActive():
+                session._period_timer.stop()
+            if session._log_file is not None:
+                if preserve_session_intent:
+                    session.log_wanted = True
+                try:
+                    self._close_log_file(session=session, toast=False)
+                except Exception:
+                    _log.debug("close_conn log failed", exc_info=True)
+                if not preserve_session_intent:
+                    session.log_wanted = False
         if update_ui:
             if self._xfer_worker is not None and self._xfer_worker.isRunning():
                 self._xfer_worker.cancel()
@@ -3423,12 +3460,19 @@ class CommTool(SessionHostMixin, QMainWindow):
                 rr_dlg.stop_recording()
             elif getattr(self, "_replay_on", False):
                 self._replay_end()
-            if self.sw_period.isChecked():
+            if not preserve_session_intent and self.sw_period.isChecked():
+                self.sw_period.blockSignals(True)
                 self.sw_period.setChecked(False)
+                self.sw_period.blockSignals(False)
             self._ms_stop_cycle()
         self._flush_pending_cr()
-        if update_ui and self.sw_log_file.isChecked():
+        if (update_ui and not preserve_session_intent
+                and self.sw_log_file.isChecked()):
+            self.sw_log_file.blockSignals(True)
             self.sw_log_file.setChecked(False)
+            self.sw_log_file.blockSignals(False)
+            if hasattr(self, "_set_log_path_label"):
+                self._set_log_path_label("")
         conn = self.conn
         self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
         if update_ui:
@@ -3601,9 +3645,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             session._serial_missing_count = 0
             with self._with_session(session):
                 if session.id == active_id:
-                    self.close_conn()
+                    self.close_conn(preserve_session_intent=True)
                 else:
-                    self.close_conn(update_ui=False)
+                    self.close_conn(
+                        update_ui=False, preserve_session_intent=True)
                 if reconnect_cfg:
                     session._serial_reconnect_cfg = tuple(reconnect_cfg)
                 if session.id == active_id:
@@ -3801,11 +3846,37 @@ class CommTool(SessionHostMixin, QMainWindow):
         ctx = getattr(self, "_display_context", None)
         return ctx.get(key, default) if ctx is not None else default
 
+    def _session_display_flag(self, key, ui_default=False, session=None):
+        """Boolean display option for the owning session (no active-tab leak).
+
+        Order: _display_context (explicit) -> session.display_opts ->
+        UI default only for the active/unknown session -> False in background.
+        """
+        session = session or self._session_ctx()
+        ctx = getattr(self, "_display_context", None)
+        if ctx is not None and key in ctx:
+            return bool(ctx[key])
+        if session is not None:
+            opts = session.display_opts or {}
+            if key in opts:
+                return bool(opts[key])
+        if session is None or session is self.active_session():
+            return bool(ui_default)
+        return False
+
     def _get_codec(self) -> str:
         """Current RX/TX/file codec mode -- 'auto' or concrete codec name."""
         ctx = getattr(self, "_display_context", None)
         if ctx is not None and "encoding" in ctx:
             return _cfg_norm_enc(ctx.get("encoding"))
+        session = self._session_ctx() if hasattr(self, "_session_ctx") else None
+        if (session is not None
+                and session is not self.active_session()):
+            opts = session.display_opts or {}
+            if "encoding" in opts:
+                return _cfg_norm_enc(opts.get("encoding"))
+            # Background without a snapshot must not inherit the active combo.
+            return "auto"
         if hasattr(self, "cb_encoding"):
             return _cfg_norm_enc(self.cb_encoding.currentData())
         return "auto"
@@ -3848,19 +3919,26 @@ class CommTool(SessionHostMixin, QMainWindow):
         """
         stream_source = (source if getattr(self, "_conn_proto", None) == PROTO_TCP_SERVER
                          else None)
-        if self._get_codec() != "auto":
+        codec = self._get_codec()
+        if codec != "auto":
             if stream_source is not None:
                 dec = self._inc_decoders.get(stream_source)
                 if dec is None:
                     try:
-                        dec = codecs.getincrementaldecoder(self._get_codec())(errors="replace")
+                        dec = codecs.getincrementaldecoder(codec)(errors="replace")
                     except (LookupError, TypeError):
                         return data.decode("latin-1")
                     self._inc_decoders[stream_source] = dec
                 return dec.decode(data, final=False)
             if self._inc_decoder is None:
-                # 第一次调用 / 刚切到具体编码 — 初始化
-                self._on_encoding_changed()
+                # Initialize only this session's decoder.  Calling the UI
+                # change handler here would also clear window-owned trigger
+                # decoder state when a background tab receives its first byte.
+                try:
+                    self._inc_decoder = codecs.getincrementaldecoder(codec)(
+                        errors="replace")
+                except (LookupError, TypeError):
+                    self._inc_decoder = None
             if self._inc_decoder is not None:
                 return self._inc_decoder.decode(data, final=False)
             # codec lookup 失败兜底
@@ -4236,11 +4314,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         cursor.movePosition(QTextCursor.End)
 
         prefix = ""
+        show_ts = self._session_display_flag(
+            "show_timestamp",
+            self.sw_show_timestamp.isChecked()
+            if hasattr(self, "sw_show_timestamp") else False)
         plan = _view_force_prefix(
             force_new_block=force_new_block,
             ends_with_nl=self._txt_ends_with_nl,
-            show_timestamp=bool(self._display_value(
-                "show_timestamp", self.sw_show_timestamp.isChecked())))
+            show_timestamp=show_ts)
         if plan["need_leading_nl"]:
             cursor.insertText("\n")
             self._txt_ends_with_nl = True
@@ -4336,28 +4417,40 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _write_log_block(self, text: str, direction: str, force_new_block: bool,
                          prefix=None):
-        if self._session_ctx() is not self.active_session():
+        """Write one display block into the context session's live log."""
+        session = self._session_ctx()
+        if session is None or not session._log_file:
             return
-        """把一个显示块写入实时日志；日志行尾状态与可见文本区完全独立。"""
-        if not self._log_file:
-            return
+        show_ts = self._session_display_flag(
+            "show_timestamp",
+            self.sw_show_timestamp.isChecked()
+            if hasattr(self, "sw_show_timestamp") else False,
+            session=session)
         try:
-            if force_new_block and self.sw_show_timestamp.isChecked() and prefix is None:
+            if force_new_block and show_ts and prefix is None:
                 prefix = self._timestamp_prefix(direction)
-            pieces, self._log_ends_with_nl = _view_log_pieces(
+            pieces, session._log_ends_with_nl = _view_log_pieces(
                 text=text, force_new_block=force_new_block,
-                log_ends_with_nl=getattr(self, "_log_ends_with_nl", True),
+                log_ends_with_nl=bool(session._log_ends_with_nl),
                 prefix=prefix,
-                show_timestamp=self.sw_show_timestamp.isChecked())
-            self._log_file.write("".join(pieces))
-            self._log_file.flush()
-            self._maybe_rotate_log()    # 超过分包上限则切到下一个文件
+                show_timestamp=show_ts)
+            session._log_file.write("".join(pieces))
+            session._log_file.flush()
+            # _write_log_block already runs in the owning session context.
+            # Keep the legacy no-argument call contract used by integrations.
+            self._maybe_rotate_log()
         except Exception as e:
             self.toast(self._t("err_log_write", e=e), error=True)
-            self._close_log_file()
-            self.sw_log_file.setChecked(False)
+            self._close_log_file(session=session, toast=False)
+            session.log_wanted = False
+            if session is self.active_session() and hasattr(self, "sw_log_file"):
+                self.sw_log_file.blockSignals(True)
+                self.sw_log_file.setChecked(False)
+                self.sw_log_file.blockSignals(False)
+                if hasattr(self, "_set_log_path_label"):
+                    self._set_log_path_label("")
 
-    # ----- 多条发送：分组数据 + 主界面快捷栏 + 循环 -----
+
     def _load_ms_groups(self):
         """Load multi-send groups; migrate flat multi_send_items if needed."""
         return _ms_load_groups(
@@ -4625,15 +4718,37 @@ class CommTool(SessionHostMixin, QMainWindow):
         w = getattr(self, "_xfer_worker", None)
         return w is not None and w.isRunning()
 
+    def _session_period_active(self, session=None) -> bool:
+        """True if the given (or context/active) session's period timer is running."""
+        session = session or self._session_ctx() or self.active_session()
+        timer = getattr(session, "_period_timer", None) if session is not None else None
+        if timer is not None:
+            return bool(timer.isActive())
+        st = getattr(self, "send_timer", None)
+        return bool(st is not None and st.isActive())
+
+    def _period_tx_blocked(self) -> bool:
+        """Window-owned exclusive engines that must pause every session's period TX."""
+        return bool(
+            self._script_active()
+            or self._seq_running()
+            or self._xfer_active()
+            or self._mbm_inflight is not None
+            or self._mbm_active()
+            or getattr(self, "_replay_on", False)
+            or self._dsl_running()
+        )
+
     def _io_task_busy(self, exclude=()) -> bool:
-        """统一的主动收发任务占用表；所有任务启动入口必须共用，避免互斥条件各写一套后漏项。"""
+        """Shared active I/O task table used by exclusive start gates."""
         excluded = set(exclude)
         states = {
             "script": self._script_active(),
             "sequence": self._seq_running(),
             "transfer": self._xfer_active(),
             "macro": bool(getattr(getattr(self, "_macro", None), "recording", False)),
-            "periodic": self.send_timer.isActive(),
+            # Context/active session only -- other tabs may period concurrently.
+            "periodic": self._session_period_active(),
             "multi": self._ms_cycle_timer.isActive(),
             "modbus": bool(self._mbm_inflight is not None or self._mbm_active()),
             "replay": bool(getattr(self, "_replay_on", False)),
@@ -7205,16 +7320,21 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._dsl_idx = 0
 
     def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None,
-                         record_macro=True, allow_during_exclusive=False,
-                         allow_running_dsl=False) -> bool:
+                         target=None, encoding=None, record_macro=True,
+                         allow_during_exclusive=False,
+                         allow_running_dsl=False, notify_ui=True,
+                         feed_window_engines=True) -> bool:
         """替换动态字段 → 发送 → 失败回滚 {count}（避免未连接/格式错等失败消耗计数）。
         ({ts}/{rand} 是纯函数无副作用，不用回滚；只有 {count} 有持久状态)"""
         prev_count = self._send_count
         subbed = self._send_subst(raw, hex_mode=hex_mode)
         ok = self._send_text(subbed, hex_mode=hex_mode, newline=newline, checksum=checksum,
+                             target=target, encoding=encoding,
                              record_macro=record_macro,
                              allow_during_exclusive=allow_during_exclusive,
-                             allow_running_dsl=allow_running_dsl)
+                             allow_running_dsl=allow_running_dsl,
+                             notify_ui=notify_ui,
+                             feed_window_engines=feed_window_engines)
         if not ok:
             self._send_count = prev_count
         return ok
@@ -8139,11 +8259,40 @@ class CommTool(SessionHostMixin, QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
+
+    def _tx_format_from_session(self, session=None):
+        """Resolve append-newline / checksum for the context session.
+
+        Active tab uses live sidebar widgets; background uses display_opts.
+        Returns (append_on, append_idx, checksum_idx).
+        """
+        session = session or self._session_ctx()
+        if session is None or session is self.active_session():
+            append_on = (self.sw_append_newline.isChecked()
+                         if hasattr(self, "sw_append_newline") else False)
+            append_idx = (self.cb_append_nl.currentIndex()
+                          if hasattr(self, "cb_append_nl") else 0)
+            cs_idx = (self.cb_checksum.currentIndex()
+                      if hasattr(self, "cb_checksum") else 0)
+            return bool(append_on), int(append_idx), int(cs_idx)
+        opts = session.display_opts or {}
+        append_on = bool(opts.get("append_nl_on", False))
+        try:
+            append_idx = int(opts.get("append_nl", 0) or 0)
+        except (TypeError, ValueError):
+            append_idx = 0
+        try:
+            cs_idx = int(opts.get("checksum", 0) or 0)
+        except (TypeError, ValueError):
+            cs_idx = 0
+        return append_on, append_idx, cs_idx
+
     def _send_text(self, raw, hex_mode=None, newline=None, checksum=None, target=None,
-                   record_macro=True, allow_during_exclusive=False,
-                   allow_running_dsl=False) -> bool:
+                   encoding=None, record_macro=True, allow_during_exclusive=False,
+                   allow_running_dsl=False, notify_ui=True,
+                   feed_window_engines=True) -> bool:
         """解析并发送一段文本(HEX/文本)，复用追加换行+校验+显示。
-        hex_mode/newline/checksum 为 None 时用主界面全局设置；多条发送可逐条传入独立值。
+        hex_mode/newline/checksum/encoding 为 None 时用主界面当前设置；调用方可传入独立值。
           newline: None=全局; 0=无 1=CRLF 2=LF 3=CR
           checksum: None=全局; 否则校验项索引(0=无…)
         成功返回 True"""
@@ -8155,10 +8304,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             raw_empty=not raw,
         )
         if pre == "exclusive":
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            if notify_ui:
+                self.toast(self._t("io_exclusive_busy"), error=True)
             return False
         if pre == "not_open":
-            self.toast(self._t("net_not_open"), error=True)
+            if notify_ui:
+                self.toast(self._t("net_not_open"), error=True)
             return False
         if pre == "empty":
             return False
@@ -8174,33 +8325,44 @@ class CommTool(SessionHostMixin, QMainWindow):
                         "err_hex_invalid_chars",
                         chars=" ".join(repr(c) for c in parsed["bad_chars"]),
                     )
-                    self.toast(self._t("err_hex_bad", e=err), error=True)
+                    if notify_ui:
+                        self.toast(self._t("err_hex_bad", e=err), error=True)
                     return False
                 if parsed["error"] == "odd_length":
-                    self.toast(self._t("err_hex_odd"), error=True)
+                    if notify_ui:
+                        self.toast(self._t("err_hex_odd"), error=True)
                     return False
                 if not parsed["ok"]:
-                    self.toast(self._t("err_hex_bad", e="value_error"), error=True)
+                    if notify_ui:
+                        self.toast(self._t("err_hex_bad", e="value_error"), error=True)
                     return False
                 data = parsed["data"]
             else:
-                data = raw.encode(self._send_codec(), errors="replace")
+                codec = self._send_codec()
+                if encoding is not None:
+                    codec = _cfg_norm_enc(encoding)
+                    if codec == "auto":
+                        codec = "utf-8"
+                data = raw.encode(codec, errors="replace")
         except ValueError as e:
-            self.toast(self._t("err_hex_bad", e=e), error=True)
+            if notify_ui:
+                self.toast(self._t("err_hex_bad", e=e), error=True)
             return False
 
+        append_on, append_idx, default_cs = self._tx_format_from_session()
         data = _ar_core_append_tx_newline(
             data,
             newline=newline,
-            global_on=self.sw_append_newline.isChecked(),
-            global_idx=self.cb_append_nl.currentIndex(),
+            global_on=append_on,
+            global_idx=append_idx,
         )
 
-        cs_idx = self.cb_checksum.currentIndex() if checksum is None else checksum
+        cs_idx = default_cs if checksum is None else checksum
         try:
             data = data + self.compute_checksum(data, cs_idx)
         except Exception as e:
-            self.toast(self._t("err_checksum", e=e), error=True)
+            if notify_ui:
+                self.toast(self._t("err_checksum", e=e), error=True)
             return False
 
         send_target = self._send_target() if target is None else target
@@ -8208,11 +8370,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             sent = self.conn.send(data, send_target)
         except Exception as e:
             self._stat_note_tx_error()
-            self._refresh_stat_labels(with_tooltip=False)
-            self.toast(self._t(
-                "err_send_failed",
-                e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
-                error=True)
+            if notify_ui:
+                self._refresh_stat_labels(with_tooltip=False)
+                self.toast(self._t(
+                    "err_send_failed",
+                    e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
+                    error=True)
             return False
         strict_full_write = getattr(self, "_conn_proto", None) in (PROTO_SERIAL, PROTO_TCP_CLIENT)
         outcome = _ar_core_classify_send(
@@ -8222,8 +8385,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         )
         if outcome == "no_target":
             self._stat_note_tx_error()
-            self._refresh_stat_labels(with_tooltip=False)
-            self.toast(self._t("net_no_target"), error=True)
+            if notify_ui:
+                self._refresh_stat_labels(with_tooltip=False)
+                self.toast(self._t("net_no_target"), error=True)
             return False
         if outcome != "ok":
             if outcome == "fail_partial":
@@ -8231,22 +8395,29 @@ class CommTool(SessionHostMixin, QMainWindow):
                 acc = getattr(self, "_io_stats", None)
                 if acc is not None:
                     acc.note_tx_bytes(sent)
-            self._abort_partial_tcp_stream(sent, len(data))
+            self._abort_partial_tcp_stream(
+                sent, len(data), update_ui=notify_ui)
             self._stat_note_tx_error()
-            self._refresh_stat_labels(with_tooltip=False)
-            self.toast(self._t("net_send_failed"), error=True)
+            if notify_ui:
+                self._refresh_stat_labels(with_tooltip=False)
+                self.toast(self._t("net_send_failed"), error=True)
             return False
 
         self._stat_note_tx(len(data))
 
         if record_macro:
             self._macro_record_tx(data)
-        self._record_stream_tx(data, source=send_target)
+        if feed_window_engines:
+            self._record_stream_tx(data, source=send_target)
 
         disp = _ar_core_tx_display_mode(
-            hexdump_on=self._hexdump_on,
-            numview_on=self._numview_on,
-            rx_hex=self.sw_rx_hex.isChecked(),
+            hexdump_on=self._session_display_flag(
+                "hexdump_on", bool(getattr(self, "_hexdump_on", False))),
+            numview_on=self._session_display_flag(
+                "numview_on", bool(getattr(self, "_numview_on", False))),
+            rx_hex=self._session_display_flag(
+                "rx_hex",
+                self.sw_rx_hex.isChecked() if hasattr(self, "sw_rx_hex") else False),
         )
         if disp == "hexdump":
             display = self._hexdump_block(data)
@@ -8290,10 +8461,15 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.txt_send.setProperty("tr_placeholder", ph)   # 语言切换时也用对的占位文案
             self.txt_send.setPlaceholderText(self._t(ph))
         if on:
-            # 进入终端模式：停掉会在后台按周期发送的功能（定时发送 + 多条发送循环），否则它们
-            # 仍在后台周期发（终端模式发送框为空 → 发空内容，且与逐字符直发互相干扰）。
+            # Entering terminal mode stops ALL sessions' period timers (not only
+            # the active tab switch), plus the window multi-send cycle.
             if hasattr(self, "sw_period") and self.sw_period.isChecked():
-                self.sw_period.setChecked(False)   # 触发 on_period_toggled → send_timer.stop()
+                self.sw_period.setChecked(False)
+            for session in getattr(self, "_sessions", []) or []:
+                session.period_on = False
+                timer = getattr(session, "_period_timer", None)
+                if timer is not None and timer.isActive():
+                    timer.stop()
             self._ms_stop_cycle()
         self._apply_terminal_ui(on)
         self.toast(self._t("term_on") if on else self._t("term_off"))
@@ -8611,9 +8787,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         return _ar_core_compute_checksum(data, index)
 
     def on_period_toggled(self, on):
-        session = self._session_ctx()
+        session = self._session_ctx() or self.active_session()
         if session is not None:
             session.period_on = bool(on)
+            if hasattr(self, "ed_period_ms"):
+                session.period_ms = self.ed_period_ms.text()
         if on:
             if self._io_task_busy(exclude=("periodic",)):
                 self.toast(self._t("io_exclusive_busy"), error=True)
@@ -8631,13 +8809,26 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.toast(self._t("net_not_open"), error=True)
                 self.sw_period.setChecked(False)
                 return
-            self.send_timer.start(ms)
+            if session is not None:
+                session.period_ms = str(ms)
+                session.period_on = True
+                self._sync_session_period_timer(session)
+            else:
+                self.send_timer.start(ms)
         else:
-            self.send_timer.stop()
+            if session is not None:
+                session.period_on = False
+                if session._period_timer.isActive():
+                    session._period_timer.stop()
+            else:
+                self.send_timer.stop()
+
 
     def on_wrap_toggled(self, on):
-        self.txt_recv.setLineWrapMode(
-            QTextEdit.WidgetWidth if on else QTextEdit.NoWrap)
+        mode = QTextEdit.WidgetWidth if on else QTextEdit.NoWrap
+        for session in self.sessions():
+            if session.txt_recv is not None:
+                session.txt_recv.setLineWrapMode(mode)
 
     # ----- 日志记录 -----
     def _parse_log_limit(self, text) -> int:
@@ -8645,29 +8836,63 @@ class CommTool(SessionHostMixin, QMainWindow):
         return log_naming.parse_size_limit(text)
 
     def _on_log_split_changed(self, _text=None):
-        """改分包大小：实时记录进行中也即时生效。"""
-        self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
+        """Change split size: apply immediately to the active session's log."""
+        session = self._session_ctx() or self.active_session()
+        limit = self._parse_log_limit(self.cb_log_split.currentText())
+        if session is not None:
+            session._log_limit = limit
+            opts = dict(session.display_opts or {})
+            opts["log_split"] = self.cb_log_split.currentText()
+            session.display_opts = opts
 
-    def _log_conn_token(self) -> str:
+    def _log_session(self, session=None):
+        return session or self._session_ctx() or self.active_session()
+
+    def _restore_session_log_intent(self, session):
+        """Reopen one session's live log after an automatic reconnect."""
+        if (session is None or not session.log_wanted
+                or not session.log_base_path):
+            return False
+        if session._log_file is not None:
+            return True
+        now = datetime.now()
+        ok = self._open_log_segment(
+            self._log_segment_path(now, session=session),
+            when=now, session=session)
+        if not ok:
+            session.log_wanted = False
+            if session is self.active_session() and hasattr(self, "sw_log_file"):
+                self.sw_log_file.blockSignals(True)
+                self.sw_log_file.setChecked(False)
+                self.sw_log_file.blockSignals(False)
+        return bool(ok)
+
+    def _log_conn_token(self, session=None) -> str:
         """%port expansion: device / IP_port / proto / empty."""
+        session = self._log_session(session)
+        if session is not None:
+            proto = session._conn_proto
+            cfg = session._conn_cfg
+        else:
+            proto = getattr(self, "_conn_proto", None)
+            cfg = getattr(self, "_conn_cfg", None)
         return log_naming.conn_token(
-            getattr(self, "_conn_proto", None),
-            getattr(self, "_conn_cfg", None),
+            proto, cfg,
             serial_name=PROTO_SERIAL,
             tcp_client_name=PROTO_TCP_CLIENT)
 
-    def _log_segment_path(self, when=None) -> str:
-        """当前分包对应的文件名：展开 %date/%time/%port/%n 变量，再按需追加序号。
-
-        when 由调用方传入（跨日轮转要用「新一天的时刻」而不是开始记录时的），
-        规则本身在 Qt-free 的 log_naming 里，便于单测。
-        """
+    def _log_segment_path(self, when=None, session=None) -> str:
+        session = self._log_session(session)
+        base = (session.log_base_path if session is not None
+                else getattr(self, "_log_base_path", "")) or ""
+        seg = int(session.log_seg if session is not None
+                  else getattr(self, "_log_seg", 0) or 0)
         return log_naming.segment_path(
-            self._log_base_path, when or datetime.now(),
-            port=self._log_conn_token(), seg=self._log_seg)
+            base, when or datetime.now(),
+            port=self._log_conn_token(session), seg=seg)
 
     def _set_log_path_label(self, path):
-        """更新状态栏的日志文件路径显示（仅记录时显示，太长中间省略，悬停看全路径）。"""
+        """Update status-bar log path (only while recording)."""
         if not hasattr(self, "lbl_log_path"):
             return
         if not path:
@@ -8678,107 +8903,149 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         fm = QFontMetrics(self.lbl_log_path.font())
         w = getattr(self, "_log_path_elide_w", 560)
-        self.lbl_log_path.setText("📝 " + fm.elidedText(path, Qt.ElideMiddle, w))
+        self.lbl_log_path.setText("\U0001f4dd " + fm.elidedText(path, Qt.ElideMiddle, w))
         set_tooltip(self.lbl_log_path, path)
         if hasattr(self, "_log_path_sep"):
             self._log_path_sep.show()
 
-    def _open_log_segment(self, path, when=None) -> bool:
+    def _log_path_owned_by_other(self, path, except_session=None):
+        path = os.path.normcase(os.path.abspath(path)) if path else ""
+        if not path:
+            return None
+        for s in getattr(self, "_sessions", []) or []:
+            if except_session is not None and s is except_session:
+                continue
+            other = s._log_file_path or ""
+            if other and os.path.normcase(os.path.abspath(other)) == path:
+                return s
+        return None
+
+    def _open_log_segment(self, path, when=None, session=None) -> bool:
+        session = self._log_session(session)
+        if session is None:
+            return False
+        conflict = self._log_path_owned_by_other(path, except_session=session)
+        if conflict is not None:
+            self.toast(self._t("err_log_path_busy", path=path), error=True)
+            return False
         try:
-            # 目录可能来自 %date 之类的变量展开，先建出来再开文件
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            self._log_file = open(path, "a", encoding="utf-8")
-            self._log_file_path = path
-            self._log_opened_at = when or datetime.now()
-            ts = self._log_opened_at.strftime("%Y-%m-%d %H:%M:%S")
-            self._log_file.write(self._t("log_header", time=ts))
-            self._log_file.flush()
-            self._log_ends_with_nl = True
-            self._set_log_path_label(path)
+            if session._log_file is not None:
+                self._close_log_segment(datetime.now(), session=session)
+            session._log_file = open(path, "a", encoding="utf-8")
+            session._log_file_path = path
+            session._log_opened_at = when or datetime.now()
+            ts = session._log_opened_at.strftime("%Y-%m-%d %H:%M:%S")
+            session._log_file.write(self._t("log_header", time=ts))
+            session._log_file.flush()
+            session._log_ends_with_nl = True
+            session.log_wanted = True
+            if session is self.active_session():
+                self._set_log_path_label(path)
             return True
         except Exception as e:
             self.toast(self._t("err_open_log", e=e), error=True)
             return False
 
-    def _close_log_segment(self, when):
-        """Write footer -> flush -> close. Each step is independent so a footer
-        failure cannot skip close (same contract as net_io._safe)."""
-        if not self._log_file:
+    def _close_log_segment(self, when, session=None):
+        """Write footer -> flush -> close for one session."""
+        session = self._log_session(session)
+        if session is None or not session._log_file:
             return
         try:
-            self._log_file.write(self._t("log_footer",
-                                         time=when.strftime("%Y-%m-%d %H:%M:%S")))
-            self._log_file.flush()
+            session._log_file.write(self._t(
+                "log_footer", time=when.strftime("%Y-%m-%d %H:%M:%S")))
+            session._log_file.flush()
         except Exception:
             _log.debug("log footer/flush failed", exc_info=True)
         try:
-            self._log_file.close()
+            session._log_file.close()
         except Exception:
             _log.debug("log close failed", exc_info=True)
-        self._log_file = None
-        self._log_ends_with_nl = True
+        session._log_file = None
+        session._log_ends_with_nl = True
 
-    def _maybe_rotate_log(self, now=None):
-        """写入后判断要不要换文件：跨自然日 或 超过分包上限。
-
-        跨日优先且序号归零 —— 文件名里已经带了新日期，再从 _003 接着数会让人以为
-        这天的记录是从第 4 段开始的。跨日轮转只在文件名含日期变量时才有意义
-        （否则换日期也是同一个文件名，白白切断），判定在 log_naming 里。
-        """
-        if not self._log_file:
+    def _maybe_rotate_log(self, now=None, session=None):
+        session = self._log_session(session)
+        if session is None or not session._log_file:
             return
         now = now or datetime.now()
-        if log_naming.should_roll_date(self._log_opened_at, now, self._log_base_path):
-            self._close_log_segment(now)
-            self._log_seg = 0
-            if not self._open_log_segment(self._log_segment_path(now), when=now):
-                self.sw_log_file.setChecked(False)
+        if log_naming.should_roll_date(
+                session._log_opened_at, now, session.log_base_path):
+            self._close_log_segment(now, session=session)
+            session.log_seg = 0
+            if not self._open_log_segment(
+                    self._log_segment_path(now, session=session),
+                    when=now, session=session):
+                session.log_wanted = False
+                if session is self.active_session() and hasattr(self, "sw_log_file"):
+                    self.sw_log_file.setChecked(False)
             return
         try:
-            cur = self._log_file.tell()
+            cur = session._log_file.tell()
         except Exception:
             _log.debug("log tell() failed", exc_info=True)
             return
-        if not log_naming.should_roll_size(cur, self._log_limit):
+        if not log_naming.should_roll_size(cur, session._log_limit):
             return
-        self._close_log_segment(now)
-        self._log_seg += 1
-        if not self._open_log_segment(self._log_segment_path(now), when=now):
-            self.sw_log_file.setChecked(False)
+        self._close_log_segment(now, session=session)
+        session.log_seg = int(session.log_seg or 0) + 1
+        if not self._open_log_segment(
+                self._log_segment_path(now, session=session),
+                when=now, session=session):
+            session.log_wanted = False
+            if session is self.active_session() and hasattr(self, "sw_log_file"):
+                self.sw_log_file.setChecked(False)
 
     def on_log_file_toggled(self, on):
+        session = self._log_session()
         if on:
             path, _ = QFileDialog.getSaveFileName(
                 self, self._t("dlg_log_path"),
-                f"data_log_{datetime.now():%Y%m%d_%H%M%S}.log",
+                "data_log_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S"),
                 self._t("filter_text"))
             if not path:
-                self.sw_log_file.blockSignals(True)   # 取消选择 → 关开关但别递归回调本函数
+                self.sw_log_file.blockSignals(True)
                 self.sw_log_file.setChecked(False)
                 self.sw_log_file.blockSignals(False)
                 return
-            self._log_limit = self._parse_log_limit(self.cb_log_split.currentText())
-            # 存模板原文（可能含 %date/%port）：每次开分包时重新展开，跨日才能拿到新日期
-            self._log_base_path = path
-            self._log_seg = 0
+            if session is None:
+                self.sw_log_file.setChecked(False)
+                return
+            session.log_base_path = path
+            session.log_seg = 0
+            if hasattr(self, "cb_log_split"):
+                session._log_limit = self._parse_log_limit(
+                    self.cb_log_split.currentText())
             now = datetime.now()
-            real = self._log_segment_path(now)
-            if self._open_log_segment(real, when=now):
+            real = self._log_segment_path(now, session=session)
+            if self._open_log_segment(real, when=now, session=session):
                 self.toast(self._t("log_started", path=real))
             else:
                 self.sw_log_file.setChecked(False)
         else:
-            self._close_log_file()
+            if session is not None:
+                session.log_wanted = False
+            self._close_log_file(session=session)
 
-    def _close_log_file(self):
-        if self._log_file:
-            self._close_log_segment(datetime.now())
-            self.toast(self._t("log_stopped", path=self._log_file_path))
-            self._log_file_path = ""
-            self._log_opened_at = None
+    def _close_log_file(self, session=None, toast=True):
+        session = self._log_session(session)
+        if session is None or not session._log_file:
+            if session is not None:
+                session._log_file_path = ""
+                session._log_opened_at = None
+            return
+        path = session._log_file_path
+        self._close_log_segment(datetime.now(), session=session)
+        if toast:
+            self.toast(self._t("log_stopped", path=path))
+        session._log_file_path = ""
+        session._log_opened_at = None
+        if session is self.active_session():
             self._set_log_path_label("")
+
 
     def change_recv_font_size(self, delta):
         new_size = self._recv_font_size + delta
@@ -8800,8 +9067,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             raw_n = self.txt_recv.document().maximumBlockCount() or 10000
         n = _cfg_clamp_lines(raw_n)
         self.ed_max_lines.setText(str(n))
-        if hasattr(self, 'txt_recv'):
-            self.txt_recv.document().setMaximumBlockCount(n)
+        for session in self.sessions():
+            if session.txt_recv is not None:
+                session.txt_recv.document().setMaximumBlockCount(n)
 
     def _on_ts_format_changed(self):
         self._ts_format = _cfg_norm_ts(self.cb_ts_format.currentData())
@@ -9073,6 +9341,15 @@ class CommTool(SessionHostMixin, QMainWindow):
 
         self._apply_theme_label_styles()
         self._update_legend_label()
+        if hasattr(self, "_refresh_session_tab_styles"):
+            try:
+                from session import format_default_title
+                for s in self.sessions():
+                    if getattr(s, "title_index", None) is not None:
+                        s.title = format_default_title(self, s.title_index)
+                self._refresh_session_tab_styles()
+            except Exception:
+                _log.debug("retranslate session tabs failed", exc_info=True)
 
         if hasattr(self, "cb_checksum"):
             idx = self.cb_checksum.currentIndex()
@@ -10755,7 +11032,6 @@ class CommTool(SessionHostMixin, QMainWindow):
         atexit.unregister(self._trg_stop_procs)
         self._save_settings()
         self._close_all_sessions(update_active_ui=True)
-        self._close_log_file()
         if self.port_scanner:
             self.port_scanner.stop()
         self._wait_oneshot_scan()

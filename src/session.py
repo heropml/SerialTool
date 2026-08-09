@@ -6,9 +6,9 @@ counters. UI widgets stay on the window and bind to the active session.
 """
 from __future__ import annotations
 
-import itertools
 import time
 import uuid
+from collections import deque
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QTextEdit
@@ -19,16 +19,57 @@ from fonts import mono_font
 MAX_SESSIONS = 8
 _DEFAULT_TAB_TITLE = "Session"
 
+_CONN_BOOL_KEYS = {
+    "serial_dtr", "serial_rts", "net_use_remote",
+    "vconn_loopback", "auto_reconnect",
+}
+_DISPLAY_BOOL_KEYS = {
+    "tx_hex", "append_nl_on", "hexdump", "rx_hex",
+    "terminal_on", "hexdump_on", "numview_on", "ansi_on",
+    "proto_hl_on", "freeze_view", "line_split", "packet_split",
+    "show_timestamp",
+}
 
-def _new_id():
+
+def _persist_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return bool(default)
+
+def new_session_id():
     return uuid.uuid4().hex[:10]
+
+
+def format_default_title(app, index):
+    """Localized default tab title: base or base-N (index >= 2)."""
+    base = _DEFAULT_TAB_TITLE
+    if app is not None and hasattr(app, "_t"):
+        try:
+            base = app._t("session_default") or base
+        except Exception:
+            pass
+    try:
+        n = int(index)
+    except (TypeError, ValueError):
+        n = 1
+    if n <= 1:
+        return base
+    return "%s-%d" % (base, n)
 
 
 class Session:
     """One concurrent connection + receive view + reconnect state."""
 
     __slots__ = (
-        "id", "title", "app",
+        "id", "title", "title_index", "app",
         "conn", "_conn_proto", "_conn_cfg", "_conn_engaged",
         "rx_bytes", "tx_bytes", "rx_packets", "tx_packets",
         "rx_errors", "tx_errors",
@@ -38,7 +79,7 @@ class Session:
         "_reconnect_attempts", "_reconnect_timer",
         "_serial_reconnect_cfg", "_reconnect_snapshot", "_user_closing",
         "_serial_device", "_serial_missing_count",
-        "_freeze_view",
+        "_freeze_view", "_ts_anchor",
         "_last_recv_time", "_last_direction", "_pending_line_break",
         "_rx_decode_buffer", "_rx_decode_buffers",
         "_rx_pending_cr", "_rx_pending_cr_source",
@@ -48,18 +89,31 @@ class Session:
         "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
         "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
         "_ar_buf", "_ar_gap_timer",
+        "_period_timer",
         "txt_recv",
-        "_bookmarks", "_bookmark_idx", "_recv_highlight_line",
+        "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
         "conn_fields", "send_draft", "period_ms", "period_on",
+        "_send_count", "send_target",
         "display_opts", "log_wanted", "log_base_path", "log_seg",
+        "_log_file", "_log_file_path", "_log_opened_at",
+        "_log_ends_with_nl", "_log_limit",
         "clients", "udp_peer",
         "_tab_index",
     )
 
-    def __init__(self, app, title=None, session_id=None):
+    def __init__(self, app, title=None, session_id=None, title_index=None):
         self.app = app
-        self.id = session_id or _new_id()
-        self.title = title or _DEFAULT_TAB_TITLE
+        self.id = session_id or new_session_id()
+        # title_index: auto-localized default (1, 2, 3...); None = custom title.
+        if title_index is not None:
+            self.title_index = int(title_index)
+            self.title = format_default_title(app, self.title_index)
+        elif title:
+            self.title_index = None
+            self.title = title
+        else:
+            self.title_index = 1
+            self.title = format_default_title(app, 1)
         self._tab_index = -1
 
         self.conn = None
@@ -96,6 +150,7 @@ class Session:
             lambda _s=self: _s.app._try_reconnect_for(_s.id))
 
         self._freeze_view = False
+        self._ts_anchor = None
         self._reset_recv_fields()
         self._ar_buf = b""
         self._ar_gap_timer = QTimer(app)
@@ -103,19 +158,31 @@ class Session:
         self._ar_gap_timer.timeout.connect(
             lambda _s=self: _s.app._ar_flush_for(_s.id))
 
+        self._period_timer = QTimer(app)
+        self._period_timer.timeout.connect(
+            lambda _s=self: _s.app._period_send_for(_s.id))
+
         self.txt_recv = None
         self._bookmarks = []
         self._bookmark_idx = -1
         self._recv_highlight_line = -1
+        self._proto_fields = deque(maxlen=3000)
 
         self.conn_fields = {}
         self.send_draft = ""
         self.period_ms = "1000"
         self.period_on = False
+        self._send_count = 0
+        self.send_target = "__all__"
         self.display_opts = {}
         self.log_wanted = False
         self.log_base_path = ""
         self.log_seg = 0
+        self._log_file = None
+        self._log_file_path = ""
+        self._log_opened_at = None
+        self._log_ends_with_nl = True
+        self._log_limit = 0
         self.clients = []
         self.udp_peer = None
 
@@ -143,7 +210,6 @@ class Session:
         self._term_osc_prev_esc = False
         self._term_streams = {}
 
-
     def ensure_recv_widget(self, font_size=10):
         """Create the per-session QTextEdit if missing (parented later into stack)."""
         if self.txt_recv is not None:
@@ -167,7 +233,6 @@ class Session:
         cfg = self._conn_cfg
         if not proto or not cfg:
             return None
-        # cfg shapes mirror _conn_config_signature
         try:
             from virtual_io import PROTO_VIRTUAL
             from conn_ui import PROTO_SERIAL
@@ -177,20 +242,13 @@ class Session:
         if proto == PROTO_SERIAL and len(cfg) > 1 and cfg[1]:
             return ("serial", str(cfg[1]).upper())
         if proto == PROTO_VIRTUAL:
-            return None  # virtual is in-process; allow many
-        # network: local bind conflicts on same (proto family, local_ip, local_port)
+            return None
         if len(cfg) >= 1:
-            # signatures vary; prefer explicit local fields when present
-            local_ip = ""
-            local_port = ""
-            if len(cfg) >= 3:
-                # common: (mode, remote_ip, remote_port) or (mode, local_ip, local_port, ...)
-                pass
             return ("net", proto, tuple(cfg))
         return ("net", proto, tuple(cfg) if cfg else ())
 
     def tab_label(self, closed_label="-"):
-        """Short label for QTabBar: conn token or placeholder.
+        """Short label for QTabBar: conn token or localized default title.
 
         Shared connection UI always keeps a serial-port combo value, so a UDP
         session's conn_fields may still contain ser_port=COM1. Prefer proto:
@@ -210,7 +268,6 @@ class Session:
             port = self.conn_fields.get("ser_port") or ""
             rip = self.conn_fields.get("net_remote_ip") or ""
             rport = self.conn_fields.get("net_remote_port") or ""
-            # Network session: never fall back to leftover serial combo text.
             if proto and proto != PROTO_SERIAL:
                 if proto == PROTO_TCP_CLIENT and rip and rport:
                     return "%s_%s" % (rip, rport)
@@ -221,16 +278,21 @@ class Session:
                 return "%s:%s" % (rip, rport)
             if proto:
                 return str(proto)
+        if self.title_index is not None:
+            return format_default_title(self.app, self.title_index)
         return self.title or closed_label
 
     def to_persist(self):
         return {
             "id": self.id,
             "title": self.title,
+            "title_index": self.title_index,
             "conn_fields": dict(self.conn_fields or {}),
             "send_draft": self.send_draft or "",
             "period_ms": self.period_ms or "1000",
             "period_on": bool(self.period_on),
+            "send_count": int(self._send_count or 0) & 0xFF,
+            "send_target": self.send_target if self.send_target is not None else "__all__",
             "display_opts": dict(self.display_opts or {}),
             "log_wanted": bool(self.log_wanted),
             "log_base_path": self.log_base_path or "",
@@ -239,27 +301,71 @@ class Session:
 
     @classmethod
     def from_persist(cls, app, data):
-        data = data or {}
-        s = cls(app, title=data.get("title"), session_id=data.get("id") or None)
-        s.conn_fields = dict(data.get("conn_fields") or {})
-        s.send_draft = data.get("send_draft") or ""
-        s.period_ms = data.get("period_ms") or "1000"
-        s.period_on = bool(data.get("period_on", False))
-        s.display_opts = dict(data.get("display_opts") or {})
-        s._freeze_view = bool(s.display_opts.get("freeze_view", False))
-        s.log_wanted = bool(data.get("log_wanted", False))
-        s.log_base_path = data.get("log_base_path") or ""
-        try:
-            s.log_seg = max(0, int(data.get("log_seg", 0) or 0))
-        except (TypeError, ValueError):
-            s.log_seg = 0
+        s = cls(app)
+        s.load_persist(data)
         return s
 
-
-# Stable counter for default titles Session-2, Session-3, ...
-_title_seq = itertools.count(2)
-
-
-def next_default_title(base="Session"):
-    n = next(_title_seq)
-    return "%s-%d" % (base, n)
+    def load_persist(self, data):
+        """Restore persisted fields onto an existing or newly-created session."""
+        data = data if isinstance(data, dict) else {}
+        raw_idx = data.get("title_index", None)
+        title = data.get("title")
+        if not isinstance(title, str):
+            title = None
+        if raw_idx is None and isinstance(title, str):
+            # Migrate old English defaults so language switches keep working.
+            if title == _DEFAULT_TAB_TITLE or title == "Session":
+                raw_idx = 1
+            elif title.startswith("Session-"):
+                try:
+                    raw_idx = int(title.split("-", 1)[1])
+                except (TypeError, ValueError):
+                    raw_idx = None
+        try:
+            parsed_idx = int(raw_idx) if raw_idx is not None else None
+        except (TypeError, ValueError):
+            parsed_idx = None
+        if parsed_idx is not None:
+            self.title_index = parsed_idx
+            self.title = format_default_title(self.app, self.title_index)
+        elif title:
+            self.title_index = None
+            self.title = title
+        else:
+            self.title_index = 1
+            self.title = format_default_title(self.app, 1)
+        raw_id = data.get("id")
+        if isinstance(raw_id, (str, int)) and str(raw_id).strip():
+            self.id = str(raw_id).strip()
+        conn_fields = data.get("conn_fields")
+        self.conn_fields = ({str(key): value for key, value in conn_fields.items()
+                             if isinstance(value, (str, int, float, bool))
+                             or value is None}
+                            if isinstance(conn_fields, dict) else {})
+        for key in _CONN_BOOL_KEYS & set(self.conn_fields):
+            self.conn_fields[key] = _persist_bool(self.conn_fields[key])
+        send_draft = data.get("send_draft")
+        self.send_draft = send_draft if isinstance(send_draft, str) else ""
+        period_ms = data.get("period_ms")
+        self.period_ms = (str(period_ms) if isinstance(period_ms, (str, int, float))
+                          and str(period_ms) else "1000")
+        self.period_on = _persist_bool(data.get("period_on", False))
+        try:
+            self._send_count = int(data.get("send_count", 0) or 0) & 0xFF
+        except (TypeError, ValueError):
+            self._send_count = 0
+        self.send_target = data.get("send_target")
+        if not isinstance(self.send_target, (str, int, float, bool)):
+            self.send_target = "__all__"
+        display_opts = data.get("display_opts")
+        self.display_opts = dict(display_opts) if isinstance(display_opts, dict) else {}
+        for key in _DISPLAY_BOOL_KEYS & set(self.display_opts):
+            self.display_opts[key] = _persist_bool(self.display_opts[key])
+        self._freeze_view = self.display_opts.get("freeze_view", False)
+        self.log_wanted = _persist_bool(data.get("log_wanted", False))
+        log_base_path = data.get("log_base_path")
+        self.log_base_path = log_base_path if isinstance(log_base_path, str) else ""
+        try:
+            self.log_seg = max(0, int(data.get("log_seg", 0) or 0))
+        except (TypeError, ValueError):
+            self.log_seg = 0

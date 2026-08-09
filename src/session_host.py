@@ -7,15 +7,39 @@ import logging
 
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import (
-    QTabBar, QHBoxLayout, QPushButton, QWidget, QLabel,
+    QTabBar, QHBoxLayout, QPushButton, QWidget, QLabel, QTextEdit,
 )
 
-from session import Session, MAX_SESSIONS, next_default_title
+from session import Session, MAX_SESSIONS, format_default_title, new_session_id
 from theme import chrome_for
 from ui_icons import close_icon, plus_icon, status_dot_icon
 from ui_tips import set_tooltip
 
 _log = logging.getLogger("commtool.session")
+
+_BACKGROUND_DISPLAY_DEFAULTS = {
+    "tx_hex": False,
+    "append_nl_on": False,
+    "append_nl": 0,
+    "checksum": 0,
+    "terminal_on": False,
+    "hexdump": False,
+    "hexdump_on": False,
+    "hexdump_width": "16",
+    "numview_on": False,
+    "numview_spec": ("u16", "le"),
+    "rx_hex": False,
+    "line_split": False,
+    "line_nl": 0,
+    "packet_split": False,
+    "packet_timeout": "0",
+    "show_timestamp": False,
+    "ts_format": "absolute",
+    "ansi_on": False,
+    "proto_hl_on": False,
+    "freeze_view": False,
+    "encoding": "auto",
+}
 
 # Attributes forwarded between CommTool and the current session context.
 _SESSION_PROXY_ATTRS = (
@@ -27,7 +51,7 @@ _SESSION_PROXY_ATTRS = (
     "_io_stats",
     "_reconnect_attempts", "_serial_reconnect_cfg",
     "_serial_device", "_serial_missing_count",
-    "_freeze_view",
+    "_freeze_view", "_ts_anchor",
     "_last_recv_time", "_last_direction", "_pending_line_break",
     "_rx_decode_buffer", "_rx_decode_buffers",
     "_rx_pending_cr", "_rx_pending_cr_source",
@@ -37,7 +61,10 @@ _SESSION_PROXY_ATTRS = (
     "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
     "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
     "_ar_gap_timer",
-    "_bookmarks", "_bookmark_idx", "_recv_highlight_line",
+    "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
+    "_log_file", "_log_file_path", "_log_opened_at",
+    "_log_ends_with_nl", "_log_limit",
+    "_send_count",
 )
 
 
@@ -60,6 +87,29 @@ def _install_session_proxies(cls):
             return property(getter, setter)
 
         setattr(cls, name, _make(name))
+
+    # Compatibility aliases used by the pre-session log rotation path/tests.
+    # Keep one source of truth instead of leaving stale window attributes.
+    for legacy_name, session_name in (
+            ("_log_base_path", "log_base_path"),
+            ("_log_seg", "log_seg")):
+        if (hasattr(cls, legacy_name)
+                and isinstance(getattr(cls, legacy_name), property)):
+            continue
+
+        def _make_alias(attr):
+            def getter(self, _a=attr):
+                s = self._session_ctx()
+                return getattr(s, _a) if s is not None else None
+
+            def setter(self, value, _a=attr):
+                s = self._session_ctx()
+                if s is not None:
+                    setattr(s, _a, value)
+
+            return property(getter, setter)
+
+        setattr(cls, legacy_name, _make_alias(session_name))
 
     # txt_recv: prefer context session widget
     if not (hasattr(cls, "txt_recv") and isinstance(getattr(cls, "txt_recv"), property)):
@@ -111,6 +161,24 @@ def _install_session_proxies(cls):
 
         cls._reconnect_timer = property(_rt_get, _rt_set)
 
+    # Window-facing period timer forwards to the context session's timer.
+    if not (hasattr(cls, "send_timer") and isinstance(getattr(cls, "send_timer"), property)):
+        def _st_get(self):
+            ov = self.__dict__.get("_send_timer_override")
+            if ov is not None:
+                return ov
+            _ctx = getattr(self, "_session_ctx", None)
+            sess = _ctx() if callable(_ctx) else None
+            if sess is not None and getattr(sess, "_period_timer", None) is not None:
+                return sess._period_timer
+            return getattr(self, "_send_timer_fallback", None)
+
+        def _st_set(self, value):
+            self.__dict__["_send_timer_override"] = value
+            self._send_timer_fallback = value
+
+        cls.send_timer = property(_st_get, _st_set)
+
 
 class SessionHostMixin:
     """Mixin: sessions tab bar, active binding, conflict checks."""
@@ -127,7 +195,7 @@ class SessionHostMixin:
         self._btn_new_session = None
         self.recv_stack = None
         # First session before any UI
-        s = Session(self, title="Session")
+        s = Session(self, title_index=1)
         self._sessions.append(s)
         self._active_session_id = s.id
 
@@ -145,6 +213,14 @@ class SessionHostMixin:
         if self._rx_context is not None:
             return self._rx_context
         return self.active_session()
+
+    @staticmethod
+    def _background_display_opts(session):
+        opts = dict(_BACKGROUND_DISPLAY_DEFAULTS)
+        if session is not None and isinstance(session.display_opts, dict):
+            opts.update(session.display_opts)
+        opts["background"] = True
+        return opts
 
     def find_session(self, session_id):
         for s in self._sessions:
@@ -311,7 +387,11 @@ class SessionHostMixin:
         if persist_data:
             s = Session.from_persist(self, persist_data)
         else:
-            s = Session(self, title=next_default_title())
+            indices = [x.title_index for x in self._sessions
+                       if x.title_index is not None]
+            s = Session(self, title_index=max([1] + indices) + 1)
+        while self.find_session(s.id) is not None:
+            s.id = new_session_id()
         self._sessions.append(s)
         self._ensure_session_recv_widget(s)
         if self._session_tab_bar is not None:
@@ -340,6 +420,24 @@ class SessionHostMixin:
 
     def _ensure_session_recv_widget(self, session):
         te = session.ensure_recv_widget(getattr(self, "_recv_font_size", 10))
+        # max_lines is window-wide.  New/reset tabs must inherit the current
+        # limit instead of silently falling back to Session's 10000 default.
+        max_lines = None
+        for other in self._sessions:
+            if other is not session and other.txt_recv is not None:
+                max_lines = other.txt_recv.document().maximumBlockCount()
+                break
+        if not max_lines and hasattr(self, "ed_max_lines"):
+            try:
+                max_lines = int(self.ed_max_lines.text())
+            except (TypeError, ValueError):
+                max_lines = None
+        if max_lines and max_lines > 0:
+            te.document().setMaximumBlockCount(max_lines)
+        if hasattr(self, "sw_wrap"):
+            te.setLineWrapMode(
+                QTextEdit.WidgetWidth if self.sw_wrap.isChecked()
+                else QTextEdit.NoWrap)
         te.setProperty("tr_tooltip", "sel_chk_hint")
         set_tooltip(te, self._t("sel_chk_hint"))
         te.setContextMenuPolicy(Qt.PreventContextMenu)
@@ -395,6 +493,15 @@ class SessionHostMixin:
                 s._reconnect_timer.stop()
             if s._ar_gap_timer.isActive():
                 s._ar_gap_timer.stop()
+            if s._period_timer.isActive():
+                s._period_timer.stop()
+            s.period_on = False
+            if getattr(s, "_log_file", None) is not None:
+                try:
+                    self._close_log_file(session=s, toast=False)
+                except Exception:
+                    _log.debug("close session log failed", exc_info=True)
+            s.log_wanted = False
         # Floating receive controls are children of the active QTextEdit. Move
         # them out before deleting that view or their C++ objects die with it.
         if was_active:
@@ -407,7 +514,7 @@ class SessionHostMixin:
             self.recv_stack.removeWidget(s.txt_recv)
             s.txt_recv.deleteLater()
             s.txt_recv = None
-        self._sessions = [x for x in self._sessions if x.id != s.id]
+        self._sessions = [x for x in self._sessions if x is not s]
         self._dispose_session_timers(s)
         if was_active:
             self._active_session_id = self._sessions[0].id
@@ -446,16 +553,6 @@ class SessionHostMixin:
         try:
             if cur is not None:
                 self._save_ui_into_session(cur)
-                # Leaving session: release live log handle (one file globally).
-                if hasattr(self, "sw_log_file") and self.sw_log_file.isChecked():
-                    cur.log_wanted = True
-                    self.sw_log_file.blockSignals(True)
-                    self.sw_log_file.setChecked(False)
-                    self.sw_log_file.blockSignals(False)
-                    try:
-                        self._close_log_file()
-                    except Exception:
-                        pass
             # Trigger decoding is window-owned. A partial character/tail from
             # the old tab must never become the prefix of the new tab's data.
             if hasattr(self, "_reset_trigger_decoders"):
@@ -484,7 +581,7 @@ class SessionHostMixin:
     @staticmethod
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
-        for name in ("_reconnect_timer", "_ar_gap_timer"):
+        for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer"):
             timer = getattr(session, name, None)
             if timer is None:
                 continue
@@ -497,8 +594,21 @@ class SessionHostMixin:
         if not hasattr(self, "cb_target"):
             return
         if session is not None and "Server" in str(session._conn_proto or ""):
+            # _on_clients_changed rebuilds the shared combo and snapshots its
+            # selection. Keep this session's choice before that shared UI work.
+            want = getattr(session, "send_target", None)
             with self._with_session(session):
                 self._on_clients_changed(list(session.clients or []))
+            # Restore this session's chosen client after the combo rebuild.
+            if want is not None and hasattr(self, "cb_target"):
+                idx = self.cb_target.findData(want)
+                if idx < 0:
+                    idx = 0
+                    session.send_target = self.cb_target.itemData(0)
+                self.cb_target.blockSignals(True)
+                self.cb_target.setCurrentIndex(idx)
+                self.cb_target.blockSignals(False)
+                session.send_target = self.cb_target.currentData()
         else:
             self.cb_target.clear()
         peer = getattr(session, "udp_peer", None) if session is not None else None
@@ -538,17 +648,11 @@ class SessionHostMixin:
             _log.debug("capture conn fields failed", exc_info=True)
         if hasattr(self, "txt_send"):
             session.send_draft = self.txt_send.toPlainText()
-        if hasattr(self, "ed_period_ms"):
-            session.period_ms = self.ed_period_ms.text()
-        if hasattr(self, "sw_period"):
-            session.period_on = bool(self.sw_period.isChecked())
         # Display / send options snapshot (best-effort)
         opts = {}
         for attr, key in (
             ("sw_tx_hex", "tx_hex"),
             ("sw_append_newline", "append_nl_on"),
-            ("cb_append_nl", "append_nl"),
-            ("cb_checksum", "checksum"),
             ("sw_hexdump", "hexdump"),
             ("sw_rx_hex", "rx_hex"),
         ):
@@ -561,6 +665,16 @@ class SessionHostMixin:
                 opts[key] = w.currentText()
             elif hasattr(w, "currentData"):
                 opts[key] = w.currentData()
+        # Store combo indices so background TX does not depend on translated labels.
+        if hasattr(self, "cb_append_nl"):
+            opts["append_nl"] = int(self.cb_append_nl.currentIndex())
+        if hasattr(self, "cb_checksum"):
+            opts["checksum"] = int(self.cb_checksum.currentIndex())
+        # Only TCP/UDP Server sidebars own cb_target; other protos must not
+        # clobber a session's last server target while the combo is stale.
+        if ("Server" in str(session._conn_proto or "")
+                and hasattr(self, "cb_target") and self.cb_target.count() > 0):
+            session.send_target = self.cb_target.currentData()
         opts.update({
             "terminal_on": bool(getattr(self, "_terminal_on", False)),
             "hexdump_on": bool(getattr(self, "_hexdump_on", False)),
@@ -585,12 +699,32 @@ class SessionHostMixin:
             if hasattr(self, "cb_hexdump_width") else "16",
             "numview_spec": self._numview_spec()
             if hasattr(self, "_numview_spec") else ("u16", "le"),
+            "log_split": self.cb_log_split.currentText()
+            if hasattr(self, "cb_log_split") else "",
         })
         session.display_opts = opts
         if hasattr(self, "sw_log_file"):
-            session.log_wanted = bool(self.sw_log_file.isChecked())
-            session.log_base_path = getattr(self, "_log_base_path", "") or ""
-            session.log_seg = int(getattr(self, "_log_seg", 0) or 0)
+            # While disconnected, the switch is shown off even if log_wanted is
+            # preserved for auto-reconnect — never clear intent from that UI.
+            if session._log_file is not None or self.sw_log_file.isChecked():
+                session.log_wanted = True
+            elif session.is_open():
+                session.log_wanted = False
+            if hasattr(self, "cb_log_split") and hasattr(self, "_parse_log_limit"):
+                session._log_limit = self._parse_log_limit(
+                    self.cb_log_split.currentText())
+        if hasattr(self, "ed_period_ms"):
+            session.period_ms = self.ed_period_ms.text()
+        if hasattr(self, "sw_period"):
+            # Keep running timers authoritative when leaving a background-capable tab.
+            if session._period_timer.isActive():
+                session.period_on = True
+            elif session.is_open():
+                session.period_on = bool(self.sw_period.isChecked())
+            elif self.sw_period.isChecked():
+                # Disconnected: adopt explicit ON; do not clear reconnect intent
+                # when the switch is shown off because the link is down.
+                session.period_on = True
 
     def _load_session_into_ui(self, session):
         if session is None:
@@ -598,13 +732,22 @@ class SessionHostMixin:
         self._switching_session = True
         try:
             if session.conn_fields:
-                self._apply_connection_fields(session.conn_fields)
+                try:
+                    self._apply_connection_fields(session.conn_fields)
+                except (TypeError, ValueError):
+                    _log.debug("invalid persisted connection fields", exc_info=True)
+                    session.conn_fields = {}
             if hasattr(self, "txt_send"):
                 self.txt_send.setPlainText(session.send_draft or "")
             if hasattr(self, "ed_period_ms") and session.period_ms:
                 self.ed_period_ms.setText(str(session.period_ms))
             self._restore_session_periodic(session)
-            opts = session.display_opts or {}
+            # Missing fields in an old/partial snapshot must not inherit the
+            # previously active tab's controls.  Use the same deterministic
+            # defaults as background processing, then overlay this session.
+            opts = dict(_BACKGROUND_DISPLAY_DEFAULTS)
+            if isinstance(session.display_opts, dict):
+                opts.update(session.display_opts)
             for attr, key in (
                 ("sw_tx_hex", "tx_hex"),
                 ("sw_append_newline", "append_nl_on"),
@@ -652,13 +795,28 @@ class SessionHostMixin:
                 if key not in opts:
                     continue
                 w = getattr(self, attr, None)
-                if w is not None and hasattr(w, "setCurrentText"):
-                    w.blockSignals(True)
-                    w.setCurrentText(str(opts[key]))
-                    w.blockSignals(False)
+                if w is None:
+                    continue
+                w.blockSignals(True)
+                raw = opts[key]
+                try:
+                    idx = int(raw)
+                    if 0 <= idx < w.count():
+                        w.setCurrentIndex(idx)
+                    elif hasattr(w, "setCurrentText"):
+                        w.setCurrentText(str(raw))
+                except (TypeError, ValueError):
+                    if hasattr(w, "setCurrentText"):
+                        w.setCurrentText(str(raw))
+                w.blockSignals(False)
             if "line_nl" in opts and hasattr(self, "cb_line_nl"):
                 self.cb_line_nl.blockSignals(True)
-                self.cb_line_nl.setCurrentIndex(int(opts["line_nl"]))
+                try:
+                    idx = int(opts["line_nl"])
+                except (TypeError, ValueError):
+                    idx = 0
+                self.cb_line_nl.setCurrentIndex(
+                    idx if 0 <= idx < self.cb_line_nl.count() else 0)
                 self.cb_line_nl.blockSignals(False)
             if "packet_timeout" in opts and hasattr(self, "ed_packet_timeout"):
                 self.ed_packet_timeout.blockSignals(True)
@@ -690,40 +848,43 @@ class SessionHostMixin:
                         self.cb_ts_format.blockSignals(True)
                         self.cb_ts_format.setCurrentIndex(idx)
                         self.cb_ts_format.blockSignals(False)
+            if "log_split" in opts and hasattr(self, "cb_log_split"):
+                self.cb_log_split.blockSignals(True)
+                self.cb_log_split.setCurrentText(str(opts["log_split"]))
+                self.cb_log_split.blockSignals(False)
+            if hasattr(self, "_parse_log_limit") and hasattr(self, "cb_log_split"):
+                session._log_limit = self._parse_log_limit(
+                    opts.get("log_split") or self.cb_log_split.currentText())
             if hasattr(self, "_refresh_hex_toggle_state"):
                 self._refresh_hex_toggle_state()
-            # Live log is window-global (one file): restore per-session intent without
-            # re-opening the file dialog (on_log_file_toggled would prompt).
+            # Live log is per-session: sync switch/label only; never close others.
             if hasattr(self, "sw_log_file"):
-                want = bool(getattr(session, "log_wanted", False))
-                base = getattr(session, "log_base_path", "") or ""
-                if want and base and hasattr(self, "_open_log_segment"):
-                    self._log_base_path = base
-                    self._log_seg = int(getattr(session, "log_seg", 0) or 0)
-                    self._log_limit = self._parse_log_limit(
-                        self.cb_log_split.currentText()) if hasattr(self, "cb_log_split") else 0
+                logging_on = session._log_file is not None
+                self.sw_log_file.blockSignals(True)
+                self.sw_log_file.setChecked(logging_on)
+                self.sw_log_file.blockSignals(False)
+                if hasattr(self, "_set_log_path_label"):
+                    self._set_log_path_label(
+                        session._log_file_path if logging_on else "")
+                # Cold restore after restart: reopen if intent + path were persisted.
+                if (not logging_on and session.log_wanted and session.log_base_path
+                        and hasattr(self, "_open_log_segment")):
                     from datetime import datetime
                     now = datetime.now()
-                    real = self._log_segment_path(now)
-                    ok = False
                     try:
-                        ok = bool(self._open_log_segment(real, when=now))
+                        real = self._log_segment_path(now, session=session)
+                        ok = bool(self._open_log_segment(
+                            real, when=now, session=session))
                     except Exception:
                         _log.debug("restore log failed", exc_info=True)
+                        ok = False
                     self.sw_log_file.blockSignals(True)
                     self.sw_log_file.setChecked(ok)
                     self.sw_log_file.blockSignals(False)
                     if not ok:
                         session.log_wanted = False
-                else:
-                    self.sw_log_file.blockSignals(True)
-                    self.sw_log_file.setChecked(False)
-                    self.sw_log_file.blockSignals(False)
-                    if getattr(self, "_log_file", None):
-                        try:
-                            self._close_log_file()
-                        except Exception:
-                            pass
+                    elif hasattr(self, "_set_log_path_label"):
+                        self._set_log_path_label(session._log_file_path or "")
             self._sync_open_button_from_session(session)
             if session.is_open():
                 self.set_settings_enabled(False)
@@ -733,24 +894,122 @@ class SessionHostMixin:
         finally:
             self._switching_session = False
 
+    def _sync_session_period_timer(self, session):
+        """Start/stop one session's period timer from its own intent."""
+        if session is None or getattr(session, "_period_timer", None) is None:
+            return
+        timer = session._period_timer
+        want = bool(session.period_on and session.is_open())
+        if not want:
+            if timer.isActive():
+                timer.stop()
+            return
+        try:
+            ms = max(10, int(session.period_ms or "1000"))
+        except (TypeError, ValueError):
+            ms = 1000
+            session.period_ms = "1000"
+        if timer.isActive() and timer.interval() == ms:
+            return
+        timer.start(ms)
+
     def _restore_session_periodic(self, session):
-        """Apply one session's periodic-send intent to the window-owned timer."""
+        """Sync sidebar period switch to this session; leave other timers alone."""
         if not hasattr(self, "sw_period"):
             return
-        if self.send_timer.isActive():
-            self.send_timer.stop()
+        self._sync_session_period_timer(session)
         want = bool(session and session.period_on and session.is_open())
         self.sw_period.blockSignals(True)
         self.sw_period.setChecked(want)
         self.sw_period.blockSignals(False)
-        if want:
+
+    def _period_send_for(self, sid):
+        """Timer callback: TX using the owning session's draft/conn/opts."""
+        session = self.find_session(sid)
+        if session is None:
+            return
+        if not session.period_on or not session.is_open():
+            if session._period_timer.isActive():
+                session._period_timer.stop()
+            return
+        is_active = session is self.active_session()
+        opts = (dict(session.display_opts or {}) if is_active
+                else self._background_display_opts(session))
+        if is_active:
+            if hasattr(self, "txt_send"):
+                raw = self.txt_send.toPlainText()
+                session.send_draft = raw
+            # Read only TX controls here.  A 10 ms timer must not snapshot the
+            # entire connection sidebar and every receive/display option.
+            if hasattr(self, "sw_tx_hex"):
+                opts["tx_hex"] = bool(self.sw_tx_hex.isChecked())
+            if hasattr(self, "sw_append_newline"):
+                opts["append_nl_on"] = bool(self.sw_append_newline.isChecked())
+            if hasattr(self, "cb_append_nl"):
+                opts["append_nl"] = int(self.cb_append_nl.currentIndex())
+            if hasattr(self, "cb_checksum"):
+                opts["checksum"] = int(self.cb_checksum.currentIndex())
+            if hasattr(self, "cb_encoding"):
+                opts["encoding"] = self.cb_encoding.currentData()
+            if ("Server" in str(session._conn_proto or "")
+                    and hasattr(self, "cb_target") and self.cb_target.count() > 0):
+                session.send_target = self.cb_target.currentData()
+        else:
+            raw = session.send_draft or ""
+        if not raw:
+            return
+        hex_mode = bool(opts.get("tx_hex", False))
+        try:
+            checksum = int(opts.get("checksum", 0) or 0)
+        except (TypeError, ValueError):
+            checksum = 0
+        # Pass the owning session/current UI selection explicitly; None would
+        # make _send_text consult a potentially stale display snapshot.
+        if bool(opts.get("append_nl_on", False)):
             try:
-                raw_ms = (session.period_ms if session and session.period_ms
-                          else self.ed_period_ms.text())
-                ms = max(10, int(raw_ms or "1000"))
-            except ValueError:
-                ms = 1000
-            self.send_timer.start(ms)
+                # Combo index is 0/1/2; _send_text's explicit override is 1/2/3.
+                newline = int(opts.get("append_nl", 0) or 0) + 1
+            except (TypeError, ValueError):
+                newline = 1
+        else:
+            newline = 0
+        target = None
+        if "Server" in str(session._conn_proto or ""):
+            target = session.send_target
+        with self._with_session(session):
+            # Window engines are shared; other sessions' period timers must not block.
+            if self._period_tx_blocked():
+                return
+            previous_ctx = getattr(self, "_display_context", None)
+            if not is_active:
+                # Keep RX/TX display+log formatting on this session's opts.
+                self._display_context = dict(opts)
+                self._display_context["background"] = True
+            errors_before = int(getattr(session, "tx_errors", 0) or 0)
+            try:
+                ok = self._send_with_subst(
+                    raw, hex_mode=hex_mode, newline=newline, checksum=checksum,
+                    target=target, encoding=opts.get("encoding"),
+                    record_macro=False, notify_ui=is_active,
+                    feed_window_engines=is_active)
+            finally:
+                if not is_active:
+                    self._display_context = previous_ctx
+            if not ok:
+                # Background format/preflight failures are deliberately silent
+                # in the active UI.  Preserve one observable error on the
+                # owning tab; transport failures already increment it below.
+                if (not is_active
+                        and int(getattr(session, "tx_errors", 0) or 0)
+                        == errors_before):
+                    self._stat_note_tx_error()
+                session.period_on = False
+                if session._period_timer.isActive():
+                    session._period_timer.stop()
+                if session is self.active_session() and hasattr(self, "sw_period"):
+                    self.sw_period.blockSignals(True)
+                    self.sw_period.setChecked(False)
+                    self.sw_period.blockSignals(False)
 
     def _sync_open_button_from_session(self, session):
         if not hasattr(self, "btn_open"):
@@ -894,9 +1153,8 @@ class SessionHostMixin:
         if s is None:
             return
         previous = self._display_context
-        self._display_context = dict(s.display_opts or {})
+        self._display_context = self._background_display_opts(s)
         self._display_context["proto_hl_on"] = False
-        self._display_context["background"] = True
         try:
             self._on_data_received_impl(data, source=reply_target)
         except Exception:
@@ -930,7 +1188,8 @@ class SessionHostMixin:
                         s._reconnect_timer.stop()
                 elif s.conn is not None:
                     # Background drop: tear down without stealing sidebar
-                    self.close_conn(update_ui=False)
+                    self.close_conn(
+                        update_ui=False, preserve_session_intent=True)
                     if not s._user_closing:
                         self._schedule_reconnect()
         self._refresh_session_tab_styles()
@@ -942,6 +1201,9 @@ class SessionHostMixin:
         s.clients = list(clients or [])
         if s.id != self._active_session_id:
             active = {key for key, _label in s.clients}
+            if (s.send_target not in (None, "__all__")
+                    and s.send_target not in active):
+                s.send_target = "__all__"
             with self._with_session(s):
                 self._numview_carries = {
                     key: value for key, value in self._numview_carries.items()
@@ -968,6 +1230,8 @@ class SessionHostMixin:
             return
         with self._with_session(s):
             self._on_clients_changed(clients)
+        if hasattr(self, "cb_target") and self.cb_target.count() > 0:
+            s.send_target = self.cb_target.currentData()
 
     def _route_session_peer(self, session_id, ip, port):
         s = self.find_session(session_id)
@@ -1035,7 +1299,7 @@ class SessionHostMixin:
         self._sessions = []
         self._rx_context = None
         self._display_context = None
-        fresh = Session(self, title="Session")
+        fresh = Session(self, title_index=1)
         self._sessions.append(fresh)
         self._active_session_id = fresh.id
         self._ensure_session_recv_widget(fresh)
@@ -1057,30 +1321,40 @@ class SessionHostMixin:
             return
         if not isinstance(payload, list) or not payload:
             return
+        items = [dict(item) for item in payload if isinstance(item, dict)]
+        if not items:
+            return
         self._reset_sessions_runtime()
-        first = payload[0]
-        s0 = self._sessions[0]
-        s0.conn_fields = dict(first.get("conn_fields") or {})
-        s0.send_draft = first.get("send_draft") or ""
-        s0.period_ms = first.get("period_ms") or "1000"
-        s0.period_on = bool(first.get("period_on", False))
-        s0.display_opts = dict(first.get("display_opts") or {})
-        s0._freeze_view = bool(s0.display_opts.get("freeze_view", False))
-        s0.log_wanted = bool(first.get("log_wanted", False))
-        s0.log_base_path = first.get("log_base_path") or ""
-        try:
-            s0.log_seg = max(0, int(first.get("log_seg", 0) or 0))
-        except (TypeError, ValueError):
-            s0.log_seg = 0
-        if first.get("title"):
-            s0.title = first["title"]
-        if first.get("id"):
-            s0.id = first["id"]
-            self._active_session_id = s0.id
-            if s0.txt_recv is not None:
-                s0.txt_recv.setProperty("session_id", s0.id)
-        for item in payload[1:MAX_SESSIONS]:
-            self.add_session(activate=False, persist_data=item)
+        seen_ids = set()
+        used_title_indices = set()
+        restored = []
+        for item in items:
+            raw_id = item.get("id")
+            sid = str(raw_id).strip() if isinstance(raw_id, (str, int)) else ""
+            while not sid or sid in seen_ids:
+                sid = new_session_id()
+            item["id"] = sid
+            if not restored:
+                session = self._sessions[0]
+                session.load_persist(item)
+                self._active_session_id = session.id
+                if session.txt_recv is not None:
+                    session.txt_recv.setProperty("session_id", session.id)
+            else:
+                session = self.add_session(activate=False, persist_data=item)
+                if session is None:
+                    break
+            if session.title_index is not None:
+                idx = int(session.title_index)
+                if idx < 1 or idx in used_title_indices:
+                    idx = max([1] + list(used_title_indices)) + 1
+                    session.title_index = idx
+                    session.title = format_default_title(self, idx)
+                used_title_indices.add(idx)
+            seen_ids.add(session.id)
+            restored.append(session)
+            if len(restored) >= MAX_SESSIONS:
+                break
         want = str(self.settings.value("active_session_id", "") or "")
         if want and self.find_session(want):
             self._active_session_id = want
@@ -1101,8 +1375,17 @@ class SessionHostMixin:
                 s._reconnect_timer.stop()
             if s._ar_gap_timer.isActive():
                 s._ar_gap_timer.stop()
+            if s._period_timer.isActive():
+                s._period_timer.stop()
+            s.period_on = False
             with self._with_session(s):
                 update_ui = bool(update_active_ui and s.id == active_id)
                 if s.conn is not None or update_ui:
                     self.close_conn(update_ui=update_ui)
+                if s._log_file is not None:
+                    try:
+                        self._close_log_file(session=s, toast=False)
+                    except Exception:
+                        _log.debug("shutdown log close failed", exc_info=True)
+                s.log_wanted = False
             s._user_closing = False
