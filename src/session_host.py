@@ -466,7 +466,7 @@ class SessionHostMixin:
         """
         return bool(self._io_task_busy(exclude=("periodic",)))
 
-    def close_session(self, session_id):
+    def close_session(self, session_id, confirm=True):
         if len(self._sessions) <= 1:
             return False
         s = self.find_session(session_id)
@@ -476,11 +476,42 @@ class SessionHostMixin:
         if s.id == self._active_session_id and self._session_exclusive_busy():
             self.toast(self._t("session_busy"))
             return False
-        if s.is_open() and hasattr(self, "_confirm_dlg"):
-            if not self._confirm_dlg(
-                    self._t("session_close"),
-                    self._t("session_close_confirm"),
-                    danger=True):
+        # Always confirm tab close (X); connected sessions warn about disconnect.
+        if confirm and hasattr(self, "_confirm_dlg"):
+            name = s.tab_label()
+            body_key = ("session_close_confirm_open" if s.conn is not None
+                        else "session_close_confirm")
+            reconnect_active = s._reconnect_timer.isActive()
+            reconnect_remaining = (s._reconnect_timer.remainingTime()
+                                   if reconnect_active else -1)
+            period_active = s._period_timer.isActive()
+            period_interval = s._period_timer.interval()
+            had_conn = s.conn is not None
+            previous_user_closing = s._user_closing
+            s._user_closing = True
+            if reconnect_active:
+                s._reconnect_timer.stop()
+            if period_active:
+                s._period_timer.stop()
+            confirmed = False
+            try:
+                confirmed = bool(self._confirm_dlg(
+                    self._t("session_close"), self._t(body_key, name=name),
+                    danger=True))
+            finally:
+                if not confirmed:
+                    s._user_closing = previous_user_closing
+                    if reconnect_active:
+                        s._reconnect_timer.start(max(0, reconnect_remaining))
+                    if period_active and s.period_on and s.is_open():
+                        s._period_timer.start(period_interval)
+            if not confirmed:
+                # The link may drop while the modal dialog is open. Its state
+                # callback sees _user_closing and correctly avoids reconnect;
+                # cancelling the close must put that session back into policy.
+                if not reconnect_active and had_conn and s.conn is None:
+                    with self._with_session(s):
+                        self._schedule_reconnect()
                 return False
         was_active = s.id == self._active_session_id
         # Close connection for this session

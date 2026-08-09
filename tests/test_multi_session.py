@@ -126,6 +126,128 @@ def test_close_session_disconnects_only_that_tab(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
+def test_close_session_asks_confirm_even_when_closed(monkeypatch, tmp_path):
+    """Tab X always confirms, including for disconnected sessions."""
+    w = _window(monkeypatch, tmp_path, "close-confirm-idle")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    assert not s2.is_open()
+    asks = []
+
+    def _confirm(title, body, **kwargs):
+        asks.append((title, body, kwargs.get("danger")))
+        return False
+
+    monkeypatch.setattr(w, "_confirm_dlg", _confirm)
+    assert w.close_session(s2.id) is False
+    assert len(w.sessions()) == 2
+    assert asks and asks[0][2] is True
+    assert s2.tab_label() in asks[0][1]
+
+    monkeypatch.setattr(w, "_confirm_dlg", lambda *a, **k: True)
+    assert w.close_session(s2.id) is True
+    assert len(w.sessions()) == 1
+    assert w.active_session() is s1
+    w._close_all_sessions()
+
+
+def test_close_session_confirm_open_mentions_disconnect(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "close-confirm-open")
+    _open_virtual(w)
+    w.add_session(activate=True)
+    _open_virtual(w)
+    s2 = w.active_session()
+    bodies = []
+    expected = w._t("session_close_confirm_open", name=s2.tab_label())
+
+    def _confirm(title, body, **kwargs):
+        bodies.append(body)
+        return True
+
+    monkeypatch.setattr(w, "_confirm_dlg", _confirm)
+    assert w.close_session(s2.id) is True
+    assert bodies == [expected]
+    w._close_all_sessions()
+
+
+def test_close_session_confirm_connecting_mentions_disconnect(monkeypatch, tmp_path):
+    """A TCP Client connect attempt is still cancelled by closing the tab."""
+    w = _window(monkeypatch, tmp_path, "close-confirm-connecting")
+    s2 = w.add_session(activate=True)
+
+    class _ConnectingConn:
+        is_open = False
+
+    s2.conn = _ConnectingConn()
+    bodies = []
+    expected = w._t("session_close_confirm_open", name=s2.tab_label())
+
+    def _cancel(_title, body, **_kwargs):
+        bodies.append(body)
+        return False
+
+    monkeypatch.setattr(w, "_confirm_dlg", _cancel)
+    assert w.close_session(s2.id) is False
+    assert bodies == [expected]
+    assert s2 in w.sessions()
+    assert s2.conn is not None
+    s2.conn = None
+    w._close_all_sessions()
+
+
+def test_close_session_confirm_pauses_and_cancel_restores_timers(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "close-confirm-pause-timers")
+    _open_virtual(w)
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    s2.period_on = True
+    s2._period_timer.start(60000)
+    s2._reconnect_timer.start(60000)
+
+    def _cancel(*_args, **_kwargs):
+        assert s2._user_closing is True
+        assert not s2._reconnect_timer.isActive()
+        assert not s2._period_timer.isActive()
+        return False
+
+    monkeypatch.setattr(w, "_confirm_dlg", _cancel)
+    assert w.close_session(s2.id) is False
+    assert s2._user_closing is False
+    assert s2._reconnect_timer.isActive()
+    assert s2._period_timer.isActive()
+    assert s2.period_on is True
+    assert s2.is_open()
+    w._close_all_sessions()
+
+
+def test_close_session_cancel_reschedules_drop_during_confirm(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "close-confirm-drop")
+    s2 = w.add_session(activate=True)
+
+    class _OpenConn:
+        is_open = True
+
+    s2.conn = _OpenConn()
+    scheduled = []
+
+    def _cancel(*_args, **_kwargs):
+        assert s2._user_closing is True
+        s2.conn = None
+        return False
+
+    monkeypatch.setattr(w, "_confirm_dlg", _cancel)
+    monkeypatch.setattr(
+        w, "_schedule_reconnect",
+        lambda: scheduled.append(w._session_ctx().id))
+    assert w.close_session(s2.id) is False
+    assert s2._user_closing is False
+    assert scheduled == [s2.id]
+    assert s2 in w.sessions()
+    w._close_all_sessions()
+
+
 def test_close_middle_active_session_rebinds_receive_ui(monkeypatch, tmp_path):
     """Closing the active middle tab must preserve overlays and select its owner."""
     from PyQt5 import sip

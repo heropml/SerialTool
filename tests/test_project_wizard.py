@@ -4,13 +4,14 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_templates import DEVICE_IDS, PROTOCOL_IDS
 from project_wizard import ProjectWizard
 from dialogs import InfoDialog
+from theme import chrome_for
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -185,5 +186,17 @@ def test_discard_third_button_is_neutral_not_danger():
         cancel_text="Cancel", third_text="Don't Save", parent=None)
     try:
         assert dialog.btn_third.objectName() == "DialogGhostBtn"
+    finally:
+        dialog.close()
+
+
+def test_info_dialog_warning_uses_warning_icon_and_color():
+    dialog = InfoDialog("Unsaved", "Save changes?", is_warning=True,
+                        theme_id="dark", parent=None)
+    try:
+        icon = dialog.findChild(QLabel, "DialogStatusIcon")
+        assert icon is not None
+        assert icon.text() == "!"
+        assert chrome_for("dark")["warning"] in icon.styleSheet()
     finally:
         dialog.close()

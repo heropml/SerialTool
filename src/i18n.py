@@ -368,6 +368,8 @@ TR = {
         "project_discard": "不保存",
         "project_unsaved_title": "工程尚未保存",
         "project_unsaved_body": "工程“{name}”有未保存的修改。是否先保存？",
+        "project_force_continue": "仍然继续",
+        "project_save_cancelled": "保存已取消，操作未执行。",
         "project_disconnect_title": "切换工程",
         "project_disconnect_body": "切换工程需要先断开当前连接，避免旧连接继续使用新工程的协议规则。",
         "project_disconnect": "断开并继续",
@@ -1583,7 +1585,8 @@ TR = {
         "session_busy": "当前会话有任务进行中，请先结束后再切换",
         "session_conflict": "资源已被会话「{name}」占用",
         "session_limit": "最多同时打开 {n} 个会话",
-        "session_close_confirm": "关闭会话将断开连接，确定吗？"
+        "session_close_confirm": "确定关闭会话「{name}」？",
+        "session_close_confirm_open": "确定关闭会话「{name}」？关闭后将断开连接。"
     },
     "en": {
         "app_title": "CommTool",
@@ -1958,6 +1961,8 @@ TR = {
         "project_discard": "Don't Save",
         "project_unsaved_title": "Unsaved Project",
         "project_unsaved_body": "Project “{name}” has unsaved changes. Save them first?",
+        "project_force_continue": "Continue Anyway",
+        "project_save_cancelled": "Save cancelled. The action was not performed.",
         "project_disconnect_title": "Switch Project",
         "project_disconnect_body": "Disconnect the current connection before switching projects so it cannot use the new project's protocol rules.",
         "project_disconnect": "Disconnect and Continue",
@@ -3177,7 +3182,8 @@ TR = {
         "session_busy": "A task is running on this session; finish it before switching",
         "session_conflict": "Resource already used by session \"{name}\"",
         "session_limit": "At most {n} sessions",
-        "session_close_confirm": "Closing this session will disconnect. Continue?"
+        "session_close_confirm": "Close session \"{name}\"?",
+        "session_close_confirm_open": "Close session \"{name}\"? This will disconnect."
     },
     "zh_tw": {
         "app_title": "通訊調試工具",
@@ -3542,6 +3548,8 @@ TR = {
         "project_discard": "不儲存",
         "project_unsaved_title": "工程尚未儲存",
         "project_unsaved_body": "工程「{name}」有未儲存的修改。是否先儲存？",
+        "project_force_continue": "仍然繼續",
+        "project_save_cancelled": "儲存已取消，操作未執行。",
         "project_disconnect_title": "切換工程",
         "project_disconnect_body": "切換工程需要先中斷目前連線，避免舊連線繼續使用新工程的協定規則。",
         "project_disconnect": "中斷並繼續",
@@ -4757,7 +4765,8 @@ TR = {
         "session_busy": "目前工作階段有任務進行中，請先結束後再切換",
         "session_conflict": "資源已被工作階段「{name}」占用",
         "session_limit": "最多同時開啟 {n} 個工作階段",
-        "session_close_confirm": "關閉工作階段將中斷連線，確定嗎？"
+        "session_close_confirm": "確定關閉工作階段「{name}」？",
+        "session_close_confirm_open": "確定關閉工作階段「{name}」？關閉後將中斷連線。"
     },
 }
 CHECKSUM_KEYS = ["ck_none", "ck_sum", "ck_neg_sum", "ck_xor", "ck_crc8",

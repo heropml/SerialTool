@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QApplication, QLabel, QWidgetAction
+from PyQt5.QtWidgets import QApplication, QLabel, QDialog, QWidgetAction
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -1244,3 +1244,153 @@ def test_freeze_log_and_view_keep_independent_line_state(tmp_path, monkeypatch):
         window._freeze_view = False
         window.deleteLater()
         _APP.processEvents()
+
+
+@pytest.mark.parametrize(
+    "dialog_result,save_result,save_cancelled,expected,save_calls,notice_calls",
+    ((QDialog.Rejected, True, False, False, 0, 0),   # Cancel
+     (QDialog.Accepted, True, False, True, 1, 0),    # Save succeeds
+     (QDialog.Accepted, False, True, False, 1, 1),   # Save dialog cancelled
+     (QDialog.Accepted, False, False, False, 1, 0),  # Save failed and reported
+     (2, True, False, True, 0, 0)),   # Don't Save
+)
+def test_confirm_project_switch_result_branches(
+        monkeypatch, dialog_result, save_result, save_cancelled, expected,
+        save_calls, notice_calls):
+    import main_window as main_window_module
+
+    captured = []
+
+    class _Dialog:
+        ThirdAction = 2
+
+        def __init__(self, *args, **kwargs):
+            captured.append((args, kwargs))
+
+        @staticmethod
+        def exec_():
+            return dialog_result
+
+    class _Host:
+        _project_name = "Meter"
+        _project_save_cancelled = False
+
+        @staticmethod
+        def _project_is_dirty():
+            return True
+
+        @staticmethod
+        def _t(key, **kwargs):
+            return "%s:%s" % (key, kwargs.get("name", ""))
+
+        @staticmethod
+        def _theme_id():
+            return "dark"
+
+        def save_project(self):
+            self.save_calls += 1
+            self._project_save_cancelled = save_cancelled
+            return save_result
+
+        @staticmethod
+        def _info_dlg(*args, **kwargs):
+            captured.append((args, kwargs))
+
+        save_calls = 0
+
+    monkeypatch.setattr(main_window_module, "InfoDialog", _Dialog)
+    host = _Host()
+    assert CommTool._confirm_project_switch(host) is expected
+    assert host.save_calls == save_calls
+    assert captured[0][1]["is_warning"] is True
+    assert "is_error" not in captured[0][1]
+    assert len(captured) == 1 + notice_calls
+    if notice_calls:
+        assert captured[1][0] == ("project_save:", "project_save_cancelled:")
+
+
+@pytest.mark.parametrize("dialog_result,expected", ((QDialog.Rejected, False), (2, True)))
+def test_confirm_project_switch_dirty_check_failure_is_reported(
+        monkeypatch, dialog_result, expected):
+    import main_window as main_window_module
+
+    captured = []
+
+    class _Dialog:
+        ThirdAction = 2
+
+        def __init__(self, *args, **kwargs):
+            captured.append((args, kwargs))
+
+        @staticmethod
+        def exec_():
+            return dialog_result
+
+    class _Host:
+        @staticmethod
+        def _project_is_dirty():
+            raise OSError("cannot collect pending editor")
+
+        @staticmethod
+        def _t(key, **kwargs):
+            return "%s:%s" % (key, kwargs.get("err", ""))
+
+        @staticmethod
+        def _theme_id():
+            return "dark"
+
+    monkeypatch.setattr(main_window_module, "InfoDialog", _Dialog)
+    assert CommTool._confirm_project_switch(_Host()) is expected
+    args, kwargs = captured[0]
+    assert args == ("project_save:",
+                    "project_save_fail:cannot collect pending editor")
+    assert kwargs["ok_text"] == "cancel:"
+    assert kwargs["third_text"] == "project_force_continue:"
+    assert kwargs["is_error"] is True
+    assert kwargs["theme_id"] == "dark"
+
+
+def test_save_project_collect_failure_is_reported():
+    notices = []
+
+    class _Host:
+        _project_path = "broken.ctproj"
+        _project_name = "Meter"
+        _project_meta = {}
+
+        @staticmethod
+        def _collect_project_settings():
+            raise OSError("disk unavailable")
+
+        @staticmethod
+        def _t(key, **kwargs):
+            return "%s:%s" % (key, kwargs.get("err", ""))
+
+        @staticmethod
+        def _info_dlg(title, body, is_error=False):
+            notices.append((title, body, is_error))
+
+    host = _Host()
+    assert CommTool.save_project(host) is False
+    assert host._project_save_cancelled is False
+    assert notices == [
+        ("project_save:", "project_save_fail:disk unavailable", True)]
+
+
+def test_save_project_dialog_cancel_sets_cancelled_marker(monkeypatch):
+    import main_window as main_window_module
+
+    class _Host:
+        _project_path = None
+        _project_name = "Meter"
+
+        @staticmethod
+        def _t(key, **_kwargs):
+            return key
+
+    monkeypatch.setattr(
+        main_window_module.QFileDialog, "getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""))
+    host = _Host()
+    assert CommTool.save_project(host) is False
+    assert host._project_save_cancelled is True

@@ -10202,11 +10202,16 @@ class CommTool(SessionHostMixin, QMainWindow):
         try:
             dirty = self._project_is_dirty()
         except Exception as e:
-            self._info_dlg(
+            dlg = InfoDialog(
                 self._t("project_save"),
                 self._t("project_save_fail", err=str(e)),
-                is_error=True)
-            return False
+                ok_text=self._t("cancel"),
+                is_error=True,
+                theme_id=self._theme_id(),
+                parent=None,
+                third_text=self._t("project_force_continue"),
+            )
+            return dlg.exec_() == InfoDialog.ThirdAction
         if not dirty:
             return True
         dlg = InfoDialog(
@@ -10214,7 +10219,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._t("project_unsaved_body",
                     name=self._project_name or self._t("project_untitled")),
             ok_text=self._t("project_save"),
-            is_error=True,
+            is_warning=True,
             theme_id=self._theme_id(),
             parent=None,
             confirm=True,
@@ -10226,7 +10231,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         if result == QDialog.Rejected:
             return False
         if result == QDialog.Accepted:
-            return self.save_project()
+            if self.save_project():
+                return True
+            if getattr(self, "_project_save_cancelled", False):
+                self._info_dlg(
+                    self._t("project_save"),
+                    self._t("project_save_cancelled"))
+            return False
         return result == InfoDialog.ThirdAction
 
     def _project_wizard_texts(self):
@@ -10440,12 +10451,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         return True
 
     def save_project(self, save_as=False):
+        self._project_save_cancelled = False
         path = None if save_as else self._project_path
         if not path:
             default_name = (self._project_name or "CommTool_project") + ".ctproj"
             path, _ = QFileDialog.getSaveFileName(
                 self, self._t("project_save"), default_name, self._t("project_filter"))
             if not path:
+                self._project_save_cancelled = True
                 return False
             if not path.lower().endswith(".ctproj"):
                 path += ".ctproj"

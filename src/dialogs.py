@@ -448,14 +448,14 @@ def _set_win_titlebar_dark(widget, is_dark):
 # ============== 通用信息/错误提示框 (iOS 风格，无边框圆角) ==============
 class InfoDialog(_DragFramelessMixin, QDialog):
     """themed info/error popup —— 替代 QMessageBox，与 CloseDialog/AboutDialog 风格统一。
-    icon=✓(accent) 信息 / icon=✕(danger) 错误；标题 + 正文 + 单 OK 按钮，点击或 Esc 关闭。"""
+    icon=✓(accent) 信息 / !(warning) 警告 / ✕(danger) 错误；标题 + 正文 + 单 OK 按钮。"""
 
     ThirdAction = 2
 
     def __init__(self, title_text: str, body_text: str, ok_text: str = "OK",
                  is_error: bool = False, theme_id: str = THEME_DEFAULT, parent=None,
                  confirm: bool = False, cancel_text: str = "Cancel", danger: bool = False,
-                 third_text: str = None):
+                 third_text: str = None, is_warning: bool = False):
         super().__init__(parent)
         _flags = Qt.Dialog | Qt.FramelessWindowHint
         if sys.platform == "darwin":
@@ -481,8 +481,14 @@ class InfoDialog(_DragFramelessMixin, QDialog):
 
         c = chrome_for(theme_id)
         # 大圆形图标（居中、视觉锚点）
-        ic = QLabel("✕" if is_error else "✓")
-        ic_bg = c['danger'] if is_error else c['accent']
+        if is_error:
+            icon_text, ic_bg = "✕", c["danger"]
+        elif is_warning:
+            icon_text, ic_bg = "!", c["warning"]
+        else:
+            icon_text, ic_bg = "✓", c["accent"]
+        ic = QLabel(icon_text)
+        ic.setObjectName("DialogStatusIcon")
         ic.setFixedSize(44, 44)
         ic.setAlignment(Qt.AlignCenter)
         ic.setStyleSheet(

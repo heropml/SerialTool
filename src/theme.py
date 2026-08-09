@@ -95,6 +95,7 @@ def chrome_for(theme_id: str) -> dict:
         "accent_pressed":    _mix(accent, "#000000", 0.20),
         "danger":            "#FF453A" if is_dark else "#FF3B30",
         "danger_hover":      "#FF6961" if is_dark else "#FF5147",
+        "warning":           "#FF9F0A",
         "title_btn_hover":   title_btn_hover,
         "title_combo_hover": title_combo_hover,
     }
