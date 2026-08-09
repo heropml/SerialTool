@@ -48,6 +48,7 @@ from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 import conn_error_tips
 from virtual_io import VirtualConn, PROTO_VIRTUAL
+from session_host import SessionHostMixin, _install_session_proxies
 import send_dsl
 import ansi
 import binproto
@@ -128,7 +129,8 @@ import log_naming
 import modbus_slave
 import modbus_master
 from dialogs import (CloseDialog, MultiSendDialog, KeywordHighlightDialog,
-                     AboutDialog, InfoDialog, _style_one_combo_popup)
+                     AboutDialog, InfoDialog, _set_win_titlebar_dark,
+                     _style_one_combo_popup)
 from updater import UpdateChecker
 from ui_tips import set_tooltip
 
@@ -570,7 +572,7 @@ class ChecksumPopup(QWidget):
 
 
 # ============== 主窗口 ==============
-class CommTool(QMainWindow):
+class CommTool(SessionHostMixin, QMainWindow):
     RESIZE_MARGIN = 6
     _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
     _TRG_MAX_ACTIONS = 8       # in-flight webhook / run_cmd workers
@@ -603,6 +605,9 @@ class CommTool(QMainWindow):
         self._sel_chk_popup_payload = None
         if self._manual_resize or self._mac_tooltip:
             QApplication.instance().installEventFilter(self)
+
+        # Multi-session host must exist before proxy attribute assigns.
+        self._init_session_host()
 
         self.conn = None          # 当前连接：SerialConn / TcpServerConn / TcpClientConn / UdpConn(...)
         self._conn_proto = None   # 实际打开的协议；配置导入可改下拉框，不能拿新值解释旧连接
@@ -802,9 +807,6 @@ class CommTool(QMainWindow):
         self._mbm_to = QTimer(self)      # 当前在途请求的响应超时（单次）
         self._mbm_to.setSingleShot(True)
         self._mbm_to.timeout.connect(self._mbm_on_timeout)
-        self._ar_gap_timer = QTimer(self)            # 整包静默超时
-        self._ar_gap_timer.setSingleShot(True)
-        self._ar_gap_timer.timeout.connect(self._ar_flush)
         self._ar_gap = 0     # 整包静默(ms)：取所有启用规则中的最大值（分帧在匹配前、整条串口共用一个）
         self._ar_script_cache = {}   # B5：脚本文本 → (编译 code, 错误文案)，主进程先做语法校验
         self._ar_script_proc = None  # B5：实发脚本常驻隔离进程（超时整组 kill + 下次重建）
@@ -832,9 +834,9 @@ class CommTool(QMainWindow):
         # 自动重连：串口 0.5s 线性递增到 5s；网络指数退避（上限 30s）。主动关闭/退出时跳过。
         self._user_closing = False
         self._reconnect_attempts = 0
-        self._reconnect_timer = QTimer(self)
-        self._reconnect_timer.setSingleShot(True)
-        self._reconnect_timer.timeout.connect(self._try_reconnect)
+        # Fallback only; SessionHost proxies _reconnect_timer to context session.
+        self._reconnect_timer_fallback = QTimer(self)
+        self._reconnect_timer_fallback.setSingleShot(True)
         self._recompute_ar_gap()
         # 自动应答按钮：单击延时打开对话框、双击翻转总开关。Qt 一次双击会发 click→dblclick→click
         # 三个信号，故单击启 timer 延后打开；双击 cancel timer；第二个 click 因距上次过近被忽略。
@@ -863,8 +865,11 @@ class CommTool(QMainWindow):
                 self.title_bar.setMouseTracking(True)
         self.refresh_ports()       # 启动即扫一次串口，cb_port 立刻有内容供恢复上次选择
         self.apply_style()
+        self._refresh_session_tab_styles()
+        _workspace_ui.refresh_top_bar_icons(self)
         self._capture_field_defaults()   # 记录字段构建默认值（在 _load_settings 覆盖前）供切换配置复位用
         self._load_settings()
+        self._restore_sessions_settings()
         self._setup_tray()
         # Ctrl+F 全局快捷键：从任何控件按下都打开搜索栏（_open_search 内会自动聚焦输入框）
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._open_search)
@@ -2026,58 +2031,64 @@ class CommTool(QMainWindow):
         遍历所有 fragment 读 ROLE_PROP，先收集区间再统一改(改格式会让迭代器失效)。
         大文档优化：合并相邻同色区间 + beginEditBlock 批处理 + 关刷新，避免逐片段重排卡死。"""
         theme = self._theme()
-        doc = self.txt_recv.document()
+        views = [s.txt_recv for s in self.sessions()
+                 if s.txt_recv is not None]
         # 每个角色的目标色只算一次(原来每片段都建 QColor + 调 _role_color)
         role_col = {r: QColor(self._role_color(r, theme))
                     for r in (None, ROLE_TS, ROLE_RX, ROLE_TX)}
         is_dark = theme.get("mode") == "dark"      # ANSI 调色板按主题明暗选那一套
-        ranges = []  # (start, end, QColor)，相邻同色自动合并
-        block = doc.begin()
-        while block.isValid():
-            it = block.begin()
-            while not it.atEnd():
-                frag = it.fragment()
-                if frag.isValid():
-                    fmt = frag.charFormat()
-                    # ANSI 着色的正文按存下的颜色标识重解析：调色板序号跟新主题明暗走
-                    # （深色配色留在浅色底上会看不见），设备指定的精确色则原样保留。
-                    spec = fmt.property(ANSI_FG_PROP)
-                    acol = (ansi.color_of_spec(spec, is_dark, theme["fg"], theme["bg"])
+        for txt in views:
+            doc = txt.document()
+            ranges = []  # (start, end, QColor)，相邻同色自动合并
+            block = doc.begin()
+            while block.isValid():
+                it = block.begin()
+                while not it.atEnd():
+                    frag = it.fragment()
+                    if frag.isValid():
+                        fmt = frag.charFormat()
+                        # ANSI 着色的正文按存下的颜色标识重解析：调色板序号跟新主题明暗走
+                        # （深色配色留在浅色底上会看不见），设备指定的精确色则原样保留。
+                        spec = fmt.property(ANSI_FG_PROP)
+                        acol = (ansi.color_of_spec(
+                            spec, is_dark, theme["fg"], theme["bg"])
                             if spec else None)
-                    role = fmt.property(ROLE_PROP)
-                    col = QColor(acol) if acol else role_col.get(role, role_col[None])
-                    # 背景色同理：ANSI 的 40-47/100-107 也是调色板序号，不跟着重解析的话，
-                    # 深色底选的底色留到浅色底上会和文字糊成一片。
-                    bspec = fmt.property(ANSI_BG_PROP)
-                    bcol = (ansi.color_of_spec(bspec, is_dark, theme["fg"], theme["bg"])
+                        role = fmt.property(ROLE_PROP)
+                        col = (QColor(acol) if acol
+                               else role_col.get(role, role_col[None]))
+                        # 背景色同理：ANSI 的 40-47/100-107 也是调色板序号。
+                        bspec = fmt.property(ANSI_BG_PROP)
+                        bcol = (ansi.color_of_spec(
+                            bspec, is_dark, theme["fg"], theme["bg"])
                             if bspec else None)
-                    bg = QColor(bcol) if bcol else None
-                    start = frag.position()
-                    end = start + frag.length()
-                    if (ranges and ranges[-1][1] == start and ranges[-1][2] == col
-                            and ranges[-1][3] == bg):
-                        ranges[-1] = (ranges[-1][0], end, col, bg)   # 合并相邻同色
-                    else:
-                        ranges.append((start, end, col, bg))
-                it += 1
-            block = block.next()
-        if not ranges:
-            return
-        self.txt_recv.setUpdatesEnabled(False)
-        cur = QTextCursor(doc)
-        cur.beginEditBlock()
-        try:
-            for start, end, col, bg in ranges:
-                cur.setPosition(start)
-                cur.setPosition(end, QTextCursor.KeepAnchor)
-                fmt = QTextCharFormat()
-                fmt.setForeground(col)
-                if bg is not None:
-                    fmt.setBackground(bg)
-                cur.mergeCharFormat(fmt)
-        finally:
-            cur.endEditBlock()
-            self.txt_recv.setUpdatesEnabled(True)
+                        bg = QColor(bcol) if bcol else None
+                        start = frag.position()
+                        end = start + frag.length()
+                        if (ranges and ranges[-1][1] == start
+                                and ranges[-1][2] == col
+                                and ranges[-1][3] == bg):
+                            ranges[-1] = (ranges[-1][0], end, col, bg)
+                        else:
+                            ranges.append((start, end, col, bg))
+                    it += 1
+                block = block.next()
+            if not ranges:
+                continue
+            txt.setUpdatesEnabled(False)
+            cur = QTextCursor(doc)
+            cur.beginEditBlock()
+            try:
+                for start, end, col, bg in ranges:
+                    cur.setPosition(start)
+                    cur.setPosition(end, QTextCursor.KeepAnchor)
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(col)
+                    if bg is not None:
+                        fmt.setBackground(bg)
+                    cur.mergeCharFormat(fmt)
+            finally:
+                cur.endEditBlock()
+                txt.setUpdatesEnabled(True)
 
     def build_send_card(self):
         return _send_card.build(self)
@@ -2313,6 +2324,70 @@ class CommTool(QMainWindow):
         QPushButton#WorkbenchBtn[active="true"] {{
             background-color: {c['accent']}; color: #FFFFFF; font-weight: 600;
         }}
+        QWidget#SessionTabBar {{
+            background: transparent;
+            border: 0px;
+        }}
+        QLabel#SessionStripLabel {{
+            color: {c['text_sec']};
+            background: transparent;
+            border: 0px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
+        QFrame#SessionSeparator {{
+            color: {c['separator']};
+            background-color: {c['separator']};
+            max-width: 1px;
+            margin: 4px 6px;
+        }}
+        QTabBar#SessionTabs {{
+            background: transparent;
+            border: 0px;
+        }}
+        QTabBar#SessionTabs::tab {{
+            background: transparent;
+            color: {c['text_sec']};
+            border: 1px solid transparent;
+            border-radius: 6px;
+            min-height: 22px;
+            padding: 2px 9px;
+            margin: 1px;
+            font-size: 12px;
+        }}
+        QTabBar#SessionTabs::tab:hover {{
+            background-color: {c['title_combo_hover']};
+            color: {c['text']};
+        }}
+        QTabBar#SessionTabs::tab:selected {{
+            background-color: {c['accent']};
+            color: #FFFFFF;
+            border-color: {c['accent']};
+            font-weight: 600;
+        }}
+        QTabBar#SessionTabs QAbstractButton#SessionCloseBtn {{
+            background: transparent;
+            border: 0px;
+            border-radius: 5px;
+            padding: 0px;
+            margin: 0px 2px 0px 0px;
+        }}
+        QTabBar#SessionTabs QAbstractButton#SessionCloseBtn:hover {{
+            background-color: rgba(255, 255, 255, 42);
+        }}
+        QPushButton#SessionAddBtn {{
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            padding: 0px;
+        }}
+        QPushButton#SessionAddBtn:hover {{
+            background-color: {c['title_combo_hover']};
+            border-color: {c['separator']};
+        }}
+        QPushButton#SessionAddBtn:pressed {{
+            background-color: {c['ghost_pressed']};
+        }}
         QWidget#WorkspaceHost, QWidget#WorkspacePage {{ background-color: {c['window_bg']}; }}
         QLabel#WorkspacePageTitle {{
             color: {c['text']}; background: transparent;
@@ -2374,7 +2449,7 @@ class CommTool(QMainWindow):
             color: {c['text']};
             border: 1px solid {c['separator']};
             border-radius: 6px;
-            padding: 2px 10px;
+            padding: 2px 23px 2px 9px;
             font-size: 12px;
         }}
         QPushButton#ProjectBtn:hover {{
@@ -2423,11 +2498,21 @@ class CommTool(QMainWindow):
     # ----- 连接 打开/关闭 -----
     def toggle_conn(self):
         if self.conn is not None:
-            self._user_closing = True       # 主动断开：跳过自动重连
-            self._cancel_reconnect()        # 也取消已排队的重连
-            self._serial_reconnect_cfg = None
-            self.close_conn()
-            self._user_closing = False
+            session = self._session_ctx()
+            if session is not None:
+                session._user_closing = True
+                session.period_on = False
+            else:
+                self._user_closing = True
+            try:
+                self._cancel_reconnect()        # 也取消已排队的重连
+                self._serial_reconnect_cfg = None
+                self.close_conn()
+            finally:
+                if session is not None:
+                    session._user_closing = False
+                else:
+                    self._user_closing = False
         else:
             self._cancel_reconnect()        # 手动重新打开 → 撤销可能在排队的重连
             self._reconnect_attempts = 0
@@ -2448,11 +2533,13 @@ class CommTool(QMainWindow):
         """转储串；时间戳/箭头开启时前置 \\n 让它们单独成行 —— 否则首行被时间戳推右、续行(00000010…)
         在行首，多行帧纵向错位。时间戳关时转储各行本就从行首起、无需前置。"""
         try:
-            per = int(self.cb_hexdump_width.currentText())
+            per = int(self._display_value(
+                "hexdump_width", self.cb_hexdump_width.currentText()))
         except (ValueError, AttributeError):
             per = 16
         dump = self._format_hexdump(data, per)
-        return _view_leading_nl(dump, self.sw_show_timestamp.isChecked())
+        return _view_leading_nl(dump, bool(self._display_value(
+            "show_timestamp", self.sw_show_timestamp.isChecked())))
 
     def _on_hexdump_toggled(self, on):
         if on and getattr(self, "_numview_on", False):
@@ -2473,6 +2560,11 @@ class CommTool(QMainWindow):
     # ----- 数值视图（字节流按 u8/i16/f32… 解读成数值序列）-----
     def _numview_spec(self):
         """当前选中的 (类型, 字节序)；下拉尚未建好或数据异常时回退 ('u16','le')。"""
+        ctx = getattr(self, "_display_context", None)
+        if ctx is not None:
+            spec = ctx.get("numview_spec")
+            if isinstance(spec, (tuple, list)) and len(spec) == 2:
+                return tuple(spec)
         cb = getattr(self, "cb_numview_type", None)
         if cb is None:
             return "u16", "le"
@@ -2499,7 +2591,8 @@ class CommTool(QMainWindow):
             tail = self._t("numview_tail", data=rest.hex(" ").upper())
             text = text + ("\n" if text else "") + tail
         # 同 _hexdump_block：多行块在时间戳/箭头开启时前置换行，避免首行被推右、续行纵向错位
-        return _view_leading_nl(text, self.sw_show_timestamp.isChecked())
+        return _view_leading_nl(text, bool(self._display_value(
+            "show_timestamp", self.sw_show_timestamp.isChecked())))
 
     def _flush_numview_carries(self, sources=None):
         """连续流结束/换口径时，把未凑整的 RX 尾字节明确显示出来，不让它们随 reset 静默消失。"""
@@ -2763,25 +2856,30 @@ class CommTool(QMainWindow):
                 self._parse_port(self.ed_remote_port.text()))
         return _conn_proto_sig(proto)
 
-    def open_conn(self, reconnect_cfg=None):
+    def open_conn(self, reconnect_cfg=None, reconnect_snapshot=None):
         """Open the connection described by the current UI (or reconnect_cfg)."""
-        ui_fields = {
-            "port": self.cb_port.currentData(),
-            "baud": self.cb_baud.currentText(),
-            "remote_ip": self.ed_remote_ip.text(),
-            "remote_port": self.ed_remote_port.text(),
-            "local_ip": self.cb_local_ip.currentText(),
-            "local_port": self.ed_local_port.text(),
-            "group": self.ed_group.text(),
-            "use_remote": self.sw_udp_remote.isChecked(),
-        }
-        if reconnect_cfg:
-            proto, fields = _conn_open_fields_from_reconnect(reconnect_cfg)
-            if not fields:
-                fields = _conn_open_fields_from_ui(proto, ui_fields)
+        manual_open = reconnect_cfg is None and reconnect_snapshot is None
+        if reconnect_snapshot is not None:
+            proto = str(reconnect_snapshot.get("proto") or "")
+            fields = dict(reconnect_snapshot.get("fields") or {})
         else:
-            proto = self.cb_proto.currentText()
-            fields = _conn_open_fields_from_ui(proto, ui_fields)
+            ui_fields = {
+                "port": self.cb_port.currentData(),
+                "baud": self.cb_baud.currentText(),
+                "remote_ip": self.ed_remote_ip.text(),
+                "remote_port": self.ed_remote_port.text(),
+                "local_ip": self.cb_local_ip.currentText(),
+                "local_port": self.ed_local_port.text(),
+                "group": self.ed_group.text(),
+                "use_remote": self.sw_udp_remote.isChecked(),
+            }
+            if reconnect_cfg:
+                proto, fields = _conn_open_fields_from_reconnect(reconnect_cfg)
+                if not fields:
+                    fields = _conn_open_fields_from_ui(proto, ui_fields)
+            else:
+                proto = self.cb_proto.currentText()
+                fields = _conn_open_fields_from_ui(proto, ui_fields)
         checked = _conn_validate_open(
             proto, fields,
             is_valid_ip=is_valid_ip,
@@ -2794,9 +2892,23 @@ class CommTool(QMainWindow):
             else:
                 self.toast(self._t(checked.get("toast", "err_bad_port")), error=True)
             return
+        session = self._session_ctx() or self.active_session()
+        period_intent = bool(session.period_on) if session is not None else False
+        resource_key = self._session_resource_key_from_open(proto, fields)
+        conflict = self.check_session_resource_conflict(resource_key, session)
+        if conflict is not None:
+            if manual_open and session is self.active_session():
+                self.toast(self._t(
+                    "session_conflict", name=conflict.tab_label()))
+            return "resource-conflict"
         port = checked.get("port") if proto == PROTO_SERIAL else None
+        serial_extras = None
         if proto == PROTO_SERIAL:
-            extras = _conn_serial_extras(reconnect_cfg) if reconnect_cfg else None
+            extras = (tuple(reconnect_snapshot.get("serial_extras") or ())
+                      if reconnect_snapshot is not None else
+                      (_conn_serial_extras(reconnect_cfg) if reconnect_cfg else None))
+            if not extras:
+                extras = None
             if extras is not None:
                 databits, parity, stopbits, flow = extras
                 if flow is None:
@@ -2806,12 +2918,16 @@ class CommTool(QMainWindow):
                 parity = self.cb_parity.currentText()
                 stopbits = self.cb_stopbits.currentText()
                 flow = self.cb_flow.currentText()
+            serial_extras = (databits, parity, stopbits, flow)
             sp = _resolve_serial_params(databits, parity, stopbits, flow)
             conn = SerialConn(
                 port, checked["baud"], sp["bytesize"],
                 sp["parity"], sp["stopbits"], flow=sp["flow"])
         elif proto == PROTO_VIRTUAL:
-            conn = VirtualConn(loopback=self.sw_vconn_loop.isChecked())
+            loopback = (bool(reconnect_snapshot.get("virtual_loopback", False))
+                        if reconnect_snapshot is not None
+                        else self.sw_vconn_loop.isChecked())
+            conn = VirtualConn(loopback=loopback)
         elif proto == PROTO_TCP_SERVER:
             conn = TcpServerConn(checked["local_ip"], checked["port"])
         elif proto == PROTO_TCP_CLIENT:
@@ -2825,45 +2941,59 @@ class CommTool(QMainWindow):
 
         # TCP Server 额外携带来源客户端 key，让协议自动应答能精确回给请求方；
         # 其余连接仍走原有单参数信号。
-        if hasattr(conn, "data_received_from"):
-            conn.data_received_from.connect(self.on_data_received)
-        else:
-            conn.data_received.connect(self.on_data_received)
-        conn.error_occurred.connect(self._on_conn_error)
-        conn.state_changed.connect(self._on_conn_state_changed)
-        # clients_changed / peer_changed 是网络连接专有信号；SerialConn 没有，按需连接
-        if hasattr(conn, "clients_changed"):
-            conn.clients_changed.connect(self._on_clients_changed)
-        if hasattr(conn, "peer_changed"):
-            conn.peer_changed.connect(self._on_udp_peer_changed)
+        # Bind to the session that is opening (context), not the visible tab.
+        self._bind_conn_signals(conn, session)
 
-        # 先赋值再 open()：TCP Server / UDP / 组播的 open() 会**同步**发出 state_changed(True)，
-        # 此时 self.conn 必须已指向 conn，否则 _on_conn_state_changed 看到 None、状态栏先跑一次「未连接」
+        # Assign before open(): sync listeners may emit state_changed(True) immediately.
+        if reconnect_snapshot is not None:
+            conn_cfg = tuple(reconnect_snapshot.get("conn_cfg") or (proto,))
+        elif reconnect_cfg:
+            conn_cfg = tuple(reconnect_cfg)
+        else:
+            conn_cfg = self._conn_config_signature(proto)
+        if reconnect_snapshot is None:
+            session._reconnect_snapshot = {
+                "proto": proto,
+                "fields": dict(fields),
+                "serial_extras": serial_extras,
+                "virtual_loopback": bool(getattr(conn, "loopback", False)),
+                "conn_cfg": tuple(conn_cfg),
+            }
         self._conn_proto = proto
-        self._conn_cfg = tuple(reconnect_cfg) if reconnect_cfg else self._conn_config_signature(proto)
-        self._mbm_guard_until = 0.0   # 新物理会话不继承旧连接的迟到响应隔离期
+        self._conn_cfg = conn_cfg
+        if session is self.active_session():
+            self._mbm_guard_until = 0.0
         self.conn = conn
-        if not conn.open():   # 同步失败(端口占用/绑定失败)：error_occurred 已触发 _on_conn_error → close_conn 复位
-            if self.conn is conn:   # 兜底：万一 _on_conn_error 未清理，这里补清
+        if not conn.open():
+            if self.conn is conn:
                 self.conn = None
                 self._conn_proto = None
                 self._conn_cfg = None
                 conn.deleteLater()
             return
 
-        self.btn_open.setProperty("state", "open")
-        self.btn_open.style().unpolish(self.btn_open)
-        self.btn_open.style().polish(self.btn_open)
-        self.set_settings_enabled(False)
-        self._update_net_fields()
-        self._update_conn_status()
-        # 记录已连接的串口设备名 + 复位掉线去抖计数，供后台扫描检测物理移除
+        cur = self.active_session()
+        ctx = self._session_ctx()
+        if ctx is cur:
+            self.btn_open.setProperty("state", "open")
+            self.btn_open.style().unpolish(self.btn_open)
+            self.btn_open.style().polish(self.btn_open)
+            self.set_settings_enabled(False)
+            self._update_net_fields()
+            self._update_conn_status()
+            if cur is not None and manual_open:
+                self._save_ui_into_session(cur)
+                cur.period_on = period_intent
+            if cur is not None:
+                self._restore_session_periodic(cur)
+        self._refresh_session_tab_styles()
         self._serial_device = port if proto == PROTO_SERIAL else None
         self._serial_missing_count = 0
         if proto == PROTO_SERIAL:
-            self._select_serial_device(port)  # 重连可能绕过当前下拉选择，界面必须显示实际打开的端口
             self._serial_reconnect_cfg = None
-            self._apply_ctrl_lines_on_open()   # 应用持久化 DTR/RTS + 启动状态线轮询
+            if ctx is cur:
+                self._select_serial_device(port)
+                self._apply_ctrl_lines_on_open()
 
     def _on_vconn_loop_toggled(self, on):
         """回环开关：连接期间也能随时切（虚拟连接无需重开），并刷新状态栏文案。"""
@@ -2994,15 +3124,16 @@ class CommTool(QMainWindow):
         self._ansi_pending = ""
         self._ansi_states = {}
         self._ansi_pendings = {}
-        self._reset_trigger_decoders() # 触发引擎的半个字符同样作废
-        if hasattr(self, "_proto_fields"):
-            self._proto_fields.clear()    # 清屏/重连：旧帧的字段高亮 cursor 一并清掉
-        if reset_dashboard:
-            dash = getattr(self, "_dash_dlg", None)
-            if dash is not None:
-                dash.reset_stream()       # 不把断线/清屏前的半行与新数据误拼
+        if self._session_ctx() is self.active_session():
+            self._reset_trigger_decoders()  # invalidate half-char trigger state
+            if hasattr(self, "_proto_fields"):
+                self._proto_fields.clear()
+            if reset_dashboard:
+                dash = getattr(self, "_dash_dlg", None)
+                if dash is not None:
+                    dash.reset_stream()
 
-    def _on_conn_error(self, msg):
+    def _on_conn_error(self, msg, update_ui=True):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
         # 用 _conn_proto(实际打开的协议)而非下拉框当前值：连接中导入配置可能改了下拉框，
         # 不能拿新值解释旧连接(见 __init__ 处 _conn_proto 注释)。在此处一次性取，早于下面
@@ -3027,18 +3158,19 @@ class CommTool(QMainWindow):
             _note_to = getattr(self, "_stat_note_timeout", None)
             if callable(_note_to):
                 _note_to("conn")
-        self._refresh_stat_labels(with_tooltip=False)
+        if update_ui:
+            self._refresh_stat_labels(with_tooltip=False)
         # 串口首次掉线必须提示一次；仅当已经持有重连目标（即后续自动重试）时静默。
         # 不用 attempts 判断，避免残留/边界计数让首次掉线被误判成重试而吞掉提示。
         serial_retrying = proto == PROTO_SERIAL and self._serial_reconnect_cfg is not None
-        if not serial_retrying:
+        if update_ui and not serial_retrying:
             self.toast(self._t(key, e=msg), error=True)
         # 关键：close_conn 会把 _conn_engaged 清零，所以要先捕获状态
         was_engaged = self._conn_engaged
         in_retry = self._reconnect_attempts > 0
         serial_cfg = self._conn_cfg if proto == PROTO_SERIAL else None
         if self.conn is not None:
-            self.close_conn()
+            self.close_conn(update_ui=(self._session_ctx() is self.active_session()))
         # 只在「曾连上又断了」(运行时掉线) 或「正在重连周期内」时自动重连。
         # 手动打开失败（端口占用/服务器离线/绑定失败）不该陷入无限重试。
         # 串口重连保存掉线前的完整签名，不读取可能已回落到其他设备的下拉框。
@@ -3049,10 +3181,26 @@ class CommTool(QMainWindow):
 
     def _schedule_reconnect(self):
         """Non-user disconnect -> queue reconnect; policy in reconnect_policy."""
+        _ctx = getattr(self, "_session_ctx", None)
+        sess = _ctx() if callable(_ctx) else None
+        timer = None
+        if sess is not None and hasattr(sess, "_reconnect_timer"):
+            timer = sess._reconnect_timer
+        else:
+            timer = getattr(self, "_reconnect_timer_fallback", None)
+            if timer is None:
+                timer = getattr(self, "_reconnect_timer", None)
+        user_closing = (bool(getattr(self, "_user_closing", False))
+                        or bool(getattr(sess, "_user_closing", False)))
+        visible = sess is None or sess is self.active_session()
+        settings = getattr(self, "settings", None)
+        auto = True
+        if settings is not None:
+            auto = settings.value("auto_reconnect", True, type=bool)
         plan = _reconnect_policy.plan_schedule(
-            user_closing=self._user_closing,
-            auto_reconnect=self.settings.value("auto_reconnect", True, type=bool),
-            timer_active=self._reconnect_timer.isActive(),
+            user_closing=user_closing,
+            auto_reconnect=auto,
+            timer_active=(timer.isActive() if timer is not None else False),
             serial_retry=self._serial_reconnect_cfg is not None,
             attempts=self._reconnect_attempts,
             serial_limit=self._serial_reconnect_limit,
@@ -3069,19 +3217,38 @@ class CommTool(QMainWindow):
         delay = int(plan.get("delay_ms") or 0)
         if plan.get("bump_attempts"):
             self._reconnect_attempts = int(self._reconnect_attempts or 0) + 1
-            self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
-        self._reconnect_timer.start(delay)
+            if visible:
+                self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
+        if timer is not None:
+            timer.start(delay)
 
     def _cancel_reconnect(self):
-        if self._reconnect_timer.isActive():
-            self._reconnect_timer.stop()
+        _ctx = getattr(self, "_session_ctx", None)
+        sess = _ctx() if callable(_ctx) else None
+        if sess is not None and getattr(sess, "_reconnect_timer", None) is not None:
+            if sess._reconnect_timer.isActive():
+                sess._reconnect_timer.stop()
+        fb = getattr(self, "_reconnect_timer_fallback", None)
+        if fb is not None and fb.isActive():
+            fb.stop()
 
     def _try_reconnect(self):
         reconnect_cfg = self._serial_reconnect_cfg
+        _ctx = getattr(self, "_session_ctx", None)
+        sess = _ctx() if callable(_ctx) else None
+        reconnect_snapshot = (getattr(sess, "_reconnect_snapshot", None)
+                              if reconnect_cfg is None else None)
+        user_closing = (bool(getattr(self, "_user_closing", False))
+                        or bool(getattr(sess, "_user_closing", False)))
+        visible = sess is None or sess is self.active_session()
+        settings = getattr(self, "settings", None)
+        auto = True
+        if settings is not None:
+            auto = settings.value("auto_reconnect", True, type=bool)
         plan = _reconnect_policy.plan_try(
             conn_open=self.conn is not None,
-            user_closing=self._user_closing,
-            auto_reconnect=self.settings.value("auto_reconnect", True, type=bool),
+            user_closing=user_closing,
+            auto_reconnect=auto,
             serial_cfg=reconnect_cfg,
             device_available=self._available_serial_devices,
         )
@@ -3094,10 +3261,20 @@ class CommTool(QMainWindow):
         if action == "wait_device":
             self._schedule_reconnect()
             return
-        if plan.get("toast_try"):
+        if plan.get("toast_try") and visible:
             self.toast(self._t("auto_reconnect_try", n=self._reconnect_attempts))
-        self.open_conn(reconnect_cfg=reconnect_cfg)
-        if self.conn is None and not self._user_closing:
+        if reconnect_snapshot is None:
+            open_result = self.open_conn(reconnect_cfg=reconnect_cfg)
+        else:
+            open_result = self.open_conn(reconnect_snapshot=reconnect_snapshot)
+        if open_result == "resource-conflict":
+            # Another tab owns this exclusive resource. More retries cannot
+            # change that and network retries otherwise continue forever.
+            self._cancel_reconnect()
+            self._serial_reconnect_cfg = None
+            self._reconnect_attempts = 0
+            return
+        if self.conn is None and not user_closing:
             if _reconnect_policy.should_reschedule_after_open_fail(
                     serial_cfg=reconnect_cfg,
                     serial_target_still_set=self._serial_reconnect_cfg is not None):
@@ -3115,7 +3292,7 @@ class CommTool(QMainWindow):
             self._mbm_restart()         # 连上 → 若 Modbus 主机轮询开启则启动
         elif self.conn is not None:
             self.toast(self._t("net_peer_closed"))
-            self.close_conn()
+            self.close_conn(update_ui=(self._session_ctx() is self.active_session()))
             self._schedule_reconnect()  # 非主动断开 → 走自动重连
 
     def _on_clients_changed(self, clients):
@@ -3235,34 +3412,31 @@ class CommTool(QMainWindow):
         self._append_block_data("\r", direction="rx", force_new_block=force_new)
         self._last_direction = "rx"
 
-    def close_conn(self):
-        # 传输中断连 → 取消传输（连接没了协议无法继续；worker 收到取消会尽快收尾并复位收流）
-        if self._xfer_worker is not None and self._xfer_worker.isRunning():
-            self._xfer_worker.cancel()
-        # 回放的 inject 回调绑定当前虚拟连接；断连后必须同步停掉定时器和占用态，
-        # 否则会继续向已关闭的旧连接静默注入，循环模式还会永久占线。
-        rr_dlg = getattr(self, "_rr_dlg", None)
-        if rr_dlg is not None:
-            rr_dlg.stop_replay()
-            rr_dlg.stop_recording()
-        elif getattr(self, "_replay_on", False):
-            self._replay_end()
-        if self.sw_period.isChecked():
-            self.sw_period.setChecked(False)
-        # 停多条发送循环定时器：否则非 closeEvent 路径(点断开/对端断开/连接错误)断连后，
-        # 下一 tick 的 _ms_cycle_step 还会再弹一个「未连接」toast，造成双重错误提示
-        self._ms_stop_cycle()
-        # 断开前先把待定 \r 显示出来，否则数据丢用户视觉
-        # 同时要在关闭实时日志前执行，保证日志和屏幕显示一致。
+    def close_conn(self, update_ui=True):
+        # Window-level engines/UI only when tearing down the active/context view.
+        if update_ui:
+            if self._xfer_worker is not None and self._xfer_worker.isRunning():
+                self._xfer_worker.cancel()
+            rr_dlg = getattr(self, "_rr_dlg", None)
+            if rr_dlg is not None:
+                rr_dlg.stop_replay()
+                rr_dlg.stop_recording()
+            elif getattr(self, "_replay_on", False):
+                self._replay_end()
+            if self.sw_period.isChecked():
+                self.sw_period.setChecked(False)
+            self._ms_stop_cycle()
         self._flush_pending_cr()
-        if self.sw_log_file.isChecked():
+        if update_ui and self.sw_log_file.isChecked():
             self.sw_log_file.setChecked(False)
         conn = self.conn
         self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
-        self._stop_device_scan(cancelled=True)
+        if update_ui:
+            self._stop_device_scan(cancelled=True)
         self._conn_proto = None
         self._conn_cfg = None
-        self._mbm_guard_until = 0.0   # 物理连接已断，旧响应不可能进入下一会话
+        if update_ui:
+            self._mbm_guard_until = 0.0   # 活动物理连接已断，旧响应不可能进入下一会话
         self._conn_engaged = False
         self._serial_device = None    # 已断开 → 清掉串口掉线检测的目标设备
         self._serial_missing_count = 0
@@ -3274,30 +3448,37 @@ class CommTool(QMainWindow):
                 _log.debug("connection close failed", exc_info=True)
             conn.deleteLater()
 
-        if getattr(self, "_seq_on", False):   # 连接断开 → 中止运行中的序列（保留结果 + 提示，不静默）
-            self._seq_abort("seq_aborted_disc")
-        # 脚本控制台同理：链路没了就别让脚本对着断掉的连接空跑（send 进虚空、每个 expect
-        # 都要等满超时）。协作式停止，脚本会在下一个 send/expect/recv/sleep 处退出并出汇总。
-        if self._script_running():
-            self._script_worker.stop()
-        self._dsl_abort()          # 断连 → 中止 DSL 剩余步骤，别对着断掉的连接空发
+        if update_ui:
+            if getattr(self, "_seq_on", False):
+                self._seq_abort("seq_aborted_disc")
+            if self._script_running():
+                self._script_worker.stop()
+            self._dsl_abort()
         self._flush_numview_carries()
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
-        self._ar_reset_buf()       # 清自动应答半包缓冲：断/重连时旧字节不能被新连接消费
-        self._ar_reset_state()     # C8：断开=会话结束 → 状态机回到初始（下次连上从 init 开始握手）
-        self._mbm_restart()        # 断开 → 停止 Modbus 主机轮询（_mbm_active 此时为假）
-        if hasattr(self, "_ctrl_poll_timer"):
-            self._ctrl_poll_timer.stop()   # 断开 → 停止控制线状态轮询
+        if update_ui:
+            self._ar_reset_buf()
+        else:
+            if self._ar_gap_timer.isActive():
+                self._ar_gap_timer.stop()
+            self._ar_buf = b""
+        if self._session_ctx() is self.active_session():
+            self._ar_reset_state()
+            self._mbm_restart()
+        if hasattr(self, "_ctrl_poll_timer") and update_ui:
+            self._ctrl_poll_timer.stop()
 
-        self.btn_open.setProperty("state", "")
-        self.btn_open.style().unpolish(self.btn_open)
-        self.btn_open.style().polish(self.btn_open)
-        self.lbl_state.setText(self._t("state_closed"))
-        self._set_state_color(opened=False)
-        self.set_settings_enabled(True)
-        if hasattr(self, "cb_target"):
-            self.cb_target.clear()
-        self._update_net_fields()
+        if update_ui:
+            self.btn_open.setProperty("state", "")
+            self.btn_open.style().unpolish(self.btn_open)
+            self.btn_open.style().polish(self.btn_open)
+            self.lbl_state.setText(self._t("state_closed"))
+            self._set_state_color(opened=False)
+            self.set_settings_enabled(True)
+            if hasattr(self, "cb_target"):
+                self.cb_target.clear()
+            self._update_net_fields()
+        self._refresh_session_tab_styles()
 
     # ----- 串口端口扫描 -----
     def refresh_ports(self):
@@ -3328,6 +3509,7 @@ class CommTool(QMainWindow):
             self.cb_port.addItem(label, device)
         # keep_device=None -> leave Qt default; keep_device='' -> explicit no-port
         if keep_device is not None:
+            self._serial_empty_selection = (keep_device == "")
             if keep_device == "":
                 idx = -1
                 for i in range(self.cb_port.count()):
@@ -3399,24 +3581,46 @@ class CommTool(QMainWindow):
         self._available_serial_devices = {dev for dev, _ in port_list if dev}
         if not port_list:
             port_list = [("", self._t("no_ports"))]
-        # 串口已连接时不动 cb_port（端口占用中、也别打断当前选择）；但要顺带检查正在用的口
-        # 是否还在枚举里 —— USB 串口会偶发瞬时掉枚举(见 _populate_port_combo 注释)，故连续
-        # _serial_missing_limit 次都检测不到才判定真移除 → 主动断开(单次抖动不误断正在用的连接)。
-        if self.conn is not None and self._conn_proto == PROTO_SERIAL:
-            if self._serial_device:
-                if any(dev == self._serial_device for dev, _ in port_list):
-                    self._serial_missing_count = 0
+        active = self.active_session()
+        active_id = active.id if active is not None else None
+        # Check every live serial session. Hidden tabs own their missing counter and
+        # reconnect timer; only the active tab is allowed to update window UI.
+        for session in list(self._sessions):
+            if session.conn is None or session._conn_proto != PROTO_SERIAL:
+                continue
+            dev = session._serial_device
+            if not dev:
+                continue
+            if dev in self._available_serial_devices:
+                session._serial_missing_count = 0
+                continue
+            session._serial_missing_count += 1
+            if session._serial_missing_count < self._serial_missing_limit:
+                continue
+            reconnect_cfg = session._conn_cfg
+            session._serial_missing_count = 0
+            with self._with_session(session):
+                if session.id == active_id:
+                    self.close_conn()
                 else:
-                    self._serial_missing_count += 1
-                    if self._serial_missing_count >= self._serial_missing_limit:
-                        dev = self._serial_device
-                        reconnect_cfg = self._conn_cfg
-                        self._serial_missing_count = 0
-                        self.close_conn()
-                        if reconnect_cfg:
-                            self._serial_reconnect_cfg = tuple(reconnect_cfg)
-                        self.toast(self._t("serial_removed", port=dev), error=True)
-                        self._schedule_reconnect()
+                    self.close_conn(update_ui=False)
+                if reconnect_cfg:
+                    session._serial_reconnect_cfg = tuple(reconnect_cfg)
+                if session.id == active_id:
+                    self.toast(self._t("serial_removed", port=dev), error=True)
+                self._schedule_reconnect()
+
+        # A reappearing device wakes the matching timer even when its tab is hidden.
+        for session in self._sessions:
+            cfg = session._serial_reconnect_cfg
+            target = cfg[1] if cfg and len(cfg) > 1 else None
+            if (target in self._available_serial_devices
+                    and session._reconnect_timer.isActive()):
+                session._reconnect_timer.start(0)
+
+        # Keep the active serial selector stable while its connection remains open.
+        if (active is not None and active.conn is not None
+                and active._conn_proto == PROTO_SERIAL):
             return
         if self.cb_port.view().isVisible():   # 下拉正展开时不刷，避免选项跳动
             return
@@ -3520,6 +3724,8 @@ class CommTool(QMainWindow):
         数据区历史文字按角色(时间戳/RX/TX)重涂成新主题色，避免浅↔深切换后看不见。"""
         # 1. 重建全局 QSS，apply_style 会读 cb_theme 当前选项自适应
         self.apply_style()
+        self._refresh_session_tab_styles()
+        _workspace_ui.refresh_top_bar_icons(self)
         # 2. 内联 setStyleSheet 的几处也跟着 chrome palette 刷
         c = chrome_for(self._theme_id())
         self._apply_theme_label_styles(c)
@@ -3591,8 +3797,15 @@ class CommTool(QMainWindow):
             self._structured_dlg.refresh_theme()
 
     # ----- 接收 -----
+    def _display_value(self, key, default=None):
+        ctx = getattr(self, "_display_context", None)
+        return ctx.get(key, default) if ctx is not None else default
+
     def _get_codec(self) -> str:
         """Current RX/TX/file codec mode -- 'auto' or concrete codec name."""
+        ctx = getattr(self, "_display_context", None)
+        if ctx is not None and "encoding" in ctx:
+            return _cfg_norm_enc(ctx.get("encoding"))
         if hasattr(self, "cb_encoding"):
             return _cfg_norm_enc(self.cb_encoding.currentData())
         return "auto"
@@ -3756,9 +3969,9 @@ class CommTool(QMainWindow):
 
         # 终端模式：纯字节流直接追加显示，绕过 HEX / 时间戳 / 方向 / 分行 / 分包 等所有装饰。
         mode = _rx_dispatch.rx_display_mode(
-            terminal_on=self._terminal_on,
-            hexdump_on=self._hexdump_on,
-            numview_on=self._numview_on,
+            terminal_on=bool(self._display_value("terminal_on", self._terminal_on)),
+            hexdump_on=bool(self._display_value("hexdump_on", self._hexdump_on)),
+            numview_on=bool(self._display_value("numview_on", self._numview_on)),
         )
         if mode == "terminal":
             self._terminal_append(self._decode_rx(data, source=source), source=source)
@@ -3783,8 +3996,9 @@ class CommTool(QMainWindow):
             return
 
         use_hex, use_line_split = _rx_dispatch.stream_flags(
-            rx_hex=self.sw_rx_hex.isChecked(),
-            line_split=self.sw_line_split.isChecked())
+            rx_hex=bool(self._display_value("rx_hex", self.sw_rx_hex.isChecked())),
+            line_split=bool(self._display_value(
+                "line_split", self.sw_line_split.isChecked())))
         now = time.monotonic()
 
         ansi_spans = None      # ANSI 着色：[(起, 止, 样式)]，下标相对下面这个 text
@@ -3792,7 +4006,7 @@ class CommTool(QMainWindow):
             text = self._bytes_to_hex(data) + " "
         else:
             text = self._decode_rx(data, source=source)
-            if self._ansi_on:
+            if bool(self._display_value("ansi_on", self._ansi_on)):
                 # 剥掉转义序列（顺带吃掉光标/擦除等非 SGR 的，不再显示成乱码），
                 # 留下纯文本给后面的分行/分包逻辑，颜色以字符区间的形式另存。
                 stream_source = (source if self._conn_proto == PROTO_TCP_SERVER else None)
@@ -3821,7 +4035,9 @@ class CommTool(QMainWindow):
         # 跨 chunk 的 \r\n 处理 — Auto(0) 和 CRLF(1) 都需要
         # （LF/CR 模式因为单字符就是终止符，无歧义，不需要 defer）
         cross_chunk_crlf = False
-        nl_mode_for_defer = self.cb_line_nl.currentIndex() if use_line_split else -1
+        line_nl = int(self._display_value(
+            "line_nl", self.cb_line_nl.currentIndex()))
+        nl_mode_for_defer = line_nl if use_line_split else -1
         if nl_mode_for_defer in (0, 1):
             stream_source = source if self._conn_proto == PROTO_TCP_SERVER else None
             # TCP Server 的各客户端不是同一条字节流：A 包尾的 CR 不能与 B 包头的 LF
@@ -3858,7 +4074,7 @@ class CommTool(QMainWindow):
 
         if use_line_split:
             segments, seg_starts = self._split_lines_with_offsets(
-                text, self.cb_line_nl.currentIndex())
+                text, line_nl)
         else:
             segments, seg_starts = [text], [0]
 
@@ -3867,9 +4083,11 @@ class CommTool(QMainWindow):
             is_last = (i == len(segments) - 1)
 
             if is_first:
-                packet_split = self.sw_packet_split.isChecked()
+                packet_split = bool(self._display_value(
+                    "packet_split", self.sw_packet_split.isChecked()))
                 timeout_ms = (
-                    _rx_dispatch.packet_timeout_ms(self.ed_packet_timeout.text())
+                    _rx_dispatch.packet_timeout_ms(self._display_value(
+                        "packet_timeout", self.ed_packet_timeout.text()))
                     if packet_split else 0)
                 force_new_block = _rx_dispatch.force_new_block_first(
                     last_direction=self._last_direction,
@@ -3893,7 +4111,9 @@ class CommTool(QMainWindow):
                                                runs=seg_runs)
             self._last_direction = "rx"
             # 协议高亮：HEX 模式下整段=一帧（seg 即 hex(data)），按帧解析规则给字段上色
-            if use_hex and self._proto_hl_on and body_pos is not None:
+            proto_hl = bool(self._display_value(
+                "proto_hl_on", self._proto_hl_on))
+            if use_hex and proto_hl and body_pos is not None:
                 self._add_proto_fields(data, body_pos)
 
         self._pending_line_break = _rx_dispatch.next_pending_line_break(
@@ -4019,7 +4239,8 @@ class CommTool(QMainWindow):
         plan = _view_force_prefix(
             force_new_block=force_new_block,
             ends_with_nl=self._txt_ends_with_nl,
-            show_timestamp=self.sw_show_timestamp.isChecked())
+            show_timestamp=bool(self._display_value(
+                "show_timestamp", self.sw_show_timestamp.isChecked())))
         if plan["need_leading_nl"]:
             cursor.insertText("\n")
             self._txt_ends_with_nl = True
@@ -4045,7 +4266,9 @@ class CommTool(QMainWindow):
         body_fmt.setProperty(ROLE_PROP, body_role)
         if view_mode is None:
             view_mode = _view_recv_prop(
-                self._hexdump_on, self._numview_on, self.sw_rx_hex.isChecked())
+                bool(self._display_value("hexdump_on", self._hexdump_on)),
+                bool(self._display_value("numview_on", self._numview_on)),
+                bool(self._display_value("rx_hex", self.sw_rx_hex.isChecked())))
         body_fmt.setProperty(VIEW_PROP, view_mode)
         cursor.setCharFormat(body_fmt)
         first_body_block = cursor.blockNumber()   # 正文插入前块号；正文含 \n 会跨多块（hexdump 多行）
@@ -4063,7 +4286,8 @@ class CommTool(QMainWindow):
         # 只有原本就在底部才跟随到最新；用户往上翻看时保持定住
         # 过滤开启时，立即决定刚追加这行的可见性 —— 在滚动到底之前完成，
         # 避免"先显示→滚到底→150ms后异步隐藏→高度收缩跳动"的抖动
-        if self._filter_active():
+        background = bool(self._display_value("background", False))
+        if not background and self._filter_active():
             # 本次插入可能跨多个 block（hexdump 多行块），逐个立即定可见性——只判最后一行会让前几行
             # 短暂错显、要等 150ms 异步重扫才纠正。普通单行文本时循环只跑一次，与原逻辑等价。
             doc = self.txt_recv.document()
@@ -4103,7 +4327,8 @@ class CommTool(QMainWindow):
         else:
             sb.setValue(scroll_before)
 
-        self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
+        if not background:
+            self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
 
         self._write_log_block(text, direction, force_new_block, prefix=prefix)
 
@@ -4111,6 +4336,8 @@ class CommTool(QMainWindow):
 
     def _write_log_block(self, text: str, direction: str, force_new_block: bool,
                          prefix=None):
+        if self._session_ctx() is not self.active_session():
+            return
         """把一个显示块写入实时日志；日志行尾状态与可见文本区完全独立。"""
         if not self._log_file:
             return
@@ -5077,8 +5304,65 @@ class CommTool(QMainWindow):
         self.toast(self._t("cpreset_applied", name=preset.get("name", "")))
         return True
 
-    def save_connection_preset_from_ui(self, prompt_name=True, name=None, note=""):
+    def _build_connection_preset_name_dialog(self, default_name=""):
         from PyQt5.QtWidgets import QInputDialog
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(self._t("cpreset_save_title"))
+        dlg.setLabelText(self._t("cpreset_save_prompt"))
+        dlg.setTextValue(default_name or self._t("cpreset_new_name"))
+        dlg.setOkButtonText(
+            {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK"))
+        dlg.setCancelButtonText(
+            {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(
+                self._lang, "Cancel"))
+        dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        dlg.setMinimumWidth(380)
+        dlg.setMinimumHeight(160)
+        dlg.resize(380, 154)
+        c = chrome_for(self._theme_id())
+        dlg.setStyleSheet(localize_qss(f"""
+        QInputDialog {{
+            background-color: {c['window_bg']};
+            color: {c['text']};
+        }}
+        QInputDialog QLabel {{
+            color: {c['text']}; background: transparent;
+            font-family: 'Segoe UI'; font-size: 12px; font-weight: 500;
+        }}
+        QInputDialog QLineEdit {{
+            background-color: {c['input_bg']}; color: {c['text']};
+            border: 1px solid {c['separator']}; border-radius: 7px;
+            min-height: 22px; padding: 5px 9px;
+            selection-background-color: {c['accent']};
+        }}
+        QInputDialog QLineEdit:focus {{
+            background-color: {c['input_focus_bg']};
+            border-color: {c['accent']};
+        }}
+        QInputDialog QPushButton {{
+            background-color: {c['ghost_bg']}; color: {c['text']};
+            border: 1px solid {c['separator']}; border-radius: 7px;
+            min-width: 82px; min-height: 30px;
+            font-family: 'Segoe UI'; font-size: 12px; font-weight: 500;
+        }}
+        QInputDialog QPushButton:hover {{
+            background-color: {c['ghost_hover']};
+        }}
+        QInputDialog QPushButton:default {{
+            background-color: {c['accent']}; color: #FFFFFF;
+            border-color: {c['accent']}; font-weight: 600;
+        }}
+        QInputDialog QPushButton:default:hover {{
+            background-color: {c['accent_hover']};
+            border-color: {c['accent_hover']};
+        }}
+        """))
+        QTimer.singleShot(
+            0, lambda d=dlg: _set_win_titlebar_dark(
+                d, self._theme().get("mode") == "dark"))
+        return dlg
+
+    def save_connection_preset_from_ui(self, prompt_name=True, name=None, note=""):
         fields = self._capture_connection_fields()
         if prompt_name and not name:
             cur_id = self.cb_conn_preset.currentData() if hasattr(self, "cb_conn_preset") else None
@@ -5087,12 +5371,8 @@ class CommTool(QMainWindow):
                 cur = connection_presets.find_by_id(self._connection_presets, cur_id)
                 if cur:
                     default_name = cur.get("name", "")
-            dlg = QInputDialog(self)
-            dlg.setWindowTitle(self._t("cpreset_save_title"))
-            dlg.setLabelText(self._t("cpreset_save_prompt"))
-            dlg.setTextValue(default_name or self._t("cpreset_new_name"))
-            dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-            ok = dlg.exec_() == QInputDialog.Accepted
+            dlg = self._build_connection_preset_name_dialog(default_name)
+            ok = dlg.exec_() == QDialog.Accepted
             name = dlg.textValue()
             if not ok:
                 return None
@@ -6672,9 +6952,7 @@ class CommTool(QMainWindow):
         return new
 
     def import_config(self):
-        """导入 JSON 配置：批量 setValue 到 QSettings + 立刻刷新 UI。
-        能即时生效：主题/语言/显示选项/发送框文本/连接字段(UI 显示，未重连)/自动应答规则与状态。
-        需手动操作：当前已开的连接（用户得手动断开重连），其它弹窗(多条/关键字/帧解析/绘图)若打开下次重开生效。"""
+        """导入 JSON 配置并用一个新会话替换当前工作区运行态。"""
         path, _ = QFileDialog.getOpenFileName(self, self._t("cfg_import"), "", "JSON (*.json)")
         if not path:
             return
@@ -6690,6 +6968,8 @@ class CommTool(QMainWindow):
         data = self._ar_gate_imported_scripts(data)   # B5：含脚本则征求同意，拒绝则清空脚本
         data = self._gate_imported_script_lib(data)   # 脚本控制台库同理：导入的脚本会在本机执行
         data = self._gate_imported_trigger_actions(data)  # 触发器外部动作同样在本机执行
+        if not self._prepare_project_switch():
+            return
         s = self.settings
         n = 0
         for k, v in data.items():
@@ -6702,6 +6982,10 @@ class CommTool(QMainWindow):
             self._apply_loaded_settings()
         except Exception:
             _log.debug("import_config failed", exc_info=True)
+        # Persist the new single-tab snapshot now so a crash before normal
+        # shutdown cannot resurrect the imported profile's stale sessions_v1.
+        self._save_sessions_settings()
+        self.settings.sync()
         self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
 
     def _apply_loaded_settings(self):
@@ -8174,7 +8458,8 @@ class CommTool(QMainWindow):
         def _make_fmt():
             """当前 SGR 样式对应的字符格式；关掉 ANSI 着色时恒为无色的基础格式。"""
             st = term_sgr
-            if not self._ansi_on or st is None or st.is_default():
+            if (not bool(self._display_value("ansi_on", self._ansi_on))
+                    or st is None or st.is_default()):
                 return base_fmt
             f = QTextCharFormat(base_fmt)
             self._apply_sgr_format(f, st)
@@ -8279,7 +8564,10 @@ class CommTool(QMainWindow):
         # Keep line-end flag in sync for non-terminal RX after leaving terminal.
         self._txt_ends_with_nl = self.txt_recv.document().lastBlock().text() == ""
         if was_bottom:
-            self._scroll_recv_to_bottom()
+            sb = self.txt_recv.verticalScrollBar()
+            sb.setValue(sb.maximum())
+            if self._session_ctx() is self.active_session():
+                self.btn_to_bottom.hide()
 
     def _term_handle_csi(self, cur, seq, sgr=None):
         """处理一条 CSI 序列 seq = ESC[ <参数> <终止字母>。只管行编辑相关：擦除 J/K + 光标左右
@@ -8323,6 +8611,9 @@ class CommTool(QMainWindow):
         return _ar_core_compute_checksum(data, index)
 
     def on_period_toggled(self, on):
+        session = self._session_ctx()
+        if session is not None:
+            session.period_on = bool(on)
         if on:
             if self._io_task_busy(exclude=("periodic",)):
                 self.toast(self._t("io_exclusive_busy"), error=True)
@@ -8495,7 +8786,9 @@ class CommTool(QMainWindow):
         if new_size == self._recv_font_size:
             return
         self._recv_font_size = new_size
-        self.txt_recv.setFont(mono_font(new_size))
+        for session in self.sessions():
+            if session.txt_recv is not None:
+                session.txt_recv.setFont(mono_font(new_size))
         self.toast(self._t("font_size_msg", size=new_size))
 
     def _on_max_lines_changed(self):
@@ -8528,9 +8821,11 @@ class CommTool(QMainWindow):
 
     def _timestamp_prefix(self, direction):
         """Build block prefix from ts_format + direction arrow; off -> ''."""
-        if not self.sw_show_timestamp.isChecked():
+        if not bool(self._display_value(
+                "show_timestamp", self.sw_show_timestamp.isChecked())):
             return ""
-        fmt = getattr(self, "_ts_format", "absolute")
+        fmt = self._display_value(
+            "ts_format", getattr(self, "_ts_format", "absolute"))
         text, self._ts_anchor = _view_timestamp_prefix(
             fmt, direction,
             now=datetime.now(), wall_time=time.time(),
@@ -8613,29 +8908,36 @@ class CommTool(QMainWindow):
     def _tick_rate(self):
         """1Hz sample: B/s + pps + peaks + history via IoStatsAccumulator."""
         now = time.monotonic()
-        rates = self._io_stats.tick(now=now)
-        self._rx_rate = rates["rx_rate"]
-        self._tx_rate = rates["tx_rate"]
-        self._rx_peak = self._io_stats.rx_peak
-        self._tx_peak = self._io_stats.tx_peak
-        self._rx_bytes_mark = self._io_stats._rx_bytes_mark
-        self._tx_bytes_mark = self._io_stats._tx_bytes_mark
-        self._rate_time_mark = self._io_stats._time_mark
-        self._refresh_stat_labels()
-        rr_dlg = getattr(self, "_rr_dlg", None)
-        if rr_dlg is not None and rr_dlg.isVisible():
-            rr_dlg.tick_stat()
-        try:
-            plot = getattr(self, "_plot_dlg", None)
-            if plot is not None and plot.isVisible() and hasattr(plot, "feed_named_samples"):
-                plot.feed_named_samples([
-                    {"tag": "rx_Bps", "value": float(self._rx_rate)},
-                    {"tag": "tx_Bps", "value": float(self._tx_rate)},
-                    {"tag": "rx_pps", "value": float(self._io_stats.rx_pps)},
-                    {"tag": "tx_pps", "value": float(self._io_stats.tx_pps)},
-                ])
-        except Exception:
-            _log.debug("_tick_rate failed", exc_info=True)
+        sessions = list(getattr(self, "_sessions", ()) or ())
+        for session in sessions:
+            with self._with_session(session):
+                rates = self._io_stats.tick(now=now)
+                self._rx_rate = rates["rx_rate"]
+                self._tx_rate = rates["tx_rate"]
+                self._rx_peak = self._io_stats.rx_peak
+                self._tx_peak = self._io_stats.tx_peak
+                self._rx_bytes_mark = self._io_stats._rx_bytes_mark
+                self._tx_bytes_mark = self._io_stats._tx_bytes_mark
+                self._rate_time_mark = self._io_stats._time_mark
+        active = self.active_session()
+        if active is None:
+            return
+        with self._with_session(active):
+            self._refresh_stat_labels()
+            rr_dlg = getattr(self, "_rr_dlg", None)
+            if rr_dlg is not None and rr_dlg.isVisible():
+                rr_dlg.tick_stat()
+            try:
+                plot = getattr(self, "_plot_dlg", None)
+                if plot is not None and plot.isVisible() and hasattr(plot, "feed_named_samples"):
+                    plot.feed_named_samples([
+                        {"tag": "rx_Bps", "value": float(self._rx_rate)},
+                        {"tag": "tx_Bps", "value": float(self._tx_rate)},
+                        {"tag": "rx_pps", "value": float(self._io_stats.rx_pps)},
+                        {"tag": "tx_pps", "value": float(self._io_stats.tx_pps)},
+                    ])
+            except Exception:
+                _log.debug("_tick_rate failed", exc_info=True)
 
     def _refresh_stat_labels(self, with_tooltip=True):
         """Refresh status-bar RX/TX: bytes, packets, B/s, pps."""
@@ -9072,6 +9374,7 @@ class CommTool(QMainWindow):
             s.setValue("ser_parity", self.cb_parity.currentText())
             s.setValue("ser_stopbits", self.cb_stopbits.currentText())
             s.setValue("ser_flow", self.cb_flow.currentText())
+            self._save_sessions_settings()
             s.sync()
             if strict and s.status() != QSettings.NoError:
                 raise OSError("QSettings sync failed (status=%s)" % int(s.status()))
@@ -9416,6 +9719,11 @@ class CommTool(QMainWindow):
                 self._t("workspace_template_title"),
                 self._t("workspace_template_fail", err=str(exc)), is_error=True)
             return
+        # The template switch already replaced the runtime tab set. Persist the
+        # new single-session snapshot now so an abnormal exit cannot restore
+        # the previous sessions_v1 / active_session_id on the next launch.
+        self._save_sessions_settings()
+        self.settings.sync()
         self._refresh_project_dirty_label()
         self.toast(self._t("workspace_template_applied", name=template_name))
 
@@ -9479,6 +9787,12 @@ class CommTool(QMainWindow):
             button.style().unpolish(button)
             button.style().polish(button)
         self._refresh_workspace_statuses()
+        # Session chips only on terminal workspace.
+        show_sessions = (key == "terminal")
+        for attr in ("_session_sep", "_session_tab_strip"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(show_sessions)
         if persist:
             self.settings.setValue("active_workspace", key)
 
@@ -9494,7 +9808,7 @@ class CommTool(QMainWindow):
             return
         name = self._project_name or os.path.splitext(
             os.path.basename(self._project_path))[0]
-        full_text = name + (" *" if dirty is True else "") + " ▾"
+        full_text = name + (" *" if dirty is True else "")
         # Elide long names so the project button stays compact beside workbench groups.
         shown = QFontMetrics(self.btn_project_menu.font()).elidedText(
             full_text, Qt.ElideMiddle, 172)
@@ -9703,20 +10017,18 @@ class CommTool(QMainWindow):
         return len(incoming)
 
     def _prepare_project_switch(self):
-        """Disconnect (or cancel reconnect) before switching projects."""
-        if self.conn is None:
-            # Clear a queued auto-reconnect so it cannot reopen against the new project.
-            self._cancel_reconnect()
-            self._serial_reconnect_cfg = None
-            return True
-        if not self._confirm_dlg(
-                self._t("project_disconnect_title"),
-                self._t("project_disconnect_body"),
-                ok_text=self._t("project_disconnect"),
-                danger=False):
-            return False
-        self.toggle_conn()
-        return self.conn is None
+        """Stop every old-project session before replacing workspace settings."""
+        if any(s.conn is not None for s in self._sessions):
+            if not self._confirm_dlg(
+                    self._t("project_disconnect_title"),
+                    self._t("project_disconnect_body"),
+                    ok_text=self._t("project_disconnect"),
+                    danger=False):
+                return False
+        self._reset_sessions_runtime()
+        return (len(self._sessions) == 1
+                and self.active_session() is not None
+                and self.active_session().conn is None)
 
     def new_project(self):
         from project_wizard import ProjectWizard
@@ -10040,10 +10352,7 @@ class CommTool(QMainWindow):
                 self._t("profile_save_fail", err=str(e)),
                 is_error=True)
             return
-        self._cancel_reconnect()
-        self._reconnect_attempts = 0
-        if self.conn is not None:
-            self.close_conn()
+        self._reset_sessions_runtime()
         # 3) 交换 profile 锁：新锁挂 app 保活、释放旧锁（旧配置槽位随即空出，可被别的窗口用）
         app = QApplication.instance()
         old_lock = getattr(app, "_profile_lock", None)
@@ -10069,6 +10378,7 @@ class CommTool(QMainWindow):
             # 否则目标配置缺某键时会残留上一配置的值、之后保存还会污染目标配置。
             self._restore_field_defaults()
             self._apply_loaded_settings()   # 与「导入配置」共用：整体重载新配置到 UI
+            self._restore_sessions_settings()
         except Exception:
             _log.debug("_switch_profile failed", exc_info=True)
         self.restoreGeometry(geo)
@@ -10444,7 +10754,7 @@ class CommTool(QMainWindow):
         # 会建很多个），那些句柄还会把已销毁的窗口一直拉着不放。
         atexit.unregister(self._trg_stop_procs)
         self._save_settings()
-        self.close_conn()
+        self._close_all_sessions(update_active_ui=True)
         self._close_log_file()
         if self.port_scanner:
             self.port_scanner.stop()
@@ -10512,3 +10822,5 @@ class CommTool(QMainWindow):
             e.accept()
         else:
             e.ignore()
+
+_install_session_proxies(CommTool)

@@ -6,7 +6,7 @@ S-2 R39: CommTool.build_receive_card / _build_search_bar thin wrappers.
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout,
-    QWidget,
+    QWidget, QStackedWidget,
 )
 
 from fonts import ui_font, mono_font
@@ -145,18 +145,28 @@ def build(app):
 
     layout.addLayout(title_row)
 
-    app.txt_recv = QTextEdit()
-    app.txt_recv.setReadOnly(True)
-    app.txt_recv.setObjectName("RecvBox")
-    app.txt_recv.setFont(mono_font(app._recv_font_size))
-    app.txt_recv.setLineWrapMode(QTextEdit.WidgetWidth)
-    # 「选中即算校验和」的发现性入口：状态栏那个标签平时是隐藏的（没选区就没内容），
-    # 提示挂在数据区自己身上，用户才可能碰到。协议高亮模式下会被它自己的字段气泡接管
-    # （见 eventFilter 的 ToolTip 分支），那是有意的——那种模式有更具体的东西要说。
-    app.txt_recv.setProperty("tr_tooltip", "sel_chk_hint")
-    set_tooltip(app.txt_recv, app._t("sel_chk_hint"))
-    app.txt_recv.document().setMaximumBlockCount(10000)
-    layout.addWidget(app.txt_recv, 1)
+    # Per-session receive views in a stack (multi-tab concurrent sessions).
+    app.recv_stack = QStackedWidget()
+    app.recv_stack.setObjectName("RecvStack")
+    session = app.active_session() if hasattr(app, "active_session") else None
+    if session is not None:
+        app._ensure_session_recv_widget(session)
+        te = session.txt_recv
+    else:
+        te = QTextEdit()
+        te.setReadOnly(True)
+        te.setObjectName("RecvBox")
+        te.setFont(mono_font(app._recv_font_size))
+        te.setLineWrapMode(QTextEdit.WidgetWidth)
+        te.document().setMaximumBlockCount(10000)
+        app.recv_stack.addWidget(te)
+    app._txt_recv_fallback = te
+    te.setProperty("tr_tooltip", "sel_chk_hint")
+    set_tooltip(te, app._t("sel_chk_hint"))
+    if app.recv_stack.indexOf(te) < 0:
+        app.recv_stack.addWidget(te)
+    app.recv_stack.setCurrentWidget(te)
+    layout.addWidget(app.recv_stack, 1)
     build_search_bar(app)
 
     # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
@@ -187,8 +197,8 @@ def build(app):
     app.btn_to_bottom.setCursor(Qt.PointingHandCursor)
     app.btn_to_bottom.clicked.connect(app._scroll_recv_to_bottom)
     app.btn_to_bottom.hide()
-    # 滚动条变化时判断是否在底部，决定按钮显隐
-    app.txt_recv.verticalScrollBar().valueChanged.connect(app._on_recv_scroll)
+    # 滚动路由由 SessionHostMixin._ensure_session_recv_widget 统一绑定，
+    # 首个标签也不在这里重复连接。
     # 监听 viewport 点击(行高亮) 和 txt_recv 尺寸变化(重定位按钮)
     app.txt_recv.viewport().installEventFilter(app)
     app.txt_recv.installEventFilter(app)

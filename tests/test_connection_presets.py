@@ -77,6 +77,7 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
+    from theme import chrome_for
     # Mirror test_workspace._patch_window_runtime: strip side effects from
     # CommTool construction (tray icon, real settings file, port scanner
     # thread, modal info dialogs) so this window cannot destabilize the
@@ -93,6 +94,13 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     ini = tmp_path / "cpreset.ini"
     w.settings = QSettings(str(ini), QSettings.IniFormat)
     w._connection_presets = []
+    name_dlg = w._build_connection_preset_name_dialog()
+    assert name_dlg.windowTitle() == w._t("cpreset_save_title")
+    assert name_dlg.textValue() == w._t("cpreset_new_name")
+    assert name_dlg.okButtonText() == "确定"
+    assert name_dlg.cancelButtonText() == "取消"
+    assert chrome_for(w._theme_id())["accent"] in name_dlg.styleSheet()
+    name_dlg.deleteLater()
     w.cb_proto.setCurrentText("TCP Client")
     w.ed_remote_ip.setText("10.0.0.8")
     w.ed_remote_port.setText("502")

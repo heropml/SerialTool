@@ -5,15 +5,42 @@ S-2 R42: CommTool thin wrappers for remaining build helpers.
 """
 import os
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QLineF, QSize
+from PyQt5.QtGui import QColor, QPainter, QPalette, QPen
 from PyQt5.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
     QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from theme import chrome_for
+from ui_icons import folder_icon
 from ui_tips import set_tooltip
 from widgets import IOSSwitch
+
+
+class ProjectMenuButton(QPushButton):
+    """Project button with a crisp painted chevron instead of a font glyph."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = self.palette().color(QPalette.ButtonText)
+        painter.setPen(QPen(QColor(color), 1.35, Qt.SolidLine,
+                            Qt.RoundCap, Qt.RoundJoin))
+        x = self.width() - 13
+        y = self.height() / 2.0 - 1
+        painter.drawLine(QLineF(x - 3, y, x, y + 3))
+        painter.drawLine(QLineF(x, y + 3, x + 3, y))
+        painter.end()
+
+
+def refresh_top_bar_icons(app):
+    """Refresh theme-colored, code-drawn icons in the top workbench bar."""
+    if not hasattr(app, "btn_project_menu"):
+        return
+    c = chrome_for(app._theme_id())
+    app.btn_project_menu.setIcon(folder_icon(c["text_sec"], 16))
 
 
 def build_protocol_template_panel(app):
@@ -143,18 +170,36 @@ def build_workbench_bar(app):
         app._workbench_buttons[key] = btn
     layout.addStretch(1)
 
+    # Sessions sit on the right of the bar (after stretch), away from workspace nav.
+    session_sep = QFrame()
+    session_sep.setObjectName("SessionSeparator")
+    session_sep.setFrameShape(QFrame.VLine)
+    layout.addWidget(session_sep)
+    app._session_sep = session_sep
+    if hasattr(app, "_build_session_tab_bar"):
+        session_strip = app._build_session_tab_bar()
+        session_strip.setObjectName("SessionTabBar")
+        app._session_tab_strip = session_strip
+        layout.addWidget(session_strip, 0)
+    else:
+        session_sep.hide()
+        app._session_tab_strip = None
+
     project_sep = QFrame()
     project_sep.setObjectName("WorkbenchSeparator")
     project_sep.setFrameShape(QFrame.VLine)
     layout.addWidget(project_sep)
-    app.btn_project_menu = QPushButton(app._t("project_menu"))
+    app.btn_project_menu = ProjectMenuButton(app._t("project_menu"))
     app.btn_project_menu.setObjectName("ProjectBtn")
     app.btn_project_menu.setCursor(Qt.PointingHandCursor)
     app.btn_project_menu.setFixedHeight(30)
     app.btn_project_menu.setMinimumWidth(76)
     app.btn_project_menu.setMaximumWidth(200)
+    app.btn_project_menu.setIconSize(QSize(16, 16))
+    app.btn_project_menu.setFocusPolicy(Qt.NoFocus)
     app.btn_project_menu.clicked.connect(app._show_project_menu)
     layout.addWidget(app.btn_project_menu)
+    refresh_top_bar_icons(app)
     app._update_project_label()
     return bar
 
