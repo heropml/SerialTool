@@ -1,5 +1,7 @@
+import re
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -29,6 +31,14 @@ class FindSpansTests(unittest.TestCase):
 
     def test_regex_catastrophic_backtracking_rejected(self):
         self.assertEqual(find_spans("a" * 30, r"(a+)+$"), [])
+
+    def test_regex_ignorecase_uses_guarded_compiler(self):
+        import triggers
+        with mock.patch("triggers.compile_regex",
+                        wraps=triggers.compile_regex) as compile_regex:
+            self.assertEqual(find_spans("A1", r"[a-z]\d", mode="regex"),
+                             [(0, 2)])
+        compile_regex.assert_called_once_with(r"[a-z]\d", re.IGNORECASE)
 
     def test_hex_mode_matches_spaced_or_compact(self):
         # 渲染文本 'AA BB CC DD' 里找 b'\xBB\xCC' → 'BB CC' 一段（跨空格）
@@ -76,6 +86,14 @@ class FindSpansTests(unittest.TestCase):
         # 时间戳/箭头行不以 8hex+双空格 开头 → 自动跳过，不被 hex 搜索误命中
         text = "[2026/08/02 12:00:00.000] ← \n00000000  11 22 |..|"
         self.assertEqual(find_spans(text, "000000", mode="hex", hexdump=True), [])
+
+    def test_hexdump_mode_with_crlf_endings(self):
+        # splitlines() 正确处理 \r\n，偏移不会因行尾残留 \r 而偏差
+        text = "00000000  00 01 |..|\r\n00000010  02 03 |..|\r\n"
+        spans = find_spans(text, "0001", mode="hex", hexdump=True)
+        self.assertEqual(len(spans), 1)
+        start, end = spans[0]
+        self.assertEqual(text[start:end], "00 01")
 
 
 

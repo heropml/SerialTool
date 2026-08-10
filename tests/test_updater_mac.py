@@ -53,6 +53,24 @@ def test_invalid_version_never_forces_an_update():
     assert is_newer("1.5.0", "1.5.0-rc1") is True
 
 
+def test_prerelease_suffix_ordering():
+    from updater import _parse_version
+    # rc2 > rc1 (same base, higher suffix number)
+    assert is_newer("1.5.0-rc2", "1.5.0-rc1") is True
+    # rc1 < rc2
+    assert is_newer("1.5.0-rc1", "1.5.0-rc2") is False
+    # beta < rc (alphabetical: "beta" < "rc")
+    assert is_newer("1.5.0-rc1", "1.5.0-beta1") is True
+    # release > any prerelease
+    assert is_newer("1.5.0", "1.5.0-rc99") is True
+    # alpha < beta
+    assert is_newer("1.5.0-beta1", "1.5.0-alpha2") is True
+    # suffix without number → number defaults to 0
+    assert is_newer("1.5.0-rc2", "1.5.0-rc") is True
+    # different base versions still compared by main version
+    assert is_newer("1.5.1-rc1", "1.5.0") is True
+
+
 def test_cleanup_removes_stale_exe_and_dmg_but_keeps_recent(tmp_path, monkeypatch):
     import os
     import time

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """触发告警单测：匹配语义 / 冷却 / 计数 / 收发范围 / 坏配置容错。"""
+import re
 import sys
 import time
 import unittest
@@ -70,6 +71,12 @@ class MatchTests(unittest.TestCase):
         # 常用而有界的分组、分支、重复仍可用，防护不能把正常正则一刀切。
         self.assertIsNotNone(tg.compile_regex(r"^(ERROR|WARN)-\d{1,3}$"))
         self.assertIsNotNone(tg.compile_regex(r"^(ab){2,4}$"))
+
+    def test_compile_regex_flags_share_the_same_safety_check(self):
+        self.assertIsNone(tg.compile_regex(r"(a+)+$", re.IGNORECASE))
+        rx = tg.compile_regex(r"^[a-z]+$", re.IGNORECASE)
+        self.assertIsNotNone(rx)
+        self.assertIsNotNone(rx.fullmatch("ABC"))
 
     def test_ambiguous_branch_in_a_bounded_repeat_is_rejected(self):
         """有界重复里的歧义分支同样指数级回溯。

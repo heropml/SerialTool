@@ -114,16 +114,16 @@ def parse_hex_pattern(text):
 _AMBIGUOUS_BOUND = 12
 
 
-def compile_regex(pattern):
+def compile_regex(pattern, flags=0):
     """正则 → 已编译对象；非法或明显会灾难性回溯的表达式返回 None。
 
     触发匹配运行在 GUI 收包线程，`(a+)+$` 这类嵌套不定重复可能指数级回溯、卡死窗口。
     读取语法树拒绝典型危险结构；普通分组、分支和小范围有限重复照常可用。
     """
     try:
-        compiled = re.compile(pattern)
-        tree = _re_parser.parse(pattern, 0)
-    except (re.error, RuntimeError, OverflowError):
+        compiled = re.compile(pattern, flags)
+        tree = _re_parser.parse(pattern, flags)
+    except (re.error, RuntimeError, OverflowError, TypeError, ValueError):
         return None
 
     repeat_ops = {_re_parser.MAX_REPEAT, _re_parser.MIN_REPEAT}

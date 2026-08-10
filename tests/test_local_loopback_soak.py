@@ -459,6 +459,8 @@ def test_udp_localhost_pair_closed_loop():
             timeout=3.0)
         assert sum(len(x) for x in rx_b) == sent_ab
         assert sum(len(x) for x in rx_a) == sent_ba
+        assert a.peer_endpoint() == ("127.0.0.1", pb)
+        assert b.peer_endpoint() == ("127.0.0.1", pa)
         _maybe_write_metrics({
             "case": "udp_localhost_pair",
             "ports": [pa, pb],
@@ -475,6 +477,20 @@ def test_udp_localhost_pair_closed_loop():
         except Exception:
             pass
         _pump(0.05)
+
+
+def test_udp_any_bind_resolves_concrete_export_endpoint():
+    from net_io import UdpConn
+
+    conn = UdpConn("0.0.0.0", 0, "127.0.0.1", 9)
+    try:
+        assert conn.open() is True
+        endpoint = conn.local_endpoint()
+        assert endpoint is not None
+        assert endpoint[0] == "127.0.0.1"
+        assert endpoint[1] > 0
+    finally:
+        conn.close()
 
 
 @pytest.mark.skipif(_soak_seconds() is None,

@@ -51,7 +51,8 @@ def set_translator(fn):
 def _parse_version(v):
     """'v1.0.5' / '1.0.5' / '1.0.5-rc1' -> 可比较元组；非法返回 None。
     主版本补齐到 3 段(避免 '1.0' 与 '1.0.0' 因长度不同误判)，末位附加预发布标记
-    (正式版 1 > 预发布 0)，于是 1.0.5 > 1.0.5-rc1，不再把 '-rc1' 整段截断成等同正式版。"""
+    (正式版 1 > 预发布 0)，于是 1.0.5 > 1.0.5-rc1，不再把 '-rc1' 整段截断成等同正式版。
+    预发布后缀拆为 (名称, 序号) 使 rc1 < rc2 可区分。"""
     try:
         s = str(v).strip().lstrip("vV")
         main, sep, pre = s.partition("-")  # 拆出主版本与可选预发布后缀(-rc1/-beta…)
@@ -62,7 +63,18 @@ def _parse_version(v):
         nums = [int(part) for part in parts]
         while len(nums) < 3:              # 补齐 3 段：1.0 → (1,0,0)
             nums.append(0)
-        nums.append(0 if pre else 1)      # 预发布排在同号正式版之前
+        if pre:
+            # 拆预发布后缀为 (名称, 序号)：rc1 → ("rc", 1)，beta → ("beta", 0)
+            m = __import__("re").match(r"([a-zA-Z]+)(\d+)?", pre.strip())
+            if m:
+                nums.append(0)           # 预发布 < 正式版
+                nums.append((m.group(1).lower(), int(m.group(2) or 0)))
+            else:
+                nums.append(0)
+                nums.append((pre.strip().lower(), 0))
+        else:
+            nums.append(1)               # 正式版 > 预发布
+            nums.append(("", 0))
         return tuple(nums)
     except (ValueError, AttributeError, TypeError):
         return None
