@@ -16,12 +16,15 @@ from PyQt5.QtGui import QFont
 if sys.platform == "darwin":          # macOS
     UI_FAMILY = "PingFang SC"         # 系统中文字体，西文字形也干净；Qt 能可靠按名解析
     MONO_FAMILY = "Menlo"             # 系统等宽字体
+    SYMBOL_FAMILY = "Apple Symbols"   # 代替 Windows 的 Segoe UI Symbol
 elif sys.platform == "win32":         # Windows —— 保持原观感不变
     UI_FAMILY = "Segoe UI"
     MONO_FAMILY = "Consolas"
+    SYMBOL_FAMILY = "Segoe UI Symbol"
 else:                                  # Linux / 其它
     UI_FAMILY = "Noto Sans CJK SC"
     MONO_FAMILY = "DejaVu Sans Mono"
+    SYMBOL_FAMILY = UI_FAMILY
 
 # 代码里出现过的、需要被重映射到本平台字体的 Windows 字体名
 _UI_ALIASES = ("Segoe UI", "Microsoft YaHei", "Microsoft YaHei UI", "SF Pro Display")
@@ -50,7 +53,8 @@ def localize_qss(qss: str) -> str:
     """
     if sys.platform == "win32":
         return qss
-    return (qss.replace("'Segoe UI'", f"'{UI_FAMILY}'")
+    return (qss.replace("'Segoe UI Symbol'", f"'{SYMBOL_FAMILY}'")
+               .replace("'Segoe UI'", f"'{UI_FAMILY}'")
                .replace("'Consolas'", f"'{MONO_FAMILY}'"))
 
 
@@ -65,5 +69,6 @@ def install_font_substitutions() -> None:
         return  # Windows 上这些字体本就存在，无需替换
     for alias in _UI_ALIASES:
         QFont.insertSubstitution(alias, UI_FAMILY)
+    QFont.insertSubstitution("Segoe UI Symbol", SYMBOL_FAMILY)
     for alias in _MONO_ALIASES:
         QFont.insertSubstitution(alias, MONO_FAMILY)

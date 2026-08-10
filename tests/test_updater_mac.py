@@ -37,9 +37,13 @@ def test_mac_download_candidates_filters_and_dedupes():
     ]) == ["https://github.com/x/a.dmg"]
 
 
-def test_active_manifest_does_not_advertise_missing_mac_asset():
+def test_active_manifest_advertises_published_mac_asset():
     manifest = json.loads((ROOT / "latest.json").read_text(encoding="utf-8"))
-    assert mac_download_candidates(manifest.get("url_mac")) == []
+    version = manifest["version"]
+    assert mac_download_candidates(manifest.get("url_mac")) == [
+        "https://github.com/heropml/SerialTool/releases/download/"
+        "comm-v%s/CommTool_v%s.dmg" % (version, version),
+    ]
 
 
 def test_invalid_version_never_forces_an_update():

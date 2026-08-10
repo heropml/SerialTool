@@ -641,6 +641,22 @@ class EventFilterLifetimeTests(unittest.TestCase):
         self.assertTrue(hasattr(w, "_mac_tooltip"))
         self.assertFalse(w.eventFilter(w, QEvent(QEvent.None_)))
 
+    def test_guard_handles_uninitialized_receive_view(self):
+        """macOS 应用级过滤器可在接收视图创建前收到事件，不能让 Python
+        AttributeError 穿透 PyQt 回调（Qt 会将其升级为 qFatal / SIGABRT）。"""
+        from PyQt5.QtCore import QEvent
+        w = _win()
+        session = w.active_session()
+        old_recv = session.txt_recv
+        old_fallback = w._txt_recv_fallback
+        try:
+            session.txt_recv = None
+            w._txt_recv_fallback = None
+            self.assertFalse(w.eventFilter(w, QEvent(QEvent.None_)))
+        finally:
+            session.txt_recv = old_recv
+            w._txt_recv_fallback = old_fallback
+
 
 class TriggerDialogTests(unittest.TestCase):
     def test_existing_rule_is_editable_on_open(self):

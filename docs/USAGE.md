@@ -47,6 +47,7 @@ Follow-ups on the v1.5.0 multi-session baseline:
 - **Reversible I/O Graph** — status-bar right-click or Workspace → I/O Graph opens the time-axis + four rate channels without wiping your series; closing / changing axis / clearing the parser restores the previous channel snapshot.
 - **Example projects** — `examples/*.ctproj` for Modbus RTU, AT modem, and dual-session presets (stable `preset_id`); the Windows installer ships `{app}/examples`, and the macOS DMG shows an `Examples` folder.
 - **Mac publish gate** — `url_mac` stays empty until the DMG is verified on GitHub; the updater prefers GitHub Mac candidates and explains when the asset is not ready yet.
+- **macOS startup hotfix** — guards the app-level Qt event filter before the receive view exists, preventing `None.viewport()` from becoming a PyQt `qFatal` / `SIGABRT`; maps `Segoe UI Symbol` to `Apple Symbols`.
 - **Display-options matrix** — the active tab follows live UI toggles; background tabs keep their own `display_opts` (timestamp / HEX / dump / ANSI / split / encoding / freeze / log). Freeze prefers `display_context["freeze_view"]`.
 - **Hardening** — Modbus slave CRC resync performance, master TCP transaction-id checks, truncated virtual-inject logs, search state reset on session switch.
 - **Tests** — 1359 passed / 11 skipped / 295 subtests.

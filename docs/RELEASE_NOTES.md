@@ -22,6 +22,11 @@
 - 更新器 Mac 候选优先 GitHub；`scripts/check_mac_asset.py` + `release_macos.sh` 门禁
 - 关于/更新对话框对未就绪的 Mac 资产给出明确说明
 
+### macOS 安装包热修复
+- 修复应用级 Qt 事件过滤器在接收视图尚未创建或会话销毁时访问 `None.viewport()`，避免 PyQt 回调异常升级为 `qFatal` / `SIGABRT`
+- 将 Windows 专用的 `Segoe UI Symbol` 映射为 macOS 的 `Apple Symbols`，消除启动时的字体回退告警
+- 11 项 macOS 针对性回归、Apple Silicon `.app` 启动冒烟、深度签名及 DMG 映像校验通过
+
 ### 多会话显示选项与协议加固
 - 活动标签显示开关以实时 UI 为准；后台标签仍用各自 `display_opts`（时间戳 / HEX / 转储 / ANSI / 分包 / 编码 / 冻结 / 日志）
 - 冻结视图优先读 `display_context["freeze_view"]`

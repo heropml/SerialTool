@@ -1384,14 +1384,19 @@ class CommTool(SessionHostMixin, QMainWindow):
                     self._update_hover_cursor(
                         self._edges_at(pos) if self.rect().contains(pos) else Qt.Edges())
 
-        if hasattr(self, "txt_recv"):
+        # SessionHostMixin 把 txt_recv 实现为属性：即使接收视图尚未创建（或当前
+        # session 正在销毁），hasattr(self, "txt_recv") 仍会为真，但取值是 None。
+        # macOS 的应用级 event filter 在 __init__ 期间就会收到事件，此时不能访问
+        # None.viewport()；PyQt 回调里的未处理异常会升级为 Qt qFatal 并终止进程。
+        recv_view = self.txt_recv
+        if recv_view is not None:
             # 接收区尺寸变化 → 重定位浮动「回到底部」按钮 + 查找栏
-            if obj is self.txt_recv and event.type() == QEvent.Resize:
+            if obj is recv_view and event.type() == QEvent.Resize:
                 self._reposition_to_bottom_btn()
                 if hasattr(self, "_search_bar"):
                     self._reposition_search_bar()
             # Ctrl+F 打开查找栏 / Esc 关闭（查找栏可见时）
-            elif obj is self.txt_recv and event.type() == QEvent.KeyPress:
+            elif obj is recv_view and event.type() == QEvent.KeyPress:
                 if (event.key() == Qt.Key_F
                         and event.modifiers() & Qt.ControlModifier):
                     self._open_search()
@@ -1400,7 +1405,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                         and self._search_bar.isVisible()):
                     self._close_search()
                     return True
-            elif obj is self.txt_recv.viewport():
+            elif obj is recv_view.viewport():
                 # 右键 → 自定义中文菜单（拦截并消费，阻止 Qt 默认菜单）
                 if event.type() == QEvent.ContextMenu:
                     self._recv_context_menu(event.globalPos())

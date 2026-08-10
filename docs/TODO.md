@@ -14,7 +14,7 @@
 | # | 严重度 | 位置 | 问题 | 建议修法 |
 |---|---|---|---|---|
 | 1 | 已修复 | `main_window.py` 终端模式路径 | 终端模式启用时会自动关闭并禁用冻结显示，避免开关状态与实际显示不一致 | — |
-| 2 | 已修复（有限导航） | `main_window.py` `_refresh_extra_selections` 搜索段 | 搜索高亮数量受 `_KW_MAX_SELECTIONS` 限制；计数以 `+` 标记仍有未展示匹配，避免大流拖慢渲染 | 若需完整导航，可后续改为按页加载匹配 |
+| 2 | 已修复（分页导航） | `main_window.py` `_refresh_extra_selections` 搜索段 | 搜索高亮数量受 `_KW_MAX_SELECTIONS` 限制；`find_spans(..., limit=)` 扫描期即止损；计数以 `+` 标记仍有未展示匹配 | DONE v1.5.x：`find_spans(limit,start)` 惰性分页 + ▲/▼ 跨页 |
 
 > 附注（非 bug，记备查）：ASCII 切帧只认 `\n` 作帧尾（规范是 CRLF）。主流设备 CRLF/LF 都能处理；纯 CR（无 LF）的非标设备会让帧累积到下一帧的 `\n`。极罕见。
 
@@ -42,7 +42,7 @@
 | ⭐ | **自动化序列：变量/上下文传递** | Postman collection runner | 上一步解析值带入下一步断言（读 SN→后续用） | 中 | `main_window._seq_*` 加上下文字典 + 模板替换 |
 | ⭐ | **自动化序列：CSV 数据驱动** | 测试序列器标配 | 每行参数跑一轮、多设备批测 | 中 | `_seq_*` 读 CSV → 模板替换每步字段 |
 | ⭐ | **自动化序列：JUnit XML 报告** | CI 友好 | 接 CI 流水线 | 低 | `_build_report_html/csv` (`dialogs.py`) 旁加 xml 生成 |
-| ⭐ | **统计补 pps + 包大小分布 + min/max/avg** | Wireshark I/O Graph | 排障带宽/异常包 | 中 | `_tick_rate` (1Hz 采样, `main_window.py` ~8900) 已有，扩字段 |
+| ⭐ | DONE **统计补 pps + 包大小分布 + min/max/avg** | Wireshark I/O Graph | 排障带宽/异常包 | 中 | 状态栏 + tooltip；见 P0-5 |
 
 ### Tier 2 — 中等投入（旗舰体验、单点突破）
 
@@ -52,7 +52,7 @@
 | ⭐ | **绘图/仪表盘数据持久化 + CSV 回放绘图** | PlotJuggler | 关掉不丢、离线回看 | 中 | `StructuredRecorder` CSV 思路复用 |
 | | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | 仅针对 TCP/UDP；串口继续使用 `.ctrec`，不强行套 PCAP |
 | | Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | 现 CSV 已防注入，加 openpyxl |
-| | 吞吐量随时间曲线（I/O Graph） | Wireshark | 带宽抖动可视化 | 中 | 扩 plot，按 `_rx_rate/_tx_rate` 历史 |
+| | DONE **吞吐量随时间曲线（I/O Graph）** | Wireshark | 带宽抖动可视化 | 中 | 波形图已订阅 `rx_Bps`/`tx_Bps`/`rx_pps`/`tx_pps`；状态栏右键 / 工作区「I/O Graph」一键打开时间轴+四通道预设 |
 | ⭐ | DONE **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机与真·TCP↔RTU 网关路由均已完成；网关见 `modbus_gateway.py`） |
 | ⭐ | DONE **更多 Modbus 功能码（FC08诊断/FC11/FC17/FC23读写多/FC22掩码写/FC43设备标识）** | ModbusSimulator(14码) | 覆盖诊断与一次读写 | 中 | `modbus_master/slave._exec` / `SUPPORTED_FUNCS` |
 | | DONE 位域(bitfield)解析 | 嵌入式协议工具 | 寄存器内部按位拆 | 中 | `device_resources.parse_bitfields` / `decode_bitfields` + 设备中心「位域」列 |
@@ -70,7 +70,7 @@
 | ⭐ | **Headless / CLI 模式**（无界面跑序列/脚本出报告） | socat/pyserial/商业 CLI | CI 里发收包+出 JUnit | 高（拆 GUI/逻辑） |
 | ⭐ | **插件式协议 dissector**（脚本化协议解码器） | Wireshark Lua / IO Ninja | 生态壁垒、用户自定义协议 | 高 |
 | | SSL/TLS 加密连接 | SecureCRT/MobaXterm | 加密调试通道 | 中-高（`QSslSocket` 包一层 `TcpClientConn`） |
-| | 工程模板库 / 示例工程仓库 | 工程化商业工具 | 开箱即用 | 中 |
+| | 部分 DONE **示例工程包**（examples/*.ctproj） | 工程化商业工具 | 开箱即用 | 中 | 已提供 Modbus/AT/双会话预设；完整模板库仍候补 |
 
 ### 明确不建议借鉴（设计取舍 / 偏离定位）
 - **完整 VT100 仿真**（光标/滚动区/备用屏）——刻意只做 SGR 着色，PuTTY 类终端已够用
@@ -135,7 +135,7 @@
 | 非目标 | 暂不做 | 会话树、拖拽分屏、标签拖出成窗 |
 
 **多会话 v1 已知限制**：
-- 多条循环发送：单一窗口定时器，仅对当前激活会话生效（切走会暂停）
+- 多条循环发送：单一窗口定时器 + 占用表项；循环运行中**禁止切换标签**（不是切走暂停），停止循环后才能切换（与每会话独立的周期发送不同）
 - 实时日志 / 周期发送：每会话独立（后台会话继续写日志、继续定时发）；两会话不可共用同一展开后的日志路径
 - 自动应答状态机 / Modbus / 序列等工具：窗口级占用，同窗仅一份；独占任务运行时禁止切走该会话
 - 后台标签 RX 只更新该会话收发区/统计/本会话日志，不喂入窗口级传输/脚本/序列/Modbus/录制引擎
