@@ -59,7 +59,7 @@ def to_utf16_spans(text, spans):
 _HEXDUMP_LINE = re.compile(r"^[0-9A-Fa-f]{8} {2}")
 
 
-def _find_hex_spans_in_hexdump(text, pat, flags):
+def _find_hex_spans_in_hexdump(text, pat, flags, limit=None):
     """在 hexdump 转储文本里只搜 hex 列（跳过每行开头的偏移列与结尾的 |ASCII| 列），
     返回全文字符区间。逐行处理：字节序列跨 hexdump 每行边界（如 per=16 换行处）不匹配，
     属可接受的极罕见取舍。"""
@@ -71,11 +71,14 @@ def _find_hex_spans_in_hexdump(text, pat, flags):
             if ascii_idx > 10:
                 for m in rx.finditer(line[10:ascii_idx]):   # 只搜 hex 列
                     out.append((off + 10 + m.start(), off + 10 + m.end()))
+                    if limit is not None and len(out) >= limit:
+                        return out
         off += len(line) + 1     # split 去掉了 "\n"，还原全文字符偏移
     return out
 
 
-def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False):
+def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False,
+               limit=None):
     """在 text 里找 term 的所有匹配，返回 [(start, end), ...]。
 
     mode ∈ ``plain / regex / hex``。空 term 或非法模式返回 []。
@@ -83,6 +86,13 @@ def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False):
     hexdump=True 仅对 hex 模式生效：逐行跳过偏移列/ASCII 列，只搜 hex 字节列。"""
     if not term:
         return []
+    if limit is not None:
+        try:
+            limit = max(0, int(limit))
+        except (TypeError, ValueError):
+            limit = 0
+        if limit == 0:
+            return []
     text = text or ""
     if mode == "regex":
         import triggers
@@ -91,7 +101,16 @@ def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False):
             return []
         if not case_sensitive:                   # 再按需加 IGNORECASE 重编译
             rx = re.compile(term, re.IGNORECASE)
-        return [(m.start(), m.end()) for m in rx.finditer(text)]
+        out = []
+        for m in rx.finditer(text):
+            # Empty matches cannot be highlighted/navigated and must not use
+            # up the result limit before a later real match (for example ^|b).
+            if m.end() <= m.start():
+                continue
+            out.append((m.start(), m.end()))
+            if limit is not None and len(out) >= limit:
+                break
+        return out
     if mode == "hex":
         bytes_ = parse_hex_term(term)
         if not bytes_:
@@ -99,9 +118,14 @@ def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False):
         pat = _hex_regex(bytes_)
         flags = 0 if case_sensitive else re.IGNORECASE
         if hexdump:
-            return _find_hex_spans_in_hexdump(text, pat, flags)
+            return _find_hex_spans_in_hexdump(text, pat, flags, limit=limit)
         rx = re.compile(pat, flags)
-        return [(m.start(), m.end()) for m in rx.finditer(text)]
+        out = []
+        for m in rx.finditer(text):
+            out.append((m.start(), m.end()))
+            if limit is not None and len(out) >= limit:
+                break
+        return out
     # plain
     if case_sensitive:
         needle, hay = term, text
@@ -114,5 +138,7 @@ def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False):
         if i < 0:
             break
         spans.append((i, i + len(needle)))
+        if limit is not None and len(spans) >= limit:
+            break
         start = i + len(needle)
     return spans

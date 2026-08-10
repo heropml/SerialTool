@@ -114,9 +114,26 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
 
     w.ed_remote_ip.setText("1.2.3.4")
     w.ed_remote_port.setText("1")
+    session = w.active_session()
+    session.conn_fields = {
+        "net_proto": "TCP Client",
+        "serial_dtr": True,
+        "serial_rts": True,
+        "auto_reconnect": True,
+    }
+    w._connection_presets[0].update({
+        "serial_dtr": False,
+        "serial_rts": False,
+        "auto_reconnect": False,
+    })
     assert w.apply_connection_preset(saved["id"]) is True
     assert w.ed_remote_ip.text() == "10.0.0.8"
     assert w.ed_remote_port.text() == "502"
+    assert session.conn_fields["net_proto"] == "TCP Client"
+    assert session.conn_fields["serial_dtr"] is False
+    assert session.conn_fields["serial_rts"] is False
+    assert session.conn_fields["auto_reconnect"] is False
+    assert w._session_auto_reconnect_enabled(w, session) is False
     assert w.settings.value("auto_reconnect", True, type=bool) is False
 
     class _Fake:

@@ -269,9 +269,11 @@ def build(app):
     app._ctrl_poll_timer = QTimer(app)
     app._ctrl_poll_timer.setInterval(200)
     app._ctrl_poll_timer.timeout.connect(app._poll_ctrl_lines)
-    app._reset_timer = None   # 复位脉冲的单次定时器（懒建、挂 self 上，关窗随之销毁，不会在已析构对象上回调）
+    # DTR reset-pulse timers are owned by Session so delayed release cannot
+    # jump to another tab after a session switch.
+    if not hasattr(app, "_reset_timer"):
+        app._reset_timer = None
 
     app._update_net_fields()
     app._rebuild_connection_preset_combo()
     return card
-

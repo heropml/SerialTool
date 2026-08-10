@@ -1047,6 +1047,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         o_project = (w._project_path, dict(w._project_meta),
                      w._project_name, w._project_baseline)
         o_confirm_switch = w._confirm_project_switch
+        o_reset_sessions = w._reset_sessions_runtime
         had_lock = hasattr(app, "_profile_lock")
         o_app_lock = getattr(app, "_profile_lock", None)
         o_send = w.txt_send.toPlainText()
@@ -1056,6 +1057,13 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             lambda p="": _os.path.join(d, "settings.ini" if not p else "settings-%s.ini" % p))
         try:
             w._confirm_project_switch = lambda: True
+            reset_depths = []
+
+            def _reset_sessions():
+                reset_depths.append(w._autosave_suppress)
+                return o_reset_sessions()
+
+            w._reset_sessions_runtime = _reset_sessions
             w._project_path = _os.path.join(d, "old.ctproj")
             w._project_name = "Old project"
             w._project_meta = {"connection_type": "Serial"}
@@ -1063,6 +1071,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.txt_send.setPlainText("LEAK-ME")           # P2：制造"上一配置"的残留值
             w._reconnect_timer.start(99999)              # P1：模拟排队中的自动重连
             w._switch_profile("3")
+            self.assertTrue(reset_depths and reset_depths[0] > 0)
             self.assertEqual(w._profile, "3")
             self.assertEqual(w._title_suffix, " (3)")
             self.assertTrue(w.windowTitle().endswith("(3)"))
@@ -1093,6 +1102,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             (w._project_path, w._project_meta,
              w._project_name, w._project_baseline) = o_project
             w._confirm_project_switch = o_confirm_switch
+            w._reset_sessions_runtime = o_reset_sessions
             w.txt_send.setPlainText(o_send)
             w._reconnect_timer.stop()
             w.setWindowTitle(w._t("app_title") + w._title_suffix)
@@ -2655,10 +2665,19 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         w = _win()
         o_hd, o_rules, o_flt = w._hexdump_on, w._active_rules, w.btn_filter_hl.isChecked()
         o_ts = w.sw_show_timestamp.isChecked()
+        o_ctx = getattr(w, "_display_context", None)
+        session = w.active_session() if hasattr(w, "active_session") else None
+        o_opts = dict(session.display_opts) if session is not None else None
         try:
+            # Shared CommTool singleton may carry a stale display snapshot / context
+            # from earlier tests; clear so this case exercises the live UI toggle.
+            w._display_context = None
             # ---- 场景 A：时间戳关，测多行 hexdump 逐行过滤 ----
             w._hexdump_on = True
             w.sw_show_timestamp.setChecked(False)
+            if session is not None:
+                session.display_opts = dict(session.display_opts or {},
+                                            show_timestamp=False)
             w.btn_filter_hl.setChecked(True)
             w._active_rules = lambda: [{"pattern": "ABC", "enabled": True, "scope": "both"}]
             w.txt_recv.clear(); w._reset_recv_state()
@@ -2676,6 +2695,9 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
             # ---- 场景 B：时间戳开，纯装饰 prefix 行不受过滤影响 ----
             w.sw_show_timestamp.setChecked(True)
+            if session is not None:
+                session.display_opts = dict(session.display_opts or {},
+                                            show_timestamp=True)
             w.txt_recv.clear(); w._reset_recv_state()
             # 同一数据；timestamp ON 时 _hexdump_block 在 dump 前插 \n → prefix 独占一个 block
             w._on_data_received_impl(bytes(range(16)) + b"ABC" + bytes(13))
@@ -2687,7 +2709,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                     vis["row2_abc"] = blk.isVisible()          # 含关键字 → 可见
                 if t.startswith("00000000"):
                     vis["row1"] = blk.isVisible()              # 无关键字 → 隐藏
-                if t.startswith("[") and "←" in t:
+                if t.startswith("[") and "\u2190" in t:
                     vis["ts"] = blk.isVisible()                # 纯装饰 prefix → 不受过滤
                 blk = blk.next()
             self.assertEqual(vis.get("row1"), False, "B-首行无关键字应隐藏")
@@ -2702,10 +2724,13 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
                         return b.isVisible()
                     b = b.next()
                 return None
-            self.assertTrue(_vis(lambda t: t.startswith("[") and "←" in t), "B-重扫后时间戳行仍应可见")
+            self.assertTrue(_vis(lambda t: t.startswith("[") and "\u2190" in t), "B-重扫后时间戳行仍应可见")
             self.assertTrue(_vis(lambda t: t.startswith("00000010") and "ABC" in t), "B-重扫后命中行仍可见")
             self.assertEqual(_vis(lambda t: t.startswith("00000000")), False, "B-重扫后无关键字行仍隐藏")
         finally:
+            w._display_context = o_ctx
+            if session is not None and o_opts is not None:
+                session.display_opts = o_opts
             w._hexdump_on = o_hd
             w._active_rules = o_rules
             w.btn_filter_hl.setChecked(o_flt)

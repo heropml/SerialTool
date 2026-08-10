@@ -207,6 +207,9 @@ def test_oneshot_scan_locked_guard_toasts_and_skips():
             self.scan_calls = []
             self._device_scan_state = {"busy": True}
 
+        def toast_io_exclusive_busy(self, exclude=()):
+            self.toast(self._t("io_exclusive_busy"), error=True)
+
         def _start_device_scan(self, *a, **k):
             self.scan_calls.append(1)
             return True

@@ -74,3 +74,42 @@ def save_fields(groups, active_index):
         else ""
     )
     return payload, name
+
+
+_MATCH_MODES = ("plain", "regex", "hex")
+
+
+def normalize_match(value):
+    """Legacy rules omit match -> plain (case-sensitive substring)."""
+    mode = str(value or "plain").strip().lower()
+    return mode if mode in _MATCH_MODES else "plain"
+
+
+def rule_matches(text, rule, hexdump=False):
+    """Return True if rule hits text; uses search_helper for regex/hex safety."""
+    import search_helper
+    pat = rule.get("pattern") or ""
+    if not pat:
+        return False
+    mode = normalize_match(rule.get("match"))
+    # Keep historical plain behavior: case-sensitive substring.
+    case_sensitive = True if mode == "plain" else False
+    spans = search_helper.find_spans(
+        text or "", pat, mode=mode, case_sensitive=case_sensitive,
+        hexdump=bool(hexdump), limit=1)
+    return any(end > start for start, end in spans)
+
+
+def rule_spans(text, rule, hexdump=False, limit=None):
+    """Return match spans for one keyword rule."""
+    import search_helper
+    pat = rule.get("pattern") or ""
+    if not pat:
+        return []
+    mode = normalize_match(rule.get("match"))
+    case_sensitive = True if mode == "plain" else False
+    spans = search_helper.find_spans(
+        text or "", pat, mode=mode, case_sensitive=case_sensitive,
+        hexdump=bool(hexdump), limit=limit)
+    spans = [(start, end) for start, end in spans if end > start]
+    return search_helper.to_utf16_spans(text or "", spans)

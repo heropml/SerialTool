@@ -7,7 +7,7 @@ import logging
 
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import (
-    QTabBar, QHBoxLayout, QPushButton, QWidget, QLabel, QTextEdit,
+    QTabBar, QHBoxLayout, QPushButton, QWidget, QLabel, QTextEdit, QDialog,
 )
 
 from session import Session, MAX_SESSIONS, format_default_title, new_session_id
@@ -61,6 +61,9 @@ _SESSION_PROXY_ATTRS = (
     "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
     "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
     "_ar_gap_timer",
+    "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
+    "_ar_generation",
+    "_modbus_buffers", "_reset_timer",
     "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
     "_log_file", "_log_file_path", "_log_opened_at",
     "_log_ends_with_nl", "_log_limit",
@@ -282,6 +285,7 @@ class SessionHostMixin:
         bar.setIconSize(QSize(12, 12))
         bar.currentChanged.connect(self._on_session_tab_changed)
         bar.tabCloseRequested.connect(self._on_session_tab_close)
+        bar.tabBarDoubleClicked.connect(self._on_session_tab_double_clicked)
         self._session_tab_bar = bar
         row.addWidget(bar, 1)
 
@@ -356,13 +360,30 @@ class SessionHostMixin:
                 continue
             label = s.tab_label()
             selected = i == bar.currentIndex()
+            reconnect_timer = getattr(s, "_reconnect_timer", None)
+            reconnecting = (not s.is_open() and reconnect_timer is not None
+                            and reconnect_timer.isActive())
             if s.is_open():
                 marker = status_dot_icon("#34C759", 12)
+            elif reconnecting:
+                marker = status_dot_icon(
+                    c.get("warning", "#FF9F0A"), 12)
             else:
                 marker = status_dot_icon(
                     "#FFFFFF" if selected else c["text_sec"], 12)
+            tip_lines = []
+            if s.has_custom_title():
+                tip_lines.append(s.connection_label())
+            tip_lines.append(self._session_tab_status_line(s, reconnecting))
+            if s.period_on:
+                tip_lines.append(self._t("session_tip_period_on"))
+            if s._log_file is not None:
+                tip_lines.append(self._t("session_tip_log_on"))
+            elif s.log_wanted:
+                tip_lines.append(self._t("session_tip_log_wanted"))
             bar.setTabText(i, label)
             bar.setTabIcon(i, marker)
+            bar.setTabToolTip(i, "\n".join(tip_lines))
             bar.setTabData(i, s.id)
             close_btn = bar.tabButton(i, QTabBar.RightSide)
             if close_btn is not None:
@@ -374,6 +395,14 @@ class SessionHostMixin:
                 close_btn.setCursor(Qt.PointingHandCursor)
                 close_btn.setFocusPolicy(Qt.NoFocus)
                 set_tooltip(close_btn, self._t("session_close"))
+
+
+    def _session_tab_status_line(self, session, reconnecting=False):
+        if session.is_open():
+            return self._t("session_tip_connected")
+        if reconnecting:
+            return self._t("session_tip_reconnecting")
+        return self._t("session_tip_closed")
 
     def _on_new_session_clicked(self):
         if len(self._sessions) >= MAX_SESSIONS:
@@ -399,6 +428,8 @@ class SessionHostMixin:
                 select_id=s.id if activate else self._active_session_id)
         if activate:
             self.switch_session(s.id)
+        if persist_data is None and hasattr(self, "_schedule_workspace_autosave"):
+            self._schedule_workspace_autosave()
         return s
 
     def _on_session_tab_changed(self, index):
@@ -410,6 +441,30 @@ class SessionHostMixin:
         sid = bar.tabData(index)
         if sid and sid != self._active_session_id:
             self.switch_session(sid)
+
+    def _on_session_tab_double_clicked(self, index):
+        """Rename session tab (optional custom_title). Empty clears rename."""
+        bar = self._session_tab_bar
+        if bar is None or index < 0:
+            return
+        sid = bar.tabData(index)
+        s = self.find_session(sid)
+        if s is None:
+            return
+        current = s.title if s.has_custom_title() else ""
+        builder = getattr(self, "_build_themed_text_input_dialog", None)
+        if not callable(builder):
+            return
+        dlg = builder(
+            self._t("session_rename"), self._t("session_rename_prompt"),
+            current)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        text = dlg.textValue()
+        s.set_custom_title(text)
+        self._refresh_session_tab_styles()
+        if hasattr(self, "_schedule_workspace_autosave"):
+            self._schedule_workspace_autosave()
 
     def _on_session_tab_close(self, index):
         bar = self._session_tab_bar
@@ -461,8 +516,8 @@ class SessionHostMixin:
     def _session_exclusive_busy(self):
         """Block leaving active session for exclusive I/O tasks only.
 
-        Periodic send pauses on switch. Multi-send stays exclusive because its
-        sequence/timer is window-owned and cannot safely migrate to another conn.
+        Periodic send is session-owned and continues after switching. Multi-send
+        stays exclusive because its timer is window-owned and cannot migrate.
         """
         return bool(self._io_task_busy(exclude=("periodic",)))
 
@@ -472,9 +527,10 @@ class SessionHostMixin:
         s = self.find_session(session_id)
         if s is None:
             return False
+        closing_index = self._sessions.index(s)
         # Busy: cannot close/switch away from the busy active session's work
         if s.id == self._active_session_id and self._session_exclusive_busy():
-            self.toast(self._t("session_busy"))
+            self.toast_session_busy()
             return False
         # Always confirm tab close (X); connected sessions warn about disconnect.
         if confirm and hasattr(self, "_confirm_dlg"):
@@ -502,7 +558,7 @@ class SessionHostMixin:
                 if not confirmed:
                     s._user_closing = previous_user_closing
                     if reconnect_active:
-                        s._reconnect_timer.start(max(0, reconnect_remaining))
+                        s._reconnect_timer.start(max(500, reconnect_remaining))
                     if period_active and s.period_on and s.is_open():
                         s._period_timer.start(period_interval)
             if not confirmed:
@@ -542,16 +598,21 @@ class SessionHostMixin:
                     widget.setParent(self)
         # Remove recv widget
         if self.recv_stack is not None and s.txt_recv is not None:
-            self.recv_stack.removeWidget(s.txt_recv)
-            s.txt_recv.deleteLater()
+            recv_widget = s.txt_recv
+            self.recv_stack.removeWidget(recv_widget)
+            if getattr(self, "_txt_recv_fallback", None) is recv_widget:
+                self._txt_recv_fallback = None
+            recv_widget.deleteLater()
             s.txt_recv = None
         self._sessions = [x for x in self._sessions if x is not s]
         self._dispose_session_timers(s)
         if was_active:
-            self._active_session_id = self._sessions[0].id
+            neighbor_index = min(closing_index, len(self._sessions) - 1)
+            self._active_session_id = self._sessions[neighbor_index].id
         self._rebuild_session_tabs(select_id=self._active_session_id)
         if was_active:
             target = self.active_session()
+            self._txt_recv_fallback = target.txt_recv
             self._load_session_into_ui(target)
             if self.recv_stack is not None and target.txt_recv is not None:
                 self.recv_stack.setCurrentWidget(target.txt_recv)
@@ -565,6 +626,8 @@ class SessionHostMixin:
                 self._search_idx = -1
                 if hasattr(self, "lbl_search_cnt"):
                     self.lbl_search_cnt.setText("")
+        if hasattr(self, "_schedule_workspace_autosave"):
+            self._schedule_workspace_autosave()
         return True
 
     def switch_session(self, session_id):
@@ -576,10 +639,18 @@ class SessionHostMixin:
         cur = self.active_session()
         # Block leaving a busy session
         if cur is not None and self._session_exclusive_busy():
-            self.toast(self._t("session_busy"))
+            self.toast_session_busy()
             # Snap tab bar back
             self._rebuild_session_tabs(select_id=self._active_session_id)
             return False
+        begin_autosave_pause = getattr(
+            self, "_begin_workspace_autosave_pause", None)
+        end_autosave_pause = getattr(
+            self, "_end_workspace_autosave_pause", None)
+        autosave_paused = (callable(begin_autosave_pause)
+                           and callable(end_autosave_pause))
+        if autosave_paused:
+            begin_autosave_pause()
         self._switching_session = True
         try:
             if cur is not None:
@@ -607,12 +678,16 @@ class SessionHostMixin:
                     self.lbl_search_cnt.setText("")
         finally:
             self._switching_session = False
+            if autosave_paused:
+                end_autosave_pause()
+        if hasattr(self, "_schedule_workspace_autosave"):
+            self._schedule_workspace_autosave()
         return True
 
     @staticmethod
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
-        for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer"):
+        for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer", "_reset_timer"):
             timer = getattr(session, name, None)
             if timer is None:
                 continue
@@ -646,6 +721,9 @@ class SessionHostMixin:
         if peer and session.id == self._active_session_id:
             with self._with_session(session):
                 self._on_udp_peer_changed(peer[0], peer[1])
+        sync_ctrl_poll = getattr(self, "_sync_ctrl_poll_for_active_session", None)
+        if callable(sync_ctrl_poll):
+            sync_ctrl_poll()
 
     def _reparent_recv_overlays(self, txt):
         """Move search bar / to-bottom button onto the active recv widget."""
@@ -760,14 +838,14 @@ class SessionHostMixin:
     def _load_session_into_ui(self, session):
         if session is None:
             return
+        previous_switching = self._switching_session
         self._switching_session = True
         try:
-            if session.conn_fields:
-                try:
-                    self._apply_connection_fields(session.conn_fields)
-                except (TypeError, ValueError):
-                    _log.debug("invalid persisted connection fields", exc_info=True)
-                    session.conn_fields = {}
+            try:
+                self._apply_connection_fields(session.conn_fields or {})
+            except (TypeError, ValueError):
+                _log.debug("invalid persisted connection fields", exc_info=True)
+                session.conn_fields = {}
             if hasattr(self, "txt_send"):
                 self.txt_send.setPlainText(session.send_draft or "")
             if hasattr(self, "ed_period_ms") and session.period_ms:
@@ -897,25 +975,6 @@ class SessionHostMixin:
                 if hasattr(self, "_set_log_path_label"):
                     self._set_log_path_label(
                         session._log_file_path if logging_on else "")
-                # Cold restore after restart: reopen if intent + path were persisted.
-                if (not logging_on and session.log_wanted and session.log_base_path
-                        and hasattr(self, "_open_log_segment")):
-                    from datetime import datetime
-                    now = datetime.now()
-                    try:
-                        real = self._log_segment_path(now, session=session)
-                        ok = bool(self._open_log_segment(
-                            real, when=now, session=session))
-                    except Exception:
-                        _log.debug("restore log failed", exc_info=True)
-                        ok = False
-                    self.sw_log_file.blockSignals(True)
-                    self.sw_log_file.setChecked(ok)
-                    self.sw_log_file.blockSignals(False)
-                    if not ok:
-                        session.log_wanted = False
-                    elif hasattr(self, "_set_log_path_label"):
-                        self._set_log_path_label(session._log_file_path or "")
             self._sync_open_button_from_session(session)
             if session.is_open():
                 self.set_settings_enabled(False)
@@ -923,7 +982,7 @@ class SessionHostMixin:
                 self.set_settings_enabled(True)
             self._update_net_fields()
         finally:
-            self._switching_session = False
+            self._switching_session = previous_switching
 
     def _sync_session_period_timer(self, session):
         """Start/stop one session's period timer from its own intent."""
@@ -1312,21 +1371,33 @@ class SessionHostMixin:
         self.settings.setValue("sessions_v1", json.dumps(payload, ensure_ascii=False))
         self.settings.setValue("active_session_id", self._active_session_id or "")
 
-    def _reset_sessions_runtime(self):
-        """Drop the current profile's sessions and create one closed default."""
+    def _install_fresh_session_runtime(self, retain_old=False):
+        """Replace current tabs with one closed session; optionally retain them for rollback."""
+        cur = self.active_session()
+        if retain_old and cur is not None:
+            self._save_ui_into_session(cur)
+        old_sessions = list(self._sessions)
+        old_active_id = self._active_session_id
+        old_intents = {
+            session.id: (bool(session.period_on), bool(session.log_wanted))
+            for session in old_sessions
+        } if retain_old else {}
         self._close_all_sessions(update_active_ui=True)
         for attr in ("_search_bar", "btn_to_bottom"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setParent(self)
         if self.recv_stack is not None:
-            for old in list(self._sessions):
+            for old in old_sessions:
                 if old.txt_recv is not None:
                     self.recv_stack.removeWidget(old.txt_recv)
-                    old.txt_recv.deleteLater()
-                    old.txt_recv = None
-        for old in self._sessions:
-            self._dispose_session_timers(old)
+                    if not retain_old:
+                        old.txt_recv.deleteLater()
+                        old.txt_recv = None
+        self._txt_recv_fallback = None
+        if not retain_old:
+            for old in old_sessions:
+                self._dispose_session_timers(old)
         self._sessions = []
         self._rx_context = None
         self._display_context = None
@@ -1334,10 +1405,84 @@ class SessionHostMixin:
         self._sessions.append(fresh)
         self._active_session_id = fresh.id
         self._ensure_session_recv_widget(fresh)
+        self._txt_recv_fallback = fresh.txt_recv
         if self.recv_stack is not None and fresh.txt_recv is not None:
             self.recv_stack.setCurrentWidget(fresh.txt_recv)
             self._reparent_recv_overlays(fresh.txt_recv)
         self._rebuild_session_tabs(select_id=fresh.id)
+        if retain_old:
+            return {
+                "sessions": old_sessions,
+                "active_id": old_active_id,
+                "intents": old_intents,
+            }
+        return None
+
+    def _reset_sessions_runtime(self):
+        """Drop the current profile's sessions and create one closed default."""
+        self._install_fresh_session_runtime(retain_old=False)
+
+    def _begin_sessions_runtime_reset(self):
+        """Install a fresh tab while retaining the closed old tabs for rollback."""
+        return self._install_fresh_session_runtime(retain_old=True)
+
+    def _commit_sessions_runtime_reset(self, snapshot):
+        """Permanently dispose tabs retained by _begin_sessions_runtime_reset."""
+        if not isinstance(snapshot, dict):
+            return
+        for old in snapshot.get("sessions", ()):
+            if old.txt_recv is not None:
+                if self.recv_stack is not None and self.recv_stack.indexOf(old.txt_recv) >= 0:
+                    self.recv_stack.removeWidget(old.txt_recv)
+                old.txt_recv.deleteLater()
+                old.txt_recv = None
+            self._dispose_session_timers(old)
+
+    def _rollback_sessions_runtime_reset(self, snapshot):
+        """Discard the temporary fresh tab and restore retained closed tabs/views."""
+        if not isinstance(snapshot, dict) or not snapshot.get("sessions"):
+            return
+        self._close_all_sessions(update_active_ui=True)
+        for attr in ("_search_bar", "btn_to_bottom"):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setParent(self)
+        for current in list(self._sessions):
+            if current.txt_recv is not None:
+                if self.recv_stack is not None:
+                    self.recv_stack.removeWidget(current.txt_recv)
+                current.txt_recv.deleteLater()
+                current.txt_recv = None
+            self._dispose_session_timers(current)
+
+        self._sessions = list(snapshot["sessions"])
+        intents = snapshot.get("intents", {})
+        for session in self._sessions:
+            period_on, log_wanted = intents.get(session.id, (False, False))
+            session.period_on = bool(period_on)
+            session.log_wanted = bool(log_wanted)
+        wanted = snapshot.get("active_id")
+        self._active_session_id = (
+            wanted if any(s.id == wanted for s in self._sessions)
+            else self._sessions[0].id)
+        self._rx_context = None
+        self._display_context = None
+        if self.recv_stack is not None:
+            for session in self._sessions:
+                if session.txt_recv is not None and self.recv_stack.indexOf(session.txt_recv) < 0:
+                    self.recv_stack.addWidget(session.txt_recv)
+        target = self.active_session()
+        self._txt_recv_fallback = target.txt_recv
+        self._rebuild_session_tabs(select_id=target.id)
+        self._load_session_into_ui(target)
+        if self.recv_stack is not None and target.txt_recv is not None:
+            self.recv_stack.setCurrentWidget(target.txt_recv)
+        self._restore_session_network_ui(target)
+        self._reparent_recv_overlays(target.txt_recv)
+        self._refresh_stat_labels()
+        self._sync_open_button_from_session(target)
+        if hasattr(self, "_schedule_keyword_rebuild"):
+            self._schedule_keyword_rebuild()
 
     def _restore_sessions_settings(self):
         """Replace tabs from settings without auto-opening connections."""
@@ -1389,6 +1534,10 @@ class SessionHostMixin:
         want = str(self.settings.value("active_session_id", "") or "")
         if want and self.find_session(want):
             self._active_session_id = want
+        restore_log = getattr(self, "_restore_session_log_intent", None)
+        if callable(restore_log):
+            for session in restored:
+                restore_log(session)
         self._rebuild_session_tabs(select_id=self._active_session_id)
         self._load_session_into_ui(self.active_session())
         if self.recv_stack is not None:
@@ -1408,6 +1557,8 @@ class SessionHostMixin:
                 s._ar_gap_timer.stop()
             if s._period_timer.isActive():
                 s._period_timer.stop()
+            if s._reset_timer.isActive():
+                s._reset_timer.stop()
             s.period_on = False
             with self._with_session(s):
                 update_ui = bool(update_active_ui and s.id == active_id)

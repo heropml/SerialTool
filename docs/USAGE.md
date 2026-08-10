@@ -9,6 +9,7 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.0](#whats-new-in-v150)
 - [Features](#features)
   - [Connection](#connection)
   - [Receiving Data](#receiving-data)
@@ -34,6 +35,21 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 1. Double-click the **CommTool** icon on your desktop
 2. In the left **Connection** panel, pick a **Type** (serial or network), fill in the serial parameters / network address & port, then click **Open Serial** / **Open** / **Connect** / **Listen** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
+
+---
+
+## What's New in v1.5.0
+
+**Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual), similar to Xshell-style tabs:
+
+- **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, and **periodic send** belong to the tab. Background tabs keep receiving, logging, and period-sending.
+- **Window-owned tools** — auto-reply / Modbus-slave configuration and RX processing belong to the window and apply to the active tab. Script Console, Sequence, file transfer, Modbus master, recording/replay, send DSL, device scan, and multi-send **cycle** share one occupancy table. Starting another exclusive task shows which task is already running; leaving the active tab is blocked while an exclusive task owns the link.
+- **Multi-send cycle** — the cycle timer is window-owned; tab switching is **blocked until the cycle stops** (unlike per-session periodic send).
+- **Tab cues** — green = connected, yellow = reconnect wait, gray = disconnected. Hover the tab for connection / periodic-send / live-log status. Double-click a tab to set an optional custom name (tooltip still shows the real port/address).
+- **Keyword highlight** — each rule can match as plain text, regex (ReDoS-safe), or HEX bytes (same engine as Find).
+- **Draft autosave** — connection/send edits debounce to disk after ~1.5s; period-send ticks do not write the config.
+- **Profiles / new window** — Help → New Window (or another profile) is still a separate workbench; multi-session is in-window concurrency, not a replacement for multi-window profiles.
+- **Limits** — no session tree, drag-to-split, or tear-off tabs in this release. Two sessions cannot share the same expanded live-log path.
 
 ---
 
@@ -782,7 +798,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.4.2`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.5.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

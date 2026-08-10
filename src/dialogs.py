@@ -1317,7 +1317,10 @@ class KeywordHighlightDialog(QDialog):
 
     _SCOPES = ("both", "rx", "tx")
 
-    def _add_row(self, pattern="", mode="bg", color="#FFD60A", enabled=True, scope="both"):
+    _MATCHES = ("plain", "regex", "hex")
+
+    def _add_row(self, pattern="", mode="bg", color="#FFD60A", enabled=True,
+                 scope="both", match="plain"):
         frame = QFrame()
         frame.setObjectName("MsRow")
         h = QHBoxLayout(frame)
@@ -1338,6 +1341,14 @@ class KeywordHighlightDialog(QDialog):
         cb_scope.setFixedWidth(74)
         cb_scope.currentIndexChanged.connect(self._commit)
         h.addWidget(cb_scope)
+        cb_match = QComboBox()
+        cb_match.addItems([self.app._t("kw_match_plain"), self.app._t("kw_match_regex"),
+                           self.app._t("kw_match_hex")])
+        match = match if match in self._MATCHES else "plain"
+        cb_match.setCurrentIndex(self._MATCHES.index(match))
+        cb_match.setFixedWidth(74)
+        cb_match.currentIndexChanged.connect(self._commit)
+        h.addWidget(cb_match)
         cb_mode = QComboBox()
         cb_mode.addItems([self.app._t("kw_mode_bg"), self.app._t("kw_mode_fg")])
         cb_mode.setCurrentIndex(0 if mode == "bg" else 1)
@@ -1349,7 +1360,8 @@ class KeywordHighlightDialog(QDialog):
         btn_color.setFixedSize(40, 24)
         btn_color.setCursor(Qt.PointingHandCursor)
         row = {"frame": frame, "chk": chk, "edit": edit, "scope": cb_scope,
-               "mode": cb_mode, "color": color, "colorbtn": btn_color}
+               "match": cb_match, "mode": cb_mode, "color": color,
+               "colorbtn": btn_color}
         self._paint_color_btn(row)
         btn_color.clicked.connect(lambda _=False, r=row: self._pick_color(r))
         h.addWidget(btn_color)
@@ -1466,6 +1478,7 @@ class KeywordHighlightDialog(QDialog):
             {"pattern": r["edit"].text(),
              "mode": "bg" if r["mode"].currentIndex() == 0 else "fg",
              "scope": self._SCOPES[r["scope"].currentIndex()],
+             "match": self._MATCHES[r["match"].currentIndex()],
              "color": r["color"],
              "enabled": r["chk"].isChecked()}
             for r in self._rows]
@@ -1494,7 +1507,7 @@ class KeywordHighlightDialog(QDialog):
         for r in rules:
             self._add_row(str(r.get("pattern", "")), r.get("mode", "bg"),
                           r.get("color", "#FFD60A"), bool(r.get("enabled", True)),
-                          r.get("scope", "both"))
+                          r.get("scope", "both"), r.get("match", "plain"))
         # 给新行的下拉弹出容器/颜色块刷主题色
         self.refresh_theme()
 
@@ -1526,6 +1539,13 @@ class KeywordHighlightDialog(QDialog):
             r["scope"].setItemText(2, self.app._t("kw_scope_tx"))
             r["scope"].setCurrentIndex(sidx)
             r["scope"].blockSignals(False)
+            midx = r["match"].currentIndex()
+            r["match"].blockSignals(True)
+            r["match"].setItemText(0, self.app._t("kw_match_plain"))
+            r["match"].setItemText(1, self.app._t("kw_match_regex"))
+            r["match"].setItemText(2, self.app._t("kw_match_hex"))
+            r["match"].setCurrentIndex(midx)
+            r["match"].blockSignals(False)
 
     def _apply_titlebar_theme(self):
         _set_win_titlebar_dark(self, self.app._theme().get("mode") == "dark")

@@ -155,7 +155,7 @@ class RecReplayDialog(QDialog):
             return
         if self.app._io_task_busy():
             # 录制本身不发数据，但与主动任务并行录到的流会混入对方流量，语义不清
-            self.app.toast(self.app._t("io_exclusive_busy"), error=True)
+            self.app.toast_io_exclusive_busy()
             return
         if not self.app._is_open():
             self.app.toast(self.app._t("net_not_open"), error=True)
@@ -232,7 +232,7 @@ class RecReplayDialog(QDialog):
             self.app.toast(self.app._t("rr_need_virtual"), error=True)
             return
         if self.app._io_task_busy():
-            self.app.toast(self.app._t("io_exclusive_busy"), error=True)
+            self.app.toast_io_exclusive_busy()
             return
         speed = _SPEEDS[max(0, self.cb_speed.currentIndex())][1]
         self._player = rec_replay.Player(self._events, inject, speed=speed,

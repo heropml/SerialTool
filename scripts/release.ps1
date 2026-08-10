@@ -202,7 +202,16 @@ if (-not (Test-Path $OnefilePath)) { throw "未生成 onefile：$OnefilePath" }
 # ---- 6. git 提交 ----
 Write-Host "⑥ git 提交…"
 git add -A
-git commit -m "release: $Tag" -m $Notes | Out-Host
+# docs/TODO.md 与本地工具残留不进发版提交（见 RELEASE.md §8.1）
+git reset -q -- docs/TODO.md 2>$null
+$CommitTitle = "release: $Tag — $Notes"
+$BodyFile = Join-Path $Root 'scripts\_release_commit_body.txt'
+if (Test-Path $BodyFile) {
+    git commit -m $CommitTitle -F $BodyFile | Out-Host
+    Remove-Item $BodyFile -Force -ErrorAction SilentlyContinue
+} else {
+    git commit -m $CommitTitle | Out-Host
+}
 
 if ($Local) {
     Write-Host "已指定 -Local：跳过 push 和 Release。" -ForegroundColor Yellow

@@ -376,7 +376,7 @@ class ScriptConsoleDialog(QDialog):
             self.app.toast(self.app._t("sc_max", n=_MAX_SCRIPTS), error=True)
             return
         if self.app._macro_start_blocked():
-            self.app.toast(self.app._t("io_exclusive_busy"), error=True)
+            self.app.toast_io_exclusive_busy(exclude=("macro",))
             return
         rec.start()
         self._set_rec_ui(True)
@@ -432,7 +432,10 @@ class ScriptConsoleDialog(QDialog):
         if self.is_running():
             return
         if self.app._script_start_blocked():
-            self._reject_run("io_exclusive_busy")
+            self._reject_run(
+                "io_exclusive_busy",
+                self.app._io_busy_message(
+                    "io_exclusive_busy", exclude=("script", "modbus")))
             return
         if not self.app._is_open():
             self._reject_run("net_not_open")
@@ -491,9 +494,9 @@ class ScriptConsoleDialog(QDialog):
         else:
             self.lbl_status.setStyleSheet("")
 
-    def _reject_run(self, key):
+    def _reject_run(self, key, msg=None):
         """用主题弹框说明启动失败，并在控制台内留下可追溯的错误文字。"""
-        msg = self.app._t(key)
+        msg = self.app._t(key) if msg is None else msg
         self.app.toast(msg, error=True)
         self._append_out("✕ " + msg)
         self._set_status(msg, error=True)

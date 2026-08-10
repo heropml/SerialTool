@@ -221,6 +221,39 @@ def test_close_session_confirm_pauses_and_cancel_restores_timers(
     w._close_all_sessions()
 
 
+def test_close_session_cancel_clamps_elapsed_reconnect_timer(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "close-confirm-reconnect-clamp")
+    s2 = w.add_session(activate=True)
+
+    class _ElapsedTimer:
+        def __init__(self):
+            self.starts = []
+
+        def isActive(self):
+            return True
+
+        def remainingTime(self):
+            return 0
+
+        def stop(self):
+            return None
+
+        def start(self, delay):
+            self.starts.append(delay)
+
+    real_timer = s2._reconnect_timer
+    fake_timer = _ElapsedTimer()
+    s2._reconnect_timer = fake_timer
+    monkeypatch.setattr(w, "_confirm_dlg", lambda *_a, **_k: False)
+    try:
+        assert w.close_session(s2.id) is False
+        assert fake_timer.starts == [500]
+    finally:
+        s2._reconnect_timer = real_timer
+    w._close_all_sessions()
+
+
 def test_close_session_cancel_reschedules_drop_during_confirm(
         monkeypatch, tmp_path):
     w = _window(monkeypatch, tmp_path, "close-confirm-drop")
@@ -249,24 +282,26 @@ def test_close_session_cancel_reschedules_drop_during_confirm(
 
 
 def test_close_middle_active_session_rebinds_receive_ui(monkeypatch, tmp_path):
-    """Closing the active middle tab must preserve overlays and select its owner."""
+    """Closing B from [A,B,C] selects C and clears deleted-view fallback."""
     from PyQt5 import sip
     from PyQt5.QtCore import QEvent
 
     w = _window(monkeypatch, tmp_path, "close-middle-active")
-    first = w.active_session()
+    w.active_session()
     middle = w.add_session(activate=True)
-    w.add_session(activate=False)
+    right = w.add_session(activate=False)
     overlays = (w._search_bar, w.btn_to_bottom)
     assert all(widget.parentWidget() is middle.txt_recv for widget in overlays)
+    w._txt_recv_fallback = middle.txt_recv
 
     assert w.close_session(middle.id)
     _APP.sendPostedEvents(None, QEvent.DeferredDelete)
 
-    assert w.active_session() is first
-    assert w.recv_stack.currentWidget() is first.txt_recv
+    assert w.active_session() is right
+    assert w.recv_stack.currentWidget() is right.txt_recv
+    assert w._txt_recv_fallback is right.txt_recv
     assert all(not sip.isdeleted(widget) for widget in overlays)
-    assert all(widget.parentWidget() is first.txt_recv for widget in overlays)
+    assert all(widget.parentWidget() is right.txt_recv for widget in overlays)
     w._open_search()
     w._close_all_sessions()
 
@@ -292,6 +327,75 @@ def test_busy_blocks_tab_switch(monkeypatch, tmp_path):
     assert w.active_session().id == s1.id
     w._close_all_sessions()
 
+
+
+def test_busy_toast_names_occupying_tasks(monkeypatch, tmp_path):
+    """Exclusive-busy and session-busy toasts list concrete task names."""
+    w = _window(monkeypatch, tmp_path, "busy-named")
+    toasts = []
+    monkeypatch.setattr(w, "toast", lambda msg, error=False: toasts.append((msg, error)))
+    w._replay_on = True
+    w.toast_io_exclusive_busy()
+    assert toasts and toasts[-1][1] is True
+    assert w._t("io_task_replay") in toasts[-1][0]
+    toasts.clear()
+    w.toast_session_busy()
+    assert toasts and w._t("io_task_replay") in toasts[-1][0]
+    # exclude hides the named task from the message
+    toasts.clear()
+    w.toast_io_exclusive_busy(exclude=("replay",))
+    assert toasts and w._t("io_task_unknown") in toasts[-1][0]
+    w._replay_on = False
+    w._close_all_sessions()
+
+
+def test_session_tab_reconnect_marker_and_tooltip(monkeypatch, tmp_path):
+    """Yellow reconnect dot + tooltip covers conn / period / log state."""
+    from PyQt5.QtGui import QColor
+    import main_window as main_window_module
+
+    w = _window(monkeypatch, tmp_path, "tab-reconnect-tip")
+    s = w.active_session()
+    s.period_on = True
+    s.log_wanted = True
+    monkeypatch.setattr(
+        main_window_module._reconnect_policy,
+        "plan_schedule",
+        lambda **_kwargs: {
+            "action": "schedule", "delay_ms": 60000,
+            "bump_attempts": False,
+        },
+    )
+    with w._with_session(s):
+        w._schedule_reconnect()
+    assert s._reconnect_timer.isActive()
+    bar = w._session_tab_bar
+    image = bar.tabIcon(0).pixmap(12, 12).toImage()
+    color = image.pixelColor(image.width() // 2, image.height() // 2)
+    assert color == QColor("#FF9F0A")
+    tip = bar.tabToolTip(0)
+    assert w._t("session_tip_reconnecting") in tip
+    assert w._t("session_tip_period_on") in tip
+    assert w._t("session_tip_log_wanted") in tip
+    with w._with_session(s):
+        w._cancel_reconnect()
+    assert not s._reconnect_timer.isActive()
+    assert w._t("session_tip_closed") in bar.tabToolTip(0)
+    w._close_all_sessions()
+
+
+def test_session_tab_style_tolerates_missing_reconnect_timer(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "tab-no-reconnect-timer")
+    session = w.active_session()
+    timer = session._reconnect_timer
+    session._reconnect_timer = None
+    try:
+        w._refresh_session_tab_styles()
+        assert w._t("session_tip_closed") in w._session_tab_bar.tabToolTip(0)
+    finally:
+        session._reconnect_timer = timer
+    w._close_all_sessions()
 
 def test_resource_conflict_serial_key(monkeypatch, tmp_path):
     """Two open sessions with same serial resource key are detected."""
@@ -888,18 +992,28 @@ def test_background_close_preserves_active_window_engines(monkeypatch, tmp_path)
     monkeypatch.setattr(w, "_stop_device_scan", lambda **_k: stopped.append(True))
     w._ar_gap_timer.start(60000)
     w._modbus_buffers = {"active-client": b"partial"}
+    w._ar_state = "active-state"
     w._mbm_guard_until = 123.5
     background._ar_buf = b"background-partial"
+    background._modbus_buffers = {"background-client": b"partial"}
+    background._ar_state = "background-state"
+    background._ar_sm_pending = object()
+    background._ar_sm_queue.append(b"queued")
 
     with w._with_session(background):
         w.close_conn(update_ui=False)
 
     assert background.conn is None
     assert background._ar_buf == b""
+    assert background._modbus_buffers == {}
+    assert background._ar_state == w._ar_sm.get("init", "")
+    assert background._ar_sm_pending is None
+    assert list(background._ar_sm_queue) == []
     assert active.is_open()
     assert stopped == []
     assert w._ar_gap_timer.isActive()
     assert w._modbus_buffers == {"active-client": b"partial"}
+    assert w._ar_state == "active-state"
     assert w._mbm_guard_until == 123.5
     w._ar_gap_timer.stop()
     w._close_all_sessions()
@@ -958,7 +1072,7 @@ def test_close_session_disposes_owned_timers(monkeypatch, tmp_path):
     w = _window(monkeypatch, tmp_path, "session-timer-dispose")
     closing = w.add_session(activate=False)
     timers = (closing._reconnect_timer, closing._ar_gap_timer,
-              closing._period_timer)
+              closing._period_timer, closing._reset_timer)
     assert w.close_session(closing.id)
     _APP.sendPostedEvents(None, QEvent.DeferredDelete)
     assert all(sip.isdeleted(timer) for timer in timers)
@@ -1101,9 +1215,18 @@ def test_import_config_replaces_stale_sessions(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "main_window.QFileDialog.getOpenFileName",
         lambda *_a, **_k: (str(imported), "JSON (*.json)"))
+    original_prepare = w._prepare_project_switch
+    suppress_depths = []
+
+    def _prepare():
+        suppress_depths.append(w._autosave_suppress)
+        return original_prepare()
+
+    monkeypatch.setattr(w, "_prepare_project_switch", _prepare)
 
     w.import_config()
 
+    assert suppress_depths and suppress_depths[0] > 0
     assert all(not conn.is_open for conn in old_conns)
     assert len(w.sessions()) == 1
     assert w.active_session() not in (first, second)
@@ -1125,6 +1248,7 @@ def test_project_switch_resets_all_sessions(monkeypatch, tmp_path):
     assert not c1.is_open and not c2.is_open
     assert len(w.sessions()) == 1
     assert w.active_session().conn is None
+    w._commit_project_switch_sessions()
     w._close_all_sessions()
 
 
@@ -1140,11 +1264,20 @@ def test_workspace_template_persists_reset_sessions_immediately(
     w.settings.sync()
     old_ids = {old_first.id, old_second.id}
     monkeypatch.setattr(w, "_confirm_dlg", lambda *_a, **_k: True)
+    original_prepare = w._prepare_project_switch
+    suppress_depths = []
+
+    def _prepare():
+        suppress_depths.append(w._autosave_suppress)
+        return original_prepare()
+
+    monkeypatch.setattr(w, "_prepare_project_switch", _prepare)
     index = w.cb_workspace_template.findData("modbus_rtu")
     w.cb_workspace_template.setCurrentIndex(index)
 
     w._apply_workspace_protocol_template()
 
+    assert suppress_depths and suppress_depths[0] > 0
     disk = QSettings(w.settings.fileName(), QSettings.IniFormat)
     payload = json.loads(str(disk.value("sessions_v1", "")))
     assert len(payload) == 1
@@ -1164,6 +1297,7 @@ def test_project_switch_cleans_window_engines_when_only_background_is_open(
     assert w._prepare_project_switch() is True
     assert background.conn is None
     assert stopped == [True]
+    w._commit_project_switch_sessions()
     w._close_all_sessions()
 
 
@@ -1308,6 +1442,109 @@ def test_period_and_log_intent_persist_roundtrip(monkeypatch, tmp_path):
     assert restored.log_base_path == "capture.log"
     assert restored.log_seg == 3
     assert restored._freeze_view is True
+    w._close_all_sessions()
+
+
+def test_cold_restore_is_the_only_ui_load_path_that_restores_log_intent(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "cold-log-restore")
+    payload = [{
+        "id": "cold-log", "title_index": 1,
+        "log_wanted": True, "log_base_path": str(tmp_path / "cold.log"),
+    }]
+    w.settings.setValue("sessions_v1", json.dumps(payload))
+    restored = []
+    monkeypatch.setattr(
+        w, "_restore_session_log_intent",
+        lambda session: restored.append(session.id) or True)
+
+    w._restore_sessions_settings()
+
+    assert restored == ["cold-log"]
+    w._close_all_sessions()
+
+
+def test_reconnect_policy_and_control_defaults_do_not_cross_sessions(
+        monkeypatch, tmp_path):
+    import main_window as main_window_module
+
+    w = _window(monkeypatch, tmp_path, "session-reconnect-policy")
+    w.settings.setValue("auto_reconnect", True)
+    w.settings.setValue("serial_dtr", True)
+    w.settings.setValue("serial_rts", True)
+    first = w.active_session()
+    first.conn_fields = {
+        "auto_reconnect": False, "serial_dtr": False, "serial_rts": False,
+    }
+    w._load_session_into_ui(first)
+    assert w.settings.value("auto_reconnect", True, type=bool) is True
+    assert w.settings.value("serial_dtr", True, type=bool) is True
+    assert w.settings.value("serial_rts", True, type=bool) is True
+    assert w._capture_connection_fields()["auto_reconnect"] is False
+    assert w._capture_connection_fields()["serial_dtr"] is False
+
+    second = w.add_session(activate=False)
+    second.conn_fields = {"auto_reconnect": True}
+    autos = []
+    monkeypatch.setattr(
+        main_window_module._reconnect_policy, "plan_schedule",
+        lambda **kwargs: autos.append(kwargs["auto_reconnect"])
+        or {"action": "skip"})
+    with w._with_session(first):
+        w._schedule_reconnect()
+    with w._with_session(second):
+        w._schedule_reconnect()
+    assert autos == [False, True]
+    w._close_all_sessions()
+
+
+def test_partial_session_connection_fields_use_global_control_defaults(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "partial-session-control-defaults")
+    w.settings.setValue("auto_reconnect", False)
+    w.settings.setValue("serial_dtr", False)
+    w.settings.setValue("serial_rts", False)
+    session = w.active_session()
+    session.conn_fields = {"net_proto": "Serial"}
+
+    w._load_session_into_ui(session)
+    captured = w._capture_connection_fields()
+
+    assert captured["auto_reconnect"] is False
+    assert captured["serial_dtr"] is False
+    assert captured["serial_rts"] is False
+    assert w._session_auto_reconnect_enabled(w, session) is False
+    w._save_ui_into_session(session)
+    assert session.conn_fields["auto_reconnect"] is False
+    assert session.conn_fields["serial_dtr"] is False
+    assert session.conn_fields["serial_rts"] is False
+    w._close_all_sessions()
+
+
+def test_empty_session_does_not_inherit_previous_connection_controls(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "empty-session-control-defaults")
+    w.settings.setValue("auto_reconnect", False)
+    w.settings.setValue("serial_dtr", False)
+    w.settings.setValue("serial_rts", False)
+    first = w.active_session()
+    first.conn_fields = {
+        "auto_reconnect": True, "serial_dtr": True, "serial_rts": True,
+    }
+    w._load_session_into_ui(first)
+    assert w._capture_connection_fields()["auto_reconnect"] is True
+
+    second = w.add_session(activate=True)
+    captured = w._capture_connection_fields()
+
+    assert second.conn_fields == {}
+    assert captured["auto_reconnect"] is False
+    assert captured["serial_dtr"] is False
+    assert captured["serial_rts"] is False
+    w._save_ui_into_session(second)
+    assert second.conn_fields["auto_reconnect"] is False
+    assert second.conn_fields["serial_dtr"] is False
+    assert second.conn_fields["serial_rts"] is False
     w._close_all_sessions()
 
 
@@ -1541,15 +1778,18 @@ def test_switch_away_while_disconnected_keeps_reconnect_intent(
     assert s1.period_on is True
     assert s1.log_wanted is True
 
-    # Visit the disconnected session then leave. Period switch is shown off
-    # while down; that must not clear period_on. Log may cold-restore on load.
+    # Visiting a disconnected session must not reopen its log. Only a real
+    # reconnect or process-start cold restore may consume the preserved intent.
     w.switch_session(s1.id)
     assert not s1.is_open()
+    assert s1._log_file is None
+    assert w.sw_log_file.isChecked() is False
     if hasattr(w, "sw_period"):
         assert w.sw_period.isChecked() is False
     w.switch_session(s2.id)
     assert s1.period_on is True
     assert s1.log_wanted is True
+    assert s1._log_file is None
 
     s1._reconnect_timer.stop()
     with w._with_session(s1):
@@ -1979,4 +2219,299 @@ def test_background_period_encoding_defaults_without_snapshot(
     w._period_send_for(s1.id)
     assert seen == ["\u4e2d".encode("utf-8")]
     s1.conn = None
+    w._close_all_sessions()
+
+
+def test_delayed_auto_reply_keeps_originating_session_after_switch(
+        monkeypatch, tmp_path):
+    """A delayed reply armed by A must never be transmitted through B."""
+    w = _window(monkeypatch, tmp_path, "ar-delayed-owner")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+    sent_from = []
+    w._ar_on = True
+    monkeypatch.setattr(w, "_is_open", lambda: True)
+    monkeypatch.setattr(
+        w, "_send_text",
+        lambda *_a, **_k: sent_from.append(w._session_ctx().id) or True)
+
+    with w._with_session(first):
+        w._ar_schedule_send(["AA"], False, 0, [], (20, 20))
+    assert w.switch_session(second.id)
+    # Opening/closing/resetting B must not invalidate A's delayed reply token.
+    w._ar_reset_state()
+    _pump(10, 0.01)
+
+    assert sent_from == [first.id]
+    w._close_all_sessions()
+
+
+def test_window_autoreply_reset_clears_every_session_runtime(
+        monkeypatch, tmp_path):
+    """A window-level AR config/reset cannot leave stale state in hidden tabs."""
+    w = _window(monkeypatch, tmp_path, "ar-global-reset")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+    w._ar_sm = {"on": True, "init": "fresh"}
+    for session, suffix in ((first, b"a"), (second, b"b")):
+        with w._with_session(session):
+            w._ar_buf = b"partial-" + suffix
+            w._modbus_buffers["peer"] = b"partial"
+            w._ar_state = "stale"
+            w._ar_sm_pending = object()
+            w._ar_sm_queue.append(b"queued")
+
+    w._ar_reset_all_buffers()
+    w._ar_reset_all_states()
+
+    for session in (first, second):
+        assert session._ar_buf == b""
+        assert session._modbus_buffers == {}
+        assert session._ar_state == "fresh"
+        assert session._ar_sm_pending is None
+        assert list(session._ar_sm_queue) == []
+    w._close_all_sessions()
+
+
+def test_tcp_server_modbus_partial_buffers_are_session_owned(
+        monkeypatch, tmp_path):
+    """Identical client keys in two server tabs cannot share a half frame."""
+    w = _window(monkeypatch, tmp_path, "modbus-buffer-owner")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+    key = "10.0.0.2:50000"
+    first._conn_proto = "TCP Server"
+    second._conn_proto = "TCP Server"
+    first.clients = [(key, key)]
+    second.clients = [(key, key)]
+
+    with w._with_session(first):
+        w._modbus_buffers[key] = b"partial-a"
+    assert w.switch_session(second.id)
+
+    with w._with_session(second):
+        assert w._modbus_buffers == {}
+    with w._with_session(first):
+        assert w._modbus_buffers == {key: b"partial-a"}
+    w._close_all_sessions()
+
+
+def test_background_serial_reconnect_applies_session_control_lines(
+        monkeypatch, tmp_path):
+    """A hidden serial reconnect still writes that tab's DTR/RTS values."""
+    w = _window(monkeypatch, tmp_path, "background-serial-lines")
+    background = w.add_session(activate=False)
+    background.conn_fields = {"serial_dtr": False, "serial_rts": True}
+    calls = []
+
+    class _SerialConn:
+        def __init__(self, *_args, **_kwargs):
+            self.is_open = False
+
+        def open(self):
+            self.is_open = True
+            return True
+
+        def set_dtr(self, value):
+            calls.append(("dtr", bool(value)))
+
+        def set_rts(self, value):
+            calls.append(("rts", bool(value)))
+
+        def deleteLater(self):
+            return None
+
+    monkeypatch.setattr("main_window.SerialConn", _SerialConn)
+    monkeypatch.setattr(w, "_bind_conn_signals", lambda *_a, **_k: None)
+    snapshot = {
+        "proto": "Serial",
+        "fields": {"port": "COM99", "baud": "9600"},
+        "serial_extras": ("8", "None", "1", "None"),
+        "conn_cfg": ("Serial", "COM99", 9600, "8", "None", "1", "None"),
+    }
+
+    with w._with_session(background):
+        w.open_conn(reconnect_snapshot=snapshot)
+
+    assert background.conn is not None and background.conn.is_open
+    assert calls == [("dtr", False), ("rts", True)]
+    background.conn = None
+    w._close_all_sessions()
+
+
+def test_switch_to_background_serial_starts_control_line_polling(
+        monkeypatch, tmp_path):
+    """A serial link opened while hidden must start CTS/DSR polling when selected."""
+    w = _window(monkeypatch, tmp_path, "background-serial-poll")
+    first = w.active_session()
+    first._conn_proto = "Virtual"
+    serial = w.add_session(activate=False)
+    reads = []
+
+    class _SerialConn:
+        is_open = True
+
+        def read_lines(self):
+            reads.append(True)
+            return {"cts": True, "dsr": False, "dcd": False, "ri": False}
+
+    serial.conn = _SerialConn()
+    serial._conn_proto = "Serial"
+    assert not w._ctrl_poll_timer.isActive()
+
+    assert w.switch_session(serial.id)
+    assert reads == [True]
+    assert w._ctrl_poll_timer.isActive()
+
+    assert w.switch_session(first.id)
+    assert not w._ctrl_poll_timer.isActive()
+    serial.conn = None
+    w._close_all_sessions()
+
+
+def test_serial_reset_pulse_releases_originating_session_after_switch(
+        monkeypatch, tmp_path):
+    """The delayed DTR release must stay bound to the tab that started it."""
+    w = _window(monkeypatch, tmp_path, "serial-reset-owner")
+    first = w.active_session()
+    second = w.add_session(activate=False)
+    calls = {first.id: [], second.id: []}
+
+    class _SerialConn:
+        is_open = True
+
+        def __init__(self, sid):
+            self.sid = sid
+
+        def set_dtr(self, value):
+            calls[self.sid].append(bool(value))
+
+        def read_lines(self):
+            return {"cts": False, "dsr": False, "dcd": False, "ri": False}
+
+    first.conn = _SerialConn(first.id)
+    first._conn_proto = "Serial"
+    first.conn_fields = {"serial_dtr": True, "serial_rts": False}
+    second.conn = _SerialConn(second.id)
+    second._conn_proto = "Serial"
+    second.conn_fields = {"serial_dtr": False, "serial_rts": False}
+
+    w._pulse_reset()
+    assert w.switch_session(second.id)
+    _pump(20, 0.01)
+
+    assert calls[first.id] == [False, True]
+    assert calls[second.id] == []
+    first.conn = None
+    second.conn = None
+    w._close_all_sessions()
+
+
+def test_template_apply_failure_restores_previous_session_runtime(
+        monkeypatch, tmp_path):
+    """A failed settings apply must restore the old tabs and receive views."""
+    w = _window(monkeypatch, tmp_path, "template-session-rollback")
+    first = w.active_session()
+    first.txt_recv.setPlainText("history-a")
+    second = w.add_session(activate=True)
+    second.txt_recv.setPlainText("history-b")
+    old_sessions = list(w.sessions())
+    old_active_id = w.active_session().id
+    old_widgets = [session.txt_recv for session in old_sessions]
+    real_apply = w._apply_loaded_settings
+    calls = {"count": 0}
+
+    def _fail_once():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("reload failed")
+        return real_apply()
+
+    monkeypatch.setattr(w, "_confirm_dlg", lambda *_a, **_k: True)
+    monkeypatch.setattr(w, "_apply_loaded_settings", _fail_once)
+    index = w.cb_workspace_template.findData("modbus_rtu")
+    w.cb_workspace_template.setCurrentIndex(index)
+
+    w._apply_workspace_protocol_template()
+
+    assert w.sessions() == old_sessions
+    assert w.active_session().id == old_active_id
+    assert [session.txt_recv for session in w.sessions()] == old_widgets
+    assert first.txt_recv.toPlainText() == "history-a"
+    assert second.txt_recv.toPlainText() == "history-b"
+    assert w.recv_stack.currentWidget() is second.txt_recv
+    w._close_all_sessions()
+
+
+def test_import_apply_failure_restores_previous_session_runtime(
+        monkeypatch, tmp_path):
+    """An import reload failure cannot discard the current tabs or histories."""
+    import json
+    from PyQt5.QtWidgets import QFileDialog
+
+    w = _window(monkeypatch, tmp_path, "import-session-rollback")
+    first = w.active_session()
+    first.txt_recv.setPlainText("history-a")
+    second = w.add_session(activate=True)
+    second.txt_recv.setPlainText("history-b")
+    old_sessions = list(w.sessions())
+    imported = tmp_path / "broken-apply.json"
+    imported.write_text(json.dumps({"settings": {"language": "en"}}), encoding="utf-8")
+    real_apply = w._apply_loaded_settings
+    calls = {"count": 0}
+    messages = []
+
+    def _fail_once():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("reload failed")
+        return real_apply()
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName",
+        lambda *_a, **_k: (str(imported), "JSON (*.json)"))
+    monkeypatch.setattr(w, "_apply_loaded_settings", _fail_once)
+    monkeypatch.setattr(
+        w, "_info_dlg", lambda title, body, **_k: messages.append((title, body)))
+
+    w.import_config()
+
+    assert w.sessions() == old_sessions
+    assert w.active_session() is second
+    assert first.txt_recv.toPlainText() == "history-a"
+    assert second.txt_recv.toPlainText() == "history-b"
+    assert len(messages) == 1
+    assert "reload failed" in messages[0][1]
+    w._close_all_sessions()
+
+
+def test_open_project_apply_failure_restores_previous_session_runtime(
+        monkeypatch, tmp_path):
+    """A project apply exception rolls the temporary session replacement back."""
+    import project_model
+
+    w = _window(monkeypatch, tmp_path, "project-session-rollback")
+    first = w.active_session()
+    w.txt_send.setPlainText("draft-a")
+    second = w.add_session(activate=True)
+    w.txt_send.setPlainText("draft-b")
+    old_sessions = list(w.sessions())
+    monkeypatch.setattr(
+        project_model, "load_project",
+        lambda _path: {"settings": {}, "resources": {}, "name": "x"})
+    monkeypatch.setattr(
+        project_model, "merge_project_resources",
+        lambda settings, resources: settings)
+    monkeypatch.setattr(
+        w, "_apply_project_settings",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("apply failed")))
+
+    assert w._open_project_path(
+        str(tmp_path / "fake.ctproj"), confirm=False,
+        notify=False, notify_errors=False) is False
+
+    assert w.sessions() == old_sessions
+    assert w.active_session() is second
+    assert first.send_draft == "draft-a"
+    assert second.send_draft == "draft-b"
     w._close_all_sessions()

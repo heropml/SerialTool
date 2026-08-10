@@ -754,7 +754,7 @@ class ModbusMasterDialog(QDialog):
     def _scan_locked(self):
         if getattr(self.app, "_device_scan_state", None) is None:
             return False
-        self.app.toast(self.app._t("io_exclusive_busy"), error=True)
+        self.app.toast_io_exclusive_busy()
         return True
 
     def _commit(self, _checked=False):

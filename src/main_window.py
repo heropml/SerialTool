@@ -238,6 +238,9 @@ from keyword_groups import (
     load_groups as _kw_load_groups,
     active_rules as _kw_active_rules,
     save_fields as _kw_save_fields,
+    normalize_match as _kw_normalize_match,
+    rule_spans as _kw_rule_spans,
+    rule_matches as _kw_rule_matches,
 )
 from project_templates import (
     workspace_tool_entries as _ws_tool_entries,
@@ -870,6 +873,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._capture_field_defaults()   # 记录字段构建默认值（在 _load_settings 覆盖前）供切换配置复位用
         self._load_settings()
         self._restore_sessions_settings()
+        self._autosave_suppress = 0
+        self._autosave_resume_pending = False
+        self._autosave_ready = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1500)
+        self._autosave_timer.timeout.connect(self._flush_workspace_autosave)
+        self._wire_workspace_autosave()
         self._setup_tray()
         # Ctrl+F 全局快捷键：从任何控件按下都打开搜索栏（_open_search 内会自动聚焦输入框）
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._open_search)
@@ -1672,7 +1683,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                  if r.get("enabled", True) and r.get("pattern")]
         # (pattern, QColor, is_bg, scope) — scope: 'both'/'rx'/'tx'
         parsed = [(r["pattern"], QColor(r.get("color", "#FFD60A")),
-                   r.get("mode", "bg") == "bg", r.get("scope", "both")) for r in rules]
+                   r.get("mode", "bg") == "bg", r.get("scope", "both"),
+                   _kw_normalize_match(r.get("match"))) for r in rules]
         # 过滤仅在有 启用+非空 规则时才生效，避免"开了过滤却没规则 → 全空"
         filter_on = self._filter_active()
         capped = False
@@ -1681,48 +1693,41 @@ class CommTool(SessionHostMixin, QMainWindow):
         while block.isValid():
             block_has_match = False
             if parsed and not capped:
-                it = block.begin()
-                while not it.atEnd():
-                    frag = it.fragment()
-                    role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
-                    if role in (ROLE_RX, ROLE_TX):
-                        ftext = frag.text()
-                        base = frag.position()
-                        for pat, col, is_bg, scope in parsed:
-                            if scope == "rx" and role != ROLE_RX:
+                hexdump_view = bool(getattr(self, "_hexdump_on", False))
+                for role, ftext, base in self._block_body_runs(block):
+                    for pat, col, is_bg, scope, match_mode in parsed:
+                        if scope == "rx" and role != ROLE_RX:
+                            continue
+                        if scope == "tx" and role != ROLE_TX:
+                            continue
+                        rule = {"pattern": pat, "match": match_mode}
+                        spans = _kw_rule_spans(
+                            ftext, rule, hexdump=hexdump_view,
+                            limit=max(0, self._KW_MAX_SELECTIONS - len(sels)))
+                        for a, b in spans:
+                            if a >= b:
                                 continue
-                            if scope == "tx" and role != ROLE_TX:
-                                continue
-                            start = 0
-                            while True:
-                                idx = ftext.find(pat, start)
-                                if idx < 0:
-                                    break
-                                block_has_match = True
-                                sel = QTextEdit.ExtraSelection()
-                                if is_bg:
-                                    sel.format.setBackground(col)
-                                    # 背景模式：按背景亮度自动配黑/白文字，避免深色主题下
-                                    # 浅色文字落在亮高亮底上看不清（亮底配黑字、暗底配白字）。
-                                    lum = (0.299 * col.red() + 0.587 * col.green()
-                                           + 0.114 * col.blue())
-                                    sel.format.setForeground(
-                                        QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
-                                else:
-                                    sel.format.setForeground(col)
-                                cur = QTextCursor(doc)
-                                cur.setPosition(base + idx)
-                                cur.setPosition(base + idx + len(pat), QTextCursor.KeepAnchor)
-                                cur.setKeepPositionOnInsert(True)   # 防末尾追加新数据时该选区延伸把新行也高亮
-                                sel.cursor = cur
-                                sels.append(sel)
-                                start = idx + len(pat)
-                                if len(sels) >= self._KW_MAX_SELECTIONS:
-                                    capped = True
-                                    break
-                            if capped:
+                            block_has_match = True
+                            sel = QTextEdit.ExtraSelection()
+                            if is_bg:
+                                sel.format.setBackground(col)
+                                lum = (0.299 * col.red() + 0.587 * col.green()
+                                       + 0.114 * col.blue())
+                                sel.format.setForeground(
+                                    QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
+                            else:
+                                sel.format.setForeground(col)
+                            cur = QTextCursor(doc)
+                            cur.setPosition(base + a)
+                            cur.setPosition(base + b, QTextCursor.KeepAnchor)
+                            cur.setKeepPositionOnInsert(True)
+                            sel.cursor = cur
+                            sels.append(sel)
+                            if len(sels) >= self._KW_MAX_SELECTIONS:
+                                capped = True
                                 break
-                    it += 1
+                        if capped:
+                            break
                     if capped:
                         break
             # 过滤：开启时只留命中行；关闭时所有行可见（恢复）。纯装饰块（时间戳/箭头行，无 RX/TX 正文，
@@ -1983,6 +1988,39 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._refresh_extra_selections()
 
     @staticmethod
+    def _block_body_runs(block):
+        """Contiguous RX/TX text runs, merging fragments split only by formatting."""
+        runs = []
+        run_role = None
+        run_text = []
+        run_base = 0
+
+        def flush():
+            nonlocal run_role, run_text, run_base
+            if run_role in (ROLE_RX, ROLE_TX) and run_text:
+                runs.append((run_role, "".join(run_text), run_base))
+            run_role = None
+            run_text = []
+            run_base = 0
+
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
+            if role not in (ROLE_RX, ROLE_TX):
+                flush()
+            elif role == run_role:
+                run_text.append(frag.text())
+            else:
+                flush()
+                run_role = role
+                run_base = frag.position()
+                run_text = [frag.text()]
+            it += 1
+        flush()
+        return runs
+
+    @staticmethod
     def _block_has_body_role(block) -> bool:
         """block 内是否有 RX/TX 正文片段（非纯时间戳/箭头等装饰）。"""
         it = block.begin()
@@ -2000,21 +2038,17 @@ class CommTool(SessionHostMixin, QMainWindow):
                  if r.get("enabled", True) and r.get("pattern")]
         if not rules:
             return False
-        it = block.begin()
-        while not it.atEnd():
-            frag = it.fragment()
-            role = frag.charFormat().property(ROLE_PROP) if frag.isValid() else None
-            if role in (ROLE_RX, ROLE_TX):
-                ftext = frag.text()
-                for r in rules:
-                    scope = r.get("scope", "both")
-                    if scope == "rx" and role != ROLE_RX:
-                        continue
-                    if scope == "tx" and role != ROLE_TX:
-                        continue
-                    if r["pattern"] in ftext:
-                        return True
-            it += 1
+        for role, ftext, _base in self._block_body_runs(block):
+            for r in rules:
+                scope = r.get("scope", "both")
+                if scope == "rx" and role != ROLE_RX:
+                    continue
+                if scope == "tx" and role != ROLE_TX:
+                    continue
+                if _kw_rule_matches(
+                        ftext, r,
+                        hexdump=bool(getattr(self, "_hexdump_on", False))):
+                    return True
         return False
 
     def _role_color(self, role, theme=None):
@@ -2538,8 +2572,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         except (ValueError, AttributeError):
             per = 16
         dump = self._format_hexdump(data, per)
-        return _view_leading_nl(dump, bool(self._display_value(
-            "show_timestamp", self.sw_show_timestamp.isChecked())))
+        show_ts = self._session_display_flag(
+            "show_timestamp",
+            self.sw_show_timestamp.isChecked()
+            if hasattr(self, "sw_show_timestamp") else False)
+        return _view_leading_nl(dump, bool(show_ts))
 
     def _on_hexdump_toggled(self, on):
         if on and getattr(self, "_numview_on", False):
@@ -2998,6 +3035,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             if ctx is cur:
                 self._select_serial_device(port)
                 self._apply_ctrl_lines_on_open()
+            else:
+                self._apply_ctrl_lines_to_conn(conn, session)
 
     def _on_vconn_loop_toggled(self, on):
         """回环开关：连接期间也能随时切（虚拟连接无需重开），并刷新状态栏文案。"""
@@ -3006,24 +3045,66 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.conn.loopback = bool(on)
             self._update_conn_status()
 
+    def _session_ctrl_line_values(self, session=None):
+        """Resolve DTR/RTS from one session, falling back to profile defaults."""
+        session = session or self._session_ctx() or self.active_session()
+        fields = getattr(session, "conn_fields", None)
+        fields = fields if isinstance(fields, dict) else {}
+        dtr = bool(fields.get(
+            "serial_dtr", self.settings.value("serial_dtr", True, type=bool)))
+        rts = bool(fields.get(
+            "serial_rts", self.settings.value("serial_rts", True, type=bool)))
+        return dtr, rts
+
+    def _apply_ctrl_lines_to_conn(self, conn, session=None):
+        """Apply one session's output control lines without touching active UI."""
+        dtr, rts = self._session_ctrl_line_values(session)
+        conn.set_dtr(dtr)
+        conn.set_rts(rts)
+        return dtr, rts
+
     def _apply_ctrl_lines_on_open(self):
         """串口连上：按持久化的 DTR/RTS 状态应用到硬件 + 同步开关 + 启动输入状态线轮询。"""
-        dtr = str(self.settings.value("serial_dtr", "true")).lower() in ("1", "true")
-        rts = str(self.settings.value("serial_rts", "true")).lower() in ("1", "true")
+        session = self._session_ctx() or self.active_session()
+        dtr, rts = self._apply_ctrl_lines_to_conn(self.conn, session)
         for sw, val in ((self.sw_dtr, dtr), (self.sw_rts, rts)):
             sw.blockSignals(True); sw.setChecked(val); sw.blockSignals(False)
-        self.conn.set_dtr(dtr)
-        self.conn.set_rts(rts)
         self._poll_ctrl_lines()
         self._ctrl_poll_timer.start()
 
+    def _sync_ctrl_poll_for_active_session(self):
+        """Start modem-line polling exactly when the active tab is an open serial link."""
+        timer = getattr(self, "_ctrl_poll_timer", None)
+        if timer is None:
+            return
+        session = self.active_session()
+        serial_open = bool(
+            session is not None
+            and session._conn_proto == PROTO_SERIAL
+            and session.conn is not None
+            and getattr(session.conn, "is_open", False))
+        if not serial_open:
+            timer.stop()
+            return
+        with self._with_session(session):
+            self._poll_ctrl_lines()
+        timer.start()
+
     def _on_dtr_toggled(self, on):
         self.settings.setValue("serial_dtr", bool(on))
+        session = self.active_session()
+        if session is not None:
+            session.conn_fields = dict(session.conn_fields or {})
+            session.conn_fields["serial_dtr"] = bool(on)
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
             self.conn.set_dtr(on)
 
     def _on_rts_toggled(self, on):
         self.settings.setValue("serial_rts", bool(on))
+        session = self.active_session()
+        if session is not None:
+            session.conn_fields = dict(session.conn_fields or {})
+            session.conn_fields["serial_rts"] = bool(on)
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
             self.conn.set_rts(on)
 
@@ -3079,18 +3160,28 @@ class CommTool(SessionHostMixin, QMainWindow):
         if self._conn_proto != PROTO_SERIAL or self.conn is None:
             return
         self.conn.set_dtr(False)
-        # 用挂在 self 上的单次定时器（非 QTimer.singleShot）：脉冲窗口内若关窗/断连，定时器随 self 销毁、
-        # 不会在已析构的 C++ 对象上回调；懒建复用。
-        if self._reset_timer is None:
-            self._reset_timer = QTimer(self)
-            self._reset_timer.setSingleShot(True)
-            self._reset_timer.timeout.connect(self._pulse_reset_release)
+        # Timer belongs to the owning Session.  Switching tabs during the pulse
+        # must still release this connection, never the newly active one.
         self._reset_timer.start(120)
 
+    def _pulse_reset_release_for(self, session_id):
+        session = self.find_session(session_id)
+        if session is None:
+            return
+        with self._with_session(session):
+            self._pulse_reset_release()
+
     def _pulse_reset_release(self):
-        # 恢复 DTR 到「开关当前状态」而非硬置高：脉冲 120ms 内用户若手动改过 DTR，开关已反映其意图，尊重之、不覆盖。
+        # The active owner can honor the live switch (including a change during
+        # the 120 ms pulse).  A hidden owner must use its captured session field,
+        # never the newly active tab's shared UI.
         if self._conn_proto == PROTO_SERIAL and self.conn is not None:
-            self.conn.set_dtr(self.sw_dtr.isChecked())
+            owner = self._session_ctx() or self.active_session()
+            if owner is self.active_session() and hasattr(self, "sw_dtr"):
+                dtr = bool(self.sw_dtr.isChecked())
+            else:
+                dtr, _rts = self._session_ctrl_line_values(owner)
+            self.conn.set_dtr(dtr)
 
     def _send_break(self):
         """发送 Break 信号（TX 线拉低约 250ms）：常用于唤醒 / 触发进入 bootloader 等。仅串口 + 已连接。"""
@@ -3185,6 +3276,17 @@ class CommTool(SessionHostMixin, QMainWindow):
         if was_engaged or in_retry:
             self._schedule_reconnect()
 
+    @staticmethod
+    def _session_auto_reconnect_enabled(host, session=None):
+        """Resolve reconnect policy from the owning session, then defaults."""
+        fields = getattr(session, "conn_fields", None)
+        if isinstance(fields, dict) and "auto_reconnect" in fields:
+            return bool(fields["auto_reconnect"])
+        settings = getattr(host, "settings", None)
+        if settings is not None:
+            return settings.value("auto_reconnect", True, type=bool)
+        return True
+
     def _schedule_reconnect(self):
         """Non-user disconnect -> queue reconnect; policy in reconnect_policy."""
         _ctx = getattr(self, "_session_ctx", None)
@@ -3199,10 +3301,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         user_closing = (bool(getattr(self, "_user_closing", False))
                         or bool(getattr(sess, "_user_closing", False)))
         visible = sess is None or sess is self.active_session()
-        settings = getattr(self, "settings", None)
-        auto = True
-        if settings is not None:
-            auto = settings.value("auto_reconnect", True, type=bool)
+        auto = CommTool._session_auto_reconnect_enabled(self, sess)
         plan = _reconnect_policy.plan_schedule(
             user_closing=user_closing,
             auto_reconnect=auto,
@@ -3219,6 +3318,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._serial_reconnect_cfg = None
             if plan.get("reset_attempts"):
                 self._reconnect_attempts = 0
+            refresh_tabs = getattr(self, "_refresh_session_tab_styles", None)
+            if callable(refresh_tabs):
+                refresh_tabs()
             return
         delay = int(plan.get("delay_ms") or 0)
         if plan.get("bump_attempts"):
@@ -3227,16 +3329,26 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.toast(self._t("auto_reconnect_in", sec=delay // 1000))
         if timer is not None:
             timer.start(delay)
+            refresh_tabs = getattr(self, "_refresh_session_tab_styles", None)
+            if callable(refresh_tabs):
+                refresh_tabs()
 
     def _cancel_reconnect(self):
         _ctx = getattr(self, "_session_ctx", None)
         sess = _ctx() if callable(_ctx) else None
+        stopped = False
         if sess is not None and getattr(sess, "_reconnect_timer", None) is not None:
             if sess._reconnect_timer.isActive():
                 sess._reconnect_timer.stop()
+                stopped = True
         fb = getattr(self, "_reconnect_timer_fallback", None)
         if fb is not None and fb.isActive():
             fb.stop()
+            stopped = True
+        if stopped:
+            refresh_tabs = getattr(self, "_refresh_session_tab_styles", None)
+            if callable(refresh_tabs):
+                refresh_tabs()
 
     def _try_reconnect(self):
         reconnect_cfg = self._serial_reconnect_cfg
@@ -3247,10 +3359,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         user_closing = (bool(getattr(self, "_user_closing", False))
                         or bool(getattr(sess, "_user_closing", False)))
         visible = sess is None or sess is self.active_session()
-        settings = getattr(self, "settings", None)
-        auto = True
-        if settings is not None:
-            auto = settings.value("auto_reconnect", True, type=bool)
+        auto = CommTool._session_auto_reconnect_enabled(self, sess)
         plan = _reconnect_policy.plan_try(
             conn_open=self.conn is not None,
             user_closing=user_closing,
@@ -3484,6 +3593,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._conn_engaged = False
         self._serial_device = None    # 已断开 → 清掉串口掉线检测的目标设备
         self._serial_missing_count = 0
+        if self._reset_timer.isActive():
+            self._reset_timer.stop()
         if conn:
             try:
                 conn.blockSignals(True)
@@ -3500,14 +3611,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._dsl_abort()
         self._flush_numview_carries()
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
-        if update_ui:
-            self._ar_reset_buf()
-        else:
-            if self._ar_gap_timer.isActive():
-                self._ar_gap_timer.stop()
-            self._ar_buf = b""
-        if self._session_ctx() is self.active_session():
-            self._ar_reset_state()
+        # AR framing/state are session-owned.  A background disconnect must
+        # clear its own pending reply and client buffers, while leaving the
+        # active session and the window-owned Modbus register bank untouched.
+        self._ar_reset_buf()
+        is_active_context = self._session_ctx() is self.active_session()
+        self._ar_reset_state(reset_modbus=is_active_context)
+        if is_active_context:
             self._mbm_restart()
         if hasattr(self, "_ctrl_poll_timer") and update_ui:
             self._ctrl_poll_timer.stop()
@@ -3849,19 +3959,20 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _session_display_flag(self, key, ui_default=False, session=None):
         """Boolean display option for the owning session (no active-tab leak).
 
-        Order: _display_context (explicit) -> session.display_opts ->
-        UI default only for the active/unknown session -> False in background.
+        Order: ``_display_context`` (explicit background/override) → live UI for
+        the active/unknown session → ``session.display_opts`` for background tabs
+        → False.  Active-tab toggles must not be masked by a stale snapshot that
+        was last saved on tab switch.
         """
         session = session or self._session_ctx()
         ctx = getattr(self, "_display_context", None)
         if ctx is not None and key in ctx:
             return bool(ctx[key])
-        if session is not None:
-            opts = session.display_opts or {}
-            if key in opts:
-                return bool(opts[key])
         if session is None or session is self.active_session():
             return bool(ui_default)
+        opts = session.display_opts or {}
+        if key in opts:
+            return bool(opts[key])
         return False
 
     def _get_codec(self) -> str:
@@ -4550,7 +4661,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._ms_stop_cycle()
             return
         if self._io_task_busy(exclude=("multi",)):
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy(exclude=("multi",))
             return
         seq = self._build_ms_cycle_seq()
         if not seq:
@@ -4682,11 +4793,8 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _script_begin(self, worker):
         """脚本开跑：接管收流 + 暂停自动应答/Modbus 主机（同自动化序列的独占策略）。"""
         self._script_worker = worker
-        self._ar_reset_buf()
-        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
-        self._ar_sm_pending = None
-        self._ar_sm_queue.clear()
-        self._ar_sm_draining = False
+        self._ar_reset_all_buffers()
+        self._ar_cancel_all_pending()
         self._mbm_sched.stop()
         # 已发出的 Modbus 请求无法撤回。取消其运行态并隔离一个完整响应超时窗；期间脚本
         # send 会等待、RX 会丢弃，避免旧响应污染脚本。结束后 _mbm_tick 按原开关恢复。
@@ -4739,8 +4847,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             or self._dsl_running()
         )
 
-    def _io_task_busy(self, exclude=()) -> bool:
-        """Shared active I/O task table used by exclusive start gates."""
+    _IO_BUSY_ORDER = (
+        "script", "sequence", "transfer", "macro", "periodic", "multi",
+        "modbus", "replay", "dsl", "recording", "device_scan",
+    )
+
+    def _io_busy_states(self, exclude=()):
+        """Named exclusive I/O occupancy table (same keys as toast labels)."""
         excluded = set(exclude)
         states = {
             "script": self._script_active(),
@@ -4756,25 +4869,52 @@ class CommTool(SessionHostMixin, QMainWindow):
             "recording": bool(getattr(getattr(self, "_recorder", None), "recording", False)),
             "device_scan": getattr(self, "_device_scan_state", None) is not None,
         }
-        return any(active for name, active in states.items() if name not in excluded)
+        return {name: active for name, active in states.items()
+                if name not in excluded}
+
+    def _io_task_busy(self, exclude=()) -> bool:
+        """Shared active I/O task table used by exclusive start gates."""
+        return any(self._io_busy_states(exclude).values())
+
+    def _io_busy_task_names(self, exclude=()):
+        states = self._io_busy_states(exclude)
+        return [name for name in self._IO_BUSY_ORDER if states.get(name)]
+
+    def _io_busy_message(self, key, exclude=()):
+        """Localize exclusive-busy toast with the concrete occupying task list."""
+        names = self._io_busy_task_names(exclude=exclude)
+        if names:
+            sep = self._t("io_task_sep")
+            tasks = sep.join(self._t("io_task_%s" % name) for name in names)
+        else:
+            tasks = self._t("io_task_unknown")
+        return self._t(key, tasks=tasks)
+
+    def toast_io_exclusive_busy(self, exclude=()):
+        self.toast(self._io_busy_message("io_exclusive_busy", exclude=exclude),
+                   error=True)
+
+    def toast_session_busy(self, exclude=("periodic",)):
+        self.toast(self._io_busy_message("session_busy", exclude=exclude),
+                   error=True)
 
     def _manual_send_blocked(self, allow_running_dsl=False) -> bool:
-        """脚本/序列/文件传输会独占回包，期间禁止其它手动发送插入线路。"""
+        """Block manual TX while exclusive engines own the RX stream."""
         return bool(self._script_active() or self._seq_running() or self._xfer_active()
                     or self._mbm_inflight is not None or self._mbm_active()
                     or self._replay_on
                     or (self._dsl_running() and not allow_running_dsl))
 
     def _script_start_blocked(self) -> bool:
-        """脚本不能与其它会主动收发/独占收流的任务并发。Modbus 主机由 _script_begin 暂停。"""
+        """Script cannot start alongside other exclusive RX/TX tasks; Modbus is paused by _script_begin."""
         return self._io_task_busy(exclude=("script", "modbus"))
 
     def _macro_start_blocked(self) -> bool:
-        """宏只录用户交互；已有后台/独占任务时拒绝开始，避免把自动流量误归因。"""
+        """Reject macro start while other exclusive tasks are active."""
         return self._io_task_busy(exclude=("macro",))
 
     def _xfer_start_blocked(self) -> bool:
-        """文件传输不能与其它主动任务或 Modbus 在途流量并发。"""
+        """File transfer cannot overlap other active TX tasks or in-flight Modbus."""
         return self._io_task_busy(exclude=("transfer",))
 
     def _macro_record_tx(self, data):
@@ -5326,8 +5466,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             "ser_parity": self.cb_parity.currentText(),
             "ser_stopbits": self.cb_stopbits.currentText(),
             "ser_flow": self.cb_flow.currentText(),
-            "serial_dtr": self.settings.value("serial_dtr", True, type=bool),
-            "serial_rts": self.settings.value("serial_rts", True, type=bool),
+            "serial_dtr": self.sw_dtr.isChecked() if hasattr(self, "sw_dtr")
+            else self.settings.value("serial_dtr", True, type=bool),
+            "serial_rts": self.sw_rts.isChecked() if hasattr(self, "sw_rts")
+            else self.settings.value("serial_rts", True, type=bool),
             "net_local_ip": self.cb_local_ip.currentText(),
             "net_local_port": self.ed_local_port.text(),
             "net_remote_ip": self.ed_remote_ip.text(),
@@ -5335,11 +5477,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             "net_use_remote": self.sw_udp_remote.isChecked(),
             "net_group_addr": self.ed_group.text(),
             "vconn_loopback": self.sw_vconn_loop.isChecked(),
-            "auto_reconnect": self.settings.value("auto_reconnect", True, type=bool),
+            "auto_reconnect": getattr(
+                self, "_ui_auto_reconnect",
+                self.settings.value("auto_reconnect", True, type=bool)),
         })
 
-    def _apply_connection_fields(self, fields):
-        fields = connection_presets.capture_fields(fields)
+    def _apply_connection_fields(self, fields, persist_defaults=False):
+        provided_fields = fields if isinstance(fields, dict) else {}
+        fields = connection_presets.capture_fields(provided_fields)
         proto = fields.get("net_proto") or PROTO_SERIAL
         idx = self.cb_proto.findText(proto)
         if idx >= 0:
@@ -5384,13 +5529,34 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.sw_udp_remote.setChecked(bool(fields.get("net_use_remote")), animate=False)
         self.ed_group.setText(str(fields.get("net_group_addr") or ""))
         self.sw_vconn_loop.setChecked(bool(fields.get("vconn_loopback")), animate=False)
-        self.settings.setValue("serial_dtr", bool(fields.get("serial_dtr", True)))
-        self.settings.setValue("serial_rts", bool(fields.get("serial_rts", True)))
-        self.settings.setValue("auto_reconnect", bool(fields.get("auto_reconnect", True)))
+        dtr = bool(fields["serial_dtr"] if "serial_dtr" in provided_fields else
+                   self.settings.value("serial_dtr", True, type=bool))
+        rts = bool(fields["serial_rts"] if "serial_rts" in provided_fields else
+                   self.settings.value("serial_rts", True, type=bool))
+        auto_reconnect = bool(
+            fields["auto_reconnect"] if "auto_reconnect" in provided_fields else
+            self.settings.value("auto_reconnect", True, type=bool))
+        self._ui_auto_reconnect = auto_reconnect
+        if persist_defaults:
+            self.settings.setValue("serial_dtr", dtr)
+            self.settings.setValue("serial_rts", rts)
+            self.settings.setValue("auto_reconnect", auto_reconnect)
+            session = self.active_session()
+            if session is not None:
+                session.conn_fields = dict(session.conn_fields or {})
+                session.conn_fields.update({
+                    "serial_dtr": dtr,
+                    "serial_rts": rts,
+                    "auto_reconnect": auto_reconnect,
+                })
         if hasattr(self, "sw_dtr"):
-            self.sw_dtr.setChecked(bool(fields.get("serial_dtr", True)), animate=False)
+            self.sw_dtr.blockSignals(True)
+            self.sw_dtr.setChecked(dtr, animate=False)
+            self.sw_dtr.blockSignals(False)
         if hasattr(self, "sw_rts"):
-            self.sw_rts.setChecked(bool(fields.get("serial_rts", True)), animate=False)
+            self.sw_rts.blockSignals(True)
+            self.sw_rts.setChecked(rts, animate=False)
+            self.sw_rts.blockSignals(False)
         self._update_net_fields()
 
     def apply_connection_preset(self, preset_id):
@@ -5406,7 +5572,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         if preset is None:
             self.toast(self._t("cpreset_missing"), error=True)
             return False
-        self._apply_connection_fields(preset)
+        self._apply_connection_fields(preset, persist_defaults=True)
         self._connection_presets, touched = connection_presets.touch_last_used(
             self._connection_presets, preset_id)
         if touched is not None:
@@ -5419,12 +5585,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.toast(self._t("cpreset_applied", name=preset.get("name", "")))
         return True
 
-    def _build_connection_preset_name_dialog(self, default_name=""):
+    def _build_themed_text_input_dialog(self, title, prompt, default_text=""):
+        """Build the shared themed single-line text prompt."""
         from PyQt5.QtWidgets import QInputDialog
         dlg = QInputDialog(self)
-        dlg.setWindowTitle(self._t("cpreset_save_title"))
-        dlg.setLabelText(self._t("cpreset_save_prompt"))
-        dlg.setTextValue(default_name or self._t("cpreset_new_name"))
+        dlg.setWindowTitle(title)
+        dlg.setLabelText(prompt)
+        dlg.setTextValue(default_text or "")
         dlg.setOkButtonText(
             {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK"))
         dlg.setCancelButtonText(
@@ -5476,6 +5643,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             0, lambda d=dlg: _set_win_titlebar_dark(
                 d, self._theme().get("mode") == "dark"))
         return dlg
+
+    def _build_connection_preset_name_dialog(self, default_name=""):
+        return self._build_themed_text_input_dialog(
+            self._t("cpreset_save_title"), self._t("cpreset_save_prompt"),
+            default_name or self._t("cpreset_new_name"))
 
     def save_connection_preset_from_ui(self, prompt_name=True, name=None, note=""):
         fields = self._capture_connection_fields()
@@ -5603,7 +5775,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         """设置自动应答总开关；开启时关闭 Modbus 主机，保证状态与实际执行一致。"""
         enabled = bool(enabled)
         if enabled and getattr(self, "_device_scan_state", None) is not None:
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy()
             if getattr(self, "_ar_dlg", None) is not None:
                 cb = self._ar_dlg.cb_enable
                 cb.blockSignals(True)
@@ -5614,8 +5786,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._set_mbm_enabled(False)
         self._ar_on = enabled
         self.settings.setValue("autoreply_on", enabled)
-        self._ar_reset_buf()        # 切换瞬间清掉半截组装缓冲，防止下次开启时旧字节被新规则吃
-        self._ar_reset_state()      # C8：总开关切换=重新开始 → 状态机回到初始
+        # 配置和总开关是窗口级的；清理必须覆盖每个会话，否则未激活标签
+        # 会在下次切回时继续消费旧配置下的半包/状态。
+        self._ar_reset_all_buffers()
+        self._ar_reset_all_states()
         self._update_autoreply_btn()
         if getattr(self, "_ar_dlg", None) is not None:
             cb = self._ar_dlg.cb_enable
@@ -5629,7 +5803,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         enabled = bool(enabled)
         scan_state = getattr(self, "_device_scan_state", None)
         if scan_state is not None:
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy()
             if getattr(self, "_mbm_dlg", None) is not None:
                 cb = self._mbm_dlg.cb_enable
                 cb.blockSignals(True)
@@ -5637,7 +5811,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 cb.blockSignals(False)
             return
         if enabled and (self.send_timer.isActive() or self._ms_cycle_timer.isActive()):
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy()
             if getattr(self, "_mbm_dlg", None) is not None:
                 cb = self._mbm_dlg.cb_enable
                 cb.blockSignals(True)
@@ -5687,11 +5861,8 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _seq_pause_peer_engines(self):
         """序列独占收发流前，作废自动应答旧任务并暂停 Modbus 主机调度；不改持久化开关。"""
         # 已排程的延迟/多段自动应答会在未来直接发送，必须用代际使其永久失效。
-        self._ar_reset_buf()
-        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
-        self._ar_sm_pending = None
-        self._ar_sm_queue.clear()
-        self._ar_sm_draining = False
+        self._ar_reset_all_buffers()
+        self._ar_cancel_all_pending()
 
         # 已经发出的 Modbus 请求无法撤回。若有在途请求，保留 inflight/超时 timer，并在序列第 0 步
         # 启动前继续把收包交给 Modbus；正常响应后立即释放，RTU 超时则沿用原有迟到响应隔离窗口。
@@ -5865,7 +6036,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         if self._seq_on:
             return
         if self._io_task_busy(exclude=("sequence", "modbus")):
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy(exclude=("sequence", "modbus"))
             return
         if not self._is_open():
             self.toast(self._t("seq_need_conn"), error=True)
@@ -6219,7 +6390,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         _last 命中统计与冷却时刻），但落盘时剥离 —— 不污染配置、也不导出到会话配置档。"""
         self._ar_rules = rules
         self._recompute_ar_gap()
-        self._ar_reset_buf()       # 规则变了 → 旧的整包缓冲不能再被新规则吃，必须清掉
+        self._ar_reset_all_buffers()  # 全局规则变更不能留下后台标签的旧半包
         clean = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rules]
         self.settings.setValue("autoreply_rules", json.dumps(clean, ensure_ascii=False))
         self.settings.sync()
@@ -6236,7 +6407,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _set_ar_frame(self, cfg):
         """对话框编辑「帧头+长度组帧」后回调：更新内存配置 + 清缓冲 + 落盘（运行态 _header 不存）。"""
         self._ar_frame = self._norm_ar_frame(cfg)
-        self._ar_reset_buf()       # 组帧方式变了 → 旧缓冲不能再被新配置吃，必须清
+        self._ar_reset_all_buffers()  # 全局组帧方式变更需清每个标签的旧缓冲
         save = {k: v for k, v in self._ar_frame.items() if not k.startswith("_")}
         self.settings.setValue("autoreply_frame", json.dumps(save, ensure_ascii=False))
         self.settings.sync()
@@ -6274,7 +6445,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         changed = (not getattr(self, "_ar_sm", None)) or new != self._ar_sm
         self._ar_sm = new
         if changed:
-            self._ar_reset_state()      # on/init 变了 → 回到（新）初始状态
+            self._ar_reset_all_states()  # on/init 是全局配置，所有会话回到新初态
         self.settings.setValue("autoreply_sm", json.dumps(self._ar_sm, ensure_ascii=False))
         self.settings.sync()
 
@@ -6307,7 +6478,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         （与 _set_ar_frame / _set_ar_rules 一致），否则切模式时旧字节会被新框架误解析。"""
         self._ar_modbus = self._norm_ar_modbus(cfg)
         self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)
-        self._ar_reset_buf()
+        self._ar_reset_all_buffers()
         self.settings.setValue("autoreply_modbus", json.dumps(self._ar_modbus, ensure_ascii=False))
         self.settings.sync()
 
@@ -6379,7 +6550,45 @@ class CommTool(SessionHostMixin, QMainWindow):
         if hasattr(self, "_modbus_buffers"):
             self._modbus_buffers.clear()
 
-    def _ar_reset_state(self):
+    def _ar_sessions_snapshot(self):
+        """Return concrete sessions for a window-wide auto-reply runtime reset."""
+        getter = getattr(self, "sessions", None)
+        sessions = list(getter()) if callable(getter) else []
+        if sessions:
+            return sessions
+        current = self._session_ctx() or self.active_session()
+        return [current] if current is not None else []
+
+    def _ar_reset_all_buffers(self):
+        """Clear framing/client buffers and gap timers in every session."""
+        sessions = self._ar_sessions_snapshot()
+        if not sessions:
+            self._ar_reset_buf()
+            return
+        for session in sessions:
+            with self._with_session(session):
+                self._ar_reset_buf()
+
+    def _ar_cancel_all_pending(self):
+        """Cancel delayed/state-machine work in every session without changing state."""
+        for session in self._ar_sessions_snapshot():
+            with self._with_session(session):
+                self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+                self._ar_sm_pending = None
+                self._ar_sm_queue.clear()
+                self._ar_sm_draining = False
+
+    def _ar_reset_all_states(self):
+        """Reset every session to the current window-level state-machine config."""
+        sessions = self._ar_sessions_snapshot()
+        if not sessions:
+            self._ar_reset_state()
+            return
+        for session in sessions:
+            with self._with_session(session):
+                self._ar_reset_state()
+
+    def _ar_reset_state(self, reset_modbus=True):
         """复位状态机当前状态到 init + 代际 +1（作废在途延迟应答）。仅会话级复位时调：连接开/关、
         总开关切、状态机 on/init 变化、配置导入、手动重置。【不】绑定到编辑规则/组帧/故障等高频
         去抖落盘路径，否则进行中的握手会因改了个无关字段就被静默拉回初始。"""
@@ -6391,7 +6600,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ar_sm_draining = False
         self._ar_generation = getattr(self, "_ar_generation", 0) + 1
         # B4：会话级复位 → Modbus 从机运行态寄存器回到配置初值（清掉主机本次会话的写入）
-        if hasattr(self, "_ar_modbus"):
+        if reset_modbus and hasattr(self, "_ar_modbus"):
             self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)
 
     @staticmethod
@@ -6765,12 +6974,27 @@ class CommTool(SessionHostMixin, QMainWindow):
         异常时不调，避免「应答没出去但状态已推进」导致主机重试被新状态拒绝。
         on_done：整条多段应答结束或中止后调一次，用于释放 pending 并继续消费状态帧 FIFO。"""
         gen = getattr(self, "_ar_generation", 0)   # C8：捕获本次会话代际；reset_state/重连会 +1
+        owner = self._session_ctx() or self.active_session()
+        owner_id = owner.id if owner is not None else None
         dmin, dmax = delay if isinstance(delay, (tuple, list)) else (delay, delay)
 
         def _delay():
             return random.randint(dmin, dmax) if dmax > dmin else dmin
 
         def fire(idx):
+            target = self.find_session(owner_id) if owner_id is not None else owner
+            if owner_id is not None and target is None:
+                if on_done is not None:
+                    with self._with_session(owner):
+                        on_done()
+                return
+            if target is not None:
+                with self._with_session(target):
+                    fire_owned(idx)
+            else:
+                fire_owned(idx)
+
+        def fire_owned(idx):
             def finish_batch():
                 if on_done is not None:
                     on_done()
@@ -7083,27 +7307,51 @@ class CommTool(SessionHostMixin, QMainWindow):
         data = self._ar_gate_imported_scripts(data)   # B5：含脚本则征求同意，拒绝则清空脚本
         data = self._gate_imported_script_lib(data)   # 脚本控制台库同理：导入的脚本会在本机执行
         data = self._gate_imported_trigger_actions(data)  # 触发器外部动作同样在本机执行
-        if not self._prepare_project_switch():
-            return
-        s = self.settings
-        n = 0
-        for k, v in data.items():
-            if k in self._CFG_KEYS:
-                s.setValue(k, _cfg_coerce_value(v))
-                n += 1
-        s.sync()
-        # 立刻刷 UI（兜底 try：刷新失败不该让导入本身报错）
-        try:
-            self._apply_loaded_settings()
-        except Exception:
-            _log.debug("import_config failed", exc_info=True)
-        # Persist the new single-tab snapshot now so a crash before normal
-        # shutdown cannot resurrect the imported profile's stale sessions_v1.
-        self._save_sessions_settings()
-        self.settings.sync()
+        old = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
+        with self._workspace_autosave_paused():
+            if not self._prepare_project_switch():
+                return
+            s = self.settings
+            n = 0
+            try:
+                for k, v in data.items():
+                    if k in self._CFG_KEYS:
+                        s.setValue(k, _cfg_coerce_value(v))
+                        n += 1
+                s.sync()
+                self._apply_loaded_settings()
+            except Exception as exc:
+                _log.debug("import_config failed", exc_info=True)
+                for key, value in old.items():
+                    if value is None:
+                        s.remove(key)
+                    else:
+                        s.setValue(key, value)
+                s.sync()
+                try:
+                    self._apply_loaded_settings()
+                except Exception:
+                    _log.debug("import_config rollback failed", exc_info=True)
+                self._rollback_project_switch_sessions()
+                self._info_dlg(
+                    self._t("cfg_import"),
+                    self._t("cfg_import_fail", err=str(exc)), is_error=True)
+                return
+            self._commit_project_switch_sessions()
+            # Persist the new single-tab snapshot now so a crash before normal
+            # shutdown cannot resurrect the imported profile's stale sessions_v1.
+            self._save_sessions_settings()
+            self.settings.sync()
         self._info_dlg(self._t("cfg_import"), self._t("cfg_imported", n=n))
 
     def _apply_loaded_settings(self):
+        self._begin_workspace_autosave_pause()
+        try:
+            self._apply_loaded_settings_unlocked()
+        finally:
+            self._end_workspace_autosave_pause()
+
+    def _apply_loaded_settings_unlocked(self):
         """从 self.settings 重新载入并即时刷新全部 UI/缓存。
         「导入配置」(import_config) 与「切换配置」(_switch_profile) 共用——两者都是把 self.settings
         的内容整体应用到当前窗口。含语言/显示/主题/连接字段/自动应答/Modbus主机/多条发送/关键字/
@@ -7123,8 +7371,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
         self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入（下方 _ar_reset_state 重建运行态）
         self._recompute_ar_gap()
-        self._ar_reset_buf()
-        self._ar_reset_state()                # C8：导入新配置=新会话 → 状态机复位到（新）初始状态
+        self._ar_reset_all_buffers()
+        self._ar_reset_all_states()           # C8：导入新配置=新会话 → 所有会话复位到新初态
         # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
         # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
         self._ar_on = s.value("autoreply_on", False, type=bool)
@@ -7270,7 +7518,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.toast(self._t("net_not_open"), error=True)
             return False
         if self._io_task_busy(exclude=("periodic",)):
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy(exclude=("periodic",))
             return False
         sends, delay = send_dsl.describe(ops)
         self._dsl_ops = ops
@@ -7967,7 +8215,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.toast(self._t("device_scan_need_connection"), error=True)
             return False
         if self._io_task_busy(exclude=("modbus",)):
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy(exclude=("modbus",))
             return False
         normalized = [modbus_master.normalize_poll(rule) for rule in rules]
         if not normalized:
@@ -8305,7 +8553,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         )
         if pre == "exclusive":
             if notify_ui:
-                self.toast(self._t("io_exclusive_busy"), error=True)
+                self.toast_io_exclusive_busy()
             return False
         if pre == "not_open":
             if notify_ui:
@@ -8556,7 +8804,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _terminal_send(self, data, echo=None):
         """终端模式即时发送一小段字节（按键）。统计计数；本地回显开则把回显文本写进数据区。"""
         if self._manual_send_blocked():
-            self.toast(self._t("io_exclusive_busy"), error=True)
+            self.toast_io_exclusive_busy()
             return
         if not self._is_open():
             return
@@ -8794,7 +9042,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 session.period_ms = self.ed_period_ms.text()
         if on:
             if self._io_task_busy(exclude=("periodic",)):
-                self.toast(self._t("io_exclusive_busy"), error=True)
+                self.toast_io_exclusive_busy(exclude=("periodic",))
                 self.sw_period.setChecked(False)
                 return
             try:
@@ -8822,6 +9070,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                     session._period_timer.stop()
             else:
                 self.send_timer.stop()
+        self._refresh_session_tab_styles()
 
 
     def on_wrap_toggled(self, on):
@@ -9010,9 +9259,11 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.sw_log_file.blockSignals(True)
                 self.sw_log_file.setChecked(False)
                 self.sw_log_file.blockSignals(False)
+                self._refresh_session_tab_styles()
                 return
             if session is None:
                 self.sw_log_file.setChecked(False)
+                self._refresh_session_tab_styles()
                 return
             session.log_base_path = path
             session.log_seg = 0
@@ -9029,6 +9280,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             if session is not None:
                 session.log_wanted = False
             self._close_log_file(session=session)
+        self._refresh_session_tab_styles()
 
     def _close_log_file(self, session=None, toast=True):
         session = self._log_session(session)
@@ -9089,8 +9341,11 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _timestamp_prefix(self, direction):
         """Build block prefix from ts_format + direction arrow; off -> ''."""
-        if not bool(self._display_value(
-                "show_timestamp", self.sw_show_timestamp.isChecked())):
+        show_ts = self._session_display_flag(
+            "show_timestamp",
+            self.sw_show_timestamp.isChecked()
+            if hasattr(self, "sw_show_timestamp") else False)
+        if not show_ts:
             return ""
         fmt = self._display_value(
             "ts_format", getattr(self, "_ts_format", "absolute"))
@@ -9575,6 +9830,99 @@ class CommTool(SessionHostMixin, QMainWindow):
             _log.debug("_settings_file failed", exc_info=True)
         return new_ini
 
+
+    def _begin_workspace_autosave_pause(self):
+        depth = int(getattr(self, "_autosave_suppress", 0))
+        timer = getattr(self, "_autosave_timer", None)
+        if depth == 0:
+            self._autosave_resume_pending = bool(
+                timer is not None and timer.isActive())
+        if timer is not None:
+            timer.stop()
+        self._autosave_suppress = depth + 1
+
+    def _end_workspace_autosave_pause(self):
+        depth = max(0, int(getattr(self, "_autosave_suppress", 0)) - 1)
+        self._autosave_suppress = depth
+        if depth != 0:
+            return
+        resume = bool(getattr(self, "_autosave_resume_pending", False))
+        self._autosave_resume_pending = False
+        timer = getattr(self, "_autosave_timer", None)
+        if (resume and timer is not None
+                and getattr(self, "_autosave_ready", False)
+                and not getattr(self, "_user_closing", False)):
+            timer.start()
+
+    def _workspace_autosave_paused(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self._begin_workspace_autosave_pause()
+            try:
+                yield
+            finally:
+                self._end_workspace_autosave_pause()
+        return _cm()
+
+    def _schedule_workspace_autosave(self, *_args):
+        """Debounce user edits into a workspace draft; ignore timer/engine ticks."""
+        if not getattr(self, "_autosave_ready", False):
+            return
+        if int(getattr(self, "_autosave_suppress", 0)) > 0:
+            return
+        if getattr(self, "_user_closing", False):
+            return
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is None:
+            return
+        timer.start()
+
+    def _flush_workspace_autosave(self):
+        if int(getattr(self, "_autosave_suppress", 0)) > 0:
+            return
+        if getattr(self, "_user_closing", False):
+            return
+        self._save_settings()
+
+    def _wire_workspace_autosave(self):
+        kick = self._schedule_workspace_autosave
+        if hasattr(self, "txt_send"):
+            self.txt_send.textChanged.connect(kick)
+        for name in getattr(self, "_RESET_LINE_EDITS", ()) or ():
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "textChanged"):
+                w.textChanged.connect(kick)
+        for name in getattr(self, "_RESET_COMBOS", ()) or ():
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "currentIndexChanged"):
+                w.currentIndexChanged.connect(kick)
+                if w.isEditable() and w.lineEdit() is not None:
+                    w.lineEdit().editingFinished.connect(kick)
+        if hasattr(self, "cb_port"):
+            self.cb_port.activated.connect(kick)
+        for name in (
+            "sw_tx_hex", "sw_append_newline", "sw_rx_hex", "sw_wrap",
+            "sw_show_timestamp", "sw_packet_split", "sw_line_split",
+            "sw_vconn_loop", "sw_udp_remote", "cb_checksum", "cb_append_nl",
+            "cb_encoding", "cb_theme", "cb_log_split", "cb_ts_format",
+            "cb_line_nl", "cb_hexdump_width", "cb_numview_type", "ed_period_ms",
+            "sw_hexdump", "sw_numview", "sw_freeze_view", "sw_terminal",
+            "sw_period", "sw_log_file", "btn_filter_hl", "cb_view_mode",
+            "cb_target", "cb_flow", "sw_dtr", "sw_rts",
+        ):
+            w = getattr(self, name, None)
+            if w is None:
+                continue
+            if hasattr(w, "toggled"):
+                w.toggled.connect(kick)
+            elif hasattr(w, "textChanged"):
+                w.textChanged.connect(kick)
+            elif hasattr(w, "currentIndexChanged"):
+                w.currentIndexChanged.connect(kick)
+        self._autosave_ready = True
+
     def _save_settings(self, strict=False):
         """Persist the visible workspace.
 
@@ -9963,44 +10311,47 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._t("workspace_template_confirm", name=template_name),
                 ok_text=self._t("workspace_template_apply"), danger=False):
             return
-        if not self._prepare_project_switch():
-            return
         from project_templates import protocol_template_settings
         cfg = protocol_template_settings(combo.currentData() or "raw")
-        # 旧版单规则配置会在 frame_rules 为空时被迁移；应用无规则模板时
-        # 必须同时清理，否则刚清空的规则会在界面重载后被重新写回。
-        legacy_frame_keys = ("frame_header", "frame_fields")
-        old = {
-            key: self.settings.value(key, None)
-            for key in (*cfg.keys(), *legacy_frame_keys)
-        }
-        try:
-            for key in legacy_frame_keys:
-                self.settings.remove(key)
-            for key, value in cfg.items():
-                self.settings.setValue(key, value)
-            self.settings.sync()
-            self._apply_loaded_settings()
-        except Exception as exc:
-            for key, value in old.items():
-                if value is None:
-                    self.settings.remove(key)
-                else:
-                    self.settings.setValue(key, value)
-            self.settings.sync()
+        with self._workspace_autosave_paused():
+            if not self._prepare_project_switch():
+                return
+            # 旧版单规则配置会在 frame_rules 为空时被迁移；应用无规则模板时
+            # 必须同时清理，否则刚清空的规则会在界面重载后被重新写回。
+            legacy_frame_keys = ("frame_header", "frame_fields")
+            old = {
+                key: self.settings.value(key, None)
+                for key in (*cfg.keys(), *legacy_frame_keys)
+            }
             try:
+                for key in legacy_frame_keys:
+                    self.settings.remove(key)
+                for key, value in cfg.items():
+                    self.settings.setValue(key, value)
+                self.settings.sync()
                 self._apply_loaded_settings()
-            except Exception:
-                _log.debug("_apply_workspace_protocol_template failed", exc_info=True)
-            self._info_dlg(
-                self._t("workspace_template_title"),
-                self._t("workspace_template_fail", err=str(exc)), is_error=True)
-            return
-        # The template switch already replaced the runtime tab set. Persist the
-        # new single-session snapshot now so an abnormal exit cannot restore
-        # the previous sessions_v1 / active_session_id on the next launch.
-        self._save_sessions_settings()
-        self.settings.sync()
+            except Exception as exc:
+                for key, value in old.items():
+                    if value is None:
+                        self.settings.remove(key)
+                    else:
+                        self.settings.setValue(key, value)
+                self.settings.sync()
+                try:
+                    self._apply_loaded_settings()
+                except Exception:
+                    _log.debug("_apply_workspace_protocol_template failed", exc_info=True)
+                self._rollback_project_switch_sessions()
+                self._info_dlg(
+                    self._t("workspace_template_title"),
+                    self._t("workspace_template_fail", err=str(exc)), is_error=True)
+                return
+            self._commit_project_switch_sessions()
+            # The template switch already replaced the runtime tab set. Persist the
+            # new single-session snapshot now so an abnormal exit cannot restore
+            # the previous sessions_v1 / active_session_id on the next launch.
+            self._save_sessions_settings()
+            self.settings.sync()
         self._refresh_project_dirty_label()
         self.toast(self._t("workspace_template_applied", name=template_name))
 
@@ -10313,10 +10664,26 @@ class CommTool(SessionHostMixin, QMainWindow):
                     ok_text=self._t("project_disconnect"),
                     danger=False):
                 return False
-        self._reset_sessions_runtime()
+        # Keep the disconnected old tabs/views alive until the caller confirms
+        # that applying the new workspace succeeded.  Failure can then restore
+        # drafts/history instead of leaving an unrelated empty tab behind.
+        self._commit_project_switch_sessions()
+        self._project_switch_session_snapshot = self._begin_sessions_runtime_reset()
         return (len(self._sessions) == 1
                 and self.active_session() is not None
                 and self.active_session().conn is None)
+
+    def _commit_project_switch_sessions(self):
+        snapshot = getattr(self, "_project_switch_session_snapshot", None)
+        self._project_switch_session_snapshot = None
+        if snapshot is not None:
+            self._commit_sessions_runtime_reset(snapshot)
+
+    def _rollback_project_switch_sessions(self):
+        snapshot = getattr(self, "_project_switch_session_snapshot", None)
+        self._project_switch_session_snapshot = None
+        if snapshot is not None:
+            self._rollback_sessions_runtime_reset(snapshot)
 
     def new_project(self):
         from project_wizard import ProjectWizard
@@ -10339,8 +10706,6 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         if not path.lower().endswith(".ctproj"):
             path += ".ctproj"
-        if not self._prepare_project_switch():
-            return
         views = data["views"]
         from project_templates import protocol_template_settings
         template_cfg = protocol_template_settings(
@@ -10350,57 +10715,63 @@ class CommTool(SessionHostMixin, QMainWindow):
         template_cfg["show_timestamp"] = views["timestamp"]
         # Keep the connection the user confirmed in step 2.
         template_cfg["net_proto"] = data["connection_type"]
-
-        # Snapshot so a later save failure can restore the previous workspace.
         old_cfg = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
         old_path = self._project_path
         old_name = self._project_name
         old_meta = dict(self._project_meta)
         old_baseline = self._project_baseline
-        try:
-            self._apply_project_settings(template_cfg, gate_scripts=False)
-        except Exception as e:
-            self._info_dlg(self._t("project_new"),
-                           self._t("project_apply_fail", err=str(e)), is_error=True)
-            return
-
-        self._project_path = os.path.abspath(path)
-        self._project_name = data["name"]
-        self._project_meta = {
-            "device_type": data["device_type"],
-            "device_label": data["device_label"],
-            "connection_type": template_cfg["net_proto"],
-            "protocol_template": data["protocol_template"],
-            "protocol_label": data["protocol_label"],
-            "views": views,
-        }
-        self._project_baseline = None
-        self._update_project_label(True)
-        if not self.save_project():
-            # Disk/save failed after apply: put back previous QSettings + project state.
+        with self._workspace_autosave_paused():
+            if not self._prepare_project_switch():
+                return
             try:
-                for cfg_key in self._CFG_KEYS:
-                    self.settings.remove(cfg_key)
-                for cfg_key, cfg_value in old_cfg.items():
-                    if cfg_value is not None:
-                        self.settings.setValue(cfg_key, cfg_value)
+                self._apply_project_settings(template_cfg, gate_scripts=False)
+            except Exception as e:
+                self._rollback_project_switch_sessions()
+                self._info_dlg(self._t("project_new"),
+                               self._t("project_apply_fail", err=str(e)), is_error=True)
+                return
+
+            self._project_path = os.path.abspath(path)
+            self._project_name = data["name"]
+            self._project_meta = {
+                "device_type": data["device_type"],
+                "device_label": data["device_label"],
+                "connection_type": template_cfg["net_proto"],
+                "protocol_template": data["protocol_template"],
+                "protocol_label": data["protocol_label"],
+                "views": views,
+            }
+            self._project_baseline = None
+            self._update_project_label(True)
+            if not self.save_project():
+                # Disk/save failed after apply: put back previous QSettings + project state.
+                try:
+                    for cfg_key in self._CFG_KEYS:
+                        self.settings.remove(cfg_key)
+                    for cfg_key, cfg_value in old_cfg.items():
+                        if cfg_value is not None:
+                            self.settings.setValue(cfg_key, cfg_value)
+                    self.settings.sync()
+                    self._restore_field_defaults()
+                    self._apply_loaded_settings()
+                except Exception:
+                    traceback.print_exc()
+                    self._info_dlg(
+                        self._t("project_new"),
+                        self._t("project_restore_fail"),
+                        is_error=True)
+                self._project_path = old_path
+                self._project_name = old_name
+                self._project_meta = old_meta
+                self._project_baseline = old_baseline
+                self._refresh_project_dirty_label()
+                if not (self._project_name or self._project_path):
+                    self._update_project_label()
+                self._rollback_project_switch_sessions()
+                self._save_sessions_settings()
                 self.settings.sync()
-                self._restore_field_defaults()
-                self._apply_loaded_settings()
-            except Exception:
-                traceback.print_exc()
-                self._info_dlg(
-                    self._t("project_new"),
-                    self._t("project_restore_fail"),
-                    is_error=True)
-            self._project_path = old_path
-            self._project_name = old_name
-            self._project_meta = old_meta
-            self._project_baseline = old_baseline
-            self._refresh_project_dirty_label()
-            if not (self._project_name or self._project_path):
-                self._update_project_label()
-            return
+                return
+            self._commit_project_switch_sessions()
         # Open optional views only after save finishes.
         if views["plot"]:
             QTimer.singleShot(0, self.open_plot)
@@ -10425,26 +10796,29 @@ class CommTool(SessionHostMixin, QMainWindow):
             return False
         if confirm and not self._confirm_project_switch():
             return False
-        if not self._prepare_project_switch():
-            return False
-        try:
-            from project_model import merge_project_resources
-            project_settings = merge_project_resources(
-                payload["settings"], payload.get("resources", {}))
-            self._apply_project_settings(project_settings)
-        except Exception as e:
-            if notify_errors:
-                self._info_dlg(self._t("project_open"),
-                               self._t("project_open_fail", err=str(e)), is_error=True)
-            return False
-        self._project_path = os.path.abspath(path)
-        self._project_name = str(payload.get("name") or "")
-        self._project_meta = dict(payload.get("metadata") or {})
-        self._project_baseline = self._project_fingerprint(
-            self._collect_project_settings())
-        self.settings.setValue("last_project_path", self._project_path)
-        self._add_recent_project(self._project_path)
-        self._update_project_label()
+        with self._workspace_autosave_paused():
+            if not self._prepare_project_switch():
+                return False
+            try:
+                from project_model import merge_project_resources
+                project_settings = merge_project_resources(
+                    payload["settings"], payload.get("resources", {}))
+                self._apply_project_settings(project_settings)
+            except Exception as e:
+                self._rollback_project_switch_sessions()
+                if notify_errors:
+                    self._info_dlg(self._t("project_open"),
+                                   self._t("project_open_fail", err=str(e)), is_error=True)
+                return False
+            self._commit_project_switch_sessions()
+            self._project_path = os.path.abspath(path)
+            self._project_name = str(payload.get("name") or "")
+            self._project_meta = dict(payload.get("metadata") or {})
+            self._project_baseline = self._project_fingerprint(
+                self._collect_project_settings())
+            self.settings.setValue("last_project_path", self._project_path)
+            self._add_recent_project(self._project_path)
+            self._update_project_label()
         if notify:
             self._info_dlg(self._t("project_open"),
                            self._t("project_opened", path=self._project_path))
@@ -10630,56 +11004,57 @@ class CommTool(SessionHostMixin, QMainWindow):
         if not new_lock.tryLock(100):
             self.toast(self._t("profile_switch_busy"), error=True)
             return
-        # 2) 存当前配置 + 停自动重连 + 断开当前连接（切配置=新会话）。旧连接/排队的重连都属旧配置，
-        #    留着会在新配置下误发起连接：故无条件取消重连、并且只要 conn 非空就拆
-        #    （TCP Client "连接中" 时 is_open=False，只判 is_open 会漏掉、旧连接稍后可能在新配置下连上）。
-        try:
-            self._save_settings(strict=True)
-        except Exception as e:
-            new_lock.unlock()
-            self._info_dlg(
-                self._t("profile_save_fail_title"),
-                self._t("profile_save_fail", err=str(e)),
-                is_error=True)
-            return
-        self._reset_sessions_runtime()
-        # 3) 交换 profile 锁：新锁挂 app 保活、释放旧锁（旧配置槽位随即空出，可被别的窗口用）
-        app = QApplication.instance()
-        old_lock = getattr(app, "_profile_lock", None)
-        app._profile_lock = new_lock
-        if old_lock is not None:
+        with self._workspace_autosave_paused():
+            # 2) 存当前配置 + 停自动重连 + 断开当前连接（切配置=新会话）。旧连接/排队的重连都属旧配置，
+            #    留着会在新配置下误发起连接：故无条件取消重连、并且只要 conn 非空就拆
+            #    （TCP Client "连接中" 时 is_open=False，只判 is_open 会漏掉、旧连接稍后可能在新配置下连上）。
             try:
-                old_lock.unlock()
+                self._save_settings(strict=True)
+            except Exception as e:
+                new_lock.unlock()
+                self._info_dlg(
+                    self._t("profile_save_fail_title"),
+                    self._t("profile_save_fail", err=str(e)),
+                    is_error=True)
+                return
+            self._reset_sessions_runtime()
+            # 3) 交换 profile 锁：新锁挂 app 保活、释放旧锁（旧配置槽位随即空出，可被别的窗口用）
+            app = QApplication.instance()
+            old_lock = getattr(app, "_profile_lock", None)
+            app._profile_lock = new_lock
+            if old_lock is not None:
+                try:
+                    old_lock.unlock()
+                except Exception:
+                    _log.debug("_switch_profile failed", exc_info=True)
+            # 4) 切换身份 + settings 指向新配置文件
+            self._profile = profile
+            self._title_suffix = "" if not profile else " (%s)" % profile
+            self.settings = QSettings(self._settings_file(profile), QSettings.IniFormat)
+            self._project_path = None
+            self._project_meta = {}
+            self._project_name = ""
+            self._project_baseline = None
+            self._update_project_label()
+            # 5) 保住当前窗口几何（下面 _load_settings 会按新配置的存档几何挪窗，切换时不希望窗口跳走）
+            geo = self.saveGeometry()
+            try:
+                # 先复位「缺失键则不改控件」的字段（发送文本/地址/串口参数等）到构建默认值，
+                # 否则目标配置缺某键时会残留上一配置的值、之后保存还会污染目标配置。
+                self._restore_field_defaults()
+                self._apply_loaded_settings()   # 与「导入配置」共用：整体重载新配置到 UI
+                self._restore_sessions_settings()
             except Exception:
                 _log.debug("_switch_profile failed", exc_info=True)
-        # 4) 切换身份 + settings 指向新配置文件
-        self._profile = profile
-        self._title_suffix = "" if not profile else " (%s)" % profile
-        self.settings = QSettings(self._settings_file(profile), QSettings.IniFormat)
-        self._project_path = None
-        self._project_meta = {}
-        self._project_name = ""
-        self._project_baseline = None
-        self._update_project_label()
-        # 5) 保住当前窗口几何（下面 _load_settings 会按新配置的存档几何挪窗，切换时不希望窗口跳走）
-        geo = self.saveGeometry()
-        try:
-            # 先复位「缺失键则不改控件」的字段（发送文本/地址/串口参数等）到构建默认值，
-            # 否则目标配置缺某键时会残留上一配置的值、之后保存还会污染目标配置。
-            self._restore_field_defaults()
-            self._apply_loaded_settings()   # 与「导入配置」共用：整体重载新配置到 UI
-            self._restore_sessions_settings()
-        except Exception:
-            _log.debug("_switch_profile failed", exc_info=True)
-        self.restoreGeometry(geo)
-        # 6) 刷新标题栏 / 任务栏 / 托盘的窗口名后缀
-        self.setWindowTitle(self._t("app_title") + self._title_suffix)
-        if hasattr(self, "title_bar"):
-            self.title_bar.set_title(self._t("app_title") + self._title_suffix)
-        if self._tray:
-            self._tray.setToolTip(self._t("app_title") + self._title_suffix)
-        name = self._t("profile_main") if not profile else self._t("profile_n", n=profile)
-        self.toast(self._t("profile_switched", name=name))
+            self.restoreGeometry(geo)
+            # 6) 刷新标题栏 / 任务栏 / 托盘的窗口名后缀
+            self.setWindowTitle(self._t("app_title") + self._title_suffix)
+            if hasattr(self, "title_bar"):
+                self.title_bar.set_title(self._t("app_title") + self._title_suffix)
+            if self._tray:
+                self._tray.setToolTip(self._t("app_title") + self._title_suffix)
+            name = self._t("profile_main") if not profile else self._t("profile_n", n=profile)
+            self.toast(self._t("profile_switched", name=name))
 
     # 「缺失键则不改控件」的字段（见 _load_settings：这些用 is not None/restore_combo，缺失就不动）。
     # 切换配置到不完整配置前先复位它们，避免残留上一配置的值。line edit→.text；combo→.currentText。
@@ -10700,6 +11075,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._field_defaults = _cfg_capture_defaults(values)
 
     def _restore_field_defaults(self):
+        self._begin_workspace_autosave_pause()
+        try:
+            self._restore_field_defaults_unlocked()
+        finally:
+            self._end_workspace_autosave_pause()
+
+    def _restore_field_defaults_unlocked(self):
         """把 _capture_field_defaults 记录的默认值写回控件（切换配置前调用）。"""
         d = getattr(self, "_field_defaults", None)
         if not d:
@@ -11033,6 +11415,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         """退出前统一清理。closeEvent 的两条退出路径（直接退出 / 选「退出」）共用：
         以前两段逐行复制，加清理步骤极易漏改其中一条导致线程/定时器泄漏，故抽成一处。"""
         self._user_closing = True             # 退出 → 跳过自动重连
+        self._begin_workspace_autosave_pause()
         self._cancel_reconnect()
         if hasattr(self, "_ms_cycle_timer"):
             self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast

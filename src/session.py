@@ -89,6 +89,9 @@ class Session:
         "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
         "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
         "_ar_buf", "_ar_gap_timer",
+        "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
+        "_ar_generation",
+        "_modbus_buffers", "_reset_timer",
         "_period_timer",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
@@ -157,6 +160,17 @@ class Session:
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(
             lambda _s=self: _s.app._ar_flush_for(_s.id))
+        sm = getattr(app, "_ar_sm", None)
+        self._ar_state = sm.get("init", "") if isinstance(sm, dict) else ""
+        self._ar_sm_pending = None
+        self._ar_sm_queue = deque()
+        self._ar_sm_draining = False
+        self._ar_generation = 0
+        self._modbus_buffers = {}
+        self._reset_timer = QTimer(app)
+        self._reset_timer.setSingleShot(True)
+        self._reset_timer.timeout.connect(
+            lambda _s=self: _s.app._pulse_reset_release_for(_s.id))
 
         self._period_timer = QTimer(app)
         self._period_timer.timeout.connect(
@@ -247,13 +261,12 @@ class Session:
             return ("net", proto, tuple(cfg))
         return ("net", proto, tuple(cfg) if cfg else ())
 
-    def tab_label(self, closed_label="-"):
-        """Short label for QTabBar: conn token or localized default title.
+    def has_custom_title(self):
+        """True when the user set an explicit tab name (title_index cleared)."""
+        return self.title_index is None and bool(self.title)
 
-        Shared connection UI always keeps a serial-port combo value, so a UDP
-        session's conn_fields may still contain ser_port=COM1. Prefer proto:
-        only use ser_port when this session is (or defaults to) serial.
-        """
+    def connection_label(self, closed_label="-"):
+        """Real port/address label for tooltips (ignores custom_title)."""
         import log_naming
         token = log_naming.conn_token(self._conn_proto, self._conn_cfg)
         if token:
@@ -280,13 +293,47 @@ class Session:
                 return str(proto)
         if self.title_index is not None:
             return format_default_title(self.app, self.title_index)
-        return self.title or closed_label
+        return closed_label
+
+    def tab_label(self, closed_label="-"):
+        """Short label for QTabBar: custom title, else conn token / default."""
+        if self.has_custom_title():
+            return self.title
+        return self.connection_label(closed_label=closed_label)
+
+    def set_custom_title(self, name):
+        """Set or clear optional custom tab title.
+
+        Empty name clears the custom title and restores an auto title_index.
+        Duplicate custom titles are allowed (tooltip still shows the real
+        connection label).
+        """
+        text = (name or "").strip()
+        if len(text) > 40:
+            text = text[:40].rstrip()
+        if not text:
+            indices = set()
+            if self.app is not None:
+                for other in getattr(self.app, "_sessions", []) or []:
+                    if other is self:
+                        continue
+                    if other.title_index is not None:
+                        indices.add(other.title_index)
+            self.title_index = 1
+            while self.title_index in indices:
+                self.title_index += 1
+            self.title = format_default_title(self.app, self.title_index)
+            return self.title
+        self.title_index = None
+        self.title = text
+        return self.title
 
     def to_persist(self):
         return {
             "id": self.id,
             "title": self.title,
             "title_index": self.title_index,
+            "custom_title": self.title if self.title_index is None else "",
             "conn_fields": dict(self.conn_fields or {}),
             "send_draft": self.send_draft or "",
             "period_ms": self.period_ms or "1000",
@@ -310,9 +357,14 @@ class Session:
         data = data if isinstance(data, dict) else {}
         raw_idx = data.get("title_index", None)
         title = data.get("title")
+        custom = data.get("custom_title")
+        explicit_custom = isinstance(custom, str) and bool(custom.strip())
+        if explicit_custom:
+            title = custom.strip()
+            raw_idx = None
         if not isinstance(title, str):
             title = None
-        if raw_idx is None and isinstance(title, str):
+        if not explicit_custom and raw_idx is None and isinstance(title, str):
             # Migrate old English defaults so language switches keep working.
             if title == _DEFAULT_TAB_TITLE or title == "Session":
                 raw_idx = 1

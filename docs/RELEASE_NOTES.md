@@ -1,33 +1,42 @@
-串口 + 网络一体调试工具。**v1.4.2 正式版**：在 v1.4.1 可维护基线上，收齐 S-2 运行时/显示/设置/连接抽离与 S-3 断线重连 soak；并补齐发送历史删除与对话框按钮样式统一；v1.4 主线功能冻结。
+串口 + 网络一体调试工具。**v1.5.0 正式版**：同一窗口内多会话标签并发连接；后台标签可继续收发日志与周期发送；具名互斥任务提示、标签状态/重命名、关键字 Regex/HEX、草稿防抖自动保存，以及 Windows offscreen CI。
 
-## v1.4.2 正式版
+## v1.5.0 正式版
 
-### 架构与可维护（S-2 R43–R55）
-- **运行时编排（R43–R50）**：重连策略 / Modbus 轮询计划 / 序列编排 / 自动应答门控 / RX 分发 / TX 计划 / Modbus 收流 / AR post-hit 抽出为 Qt-free 模块；`CommTool` 保留薄包装
-- **显示与设置 I/O（R51–R55）**：`config_io` 加载门控、`view_format` 块前缀与日志拼装、`connection_presets` 开连字段采集、新模块 `term_vt`（终端流状态 / tooltip 色）；设置分区与 `settings.ini` 命名决策迁出
-- **刻意保留**：整段 QSS、`_apply_language` 控件遍历、VT 解析循环、`_settings_file` 路径 I/O（Qt 壳，不再作为刀目标）
+### 终端多会话标签
+- **同窗并发连接**：串口 / TCP / UDP / 虚拟可在多个标签中同时打开；每个标签独立连接、收发视图、相关显示选项、实时日志路径、自动重连与**周期发送**
+- **后台不抢前台**：后台标签继续接收、写日志、周期发送；自动应答 / Modbus 从机等窗口级引擎只处理活动标签的 RX
+- **互斥任务表**：脚本控制台、自动化序列、文件传输、Modbus 主机、录制/回放、发送 DSL、设备扫描、多条循环发送共享占用表；启动冲突时 toast 列出正在运行的任务名；离开活动标签前须结束互斥任务
+- **多条循环发送**：周期定时器仍为窗口级，循环运行中**禁止切标签**（与会话级周期发送不同）
+- **标签提示**：绿=已连接、黄=重连等待、灰=已断开；悬停显示连接 / 周期发送 / 实时日志；双击可设自定义标签名（tooltip 仍显示真实端口/地址）
+- **关闭确认**：关闭标签前确认；已连接会话提示将断开
 
-### 稳定性（S-3）
-- `VirtualConn.simulate_link_drop` 断线重连基线；CI 虚拟掉线 / churn 测试
-- 可选门禁：`COMMTOOL_SOAK_DISCONNECT`、`COMMTOOL_SOAK_SERIAL=COMx[,COMy]` 真机 open/close（未设或占用则 skip）、`COMMTOOL_SOAK_NIGHTLY` 加密循环
+### 关键字高亮与草稿保存
+- 关键字规则支持 **文本 / 正则（ReDoS 安全）/ HEX**，与搜索同一匹配引擎；同角色被格式拆开的 fragment 合并后再匹配
+- 连接与发送区用户编辑约 **1.5s 防抖**写入草稿；切标签时暂停 autosave，避免半加载 UI 落盘；周期发送等引擎节拍不写配置
+
+### 连接与会话隔离
+- 每会话 `conn_fields` 持久化；缺省 `serial_dtr` / `serial_rts` / `auto_reconnect` 回退 profile `QSettings`，空字段不再继承上一标签控件
+- 会话关闭确认；工程未保存警告样式对齐
+
+### 工程与 CI
+- Windows GitHub Actions：`QT_QPA_PLATFORM=offscreen` 全量 pytest；夜间/手动可选 soak
+- 双 profile 窗口隔离与 v1.5 跟进项回归测试
 
 ### 产品边界
-- **v1.4 主线（S-1～S-5）收齐**；P2（CLI / REST / 插件 dissector）继续暂缓，功能冻结，优先修 bug 与发版
-
-### 易用性补丁（同版重发）
-- **发送历史删除**：历史窗口支持「删除」按钮与 Delete/Backspace，立即持久化并校正 ↑↓ 导航位置
-- **按钮样式对齐**：发送历史与文件传输对话框按钮统一为多条发送同款幽灵/主按钮样式
+- 本版不做会话树、拖拽分屏、撕出标签；两个会话不可共用同一展开后的实时日志路径
+- 多窗口 / 多 profile 仍是独立工作台，与同窗多标签互补
+- P2（CLI / REST / 插件 dissector）继续暂缓
 
 ### 测试
-- 基线：**1186 passed / 6 skipped / 291 subtests**
+- 基线：**1329 passed / 11 skipped / 291 subtests**
 
 ## 下载
 
 | 形式 | 文件 | 说明 |
 |------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.4.2.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.4.2.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.4.2.dmg` | arm64；拖入「应用程序」。未公证，首次打开见下方说明 |
+| Windows 安装版 | `CommTool_Setup_v1.5.0.exe` | 推荐，向导安装 + 桌面快捷方式 |
+| Windows 单文件版 | `CommTool_v1.5.0.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
+| macOS（Apple Silicon）| `CommTool_v1.5.0.dmg` | arm64；拖入「应用程序」。未公证，首次打开见下方说明 |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 

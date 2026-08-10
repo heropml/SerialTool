@@ -288,7 +288,7 @@ class XferDialog(QDialog):
             self.app.toast(t("xfer_need_conn"), error=True)
             return
         if self.app._xfer_start_blocked():
-            self.app.toast(t("io_exclusive_busy"), error=True)
+            self.app.toast_io_exclusive_busy(exclude=("transfer",))
             return
         if not self._path:
             self.app.toast(t("xfer_need_file" if self._is_send() else "xfer_need_save"), error=True)

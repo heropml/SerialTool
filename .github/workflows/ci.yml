@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [CommTool, main, master]
+  pull_request:
+  schedule:
+    # Nightly soak (UTC). Default push/PR job stays soak-free.
+    - cron: "17 16 * * *"
+  workflow_dispatch:
+    inputs:
+      run_soak:
+        description: "Also run extended soak / disconnect churn"
+        type: boolean
+        default: false
+
+jobs:
+  windows-pytest:
+    name: Windows + offscreen pytest
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run full suite (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest --junitxml=pytest-results.xml
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-windows
+          path: pytest-results.xml
+
+  windows-soak-nightly:
+    name: Nightly soak / disconnect churn
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.run_soak == true)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Extended soak
+        env:
+          QT_QPA_PLATFORM: offscreen
+          COMMTOOL_SOAK: "30"
+          COMMTOOL_SOAK_DISCONNECT: "1"
+        run: python -m pytest tests/test_multi_session.py tests/test_soak_throughput.py
