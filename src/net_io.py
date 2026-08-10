@@ -15,6 +15,7 @@
     clients_changed(list)  TCP Server 专用，已连接客户端 [(key, label)]
 """
 import logging
+import socket as _socket
 
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtNetwork import (
@@ -77,6 +78,22 @@ def _any_or(ip):
     if not ip or ip == "0.0.0.0":
         return QHostAddress(QHostAddress.AnyIPv4)
     return QHostAddress(ip)
+
+
+def _route_local_ipv4(remote_ip, remote_port):
+    """Resolve the concrete source IPv4 selected by the OS route table.
+
+    UDP connect does not send a datagram; it only selects a route/source.
+    """
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        sock.connect((str(remote_ip), int(remote_port)))
+        ip = str(sock.getsockname()[0] or "")
+        return ip if ip and ip != "0.0.0.0" else None
+    except (OSError, TypeError, ValueError):
+        return None
+    finally:
+        sock.close()
 
 
 def is_multicast_ipv4(ip):
@@ -383,6 +400,21 @@ class TcpClientConn(NetConn):
     def is_open(self):
         return self._sock is not None and self._sock.state() == QAbstractSocket.ConnectedState
 
+    def local_endpoint(self):
+        """Return (ip_str, port) for the local side of an established TCP client."""
+        if not self._sock or not self._connected:
+            return None
+        try:
+            ip = self._sock.localAddress().toString()
+            port = int(self._sock.localPort())
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
+            if not ip or port <= 0:
+                return None
+            return (ip, port)
+        except Exception:
+            return None
+
 
 # ============== UDP ==============
 class UdpConn(NetConn):
@@ -476,6 +508,42 @@ class UdpConn(NetConn):
     def bridge_ready(self):
         return self.is_open and bool(
             (self._remote_ip and self._remote_port) or self._last_peer)
+
+    def peer_endpoint(self):
+        """Return the source endpoint of the most recently emitted datagram."""
+        if not self._last_peer:
+            return None
+        try:
+            ip = self._last_peer[0].toString()
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
+            port = int(self._last_peer[1])
+            return (ip, port) if ip and port > 0 else None
+        except Exception:
+            return None
+
+    def local_endpoint(self):
+        """Return (ip_str, port) for the bound UDP socket when available."""
+        if self._sock is None:
+            return None
+        try:
+            ip = self._sock.localAddress().toString()
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
+            port = int(self._sock.localPort())
+            if not ip or ip in ("0.0.0.0", "::"):
+                configured = str(self._local_ip or "").strip()
+                if configured and configured not in ("0.0.0.0", "::"):
+                    ip = configured
+                elif self._remote_ip and self._remote_port:
+                    ip = _route_local_ipv4(self._remote_ip, self._remote_port)
+                else:
+                    ip = None
+            if not ip or port <= 0:
+                return None
+            return (ip, port)
+        except Exception:
+            return None
 
 
 # ============== UDP 组播 (multicast) ==============

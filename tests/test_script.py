@@ -5551,6 +5551,27 @@ class OfflineIntegrationTests(unittest.TestCase):
         finally:
             w._recorder.stop(); dlg.close(); dlg.deleteLater(); w.close_conn()
 
+    def test_pcap_export_does_not_borrow_current_connection_metadata(self):
+        """A metadata-free historical capture must stay unsupported."""
+        from rec_replay_dialog import RecReplayDialog
+        from unittest.mock import patch
+        w = self._virtual()
+        dlg = RecReplayDialog(w)
+        dlg._events = [(0.0, "rx", b"OLD")]
+        dlg._link = None
+        current = {
+            "proto": "TCP Client",
+            "local_ip": "127.0.0.1", "local_port": 40000,
+            "remote_ip": "127.0.0.1", "remote_port": 502,
+        }
+        try:
+            with patch.object(w, "_recorder_link_snapshot", return_value=current), \
+                    patch("rec_replay_dialog.QFileDialog.getSaveFileName") as choose:
+                dlg._on_export_pcap()
+            choose.assert_not_called()
+        finally:
+            dlg.close(); dlg.deleteLater(); w.close_conn()
+
     def test_plain_send_cannot_mix_into_replay(self):
         """回放期间手动发送会污染复现场景；自动应答等内部发送仍有专用绕过通道。"""
         from rec_replay_dialog import RecReplayDialog

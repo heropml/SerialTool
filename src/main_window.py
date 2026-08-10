@@ -4199,7 +4199,13 @@ class CommTool(SessionHostMixin, QMainWindow):
                 and not self._seq_running()):
             self._rx_side("macro.on_rx", lambda: self._macro.on_rx(data))
         if self._recorder.recording:      # 数据录制：录原始 RX 现场
-            self._rx_side("recorder.on_rx", lambda: self._recorder.on_rx(data))
+            peer = None
+            if (getattr(self, "_conn_proto", None) == PROTO_UDP
+                    and hasattr(self.conn, "peer_endpoint")):
+                peer = self.conn.peer_endpoint()
+            self._rx_side(
+                "recorder.on_rx",
+                lambda peer=peer: self._recorder.on_rx(data, source=peer))
         # 结构化记录：复用 frame_rules 抽取普通协议字段；Modbus 标签在响应解析成功后单独写入。
         def _structured_feed():
             if _rx_dispatch.structured_feed_ok(
@@ -5482,6 +5488,55 @@ class CommTool(SessionHostMixin, QMainWindow):
         if isinstance(conn, VirtualConn) and conn.is_open:
             return conn.inject
         return None
+
+    def _recorder_link_snapshot(self):
+        """Capture TCP Client / single-peer UDP endpoints for PCAP export.
+
+        Returns None when the active connection is out of scope (serial,
+        TCP Server, multicast, UDP without a fixed remote peer).
+        """
+        from pcap_export import PROTO_TCP_CLIENT, PROTO_UDP, can_export_link
+        proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
+        remote_ip = ""
+        remote_port = None
+        local_ip = ""
+        local_port = None
+
+        if proto == PROTO_TCP_CLIENT:
+            remote_ip = (self.ed_remote_ip.text() or "").strip()
+            remote_port = self._parse_port(self.ed_remote_port.text())
+            conn = self.conn
+            ep = conn.local_endpoint() if hasattr(conn, "local_endpoint") else None
+            if ep:
+                local_ip, local_port = ep
+        elif proto == PROTO_UDP:
+            # Single-peer only: require "指定远程" with a concrete peer.
+            if not self.sw_udp_remote.isChecked():
+                return None
+            remote_ip = (self.ed_remote_ip.text() or "").strip()
+            remote_port = self._parse_port(self.ed_remote_port.text())
+            local_ip = (self.cb_local_ip.currentText() or "").strip()
+            local_port = self._parse_port(self.ed_local_port.text())
+            conn = self.conn
+            ep = conn.local_endpoint() if hasattr(conn, "local_endpoint") else None
+            if ep:
+                # Prefer OS-bound port (port 0) over the UI placeholder.
+                lip, lport = ep
+                if lip and lip not in ("0.0.0.0", "::"):
+                    local_ip = lip
+                if lport:
+                    local_port = lport
+        else:
+            return None
+
+        link = {
+            "proto": proto,
+            "local_ip": local_ip or None,
+            "local_port": local_port,
+            "remote_ip": remote_ip or None,
+            "remote_port": remote_port,
+        }
+        return link if can_export_link(link) else None
 
     def _replay_begin(self):
         self._replay_on = True

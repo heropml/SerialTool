@@ -38,6 +38,8 @@ class RecReplayDialog(QDialog):
         self._events = []            # 已载入/已录制的事件，供回放
         self._src_name = ""          # 数据来源描述（文件名 / 「本次录制」）
         self._player = None
+        self._link = None            # TCP/UDP 端点快照（PCAP 导出用）
+        self._wall_t0 = None         # 录制墙钟锚点（写入 pcap 时间戳）
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -55,10 +57,14 @@ class RecReplayDialog(QDialog):
         self.btn_save = QPushButton()
         self.btn_save.setObjectName("PlotGhostBtn")
         self.btn_save.clicked.connect(self._on_save)
+        self.btn_pcap = QPushButton()
+        self.btn_pcap.setObjectName("PlotGhostBtn")
+        self.btn_pcap.clicked.connect(self._on_export_pcap)
         rec.addWidget(self.lbl_rec)
         rec.addWidget(self.btn_rec)
         rec.addWidget(self.lbl_rec_stat, 1)
         rec.addWidget(self.btn_save)
+        rec.addWidget(self.btn_pcap)
         root.addLayout(rec)
 
         # ===== 回放行 =====
@@ -161,7 +167,12 @@ class RecReplayDialog(QDialog):
             self.app.toast(self.app._t("net_not_open"), error=True)
             return
         r.clear()
-        r.start()
+        link = None
+        if hasattr(self.app, "_recorder_link_snapshot"):
+            link = self.app._recorder_link_snapshot()
+        r.start(link=link)
+        self._link = dict(link) if isinstance(link, dict) else None
+        self._wall_t0 = None
         self._log(self.app._t("rr_rec_started"))
         self._refresh_stat()
 
@@ -173,6 +184,8 @@ class RecReplayDialog(QDialog):
         r.stop()
         self._events = list(r.events)
         self._src_name = self.app._t("rr_src_live")
+        self._link = dict(r.link) if isinstance(getattr(r, "link", None), dict) else None
+        self._wall_t0 = getattr(r, "_wall_t0", None)
         self._log(self.app._t("rr_rec_stopped", n=len(r), sec=round(r.duration, 1)))
         self._refresh_stat()
 
@@ -188,11 +201,35 @@ class RecReplayDialog(QDialog):
         try:
             rec = rec_replay.StreamRecorder()
             rec.events = list(self._events)
+            rec._wall_t0 = self._wall_t0
+            rec.link = dict(self._link) if isinstance(self._link, dict) else None
             n = rec.save(path)
             self.app.toast(self.app._t("saved_to", path=path))
             self._log(self.app._t("rr_saved", n=n))
         except Exception as e:
             self.app.toast(self.app._t("err_save_failed", e=e), error=True)
+
+    def _on_export_pcap(self):
+        if not self._events:
+            self.app.toast(self.app._t("rr_nothing"), error=True)
+            return
+        import pcap_export
+        link = self._link
+        if not pcap_export.can_export_link(link):
+            self.app.toast(self.app._t("rr_pcap_unsupported"), error=True)
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.app._t("rr_export_pcap"), "capture.pcap",
+            "Wireshark PCAP (*.pcap);;All Files (*)")
+        if not path:
+            return
+        try:
+            n = pcap_export.export_pcap_file(
+                path, self._events, link, wall_t0=self._wall_t0)
+            self.app.toast(self.app._t("rr_pcap_exported", path=path, n=n))
+            self._log(self.app._t("rr_pcap_exported", path=path, n=n))
+        except Exception as e:
+            self.app.toast(self.app._t("rr_pcap_failed", e=e), error=True)
 
     # ---------------- 回放 ----------------
     def _on_load(self):
@@ -211,6 +248,8 @@ class RecReplayDialog(QDialog):
         self._events = events
         import os
         self._src_name = os.path.basename(path)
+        self._link = dict(header["link"]) if isinstance(header.get("link"), dict) else None
+        self._wall_t0 = header.get("wall_t0")
         bad = header.get("bad_lines") or 0
         self._log(self.app._t("rr_loaded", name=self._src_name, n=len(events)))
         if bad:
@@ -346,7 +385,8 @@ class RecReplayDialog(QDialog):
         recording = self.app._recorder.recording
         playing = self.is_playing()
         self.btn_rec.setEnabled(not playing)
-        for w in (self.btn_load, self.btn_save, self.cb_speed, self.chk_loop, self.chk_tx):
+        for w in (self.btn_load, self.btn_save, self.btn_pcap,
+                  self.cb_speed, self.chk_loop, self.chk_tx):
             w.setEnabled(not recording and not playing)
         self.btn_play.setEnabled(not recording and not playing)
         # 暂停/单步/定位 只在回放中有意义（无 player 时点了也不会有反应）。
@@ -479,6 +519,8 @@ class RecReplayDialog(QDialog):
         self.setWindowTitle(t("rr_title"))
         self.lbl_rec.setText(t("rr_record"))
         self.btn_save.setText(t("rr_save"))
+        self.btn_pcap.setText(t("rr_export_pcap"))
+        set_tooltip(self.btn_pcap, t("rr_export_pcap_tip"))
         self.lbl_rep.setText(t("rr_replay"))
         self.btn_load.setText(t("rr_load"))
         self.lbl_speed.setText(t("rr_speed"))

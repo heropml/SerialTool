@@ -16,6 +16,7 @@ Player 只依赖一个 `inject(bytes)` 回调，不碰 Qt 控件；定时由调�
 便于单测。
 """
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -54,12 +55,14 @@ class StreamRecorder:
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
+        self.link = None        # optional net endpoint snapshot for PCAP export
 
-    def start(self):
+    def start(self, link=None):
         self.events = []
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
+        self.link = dict(link) if isinstance(link, dict) else None
         self.recording = True
 
     def stop(self):
@@ -70,6 +73,7 @@ class StreamRecorder:
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
+        self.link = None
 
     def __len__(self):
         return len(self.events)
@@ -108,18 +112,47 @@ class StreamRecorder:
                 return
             self.events.append((rel, direction, payload[off:off + _MAX_CHUNK]))
 
-    def on_rx(self, data, t=None):
+    @staticmethod
+    def _same_udp_peer(link, source):
+        try:
+            src_ip, src_port = source
+            return (ipaddress.IPv4Address(str(src_ip)) ==
+                    ipaddress.IPv4Address(str(link.get("remote_ip")))
+                    and int(src_port) == int(link.get("remote_port")))
+        except (TypeError, ValueError):
+            return False
+
+    def on_rx(self, data, t=None, source=None):
+        if (self.recording and isinstance(self.link, dict)
+                and self.link.get("proto") == "UDP"
+                and not self._same_udp_peer(self.link, source)):
+            # A fixed TX destination does not filter inbound UDP. Once another
+            # peer contributes bytes, the 3-field recorder events no longer
+            # contain enough provenance for a truthful single-peer PCAP.
+            # source=None is also untrusted: without peer provenance the
+            # exported PCAP could falsely attribute RX bytes to the fixed peer.
+            self.link = None
         self._add("rx", data, t)
 
     def on_tx(self, data, t=None):
         self._add("tx", data, t)
 
     # ---------------- 存盘 / 载入 ----------------
-    def save(self, path, note=""):
+    def save(self, path, note="", link=None):
         header = {"_": _MAGIC, "v": _VERSION, "note": str(note or ""),
                   "created": time.strftime("%Y-%m-%d %H:%M:%S")}
         if self._wall_t0 is not None:
             header["wall_t0"] = float(self._wall_t0)
+        link_obj = link if link is not None else self.link
+        if isinstance(link_obj, dict) and link_obj:
+            # Keep a compact, JSON-friendly snapshot for offline PCAP export.
+            clean = {}
+            for key in ("proto", "local_ip", "local_port",
+                        "remote_ip", "remote_port"):
+                if key in link_obj and link_obj[key] not in (None, ""):
+                    clean[key] = link_obj[key]
+            if clean:
+                header["link"] = clean
         with io.open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(header, ensure_ascii=False) + "\n")
             for t, d, b in self.events:
