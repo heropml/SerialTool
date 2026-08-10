@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -19,6 +20,23 @@ def request(hex_body):
 
 
 class ModbusFramingTests(unittest.TestCase):
+    def test_unknown_function_blind_resync_is_bounded(self):
+        noise = bytes([0xFF, 0x7F]) * 2000
+        calls = {"n": 0}
+
+        def no_crc(_tail, maxlen=256):
+            calls["n"] += 1
+            return None
+
+        with patch.object(modbus_slave, "_crc_scan", side_effect=no_crc):
+            self.assertIsNone(modbus_slave._next_complete_frame(noise))
+        self.assertLessEqual(calls["n"], modbus_slave._RESYNC_UNKNOWN_SCAN_MAX)
+
+    def test_known_frame_resync_still_scans_beyond_unknown_cap(self):
+        good = request("010300000001")
+        noise = b"\xff\x7f" * (modbus_slave._RESYNC_UNKNOWN_SCAN_MAX + 10)
+        self.assertEqual(modbus_slave._next_complete_frame(noise + good), len(noise))
+
     def assert_all_splits(self, frame):
         for split in range(1, len(frame)):
             first, remainder = iter_frames(frame[:split])

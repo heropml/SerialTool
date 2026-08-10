@@ -185,6 +185,7 @@ WORKSPACE_TOOL_ENTRIES = {
     ),
     "data": (
         ("plot_open", "∿"),
+        ("plot_io_graph", "⌁"),
         ("dash_open", "▦"),
         ("rr_title", "◷"),
         ("rd_title", "≠"),

@@ -1,0 +1,138 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "AT Modem Demo",
+  "metadata": {
+    "device_type": "at",
+    "protocol_template": "at",
+    "connection_type": "Serial",
+    "description": "Line-split ASCII AT commands with sample snippets/sequence."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": false,
+    "packet_split": false,
+    "packet_timeout": "20",
+    "line_split": true,
+    "line_nl_mode": 0,
+    "tx_hex": false,
+    "append_newline": true,
+    "append_nl_mode": 0,
+    "checksum_idx": 0,
+    "encoding": "ascii",
+    "frame_rules": "",
+    "plot_mode": 0,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "",
+    "plot_hex_header": "",
+    "dash_mode": 0,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "",
+    "dash_header": "",
+    "net_proto": "Serial",
+    "rx_hex": false,
+    "ser_baud": "115200",
+    "show_timestamp": true,
+    "snippets": "[{\"name\": \"AT\", \"text\": \"AT\", \"hex\": false}, {\"name\": \"ATI\", \"text\": \"ATI\", \"hex\": false}, {\"name\": \"AT+CSQ\", \"text\": \"AT+CSQ\", \"hex\": false}]",
+    "connection_presets": "[{\"id\": \"example-at-modem\", \"name\": \"AT Modem\", \"note\": \"ASCII line mode for AT commands\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true}]",
+    "sequence_rules": "[{\"on\": true, \"name\": \"AT\", \"send\": \"AT\", \"send_hex\": false, \"expect\": \"OK\", \"expect_hex\": false, \"timeout\": 1000, \"delay\": 0}, {\"on\": true, \"name\": \"ATI\", \"send\": \"ATI\", \"send_hex\": false, \"expect\": \"\", \"expect_hex\": false, \"timeout\": 1000, \"delay\": 100}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "AT",
+          "text": "AT",
+          "hex": false
+        },
+        {
+          "name": "ATI",
+          "text": "ATI",
+          "hex": false
+        },
+        {
+          "name": "AT+CSQ",
+          "text": "AT+CSQ",
+          "hex": false
+        }
+      ],
+      "groups": []
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-at-modem",
+          "name": "AT Modem",
+          "note": "ASCII line mode for AT commands",
+          "last_used": 0.0,
+          "net_proto": "Serial",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": false,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [
+        {
+          "on": true,
+          "name": "AT",
+          "send": "AT",
+          "send_hex": false,
+          "expect": "OK",
+          "expect_hex": false,
+          "timeout": 1000,
+          "delay": 0
+        },
+        {
+          "on": true,
+          "name": "ATI",
+          "send": "ATI",
+          "send_hex": false,
+          "expect": "",
+          "expect_hex": false,
+          "timeout": 1000,
+          "delay": 100
+        }
+      ],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 0,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "",
+      "dash_header": ""
+    },
+    "plot": {
+      "plot_mode": 0,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "",
+      "plot_hex_header": ""
+    }
+  }
+}

@@ -120,6 +120,7 @@ if [ "${1:-}" = "--dmg" ]; then
     STAGE="$BUILD_DIR/dmg"
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp -R "$APP" "$STAGE/"
+    cp -R examples "$STAGE/Examples"
     ln -s /Applications "$STAGE/Applications"
     rm -f "$DMG"
     hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null

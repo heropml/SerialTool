@@ -29,6 +29,9 @@ _WRITE_MULTI = (0x0F, 0x10)
 # 17(读写多寄存器) 含读，不可广播；08/0B/11 是诊断类，也都要求点对点。
 _BROADCAST_WRITE_FUNCS = _WRITE_SINGLE + _WRITE_MULTI + (0x16,)
 SUPPORTED_FUNCS = _READ_FUNCS + _WRITE_SINGLE + _WRITE_MULTI + (0x08, 0x0B, 0x11, 0x16, 0x17, 0x2B)
+# Known-function resync is cheap and scans the whole buffer. CRC blind scanning
+# for unknown functions is much more expensive, so cap only that second pass.
+_RESYNC_UNKNOWN_SCAN_MAX = 512
 
 
 class ModbusException(Exception):
@@ -129,8 +132,16 @@ def _crc_scan(rest, maxlen=256):
     """未知功能码：长度无法由功能码推出 → 从最短(4 字节)起找第一个 CRC 自洽的帧长度。
     这样不支持但合法的功能码也能被 handle() 收到、回「非法功能」异常，
     且不会按固定长度乱切而吃掉紧随其后的合法帧。找不到返回 None（等更多字节再试）。"""
-    for size in range(4, min(maxlen, len(rest)) + 1):
-        if crc16(rest[:size - 2]) == rest[size - 2:size]:
+    limit = min(maxlen, len(rest))
+    crc = 0xFFFF
+    # Grow the candidate body one byte at a time. Recomputing crc16(rest[:n])
+    # for every n makes one blind scan quadratic before resync even advances.
+    for body_end in range(1, limit - 1):
+        crc ^= rest[body_end - 1]
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
+        size = body_end + 2
+        if size >= 4 and bytes((crc & 0xFF, (crc >> 8) & 0xFF)) == rest[body_end:size]:
             return size
     return None
 
@@ -184,7 +195,7 @@ def _next_complete_frame(rest, known_only=False):
     if known_only:
         return None
     # 第二轮：未知功能码靠 CRC 探测，噪声之后照样能重新对齐
-    for off in range(1, len(rest) - 3):
+    for off in range(1, min(len(rest) - 3, _RESYNC_UNKNOWN_SCAN_MAX + 1)):
         tail = rest[off:]
         if expected_len(tail) == -1 and _crc_scan(tail) is not None:
             return off
@@ -227,8 +238,9 @@ def iter_frames(buf):
     已知功能码：按长度取整帧并校验 CRC，符→产出，不符→丢 1 字节重对齐；未知功能码：CRC 探测帧长。
     最小帧 4 字节(addr+func+crc2)。"""
     frames, i = [], 0
+    view = memoryview(buf)                 # suffix slices stay O(1) views
     while len(buf) - i >= 4:
-        rest = buf[i:]
+        rest = view[i:]
         size = expected_len(rest)
         if size is None:
             break                         # 字节不够判断长度 → 等更多字节

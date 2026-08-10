@@ -236,12 +236,14 @@ def build_rtu_request(unit, func, addr, qty_or_val):
 
 def build_tcp_request(tid, unit, func, addr, qty_or_val):
     """Modbus-TCP 请求帧 = MBAP(事务ID + 协议ID0 + 长度 + unit) + PDU，无 CRC。"""
+    tid = _exact_int(tid, "TCP transaction id must be an integer")
+    if not 0 <= tid <= 0xFFFF:
+        raise ValueError("TCP transaction id must be 0..65535")
     unit = _exact_int(unit, "TCP unit must be an integer")
     if not 0 <= unit <= 255:
         raise ValueError("TCP unit must be 0..255")
     pdu = _build_pdu(func, addr, qty_or_val)
     length = len(pdu) + 1                  # unit(1) + PDU
-    tid &= 0xFFFF
     mbap = bytes([(tid >> 8) & 0xFF, tid & 0xFF, 0x00, 0x00,
                   (length >> 8) & 0xFF, length & 0xFF, unit])
     return mbap + pdu

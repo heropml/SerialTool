@@ -3615,6 +3615,13 @@ class ScriptEvalTests(unittest.TestCase):
         self.assertEqual((parts, err), (["06"], None))
         self.assertTrue(self.w._ar_script_proc.is_alive())
 
+    def test_system_exit_is_reported_without_killing_worker(self):
+        parts, err = self.w._ar_script_eval(
+            {"script": "import sys\ndef reply(f,c): sys.exit(7)"}, b"\x00")
+        self.assertIsNone(parts)
+        self.assertIn("SystemExit: 7", err)
+        self.assertTrue(self.w._ar_script_proc.is_alive())
+
     def test_preview_does_not_consume_seq(self):
         self.w._ar_seq = 10
         parts, err = self.w._ar_script_eval(
@@ -5345,6 +5352,16 @@ class VirtualConnTests(unittest.TestCase):
         c.close()                       # 派发前就关掉 → 应丢弃
         loop = QEventLoop(); QTimer.singleShot(60, loop.quit); loop.exec_()
         self.assertEqual(got, [])
+
+    def test_oversize_inject_returns_partial_count_and_warns(self):
+        from virtual_io import _MAX_INJECT
+        c = self._conn()
+        c.open()
+        with self.assertLogs("virtual_io", level="WARNING") as logs:
+            accepted = c.inject(b"X" * (_MAX_INJECT + 1))
+        c.close()  # scheduled delivery is intentionally discarded
+        self.assertEqual(accepted, _MAX_INJECT)
+        self.assertIn("truncated", "\n".join(logs.output))
 
     def test_registered_as_conn_type(self):
         from virtual_io import PROTO_VIRTUAL

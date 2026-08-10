@@ -5,8 +5,10 @@ from __future__ import print_function
 import json
 import os
 import sys
+import csv
 from pathlib import Path
 
+import pytest
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
@@ -285,6 +287,31 @@ def test_workspace_autosave_pause_restores_preexisting_pending_timer(
     w._close_all_sessions()
 
 
+def test_recv_search_passes_hard_cap_into_find_spans(monkeypatch, tmp_path):
+    """Search rebuild must stop scanning inside find_spans, not after."""
+    w = _window(monkeypatch, tmp_path, "search-limit")
+    seen = {}
+
+    def _fake_find_spans(text, term, mode="plain", case_sensitive=False,
+                         hexdump=False, limit=None, start=0):
+        seen["limit"] = limit
+        seen["start"] = start
+        n = 0 if limit is None else max(0, int(limit))
+        base = int(start or 0)
+        return [(base + i, base + i + 1) for i in range(n)]
+
+    monkeypatch.setattr("search_helper.find_spans", _fake_find_spans)
+    monkeypatch.setattr("search_helper.to_utf16_spans", lambda text, spans: spans)
+    w._search_term = "00"
+    w._search_mode = "hex"
+    w.txt_recv.setPlainText("00 00 00")
+    w._refresh_extra_selections(rebuild_search=True)
+    assert seen.get("limit") == w._KW_MAX_SELECTIONS + 1
+    assert len(w._search_matches) == w._KW_MAX_SELECTIONS
+    assert w._search_match_capped is True
+    w._close_all_sessions()
+
+
 def test_active_timestamp_toggle_beats_stale_display_opts(monkeypatch, tmp_path):
     """Live UI on the active tab must not be masked by a prior snapshot."""
     w = _window(monkeypatch, tmp_path, "active-ts-ui")
@@ -305,4 +332,140 @@ def test_active_timestamp_toggle_beats_stale_display_opts(monkeypatch, tmp_path)
     w.sw_show_timestamp.setChecked(True)
     assert w._session_display_flag("show_timestamp", True) is False
     w._display_context = None
+    w._close_all_sessions()
+
+
+def test_open_io_graph_applies_rate_preset(monkeypatch, tmp_path):
+    """I/O Graph is an isolated, reversible view that preserves plot samples."""
+    pytest.importorskip("pyqtgraph")
+    w = _window(monkeypatch, tmp_path, "io-graph-entry")
+    w._rx_rate = 1200.0
+    w._tx_rate = 340.0
+    w.open_plot()
+    dlg = w._plot_dlg
+    dlg._append_vals([7.0], names=["rx_Bps"])
+    generic = dlg._channels[0]
+    assert list(generic["ys"]) == [7.0]
+    assert list(generic["xs"]) == [0]
+
+    # A named rate source may collide with a user field carrying the same label.
+    dlg.feed_named_samples([{"tag": "rx_Bps", "value": 11.0}])
+    same_named = dlg._channels[dlg._name_to_idx["rx_Bps"]]
+    assert same_named is not generic
+    assert same_named["name"] == generic["name"] == "rx_Bps"
+    rate_before = list(same_named["ys"])
+    assert rate_before == [11.0]
+    saved_sample_idx = dlg._sample_idx
+
+    w.open_io_graph()
+    dlg = getattr(w, "_plot_dlg", None)
+    assert dlg is not None
+    assert dlg.isVisible()
+    assert dlg._io_graph_mode is True
+    assert dlg.cb_xaxis.currentIndex() == 1
+    assert dlg._x_time is True
+    assert list(generic["ys"]) == [7.0]
+    assert not generic["cb"].isChecked()
+    for tag in ("rx_Bps", "tx_Bps", "rx_pps", "tx_pps"):
+        assert tag in dlg._name_to_idx
+        ch = dlg._channels[dlg._name_to_idx[tag]]
+        assert ch["cb"].isChecked()
+        assert ch.get("jumpable") is False
+    assert len(dlg._channels[dlg._name_to_idx["rx_Bps"]]["ys"]) >= 1
+    # Temporary overlay replaced the old rate series (restored on leave).
+    assert list(dlg._channels[dlg._name_to_idx["rx_Bps"]]["ys"]) != rate_before
+
+    # Exporting the temporary view must not include the hidden generic curve,
+    # even though it deliberately shares the display name "rx_Bps".
+    csv_path = tmp_path / "io-graph.csv"
+    monkeypatch.setattr(
+        "plot_dialog.QFileDialog.getSaveFileName",
+        lambda *_a, **_k: (str(csv_path), "CSV (*.csv)"))
+    dlg._export_csv()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        header = next(csv.reader(f))
+    assert len(header) == 8
+    assert header.count("rx_Bps") == 1
+
+    channel_count = len(dlg._channels)
+    dlg.feed(b"9\n")
+    dlg.feed_named_samples([{"tag": "temperature", "value": 25.0}])
+    assert len(dlg._channels) == channel_count
+    assert "temperature" not in dlg._name_to_idx
+    assert list(generic["ys"]) == [7.0]
+
+    # Reopening an active I/O Graph must not reset its accumulated history.
+    dlg.feed_named_samples([{"tag": "rx_Bps", "value": 9999.0}])
+    rate_live = dlg._channels[dlg._name_to_idx["rx_Bps"]]
+    live_before = list(rate_live["ys"])
+    w.open_io_graph()
+    assert list(rate_live["ys"])[:len(live_before)] == live_before
+
+    # Closing while in I/O Graph must restore, not keep the temporary mode.
+    dlg.close()
+    assert dlg._io_graph_mode is False
+    assert dlg.cb_xaxis.currentIndex() == 0
+    assert dlg._x_time is False
+    assert dlg._sample_idx == saved_sample_idx
+    assert generic["cb"].isChecked()
+    assert list(generic["ys"]) == [7.0]
+    assert list(generic["xs"]) == [0]
+    assert list(same_named["ys"]) == [11.0]
+    assert list(dlg._channels[dlg._name_to_idx["rx_Bps"]]["ys"]) == rate_before
+    w._close_all_sessions()
+
+
+def test_io_graph_starts_fresh_segment_on_session_switch(monkeypatch, tmp_path):
+    """Rate samples from two tabs must never be joined in one I/O curve."""
+    pytest.importorskip("pyqtgraph")
+    w = _window(monkeypatch, tmp_path, "io-graph-session-switch")
+    w.open_io_graph()
+    dlg = w._plot_dlg
+    dlg.feed_named_samples([{"tag": "rx_Bps", "value": 9999.0}])
+    rate = dlg._channels[dlg._name_to_idx["rx_Bps"]]
+    assert list(rate["ys"])
+
+    target = w.add_session(activate=True)
+    assert target is w.active_session()
+    assert dlg._io_graph_mode is True
+    assert list(rate["xs"]) == []
+    assert list(rate["ys"]) == []
+    assert dlg._io_graph_restore is not None
+
+    dlg.feed_named_samples([{"tag": "rx_Bps", "value": 7.0}])
+    assert list(rate["ys"]) == [7.0]
+    dlg.close()
+    w._close_all_sessions()
+
+
+@pytest.mark.parametrize("change", ["mode", "separator", "regex", "fields", "header"])
+def test_io_graph_parser_changes_restore_then_clear(monkeypatch, tmp_path, change):
+    """Parser changes leave the temporary overlay before their intentional wipe."""
+    pytest.importorskip("pyqtgraph")
+    w = _window(monkeypatch, tmp_path, "io-graph-parser-" + change)
+    w.open_plot()
+    dlg = w._plot_dlg
+    dlg._append_vals([7.0])
+    w.open_io_graph()
+    assert dlg._io_graph_mode is True
+    assert dlg._io_graph_restore is not None
+
+    if change == "mode":
+        dlg.cb_mode.setCurrentIndex((dlg.cb_mode.currentIndex() + 1) % 3)
+    elif change == "separator":
+        dlg.cb_sep.setCurrentIndex((dlg.cb_sep.currentIndex() + 1) % 5)
+    elif change == "regex":
+        dlg.ed_regex.setText(r"(\\d+)")
+        dlg._on_regex_changed()
+    elif change == "fields":
+        dlg.ed_fields.setText("value=0:u8")
+        dlg._on_fields_changed()
+    else:
+        dlg.ed_header.setText("AA")
+        dlg._on_header_changed()
+
+    assert dlg._io_graph_mode is False
+    assert dlg._io_graph_restore is None
+    assert dlg._channels == []
+    dlg.close()
     w._close_all_sessions()

@@ -59,30 +59,89 @@ def to_utf16_spans(text, spans):
 _HEXDUMP_LINE = re.compile(r"^[0-9A-Fa-f]{8} {2}")
 
 
-def _find_hex_spans_in_hexdump(text, pat, flags, limit=None):
+def _iter_hex_spans_in_hexdump(text, pat, flags, start=0):
     """在 hexdump 转储文本里只搜 hex 列（跳过每行开头的偏移列与结尾的 |ASCII| 列），
-    返回全文字符区间。逐行处理：字节序列跨 hexdump 每行边界（如 per=16 换行处）不匹配，
+    产出全文字符区间。逐行处理：字节序列跨 hexdump 每行边界（如 per=16 换行处）不匹配，
     属可接受的极罕见取舍。"""
+    try:
+        start = max(0, int(start or 0))
+    except (TypeError, ValueError):
+        start = 0
     rx = re.compile(pat, flags)
-    out, off = [], 0
-    for line in text.split("\n"):
+    # 惰性翻页从包含 start 的行开始，避免每翻一页都重新遍历此前所有行。
+    off = text.rfind("\n", 0, min(start, len(text))) + 1
+    for line in text[off:].split("\n"):
         if _HEXDUMP_LINE.match(line):
             ascii_idx = line.find(" |", 10)
             if ascii_idx > 10:
                 for m in rx.finditer(line[10:ascii_idx]):   # 只搜 hex 列
-                    out.append((off + 10 + m.start(), off + 10 + m.end()))
-                    if limit is not None and len(out) >= limit:
-                        return out
+                    a = off + 10 + m.start()
+                    if a < start:
+                        continue
+                    yield a, off + 10 + m.end()
         off += len(line) + 1     # split 去掉了 "\n"，还原全文字符偏移
-    return out
+
+
+def _iter_spans(text, term, mode="plain", case_sensitive=False,
+                hexdump=False, start=0):
+    """Yield matching codepoint spans without materializing the full result."""
+    if not term:
+        return
+    try:
+        start = max(0, int(start or 0))
+    except (TypeError, ValueError):
+        start = 0
+    text = text or ""
+    if mode not in {"plain", "regex", "hex"}:
+        return
+    if mode == "regex":
+        import triggers
+        rx = triggers.compile_regex(term)
+        if rx is None:
+            return
+        if not case_sensitive:
+            rx = re.compile(term, re.IGNORECASE)
+        for m in rx.finditer(text, start):
+            if m.end() > m.start():
+                yield m.start(), m.end()
+        return
+    if mode == "hex":
+        bytes_ = parse_hex_term(term)
+        if not bytes_:
+            return
+        pat = _hex_regex(bytes_)
+        flags = 0 if case_sensitive else re.IGNORECASE
+        if hexdump:
+            yield from _iter_hex_spans_in_hexdump(text, pat, flags, start=start)
+            return
+        rx = re.compile(pat, flags)
+        for m in rx.finditer(text, start):
+            yield m.start(), m.end()
+        return
+    if not case_sensitive:
+        # lower()/casefold() can change string length (for example "İ" -> "i̇"),
+        # making the returned offsets invalid for QTextCursor. Regex spans always
+        # refer to the original text while preserving non-overlapping matching.
+        rx = re.compile(re.escape(term), re.IGNORECASE)
+        for m in rx.finditer(text, start):
+            yield m.start(), m.end()
+        return
+    pos = start
+    while True:
+        i = text.find(term, pos)
+        if i < 0:
+            return
+        yield i, i + len(term)
+        pos = i + len(term)
 
 
 def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False,
-               limit=None):
+               limit=None, start=0):
     """在 text 里找 term 的所有匹配，返回 [(start, end), ...]。
 
     mode ∈ ``plain / regex / hex``。空 term 或非法模式返回 []。
     区间按起始位置升序、互不重叠。
+    ``start``：从该码点偏移起继续扫描（惰性分页用）。
     hexdump=True 仅对 hex 模式生效：逐行跳过偏移列/ASCII 列，只搜 hex 字节列。"""
     if not term:
         return []
@@ -93,52 +152,36 @@ def find_spans(text, term, mode="plain", case_sensitive=False, hexdump=False,
             limit = 0
         if limit == 0:
             return []
-    text = text or ""
-    if mode == "regex":
-        import triggers
-        rx = triggers.compile_regex(term)       # 先过灾难性回溯安全检查
-        if rx is None:
-            return []
-        if not case_sensitive:                   # 再按需加 IGNORECASE 重编译
-            rx = re.compile(term, re.IGNORECASE)
-        out = []
-        for m in rx.finditer(text):
-            # Empty matches cannot be highlighted/navigated and must not use
-            # up the result limit before a later real match (for example ^|b).
-            if m.end() <= m.start():
-                continue
-            out.append((m.start(), m.end()))
-            if limit is not None and len(out) >= limit:
-                break
-        return out
-    if mode == "hex":
-        bytes_ = parse_hex_term(term)
-        if not bytes_:
-            return []
-        pat = _hex_regex(bytes_)
-        flags = 0 if case_sensitive else re.IGNORECASE
-        if hexdump:
-            return _find_hex_spans_in_hexdump(text, pat, flags, limit=limit)
-        rx = re.compile(pat, flags)
-        out = []
-        for m in rx.finditer(text):
-            out.append((m.start(), m.end()))
-            if limit is not None and len(out) >= limit:
-                break
-        return out
-    # plain
-    if case_sensitive:
-        needle, hay = term, text
-    else:
-        needle, hay = term.lower(), text.lower()
     spans = []
-    start = 0
-    while True:
-        i = hay.find(needle, start)
-        if i < 0:
-            break
-        spans.append((i, i + len(needle)))
+    for span in _iter_spans(
+            text, term, mode, case_sensitive, hexdump, start=start):
+        spans.append(span)
         if limit is not None and len(spans) >= limit:
             break
-        start = i + len(needle)
     return spans
+
+
+def find_last_page(text, term, mode="plain", case_sensitive=False,
+                   hexdump=False, page_size=2000):
+    """Return the final bounded match page and every page's scan start.
+
+    The document is scanned once. Only the current page plus one integer per
+    earlier page is retained, so global ▲ wrap cannot become repeated full-text
+    scans on dense streams.
+    """
+    try:
+        page_size = max(0, int(page_size))
+    except (TypeError, ValueError):
+        page_size = 0
+    if page_size == 0 or not term:
+        return [], [0]
+    page = []
+    page_starts = [0]
+    count = 0
+    for span in _iter_spans(text, term, mode, case_sensitive, hexdump, start=0):
+        if count and count % page_size == 0:
+            page_starts.append(span[0])
+            page = []
+        page.append(span)
+        count += 1
+    return page, page_starts

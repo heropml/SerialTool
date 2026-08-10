@@ -21,9 +21,9 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 1. **Gitee raw**（`gitee.com/.../raw/CommTool/latest.json`）— 国内优先，秒回
 2. **GitHub raw**（回退）— Gitee 抽风时兜底
 
-`latest.json` 的 `url` 字段**统一指向 Gitee Release 下载**（Gitee 全球可达，国内国外都下得到）。
-所以无论清单从哪个源读到，**下载都走 Gitee**。改源顺序/下载地址 = 改 `updater.py` + `latest.json`，
-**要重打包**（updater.py 编进二进制）。
+`latest.json` 的 `url` 字段（Windows）**统一指向 Gitee Release 下载**（Gitee 全球可达）。
+`url_mac` 在 Windows 发版阶段保持空数组；macOS 脚本上传并校验 `.dmg` 后，才写入 GitHub 直链（标准流程不把 `.dmg` 传到 Gitee；运行时 `mac_download_candidates` 仍兼容旧清单并把 GitHub 提前）。
+改源顺序/下载地址 = 改 `updater.py` + `latest.json` / `release.ps1`；改 `updater.py` **要重打包**。
 
 ---
 

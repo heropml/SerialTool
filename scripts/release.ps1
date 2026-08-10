@@ -62,10 +62,23 @@ $OnefilePath = Join-Path $Root "dist_onefile\$OnefileName"
 $MacName     = "CommTool_v$Version.dmg"
 # 下载源走 Gitee（全球可达；updater 第一源为 Gitee raw latest.json）
 $DownloadUrl = "https://gitee.com/$Repo/releases/download/$Tag/$SetupName"
-$MacUrls     = @(
-    "https://gitee.com/$Repo/releases/download/$Tag/$MacName",
-    "https://github.com/$Repo/releases/download/$Tag/$MacName"
-)
+# Windows 发版时 DMG 尚未生成，不能提前发布死链。release_macos.sh 上传并校验
+# GitHub 资产后，才会把对应 URL 写回共享清单；同版本重跑 Windows 发布时
+# 保留已由 Mac 门禁写入的精确 GitHub URL。
+$MacUrls     = @()
+$VerifiedMacUrl = "https://github.com/heropml/SerialTool/releases/download/$Tag/$MacName"
+$ExistingManifest = Join-Path $Root "latest.json"
+if (Test-Path $ExistingManifest) {
+    try {
+        $ExistingLatest = Get-Content $ExistingManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$ExistingLatest.version -eq $Version -and
+            @($ExistingLatest.url_mac) -contains $VerifiedMacUrl) {
+            $MacUrls = @($VerifiedMacUrl)
+        }
+    } catch {
+        Write-Warning "latest.json 无法解析，将按无 Mac 资产处理：$($_.Exception.Message)"
+    }
+}
 
 Write-Host "==== 发版 CommTool $Tag ====" -ForegroundColor Cyan
 
@@ -151,6 +164,10 @@ $vp   = Join-Path $Root 'src\version.py'
 $vtxt = [IO.File]::ReadAllText($vp)
 $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$Version`"")
 [IO.File]::WriteAllText($vp, $vtxt)
+# 示例工程带 app_version，须与 version.py 同步，否则 CI 字节比对会红
+Write-Host "①b 重生 examples/*.ctproj（同步 app_version）"
+& py -3 (Join-Path $Root 'scripts\build_example_projects.py')
+if ($LASTEXITCODE -ne 0) { throw "examples 重生失败" }
 
 # ---- 2. 更新 latest.json（url 指向 Gitee Release）----
 Write-Host "② 更新 latest.json → $Version（url 指向 Gitee $Tag）"
@@ -204,14 +221,25 @@ Write-Host "⑥ git 提交…"
 git add -A
 # docs/TODO.md 与本地工具残留不进发版提交（见 RELEASE.md §8.1）
 git reset -q -- docs/TODO.md 2>$null
+# 提交说明统一走一个 UTF-8 文件：标题 + 可选详细正文。
+# 不要同时用 -m 与 -F（部分环境下正文会被丢掉，只剩标题一行）。
 $CommitTitle = "release: $Tag — $Notes"
 $BodyFile = Join-Path $Root 'scripts\_release_commit_body.txt'
+$MsgFile  = Join-Path $Root 'scripts\_release_commit_msg.txt'
+$msgLines = [System.Collections.Generic.List[string]]::new()
+$msgLines.Add($CommitTitle)
 if (Test-Path $BodyFile) {
-    git commit -m $CommitTitle -F $BodyFile | Out-Host
+    $body = [IO.File]::ReadAllText($BodyFile).Trim()
+    if ($body) {
+        $msgLines.Add('')
+        $msgLines.Add($body)
+    }
     Remove-Item $BodyFile -Force -ErrorAction SilentlyContinue
-} else {
-    git commit -m $CommitTitle | Out-Host
 }
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[IO.File]::WriteAllText($MsgFile, (($msgLines -join "`n") + "`n"), $utf8NoBom)
+git commit -F $MsgFile | Out-Host
+Remove-Item $MsgFile -Force -ErrorAction SilentlyContinue
 
 if ($Local) {
     Write-Host "已指定 -Local：跳过 push 和 Release。" -ForegroundColor Yellow

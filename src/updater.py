@@ -49,47 +49,87 @@ def set_translator(fn):
 
 
 def _parse_version(v):
-    """'v1.0.5' / '1.0.5' / '1.0.5-rc1' -> 可比较元组；非法返回 (0,)。
+    """'v1.0.5' / '1.0.5' / '1.0.5-rc1' -> 可比较元组；非法返回 None。
     主版本补齐到 3 段(避免 '1.0' 与 '1.0.0' 因长度不同误判)，末位附加预发布标记
     (正式版 1 > 预发布 0)，于是 1.0.5 > 1.0.5-rc1，不再把 '-rc1' 整段截断成等同正式版。"""
     try:
         s = str(v).strip().lstrip("vV")
-        main, _, pre = s.partition("-")   # 拆出主版本与可选预发布后缀(-rc1/-beta…)
-        nums = []
-        for part in main.split("."):
-            m = re.match(r"\d+", part)
-            if not m:
-                break
-            nums.append(int(m.group()))
-        if not nums:
-            return (0,)
+        main, sep, pre = s.partition("-")  # 拆出主版本与可选预发布后缀(-rc1/-beta…)
+        parts = main.split(".")
+        if (not parts or any(not part.isdigit() for part in parts)
+                or (sep and not pre)):
+            return None
+        nums = [int(part) for part in parts]
         while len(nums) < 3:              # 补齐 3 段：1.0 → (1,0,0)
             nums.append(0)
         nums.append(0 if pre else 1)      # 预发布排在同号正式版之前
         return tuple(nums)
     except (ValueError, AttributeError, TypeError):
-        return (0,)
+        return None
 
 
 def is_newer(remote, local):
     """remote 版本是否比 local 新"""
-    return _parse_version(remote) > _parse_version(local)
+    remote_v = _parse_version(remote)
+    local_v = _parse_version(local)
+    return bool(remote_v is not None and local_v is not None
+                and remote_v > local_v)
+
+
+def mac_download_candidates(raw):
+    """Normalize url_mac into an ordered HTTPS list (GitHub before Gitee).
+
+    Gitee Releases do not host the .dmg in the standard publish flow; listing
+    Gitee first causes a guaranteed 404 before the GitHub fallback.  Older
+    manifests may still put Gitee first — reorder at runtime so Mac updates
+    stay reliable even when latest.json is stale.
+    """
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        items = []
+    https = []
+    seen = set()
+    for u in items:
+        if not isinstance(u, str):
+            continue
+        u = u.strip()
+        key = u.lower()
+        if not key.startswith("https://") or key in seen:
+            continue
+        seen.add(key)
+        https.append(u)
+
+    def _rank(url):
+        host = url.lower()
+        if "github.com" in host or "githubusercontent.com" in host:
+            return 0
+        if "gitee.com" in host:
+            return 2
+        return 1
+
+    https.sort(key=_rank)
+    return https
 
 
 def cleanup_temp_installers():
-    """清理上次更新残留在 %TEMP% 的安装包（CommTool_Setup_*.exe）。启动时调用一次；
+    """清理上次更新残留在临时目录的 Windows/macOS 安装包。启动时调用一次；
     删不掉（可能仍被占用）就跳过，不影响启动。多窗口下**跳过最近 10 分钟内改动的文件**——
     避免删掉另一个窗口正在下载 / 刚下载完还没启动安装的更新包。"""
     try:
         now = time.time()
-        pattern = os.path.join(tempfile.gettempdir(), "CommTool_Setup_*.exe")
-        for f in glob.glob(pattern):
-            try:
-                if now - os.path.getmtime(f) < 600:   # 近 10 分钟改动 → 可能别的窗口在用，跳过
-                    continue
-                os.remove(f)
-            except OSError:
-                pass
+        patterns = ("CommTool_Setup_*.exe", "CommTool_v*.dmg")
+        for name in patterns:
+            pattern = os.path.join(tempfile.gettempdir(), name)
+            for f in glob.glob(pattern):
+                try:
+                    if now - os.path.getmtime(f) < 600:  # 近 10 分钟改动 → 可能别的窗口在用
+                        continue
+                    os.remove(f)
+                except OSError:
+                    pass
     except Exception:
         _log.debug("cleanup_temp_installers failed", exc_info=True)
 
@@ -239,6 +279,7 @@ class _DownloadWorker(QThread):
                 with open(self._path, "rb") as f:
                     head = f.read(2)
             except OSError as e:
+                self._remove()
                 self.done.emit("", str(e))
                 return
             if head != b"MZ":

@@ -328,22 +328,34 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             self._set_status(self._tr("update_latest", ver=info["version"]))
             return
         self._dl_url = info.get("url", "")
-        # 本平台下载候选：mac 用 url_mac(可为字符串或多源列表，逐个试)，其余用 url。仅收 https。
-        raw = info.get("url_mac", "") if sys.platform == "darwin" else self._dl_url
-        raw = [raw] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple)) else [])
-        self._dl_cands = [u for u in raw if isinstance(u, str) and u.lower().startswith("https://")]
+        # 本平台下载候选：mac 用 url_mac(可为字符串或多源列表，逐个试)，其余用 url。
+        # Mac：GitHub 优先（标准发版不把 .dmg 传到 Gitee，避免先撞 404）。
+        if sys.platform == "darwin":
+            from updater import mac_download_candidates
+            self._dl_cands = mac_download_candidates(info.get("url_mac", ""))
+        else:
+            raw = self._dl_url
+            raw = [raw] if isinstance(raw, str) else (
+                list(raw) if isinstance(raw, (list, tuple)) else [])
+            self._dl_cands = [
+                u for u in raw
+                if isinstance(u, str) and u.lower().startswith("https://")]
         txt = self._tr("update_found", ver=info["version"])
         if info.get("notes"):
             txt += "\n" + info["notes"]
+        if sys.platform == "darwin" and not self._dl_cands:
+            txt += "\n" + self._tr("update_platform_unavailable")
         self._set_status(txt)
-        if self._dl_url:
+        if self._dl_cands:
             self.btn_check.hide()
             self.btn_action.show()
+        else:
+            self.btn_action.hide()
 
     # ----- 下载 + 安装 -----
     def _download(self):
         # Windows: 下载 Setup.exe → 跑安装向导；macOS: 下载 dmg → 打开挂载(拖入应用程序)。
-        # 下载地址按候选逐个试(mac 多源：Gitee 优先 + GitHub 兜底)。
+        # 下载地址按候选逐个试(mac 多源：GitHub 优先 + 其它源兜底)。
         if not self._dl_cands:
             # 无平台专用直链(如老清单缺 url_mac) → 打开 releases 页兜底
             if sys.platform != "win32" and self._dl_url:

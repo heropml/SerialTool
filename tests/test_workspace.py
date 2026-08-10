@@ -42,12 +42,14 @@ def test_workspace_pages_and_tool_icons_initialize(tmp_path, monkeypatch):
         _APP.processEvents()
         icons = window.findChildren(QLabel, "WorkspaceToolIcon")
         assert window.workspace_stack.count() == 6
-        assert len(icons) == 17
+        assert len(icons) == 18  # includes I/O Graph entry under data tools
         assert len({icon.text() for icon in icons}) >= 12
         assert window.btn_xfer.text() == window._t("xfer_title")
         assert window.cb_workspace_template.count() == 8
         assert "device_title" in {item[0] for item in window._workspace_specs("protocol")}
-        assert "structured_title" in {item[0] for item in window._workspace_specs("data")}
+        data_keys = {item[0] for item in window._workspace_specs("data")}
+        assert "structured_title" in data_keys
+        assert "plot_io_graph" in data_keys
         tcp_index = window.cb_workspace_template.findData("modbus_tcp")
         window.cb_workspace_template.setCurrentIndex(tcp_index)
         assert "TCP Client" in window.lbl_workspace_template_preview.text()
@@ -1394,3 +1396,120 @@ def test_save_project_dialog_cancel_sets_cancelled_marker(monkeypatch):
     host = _Host()
     assert CommTool.save_project(host) is False
     assert host._project_save_cancelled is True
+
+
+def test_search_lazy_pages_with_next_prev(tmp_path, monkeypatch):
+    """Capped search keeps full-document next/previous wrap semantics."""
+    notices = []
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
+    window = CommTool("search-lazy-test")
+    try:
+        _APP.processEvents()
+        # Shrink page size so the test stays cheap.
+        window._KW_MAX_SELECTIONS = 5
+        window._search_mode = "hex"
+        window.txt_recv.setPlainText("00 " * 14)  # 14 hits
+        window.ed_search.setText("00")
+        assert len(window._search_matches) == 5
+        assert window._search_match_capped is True
+        assert window.lbl_search_cnt.text() == "1/5+"
+
+        # Advance to end of page 1, then one more ▼ → page 2
+        window._search_idx = 4
+        window._search_next()
+        assert len(window._search_matches) == 5
+        assert window._search_idx == 0
+        assert len(window._search_page_starts) == 2
+        assert window._search_page_starts[0] == 0
+        assert window.lbl_search_cnt.text().startswith("6/")
+        assert "+" in window.lbl_search_cnt.text()
+
+        # ▼ until last page (4 remaining → page of 4, not capped)
+        window._search_idx = 4
+        window._search_next()
+        assert len(window._search_matches) == 4
+        assert window._search_match_capped is False
+        assert window.lbl_search_cnt.text() == "11/14"
+
+        # ▲ from first of last page → previous page last match
+        window._search_idx = 0
+        window._search_prev()
+        assert len(window._search_matches) == 5
+        assert window._search_idx == 4
+        assert window.lbl_search_cnt.text().startswith("10/")
+
+        # Last global match + ▼ wraps to the first page/match.
+        window._search_idx = 4
+        window._search_next()
+        assert len(window._search_page_starts) == 3
+        assert len(window._search_matches) == 4
+        window._search_idx = 3
+        window._search_next()
+        assert window._search_page_starts == [0]
+        assert window._search_idx == 0
+        assert window.lbl_search_cnt.text() == "1/5+"
+
+        # First global match + ▲ lazily finds the final page/match.
+        window._search_prev()
+        assert len(window._search_page_starts) == 3
+        assert len(window._search_matches) == 4
+        assert window._search_idx == 3
+        assert window.lbl_search_cnt.text() == "14/14"
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_example_projects_validate_and_merge(tmp_path):
+    """Shipped examples/ packs load as v2 projects with useful resources."""
+    from project_model import load_project, merge_project_resources, validate
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    files = sorted(examples.glob("*.ctproj"))
+    assert len(files) >= 3
+    for path in files:
+        payload = load_project(str(path))
+        validate(payload)
+        merged = merge_project_resources(
+            payload.get("settings") or {}, payload.get("resources") or {})
+        assert isinstance(merged, dict)
+        # Every demo ships at least one connection preset name.
+        import json
+        presets = json.loads(merged.get("connection_presets") or "[]")
+        assert presets, path.name
+
+
+def test_example_project_generation_is_stable_and_dual_session_loops_back(tmp_path):
+    """Generated demos are reproducible and the virtual starter works immediately."""
+    from scripts import build_example_projects as builder
+    from project_model import merge_project_resources
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    builders = (builder.build_modbus, builder.build_at, builder.build_dual_session)
+    for build in builders:
+        build(first)
+        build(second)
+
+    for path in sorted(first.glob("*.ctproj")):
+        assert path.read_bytes() == (second / path.name).read_bytes()
+        shipped = Path(__file__).resolve().parents[1] / "examples" / path.name
+        assert path.read_bytes() == shipped.read_bytes()
+
+    dual = load_project(str(first / "dual_session_demo.ctproj"))
+    merged = merge_project_resources(
+        dual.get("settings") or {}, dual.get("resources") or {})
+    assert merged.get("vconn_loopback") is True
+    presets = json.loads(merged.get("connection_presets") or "[]")
+    ids = [item["id"] for item in presets]
+    assert len(ids) == len(set(ids))
+
+
+def test_example_projects_are_in_platform_installers():
+    """Repository examples must also reach Windows installers and the Mac DMG."""
+    root = Path(__file__).resolve().parents[1]
+    iss = (root / "scripts" / "CommTool.iss").read_text(encoding="utf-8")
+    mac = (root / "scripts" / "build_macos.sh").read_text(encoding="utf-8")
+    assert 'Source: "..\\examples\\*.ctproj"' in iss
+    assert 'cp -R examples "$STAGE/Examples"' in mac

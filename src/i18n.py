@@ -746,6 +746,7 @@ TR = {
         "update_downloading": "下载中 {pct}%",
         "update_failed": "检查更新失败：{e}",
         "update_dl_failed": "下载失败：{e}",
+        "update_platform_unavailable": "该版本的 macOS 安装包尚未发布，请稍后再检查",
         "update_installing": "正在启动安装程序，即将退出…",
         "update_open_page": "已在浏览器打开下载页",
         "update_open_dmg": "已下载并打开安装镜像，拖入「应用程序」后重启即可（首次打开见「关于」说明）",
@@ -1069,6 +1070,7 @@ TR = {
             "即使设备 10ms 发一帧，每 200ms 才回一次（冷却把中间的吃掉）</pre>"
         ),
         "plot_open": "波形图",
+        "plot_io_graph": "I/O Graph",
         "plot_need_lib": "波形图需要 pyqtgraph 库：{e}",
         "plot_title": "数据波形图",
         "dsl_busy": "上一条带时序的发送还在执行中",
@@ -2365,6 +2367,7 @@ TR = {
         "update_downloading": "Downloading {pct}%",
         "update_failed": "Update check failed: {e}",
         "update_dl_failed": "Download failed: {e}",
+        "update_platform_unavailable": "The macOS package for this version is not published yet; check again later",
         "update_installing": "Launching installer, quitting…",
         "update_open_page": "Opened the download page in your browser",
         "update_open_dmg": "Downloaded and opened the disk image — drag into Applications and relaunch (first open: see About)",
@@ -2690,6 +2693,7 @@ TR = {
             "Even if device sends every 10 ms, reply only fires every 200 ms (cooldown drops the in-between)</pre>"
         ),
         "plot_open": "Plot",
+        "plot_io_graph": "I/O Graph",
         "plot_need_lib": "Plot requires the pyqtgraph package: {e}",
         "plot_title": "Data Plot",
         "dsl_busy": "A timed send is still running",
@@ -3974,6 +3978,7 @@ TR = {
         "update_downloading": "下載中 {pct}%",
         "update_failed": "檢查更新失敗：{e}",
         "update_dl_failed": "下載失敗：{e}",
+        "update_platform_unavailable": "此版本的 macOS 安裝套件尚未發佈，請稍後再檢查",
         "update_installing": "正在啟動安裝程式，即將退出…",
         "update_open_page": "已在瀏覽器開啟下載頁",
         "update_open_dmg": "已下載並開啟安裝映像，拖入「應用程式」後重啟即可（首次開啟見「關於」說明）",
@@ -4297,6 +4302,7 @@ TR = {
             "即使裝置 10ms 發一幀，每 200ms 才回一次（冷卻把中間的吃掉）</pre>"
         ),
         "plot_open": "波形圖",
+        "plot_io_graph": "I/O Graph",
         "plot_need_lib": "波形圖需要 pyqtgraph 套件：{e}",
         "plot_title": "數據波形圖",
         "dsl_busy": "上一條帶時序的傳送還在執行中",

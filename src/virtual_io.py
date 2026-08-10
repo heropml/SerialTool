@@ -14,11 +14,14 @@ data_received/error_occurred/state_changed），因此作为一种连接「类�
 注意：send() 里不能直接 emit data_received —— 那样会在主窗 _send_text 尚未返回时
 重入收包路径。统一用 0ms QTimer 派发到下一轮事件循环。
 """
+import logging
+
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 PROTO_VIRTUAL = "Virtual"
 
 _MAX_INJECT = 1 << 20        # 单次注入字节上限，防脚本/回放一次灌爆界面
+_log = logging.getLogger(__name__)
 
 
 class VirtualConn(QObject):
@@ -90,7 +93,12 @@ class VirtualConn(QObject):
         """把 data 当作「设备发来的数据」投进来。回放器与「喂数据」按钮用。"""
         if not self._open:
             return 0
-        payload = bytes(data)[:_MAX_INJECT]
+        raw = bytes(data)
+        payload = raw[:_MAX_INJECT]
+        if len(raw) > _MAX_INJECT:
+            _log.warning(
+                "VirtualConn.inject truncated %d bytes to %d bytes",
+                len(raw), _MAX_INJECT)
         if payload:
             QTimer.singleShot(0, lambda d=payload: self._emit_rx(d))
         return len(payload)

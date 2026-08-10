@@ -81,6 +81,9 @@ Source: "..\docs\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion isread
 Source: "..\docs\使用說明.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Languages: chinesetrad
 ; 三份文档都引用的预览图
 Source: "..\assets\icon_preview.png"; DestDir: "{app}"; Flags: ignoreversion
+; 开箱示例工程（与三语使用说明中的 examples/ 路径一致）
+Source: "..\examples\*.ctproj"; DestDir: "{app}\examples"; Flags: ignoreversion
+Source: "..\examples\README.md"; DestDir: "{app}\examples"; Flags: ignoreversion
 
 [Icons]
 ; 开始菜单

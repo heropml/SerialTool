@@ -20,9 +20,11 @@ def build_search_bar(app):
     """Floating Ctrl+F search bar over txt_recv (hidden by default)."""
     """创建悬浮在 txt_recv 右上角的查找栏（默认隐藏）。"""
     app._search_term = ""
-    app._search_matches = []     # 存 QTextCursor
+    app._search_matches = []     # 存 QTextCursor（当前页）
     app._search_idx = -1
     app._search_match_capped = False
+    app._search_scan_end = 0     # 下一页 find_spans 的码点 start
+    app._search_page_starts = [0]  # 已访问页的扫描起点栈（支持 ▲ 回翻）
     app._search_mode = "plain"   # plain / regex / hex
     app._search_case = False     # 大小写敏感
     app._search_bar = QWidget(app.txt_recv)

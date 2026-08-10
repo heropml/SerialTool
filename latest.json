@@ -1,9 +1,6 @@
 {
-  "version": "1.5.0",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.5.0/CommTool_Setup_v1.5.0.exe",
-  "url_mac": [
-    "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.5.0/CommTool_v1.5.0.dmg",
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.5.0/CommTool_v1.5.0.dmg"
-  ],
-  "notes": "终端多会话标签：同窗并发连接、具名互斥提示、关键字 Regex/HEX、草稿防抖保存与 Windows CI"
+  "version": "1.5.1",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.5.1/CommTool_Setup_v1.5.1.exe",
+  "url_mac": [],
+  "notes": "搜索惰性分页与全局导航、可逆 I/O Graph、示例工程、Mac 发版门禁与显示选项矩阵"
 }

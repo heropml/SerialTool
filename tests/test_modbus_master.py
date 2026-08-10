@@ -11,6 +11,12 @@ import modbus_slave  # noqa: E402
 
 
 class BuildRequestTests(unittest.TestCase):
+    def test_tcp_transaction_id_rejects_out_of_range_or_fractional(self):
+        for tid in (-1, 0x10000, 1.5, "bad"):
+            with self.subTest(tid=tid), self.assertRaises(ValueError):
+                mm.build_tcp_request(tid, 1, 0x03, 0, 1)
+        self.assertEqual(mm.build_tcp_request(0xFFFF, 1, 0x03, 0, 1)[:2], b"\xff\xff")
+
     def test_rtu_read_holding(self):
         # 读保持寄存器：unit 1, func 03, addr 0, qty 2 → 01 03 0000 0002 + CRC
         f = mm.build_rtu_request(1, 0x03, 0, 2)

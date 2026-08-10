@@ -371,6 +371,10 @@ def _ar_script_worker(conn):
                 else:
                     raise TypeError("reply 返回类型须 bytes / str / list / None")
                 conn.send(("ok", norm))
+            except SystemExit as e:
+                # User scripts may call sys.exit(); report it like any other
+                # script error instead of silently killing the reusable worker.
+                conn.send(("err", "%s: %s" % (type(e).__name__, e)))
             except Exception as e:
                 conn.send(("err", "%s: %s" % (type(e).__name__, e)))
     finally:
@@ -1588,9 +1592,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         if not hasattr(self, "lbl_search_cnt"):
             return
         if self._search_matches:
+            page = max(0, len(getattr(self, "_search_page_starts", [0])) - 1)
+            base = page * self._KW_MAX_SELECTIONS
             suffix = "+" if getattr(self, "_search_match_capped", False) else ""
             self.lbl_search_cnt.setText(
-                f"{self._search_idx + 1}/{len(self._search_matches)}{suffix}")
+                f"{base + self._search_idx + 1}/{base + len(self._search_matches)}{suffix}")
         elif self._search_term:
             self.lbl_search_cnt.setText(self._t("search_no_match"))
         else:
@@ -1599,18 +1605,120 @@ class CommTool(SessionHostMixin, QMainWindow):
         if hasattr(self, "_search_bar"):
             self._reposition_search_bar()
 
+    def _search_find_kwargs(self):
+        return dict(
+            mode=getattr(self, "_search_mode", "plain"),
+            case_sensitive=getattr(self, "_search_case", False),
+            hexdump=getattr(self, "_hexdump_on", False),
+        )
+
+    def _load_search_page(self, start=0):
+        """Load one page of matches from codepoint ``start`` (lazy pagination)."""
+        import search_helper
+        doc_text = self.txt_recv.document().toPlainText()
+        page = self._KW_MAX_SELECTIONS
+        spans = search_helper.find_spans(
+            doc_text, self._search_term,
+            limit=page + 1, start=start, **self._search_find_kwargs())
+        capped = len(spans) > page
+        spans = spans[:page]
+        return self._set_search_page(doc_text, spans, capped, start)
+
+    def _set_search_page(self, doc_text, spans, capped, start=0):
+        """Install codepoint spans as the current QTextCursor search page."""
+        import search_helper
+        doc = self.txt_recv.document()
+        self._search_match_capped = capped
+        if spans:
+            last_start, last_end = spans[-1]
+            # Zero-width regex matches must still advance the next-page scan.
+            self._search_scan_end = (
+                last_end if last_end > last_start else min(len(doc_text), last_end + 1))
+        else:
+            self._search_scan_end = int(start or 0)
+        spans = search_helper.to_utf16_spans(doc_text, spans)
+        self._search_matches = []
+        for a, b in spans:
+            cur = QTextCursor(doc)
+            cur.setPosition(a)
+            cur.setPosition(b, QTextCursor.KeepAnchor)
+            cur.setKeepPositionOnInsert(True)
+            self._search_matches.append(cur)
+        return bool(self._search_matches)
+
+    def _extend_search_next_page(self):
+        """▼ past the end of a capped page → fetch the next chunk."""
+        start = int(getattr(self, "_search_scan_end", 0) or 0)
+        pages = list(getattr(self, "_search_page_starts", None) or [0])
+        if not self._load_search_page(start):
+            self._search_match_capped = False
+            return False
+        pages.append(start)
+        self._search_page_starts = pages
+        return True
+
+    def _load_search_prev_page(self):
+        """▲ before the first match of page N → reload page N-1."""
+        pages = list(getattr(self, "_search_page_starts", None) or [0])
+        if len(pages) <= 1:
+            return False
+        pages.pop()
+        start = pages[-1]
+        self._search_page_starts = pages
+        return self._load_search_page(start)
+
+    def _load_search_last_page(self):
+        """Find the final page in one bounded scan for global ▲ wrap."""
+        import search_helper
+        doc_text = self.txt_recv.document().toPlainText()
+        spans, starts = search_helper.find_last_page(
+            doc_text, self._search_term, page_size=self._KW_MAX_SELECTIONS,
+            **self._search_find_kwargs())
+        self._search_page_starts = starts
+        return self._set_search_page(
+            doc_text, spans, False, starts[-1] if starts else 0)
+
     def _search_next(self):
         if not self._search_matches:
             return
-        self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+        if self._search_idx + 1 < len(self._search_matches):
+            self._search_idx += 1
+        elif getattr(self, "_search_match_capped", False):
+            if self._extend_search_next_page():
+                self._search_idx = 0
+            elif len(getattr(self, "_search_page_starts", [0])) > 1:
+                # No further hits: wrap to the first global page.
+                self._search_page_starts = [0]
+                self._load_search_page(0)
+                self._search_idx = 0
+            else:
+                self._search_idx = 0
+        else:
+            if len(getattr(self, "_search_page_starts", [0])) > 1:
+                self._search_page_starts = [0]
+                self._load_search_page(0)
+            self._search_idx = 0
         self._goto_match(self._search_idx)
-        # 导航不改变文档，匹配列表不变：只重新着色当前匹配(内部含计数刷新)，免去全文 doc.find 重建
+        # 导航不改变文档：只重新着色当前匹配(内部含计数刷新)，免去全文重建
         self._refresh_extra_selections(rebuild_search=False)
 
     def _search_prev(self):
         if not self._search_matches:
             return
-        self._search_idx = (self._search_idx - 1) % len(self._search_matches)
+        if self._search_idx > 0:
+            self._search_idx -= 1
+        elif len(getattr(self, "_search_page_starts", [0])) > 1:
+            if self._load_search_prev_page() and self._search_matches:
+                self._search_idx = len(self._search_matches) - 1
+            else:
+                self._search_idx = 0
+        elif getattr(self, "_search_match_capped", False):
+            if self._load_search_last_page() and self._search_matches:
+                self._search_idx = len(self._search_matches) - 1
+            else:
+                self._search_idx = 0
+        else:
+            self._search_idx = len(self._search_matches) - 1
         self._goto_match(self._search_idx)
         self._refresh_extra_selections(rebuild_search=False)
 
@@ -1627,6 +1735,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._search_matches = []
         self._search_idx = -1
         self._search_match_capped = False
+        self._search_scan_end = 0
+        self._search_page_starts = [0]
         if hasattr(self, "lbl_search_cnt"):
             self.lbl_search_cnt.setText("")
         self._refresh_extra_selections()
@@ -1799,31 +1909,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 3. 搜索高亮（叠加在最上层）：所有匹配淡黄，当前匹配橙色
         if getattr(self, "_search_term", ""):
             if rebuild_search:
-                # 文档可能已变(实时接收新数据 / 搜索词变化)：全文 doc.find 重建匹配列表。
-                # 导航(上一个/下一个)不改文档，走 rebuild_search=False 跳过这段，避免大文档每次点击都全文扫描。
-                self._search_matches = []
-                self._search_match_capped = False
-                # 三模式（纯文本/正则/HEX）匹配由 search_helper 统一算出字符区间，再建选区光标。
-                # hexdump 视图下 HEX 搜索只对 hex 列生效（跳过偏移/ASCII 列误匹配）。
-                import search_helper
-                doc_text = doc.toPlainText()
-                spans = search_helper.find_spans(
-                    doc_text, self._search_term,
-                    getattr(self, "_search_mode", "plain"),
-                    getattr(self, "_search_case", False),
-                    hexdump=getattr(self, "_hexdump_on", False))
-                # search_helper 使用 Python 码点偏移；QTextCursor 使用 UTF-16 单元偏移。
-                # 含 emoji 等非 BMP 字符时，两者会在后续位置分叉。
-                spans = search_helper.to_utf16_spans(doc_text, spans)
-                if len(spans) > self._KW_MAX_SELECTIONS:
-                    self._search_match_capped = True
-                    spans = spans[:self._KW_MAX_SELECTIONS]
-                for start, end in spans:
-                    cur = QTextCursor(doc)
-                    cur.setPosition(start)
-                    cur.setPosition(end, QTextCursor.KeepAnchor)
-                    cur.setKeepPositionOnInsert(True)   # 同上：防选区随末尾插入延伸
-                    self._search_matches.append(cur)
+                # 文档/搜索词变了：重置到第一页。硬上限在 find_spans 内止损；
+                # 更多匹配靠 ▼ 惰性加载下一页（_extend_search_next_page）。
+                self._search_page_starts = [0]
+                self._search_scan_end = 0
+                self._load_search_page(0)
                 if not (0 <= self._search_idx < len(self._search_matches)):
                     self._search_idx = 0 if self._search_matches else -1
             # 用(已缓存或刚重建的)匹配列表着色：当前匹配橙色、其余淡黄
@@ -4403,7 +4493,13 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _append_block_data(self, text: str, direction: str, force_new_block: bool,
                            view_mode=None, runs=None, role=None):
-        if getattr(self, "_freeze_view", False):
+        # Prefer explicit display context (background tab opts) over the
+        # session proxy, so freeze_view in display_opts cannot desync from UI.
+        freeze = bool(getattr(self, "_freeze_view", False))
+        ctx = getattr(self, "_display_context", None)
+        if ctx is not None and "freeze_view" in ctx:
+            freeze = bool(ctx["freeze_view"])
+        if freeze:
             # 冻结视图：不追加显示，但「实时记录/Log to File」仍按正常拼接落盘（与 .ctrec 录制/
             # 统计/触发一样独立于视图）。否则冻结期间日志会静默丢一段数据，与"冻结只锁画面"的语义相悖。
             self._write_log_block(text, direction, force_new_block)
@@ -4734,7 +4830,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
-    def open_plot(self):
+    def open_plot(self, io_graph=False):
         """打开数据波形图（单实例，复用并刷新主题/语言）。
         pyqtgraph 懒导入：缺库时只提示、不影响主程序其余功能。"""
         if getattr(self, "_plot_dlg", None) is None:
@@ -4745,11 +4841,41 @@ class CommTool(SessionHostMixin, QMainWindow):
                 return
             self._plot_dlg = PlotDialog(self)
         dlg = self._plot_dlg
+        if io_graph and hasattr(dlg, "apply_io_graph_preset"):
+            dlg.apply_io_graph_preset()
+        elif hasattr(dlg, "leave_io_graph_preset"):
+            dlg.leave_io_graph_preset()
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def open_io_graph(self):
+        """Open the plot dialog preset to RX/TX throughput channels (I/O Graph)."""
+        self.open_plot(io_graph=True)
+        dlg = getattr(self, "_plot_dlg", None)
+        if dlg is None:
+            return
+        try:
+            if hasattr(dlg, "feed_named_samples"):
+                acc = getattr(self, "_io_stats", None)
+                dlg.feed_named_samples([
+                    {"tag": "rx_Bps", "value": float(getattr(self, "_rx_rate", 0) or 0)},
+                    {"tag": "tx_Bps", "value": float(getattr(self, "_tx_rate", 0) or 0)},
+                    {"tag": "rx_pps", "value": float(getattr(acc, "rx_pps", 0) or 0)},
+                    {"tag": "tx_pps", "value": float(getattr(acc, "tx_pps", 0) or 0)},
+                ])
+        except Exception:
+            _log.debug("open_io_graph seed failed", exc_info=True)
+
+    def _on_active_session_plot_changed(self):
+        """Keep the I/O Graph from joining samples from different tabs."""
+        dlg = getattr(self, "_plot_dlg", None)
+        if (dlg is not None
+                and getattr(dlg, "_io_graph_mode", False)
+                and hasattr(dlg, "restart_io_graph_series")):
+            dlg.restart_io_graph_series()
 
     def open_script_console(self):
         """打开脚本控制台（单实例，复用并刷新主题/语言）。"""
@@ -9535,7 +9661,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._refresh_stat_labels()
 
     def _stat_context_menu(self, pos):
-        """状态栏右键：重置统计（文字跟随语言、配色跟随主题）。"""
+        """状态栏右键：I/O Graph / 重置统计（文字跟随语言、配色跟随主题）。"""
         menu = QMenu(self.status_bar)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -9544,10 +9670,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             QMenu::item {{ padding: 5px 18px; border-radius: 5px; }}
             QMenu::item:selected {{ background-color: {c['accent']}; color: #FFFFFF; }}
         """)
+        act_io = menu.addAction(self._t("plot_io_graph"))
         act_reset = menu.addAction(self._t("stat_reset"))
         chosen = menu.exec_(self.status_bar.mapToGlobal(pos))
         menu.deleteLater()   # 每次右键新建、挂在 status_bar 下；exec_ 后主动回收，避免累积为常驻子对象
-        if chosen is act_reset:
+        if chosen is act_io:
+            self.open_io_graph()
+        elif chosen is act_reset:
             self._reset_stats()
 
     def toast(self, msg, error=False):
@@ -10249,6 +10378,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             "sc_title": self.open_script_console,
             "trg_title": self.open_triggers,
             "plot_open": self.open_plot,
+            "plot_io_graph": self.open_io_graph,
             "dash_open": self.open_dashboard,
             "rd_title": self.open_rec_diff,
             "structured_title": self._open_structured_record,

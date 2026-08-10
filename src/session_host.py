@@ -619,11 +619,17 @@ class SessionHostMixin:
             self._restore_session_network_ui(target)
             self._reparent_recv_overlays(target.txt_recv)
             self._refresh_stat_labels()
+            plot_changed = getattr(self, "_on_active_session_plot_changed", None)
+            if callable(plot_changed):
+                plot_changed()
             if hasattr(self, "_schedule_keyword_rebuild"):
                 self._schedule_keyword_rebuild()
             if hasattr(self, "_search_matches"):
                 self._search_matches = []
                 self._search_idx = -1
+                self._search_match_capped = False
+                self._search_scan_end = 0
+                self._search_page_starts = [0]
                 if hasattr(self, "lbl_search_cnt"):
                     self.lbl_search_cnt.setText("")
         if hasattr(self, "_schedule_workspace_autosave"):
@@ -667,6 +673,9 @@ class SessionHostMixin:
             self._reparent_recv_overlays(target.txt_recv)
             self._rebuild_session_tabs(select_id=target.id)
             self._refresh_stat_labels()
+            plot_changed = getattr(self, "_on_active_session_plot_changed", None)
+            if callable(plot_changed):
+                plot_changed()
             self._sync_open_button_from_session(target)
             if hasattr(self, "_schedule_keyword_rebuild"):
                 self._schedule_keyword_rebuild()
@@ -674,6 +683,9 @@ class SessionHostMixin:
             if hasattr(self, "_search_matches"):
                 self._search_matches = []
                 self._search_idx = -1
+                self._search_match_capped = False
+                self._search_scan_end = 0
+                self._search_page_starts = [0]
                 if hasattr(self, "lbl_search_cnt"):
                     self.lbl_search_cnt.setText("")
         finally:
@@ -989,16 +1001,25 @@ class SessionHostMixin:
         if session is None or getattr(session, "_period_timer", None) is None:
             return
         timer = session._period_timer
+        if session.period_on:
+            try:
+                ms = int(session.period_ms or "1000")
+                if ms < 10:
+                    raise ValueError(self._t("err_min_period"))
+            except (TypeError, ValueError) as e:
+                # Imported/persisted sessions bypass the live toggle validator.
+                # Disable an invalid schedule instead of silently running at 10ms.
+                session.period_on = False
+                if timer.isActive():
+                    timer.stop()
+                if session is self.active_session():
+                    self.toast(self._t("err_period_bad", e=e), error=True)
+                return
         want = bool(session.period_on and session.is_open())
         if not want:
             if timer.isActive():
                 timer.stop()
             return
-        try:
-            ms = max(10, int(session.period_ms or "1000"))
-        except (TypeError, ValueError):
-            ms = 1000
-            session.period_ms = "1000"
         if timer.isActive() and timer.interval() == ms:
             return
         timer.start(ms)

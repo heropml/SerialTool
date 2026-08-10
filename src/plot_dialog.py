@@ -43,7 +43,8 @@ _SEP_RX = [r",", r"\s+", r"\t", r";", r"[,\s;]+"]
 
 # 模式索引
 _MODE_DELIM, _MODE_REGEX, _MODE_HEX = 0, 1, 2
-_NO_JUMP_TAGS = frozenset({"rx_Bps", "tx_Bps", "rx_pps", "tx_pps"})
+_IO_GRAPH_TAGS = ("rx_Bps", "tx_Bps", "rx_pps", "tx_pps")
+_NO_JUMP_TAGS = frozenset(_IO_GRAPH_TAGS)
 
 
 class PlotDialog(QDialog):
@@ -75,6 +76,8 @@ class PlotDialog(QDialog):
         self._channels = []          # [{name, xs(deque), ys(deque), curve, color, cb}]
         self._pos_to_idx = {}        # 文本/帧解析：逻辑位置 → _channels 中的实际下标
         self._name_to_idx = {}       # 寄存器联动：tag → 通道下标（按名而非位置定位）
+        self._io_graph_mode = False
+        self._io_graph_restore = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -89,7 +92,7 @@ class PlotDialog(QDialog):
         self.cb_mode.currentIndexChanged.connect(self._on_mode_changed)
         self.cb_sep = QComboBox()            # 分隔符（5 项，仅分隔符模式）
         self.cb_sep.addItems(["", "", "", "", ""])
-        self.cb_sep.currentIndexChanged.connect(lambda *_: self._save_cfg())
+        self.cb_sep.currentIndexChanged.connect(self._on_sep_changed)
         self.ed_regex = QLineEdit()          # 仅正则模式
         self.ed_regex.editingFinished.connect(self._on_regex_changed)
         self.ed_header = QLineEdit()         # 仅 HEX 字节模式：帧头过滤（hex，可空）
@@ -229,7 +232,7 @@ class PlotDialog(QDialog):
 
     def feed(self, data: bytes):
         """主窗口收包时调用（仅本对话框可见时）。HEX 模式按帧取字段；文本模式缓冲拆行。"""
-        if self._paused:
+        if self._paused or vars(self).get("_io_graph_mode", False):
             return
         if self.cb_mode.currentIndex() == _MODE_HEX:
             if not self._hex_header_valid:
@@ -319,6 +322,10 @@ class PlotDialog(QDialog):
         共享同一个 X 坐标——否则一次响应里的多个寄存器会落在不同的采样点，波形横向错位。"""
         if self._paused or not samples:
             return
+        if vars(self).get("_io_graph_mode", False):
+            samples = [s for s in samples if s.get("tag") in _IO_GRAPH_TAGS]
+            if not samples:
+                return
         if self._x_time:
             if self._t0 is None:
                 self._t0 = time.monotonic()
@@ -388,6 +395,169 @@ class PlotDialog(QDialog):
             })
         return self._channels[i]
 
+    def ensure_named_channels(self, names, exclusive=False):
+        """Create named tag channels if missing; check them; optionally hide others."""
+        keep_indices = set()
+        for name in names:
+            if not name:
+                continue
+            name = str(name)
+            idx = self._name_to_idx.get(name)
+            if idx is None:
+                idx = len(self._channels)
+                self._name_to_idx[name] = idx
+                self._ensure_channel(idx, name)
+            keep_indices.add(idx)
+            ch = self._channels[idx]
+            ch["cb"].setChecked(True)
+            ch["curve"].setVisible(True)
+            if name in _NO_JUMP_TAGS:
+                ch["jumpable"] = False
+        if exclusive and keep_indices:
+            for idx, ch in enumerate(self._channels):
+                on = idx in keep_indices
+                ch["cb"].setChecked(on)
+                ch["curve"].setVisible(on)
+
+    def _snapshot_io_graph_state(self):
+        """Capture axis/sample counters + per-channel series for a reversible I/O view."""
+        series = []
+        checks = []
+        for ch in self._channels:
+            checks.append(ch["cb"].isChecked())
+            series.append((
+                list(ch["xs"]),
+                list(ch["ys"]),
+                list(ch["walls"]) if ch.get("walls") is not None else None,
+            ))
+        return {
+            "axis": self.cb_xaxis.currentIndex(),
+            "checks": checks,
+            "sample_idx": self._sample_idx,
+            "t0": self._t0,
+            "series": series,
+        }
+
+    def apply_io_graph_preset(self):
+        """One-click Wireshark-style I/O Graph: time axis + rate channels only.
+
+        Temporary and reversible: does not wipe existing plot samples. Ordinary
+        RX ``feed()`` / non-rate named samples are ignored while active; rate
+        channels get a clean time-axis series that is discarded on leave.
+        """
+        if self._io_graph_mode:
+            return False
+        self._io_graph_restore = self._snapshot_io_graph_state()
+        self._io_graph_mode = True
+        self.cb_xaxis.blockSignals(True)
+        self.cb_xaxis.setCurrentIndex(1)
+        self.cb_xaxis.blockSignals(False)
+        self._x_time = True
+        # Fresh time origin for the temporary rate overlay only.
+        self._t0 = None
+        self.plot.setLabel("bottom", self.app._t("plot_x_time"))
+        self.ensure_named_channels(_IO_GRAPH_TAGS, exclusive=True)
+        # Keep non-rate buffers intact (unchecked); clear rate series so the
+        # temporary time-axis points never mix with prior sample-index data.
+        for tag in _IO_GRAPH_TAGS:
+            idx = self._name_to_idx.get(tag)
+            if idx is None:
+                continue
+            ch = self._channels[idx]
+            ch["xs"].clear()
+            ch["ys"].clear()
+            if ch.get("walls") is not None:
+                ch["walls"].clear()
+            ch["curve"].setData([], [])
+        return True
+
+    def leave_io_graph_preset(self):
+        """Return to the plot state captured before the temporary I/O view."""
+        if not self._io_graph_mode:
+            return
+        snap = self._io_graph_restore
+        self._io_graph_mode = False
+        self._io_graph_restore = None
+        if not isinstance(snap, dict):
+            # Backward-compatible tuple snapshot from older builds.
+            axis, checks, sample_idx, time_origin = snap or (
+                self.cb_xaxis.currentIndex(), [], self._sample_idx, self._t0)
+            self.cb_xaxis.blockSignals(True)
+            self.cb_xaxis.setCurrentIndex(axis)
+            self.cb_xaxis.blockSignals(False)
+            self._x_time = axis == 1
+            self._sample_idx = sample_idx
+            self._t0 = time_origin
+            self.plot.setLabel(
+                "bottom",
+                self.app._t("plot_x_time" if self._x_time else "plot_x_index"))
+            for idx, ch in enumerate(self._channels):
+                on = checks[idx] if idx < len(checks) else False
+                ch["cb"].setChecked(on)
+                ch["curve"].setVisible(on)
+            return
+
+        axis = int(snap.get("axis", 0) or 0)
+        self.cb_xaxis.blockSignals(True)
+        self.cb_xaxis.setCurrentIndex(axis)
+        self.cb_xaxis.blockSignals(False)
+        self._x_time = axis == 1
+        self._sample_idx = snap.get("sample_idx", 0)
+        self._t0 = snap.get("t0")
+        self.plot.setLabel(
+            "bottom",
+            self.app._t("plot_x_time" if self._x_time else "plot_x_index"))
+
+        series = list(snap.get("series") or [])
+        checks = list(snap.get("checks") or [])
+        for idx, ch in enumerate(self._channels):
+            if idx < len(series):
+                xs, ys, walls = series[idx]
+                ch["xs"] = deque(xs, maxlen=self._max_points)
+                ch["ys"] = deque(ys, maxlen=self._max_points)
+                if walls is not None:
+                    ch["walls"] = deque(walls, maxlen=self._max_points)
+                elif "walls" in ch:
+                    ch["walls"] = deque(
+                        [0.0] * len(xs), maxlen=self._max_points)
+                on = bool(checks[idx]) if idx < len(checks) else False
+                ch["cb"].setChecked(on)
+                ch["curve"].setVisible(on)
+                if on:
+                    ch["curve"].setData(list(ch["xs"]), list(ch["ys"]))
+                else:
+                    ch["curve"].setData([], [])
+            else:
+                # Created only during the temporary I/O view (usually rate tags).
+                ch["xs"].clear()
+                ch["ys"].clear()
+                if ch.get("walls") is not None:
+                    ch["walls"].clear()
+                ch["cb"].setChecked(False)
+                ch["curve"].setVisible(False)
+                ch["curve"].setData([], [])
+
+    def restart_io_graph_series(self):
+        """Start a fresh rate segment after the active session changes.
+
+        The generic plot snapshot remains untouched and can still be restored
+        when leaving the temporary I/O view.
+        """
+        if not self._io_graph_mode:
+            return False
+        self._t0 = None
+        for tag in _IO_GRAPH_TAGS:
+            idx = self._name_to_idx.get(tag)
+            if idx is None:
+                continue
+            ch = self._channels[idx]
+            ch["xs"].clear()
+            ch["ys"].clear()
+            if ch.get("walls") is not None:
+                ch["walls"].clear()
+            ch["curve"].setData([], [])
+        return True
+
     # ---------------- 重绘 ----------------
     def _redraw(self):
         for ch in self._channels:
@@ -402,7 +572,12 @@ class PlotDialog(QDialog):
         self.ed_header.setVisible(mode == _MODE_HEX)
         self.ed_fields.setVisible(mode == _MODE_HEX)
         if save:                 # 切模式（非初次加载）：通道含义变了，清空重建
-            self._clear()
+            self._clear_after_io_graph()
+            self._save_cfg()
+
+    def _on_sep_changed(self, *_args, save=True):
+        if save:                 # 分隔规则变了：旧列含义不能与新解析结果混用
+            self._clear_after_io_graph()
             self._save_cfg()
 
     def _on_regex_changed(self, *_args, save=True):
@@ -416,6 +591,8 @@ class PlotDialog(QDialog):
                 self._regex = None
                 self.app.toast(self.app._t("plot_regex_bad"), error=True)
         if save:
+            # 捕获组/字段含义可能改变；先退出临时 I/O 视图，再清空旧曲线。
+            self._clear_after_io_graph()
             self._save_cfg()
 
     def _on_fields_changed(self, *_args, save=True):
@@ -425,7 +602,7 @@ class PlotDialog(QDialog):
             self._hex_fields = []
             self.app.toast(self.app._t("plot_fields_bad"), error=True)
         if save:                 # 字段定义变了：通道含义变，清空重建
-            self._clear()
+            self._clear_after_io_graph()
             self._save_cfg()
 
     def _on_header_changed(self, *_args, save=True):
@@ -437,7 +614,7 @@ class PlotDialog(QDialog):
             self._hex_header_valid = False
             self.app.toast(self.app._t("plot_header_bad"), error=True)
         if save:                 # 帧头变了：过滤范围变，清空避免新旧数据混在一起
-            self._clear()
+            self._clear_after_io_graph()
             self._save_cfg()
 
     def _on_maxpts_changed(self, *_args):
@@ -453,6 +630,24 @@ class PlotDialog(QDialog):
         self._save_cfg()
 
     def _on_xaxis_changed(self, *_args):
+        # Leaving the temporary I/O view first restores preserved samples. Only
+        # clear when the user picked an axis different from the restored one.
+        if getattr(self, "_io_graph_mode", False):
+            desired = self.cb_xaxis.currentIndex()
+            self.leave_io_graph_preset()
+            restored = self.cb_xaxis.currentIndex()
+            if desired == restored:
+                return
+            self.cb_xaxis.blockSignals(True)
+            self.cb_xaxis.setCurrentIndex(desired)
+            self.cb_xaxis.blockSignals(False)
+            self._x_time = desired == 1
+            self._clear()
+            self.plot.setLabel(
+                "bottom",
+                self.app._t("plot_x_time" if self._x_time else "plot_x_index"))
+            self._save_cfg()
+            return
         self._x_time = self.cb_xaxis.currentIndex() == 1
         self._clear()                # X 轴含义变了，旧点无意义，清空重来
         self.plot.setLabel("bottom",
@@ -510,6 +705,12 @@ class PlotDialog(QDialog):
             jump(best_wall)
 
 
+    def _clear_after_io_graph(self):
+        """Restore any reversible I/O snapshot, then wipe — mode/header changes."""
+        if getattr(self, "_io_graph_mode", False):
+            self.leave_io_graph_preset()
+        self._clear()
+
     def _clear(self):
         for ch in self._channels:
             self.plot.removeItem(ch["curve"])
@@ -521,9 +722,23 @@ class PlotDialog(QDialog):
         self._sample_idx = 0
         self._t0 = None
         self._decode_buf = ""
+        # Explicit clear discards the reversible I/O snapshot (user asked to wipe).
+        self._io_graph_mode = False
+        self._io_graph_restore = None
 
     def _export_csv(self):
-        if not self._channels:
+        channels = self._channels
+        if getattr(self, "_io_graph_mode", False):
+            # 临时 I/O 视图只导出当前四条速率曲线；被快照保留、UI 已隐藏的
+            # 普通解析曲线仍使用原采样轴，不能混进同一份 CSV。
+            rate_indices = {
+                self._name_to_idx.get(tag) for tag in _IO_GRAPH_TAGS
+            }
+            channels = [
+                ch for idx, ch in enumerate(self._channels)
+                if idx in rate_indices
+            ]
+        if not channels:
             self.app.toast(self.app._t("plot_no_data"), error=True)
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -534,7 +749,7 @@ class PlotDialog(QDialog):
         # 每通道两列 (x, value) 并排，行数取最长通道；通道间 x 可能不齐（有缺值），故不强行对齐
         header = []
         cols = []
-        for ch in self._channels:
+        for ch in channels:
             header += [f"{ch['name']}_x", ch["name"]]
             cols.append((list(ch["xs"]), list(ch["ys"])))
         rows = max((len(xs) for xs, _ in cols), default=0)
@@ -667,6 +882,9 @@ class PlotDialog(QDialog):
         self._timer.stop()
 
     def closeEvent(self, e):
+        # Closing while in I/O Graph must restore preserved samples for next open.
+        if getattr(self, "_io_graph_mode", False):
+            self.leave_io_graph_preset()
         self._save_cfg()
         super().closeEvent(e)
 

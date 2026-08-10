@@ -33,6 +33,10 @@ def test_shell_value_win32():
     assert "%" not in q and "!" not in q
     assert "\n" not in q and "\r" not in q
     assert "%" not in ts.shell_value("a%PATH%b", platform="win32")
+    # cmd.exe treats these as literal text while they remain inside the one
+    # surrounding quote pair; an embedded quote is replaced above.
+    meta = ts.shell_value("a & b | c > d < e ^ (f)", platform="win32")
+    assert meta == '"a & b | c > d < e ^ (f)"'
 
 
 def test_shell_value_posix():

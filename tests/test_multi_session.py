@@ -1925,6 +1925,26 @@ def test_concurrent_period_send_keeps_running_in_background(monkeypatch, tmp_pat
     assert not s2._period_timer.isActive()
 
 
+def test_invalid_persisted_period_is_disabled_not_silently_clamped(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "invalid-period")
+    _open_virtual(w)
+    session = w.active_session()
+    session.period_ms = "0"
+    session.period_on = True
+    notices = []
+    monkeypatch.setattr(
+        w, "toast", lambda msg, error=False: notices.append((msg, error)))
+
+    w._sync_session_period_timer(session)
+
+    assert session.period_ms == "0"
+    assert session.period_on is False
+    assert not session._period_timer.isActive()
+    assert notices and notices[-1][1] is True
+    w._close_all_sessions()
+
+
 def test_log_path_conflict_rejects_second_session(monkeypatch, tmp_path):
     w = _window(monkeypatch, tmp_path, "log-conflict")
     s1 = w.active_session()
@@ -2514,4 +2534,159 @@ def test_open_project_apply_failure_restores_previous_session_runtime(
     assert w.active_session() is second
     assert first.send_draft == "draft-a"
     assert second.send_draft == "draft-b"
+    w._close_all_sessions()
+
+
+def test_display_options_matrix_background_vs_active(monkeypatch, tmp_path):
+    """Background RX uses owning display_opts; active tab uses live UI.
+
+    Covers timestamp, HEX/hexdump/numview, ANSI strip, line split, encoding,
+    freeze (view locked, log still writes), without active-tab leakage.
+    """
+    w = _window(monkeypatch, tmp_path, "display-matrix")
+    _open_virtual(w)
+    s1 = w.active_session()
+    log1 = tmp_path / "matrix-s1.log"
+    s1.log_base_path = str(log1)
+    s1.log_seg = 0
+    assert w._open_log_segment(str(log1), session=s1)
+
+    # Capture s1 options while it is active, then diverge the foreground.
+    w.sw_show_timestamp.setChecked(False)
+    w.sw_rx_hex.setChecked(False)
+    if hasattr(w, "sw_hexdump"):
+        w.sw_hexdump.setChecked(False)
+    if hasattr(w, "sw_numview"):
+        w.sw_numview.setChecked(False)
+    if hasattr(w, "sw_line_split"):
+        w.sw_line_split.setChecked(True)
+    if hasattr(w, "sw_ansi"):
+        w.sw_ansi.setChecked(True)
+        w._ansi_on = True
+    if hasattr(w, "cb_encoding"):
+        idx = w.cb_encoding.findData("gbk")
+        if idx >= 0:
+            w.cb_encoding.setCurrentIndex(idx)
+    w._freeze_view = False
+    if hasattr(w, "sw_freeze_view"):
+        w.sw_freeze_view.setChecked(False, animate=False)
+    w._save_ui_into_session(s1)
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    # Active tab: opposite formatting so leakage would be obvious.
+    w.sw_show_timestamp.setChecked(True)
+    w.sw_rx_hex.setChecked(True)
+    if hasattr(w, "sw_hexdump"):
+        w.sw_hexdump.setChecked(False)
+    if hasattr(w, "sw_line_split"):
+        w.sw_line_split.setChecked(False)
+    if hasattr(w, "sw_ansi"):
+        w.sw_ansi.setChecked(False)
+        w._ansi_on = False
+    if hasattr(w, "cb_encoding"):
+        idx = w.cb_encoding.findData("utf-8")
+        if idx >= 0:
+            w.cb_encoding.setCurrentIndex(idx)
+    w._save_ui_into_session(s2)
+
+    # --- timestamp / encoding / ANSI / line_split on background ---
+    s1.txt_recv.clear()
+    # GBK for U+4E2D plus ANSI color; background must decode+strip, not HEX.
+    s1.conn.inject(b"\x1b[31m\xd6\xd0\x1b[0m\nTAIL")
+    _pump()
+    bg = s1.txt_recv.toPlainText()
+    assert "\u4e2d" in bg, bg
+    assert "TAIL" in bg
+    assert "\x1b" not in bg
+    assert "31m" not in bg
+    assert not bg.lstrip().startswith("["), bg  # no timestamp prefix
+    assert "41" not in bg  # must not render as active HEX
+
+    # Active tab still HEX+timestamp when it receives.
+    s2.txt_recv.clear()
+    s2.conn.inject(b"AB")
+    _pump()
+    fg = s2.txt_recv.toPlainText()
+    assert "41" in fg and "42" in fg
+    assert fg.lstrip().startswith("["), fg
+
+    # --- hexdump only on background opts ---
+    s1.txt_recv.clear()
+    s1.display_opts = dict(
+        s1.display_opts or {},
+        hexdump_on=True, numview_on=False, rx_hex=False,
+        ansi_on=False, show_timestamp=False, line_split=False,
+        encoding="utf-8")
+    s1.conn.inject(b"CD")
+    _pump()
+    dump = s1.txt_recv.toPlainText()
+    assert "00000000" in dump
+    assert "43" in dump and "44" in dump
+
+    # --- freeze locks view but keeps log ---
+    s1.txt_recv.clear()
+    before_log = log1.read_text(encoding="utf-8")
+    s1._freeze_view = True
+    s1.display_opts = dict(s1.display_opts or {}, freeze_view=True,
+                           hexdump_on=False, rx_hex=False, encoding="utf-8")
+    s1.conn.inject(b"FROZEN-VIEW")
+    _pump()
+    assert "FROZEN-VIEW" not in s1.txt_recv.toPlainText()
+    after_log = log1.read_text(encoding="utf-8")
+    assert "FROZEN-VIEW" in after_log
+    assert after_log != before_log
+
+    # display_context freeze wins even if session proxy is stale False
+    s1._freeze_view = False
+    s1.display_opts = dict(s1.display_opts or {}, freeze_view=True)
+    s1.txt_recv.clear()
+    s1.conn.inject(b"CTX-FREEZE")
+    _pump()
+    assert "CTX-FREEZE" not in s1.txt_recv.toPlainText()
+    assert "CTX-FREEZE" in log1.read_text(encoding="utf-8")
+
+    w._close_all_sessions()
+
+
+def test_display_options_matrix_numview_and_packet_split(monkeypatch, tmp_path):
+    """Numview and packet_split stay on the owning background session."""
+    w = _window(monkeypatch, tmp_path, "display-matrix-num-pkt")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.sw_rx_hex.setChecked(False)
+    if hasattr(w, "sw_hexdump"):
+        w.sw_hexdump.setChecked(False)
+    if hasattr(w, "sw_numview"):
+        w.sw_numview.setChecked(True)
+        w._numview_on = True
+    if hasattr(w, "sw_packet_split"):
+        w.sw_packet_split.setChecked(False)
+    w._save_ui_into_session(s1)
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    if hasattr(w, "sw_numview"):
+        w.sw_numview.setChecked(False)
+        w._numview_on = False
+    w.sw_rx_hex.setChecked(True)
+    w._save_ui_into_session(s2)
+
+    s1.txt_recv.clear()
+    s1.display_opts = dict(
+        s1.display_opts or {},
+        numview_on=True, hexdump_on=False, rx_hex=False,
+        packet_split=True, packet_timeout="50",
+        show_timestamp=False, encoding="utf-8")
+    s1.conn.inject(b"\x01\x02")
+    _pump(n=5, dt=0.01)
+    s1.conn.inject(b"\x03\x04")
+    _pump()
+    text = s1.txt_recv.toPlainText()
+    # Numview should not look like plain HEX dump offset or active HEX stream.
+    assert "00000000" not in text
+    assert text.strip() != "01 02 03 04"
+    # Packet split forces separate appends; at least one numeric rendering present.
+    assert any(ch.isdigit() for ch in text), text
+    assert "01 02" not in s2.txt_recv.toPlainText()
     w._close_all_sessions()

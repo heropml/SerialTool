@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from search_helper import find_spans, parse_hex_term  # noqa: E402
+from search_helper import find_last_page, find_spans, parse_hex_term  # noqa: E402
 
 
 class FindSpansTests(unittest.TestCase):
@@ -13,6 +13,10 @@ class FindSpansTests(unittest.TestCase):
         # 默认大小写不敏感；显式 case_sensitive=True 只匹配小写
         self.assertEqual(find_spans("Hello hello", "hel", case_sensitive=True), [(6, 9)])
         self.assertEqual(find_spans("abc", ""), [])
+        # Unicode lower() may expand a codepoint; spans must still index the
+        # original string so QTextCursor receives the correct position.
+        self.assertEqual(find_spans("İx", "x"), [(1, 2)])
+        self.assertEqual(find_spans("abc", "a", mode="unknown"), [])
 
     def test_regex_mode(self):
         self.assertEqual(find_spans("a1 b2 c3", r"[a-z]\d", mode="regex"),
@@ -73,6 +77,29 @@ class FindSpansTests(unittest.TestCase):
         text = "[2026/08/02 12:00:00.000] ← \n00000000  11 22 |..|"
         self.assertEqual(find_spans(text, "000000", mode="hex", hexdump=True), [])
 
+
+
+    def test_find_spans_respects_start_and_limit(self):
+        text = "aa aa aa aa"
+        self.assertEqual(find_spans(text, "aa", limit=2), [(0, 2), (3, 5)])
+        self.assertEqual(find_spans(text, "aa", limit=2, start=3), [(3, 5), (6, 8)])
+        self.assertEqual(find_spans(text, "aa", limit=10, start=9), [(9, 11)])
+        self.assertEqual(
+            find_spans("a1 b2 c3", r"[a-z]\d", mode="regex", limit=1, start=2),
+            [(3, 5)])
+        self.assertEqual(
+            find_spans("AA BB CC", "BB", mode="hex", limit=1, start=3),
+            [(3, 5)])
+
+    def test_find_last_page_scans_once_with_bounded_results(self):
+        text = "aa " * 14
+        spans, starts = find_last_page(text, "aa", page_size=5)
+        self.assertEqual(starts, [0, 15, 30])
+        self.assertEqual(spans, [(30, 32), (33, 35), (36, 38), (39, 41)])
+
+        spans, starts = find_last_page("no hits", "aa", page_size=5)
+        self.assertEqual(spans, [])
+        self.assertEqual(starts, [0])
 
 if __name__ == "__main__":
     unittest.main()

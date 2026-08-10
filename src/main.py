@@ -91,7 +91,7 @@ def main():
     install_font_substitutions()
     app.setFont(ui_font(10))
 
-    cleanup_temp_installers()   # 清理上次更新残留在 %TEMP% 的安装包
+    cleanup_temp_installers()   # 清理上次更新残留在系统临时目录的安装包
     # 多窗口配置隔离：挑一个空闲配置槽位（主/2/3…）并加锁——双击开多个 / 「新建窗口」
     # 都各用各的配置、退出不互相覆盖。锁必须留到进程退出，否则被释放、槽位会被下一个窗口抢占；
     # 挂到 app（生命周期=整个进程）上保活，比裸局部变量更稳（不依赖 CPython 引用计数细节）。

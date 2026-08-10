@@ -1,0 +1,157 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "Modbus RTU Demo",
+  "metadata": {
+    "device_type": "modbus",
+    "protocol_template": "modbus_rtu",
+    "connection_type": "Serial",
+    "description": "HEX + packet split + ModbusCRC; sample registers and snippets."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": true,
+    "packet_split": true,
+    "packet_timeout": "20",
+    "line_split": false,
+    "line_nl_mode": 0,
+    "tx_hex": true,
+    "append_newline": false,
+    "append_nl_mode": 0,
+    "checksum_idx": 5,
+    "encoding": "auto",
+    "frame_rules": " | 从机=0:u8x, 功能码=1:u8x",
+    "plot_mode": 0,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "",
+    "plot_hex_header": "",
+    "dash_mode": 0,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "",
+    "dash_header": "",
+    "net_proto": "Serial",
+    "rx_hex": true,
+    "ser_baud": "9600",
+    "ser_databits": "8",
+    "ser_parity": "Even",
+    "ser_stopbits": "1",
+    "show_timestamp": true,
+    "device_registers": "[{\"name\": \"Voltage\", \"address\": 0, \"type\": \"u16\", \"unit\": \"V\", \"scale\": 0.1, \"slave\": 1, \"function\": 3}, {\"name\": \"Current\", \"address\": 1, \"type\": \"u16\", \"unit\": \"A\", \"scale\": 0.01, \"slave\": 1, \"function\": 3}]",
+    "snippets": "[{\"name\": \"Read Holding 0..1\", \"text\": \"01 03 00 00 00 02\", \"hex\": true}, {\"name\": \"Read Input 0\", \"text\": \"01 04 00 00 00 01\", \"hex\": true}]",
+    "connection_presets": "[{\"id\": \"example-modbus-rtu-serial\", \"name\": \"Modbus RTU COM\", \"note\": \"Typical RS-485 Modbus RTU\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"9600\", \"ser_databits\": \"8\", \"ser_parity\": \"Even\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true}, {\"id\": \"example-modbus-tcp\", \"name\": \"Modbus TCP\", \"note\": \"Optional TCP path\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"192.168.1.10\", \"net_remote_port\": \"502\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [
+        {
+          "name": "Voltage",
+          "address": 0,
+          "type": "u16",
+          "unit": "V",
+          "scale": 0.1,
+          "slave": 1,
+          "function": 3
+        },
+        {
+          "name": "Current",
+          "address": 1,
+          "type": "u16",
+          "unit": "A",
+          "scale": 0.01,
+          "slave": 1,
+          "function": 3
+        }
+      ],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "Read Holding 0..1",
+          "text": "01 03 00 00 00 02",
+          "hex": true
+        },
+        {
+          "name": "Read Input 0",
+          "text": "01 04 00 00 00 01",
+          "hex": true
+        }
+      ],
+      "groups": []
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-modbus-rtu-serial",
+          "name": "Modbus RTU COM",
+          "note": "Typical RS-485 Modbus RTU",
+          "last_used": 0.0,
+          "net_proto": "Serial",
+          "ser_port": "",
+          "ser_baud": "9600",
+          "ser_databits": "8",
+          "ser_parity": "Even",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": false,
+          "auto_reconnect": true
+        },
+        {
+          "id": "example-modbus-tcp",
+          "name": "Modbus TCP",
+          "note": "Optional TCP path",
+          "last_used": 0.0,
+          "net_proto": "TCP Client",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "192.168.1.10",
+          "net_remote_port": "502",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": false,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 0,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "",
+      "dash_header": ""
+    },
+    "plot": {
+      "plot_mode": 0,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "",
+      "plot_hex_header": ""
+    }
+  }
+}
