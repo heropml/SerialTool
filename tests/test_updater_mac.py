@@ -37,13 +37,22 @@ def test_mac_download_candidates_filters_and_dedupes():
     ]) == ["https://github.com/x/a.dmg"]
 
 
-def test_active_manifest_advertises_published_mac_asset():
+def test_active_manifest_mac_urls_match_gate():
+    """Windows-first publish leaves url_mac empty until Mac gate verifies the DMG.
+
+    When urls are present they must be the GitHub asset for the same version
+    (no prefilled dead links / Gitee-only Mac entries).
+    """
     manifest = json.loads((ROOT / "latest.json").read_text(encoding="utf-8"))
     version = manifest["version"]
-    assert mac_download_candidates(manifest.get("url_mac")) == [
+    expected = (
         "https://github.com/heropml/SerialTool/releases/download/"
-        "comm-v%s/CommTool_v%s.dmg" % (version, version),
-    ]
+        "comm-v%s/CommTool_v%s.dmg" % (version, version)
+    )
+    got = mac_download_candidates(manifest.get("url_mac"))
+    assert got in ([], [expected])
+    if got:
+        assert got[0] == expected
 
 
 def test_invalid_version_never_forces_an_update():
