@@ -69,6 +69,11 @@ def test_prerelease_suffix_ordering():
     assert is_newer("1.5.0-rc2", "1.5.0-rc") is True
     # different base versions still compared by main version
     assert is_newer("1.5.1-rc1", "1.5.0") is True
+    # Extra numeric components must not shift the prerelease tuple into an int
+    # comparison (which used to raise TypeError). Trailing zero is equivalent.
+    assert is_newer("1.5.0.0-rc1", "1.5.0-rc1") is False
+    assert is_newer("1.5.0-rc1", "1.5.0.0-rc1") is False
+    assert is_newer("1.5.0.1-rc1", "1.5.0-rc1") is True
 
 
 def test_cleanup_removes_stale_exe_and_dmg_but_keeps_recent(tmp_path, monkeypatch):

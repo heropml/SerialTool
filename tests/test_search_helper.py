@@ -88,12 +88,18 @@ class FindSpansTests(unittest.TestCase):
         self.assertEqual(find_spans(text, "000000", mode="hex", hexdump=True), [])
 
     def test_hexdump_mode_with_crlf_endings(self):
-        # splitlines() 正确处理 \r\n，偏移不会因行尾残留 \r 而偏差
+        # CRLF 占两个码点；第二行 span 必须仍指向原文中的准确位置。
         text = "00000000  00 01 |..|\r\n00000010  02 03 |..|\r\n"
         spans = find_spans(text, "0001", mode="hex", hexdump=True)
         self.assertEqual(len(spans), 1)
         start, end = spans[0]
         self.assertEqual(text[start:end], "00 01")
+
+        spans = find_spans(text, "0203", mode="hex", hexdump=True)
+        self.assertEqual(len(spans), 1)
+        start, end = spans[0]
+        self.assertEqual(start, text.index("02 03"))
+        self.assertEqual(text[start:end], "02 03")
 
 
 

@@ -56,6 +56,7 @@ def _parse_version(v):
     try:
         s = str(v).strip().lstrip("vV")
         main, sep, pre = s.partition("-")  # 拆出主版本与可选预发布后缀(-rc1/-beta…)
+        pre = pre.strip()
         parts = main.split(".")
         if (not parts or any(not part.isdigit() for part in parts)
                 or (sep and not pre)):
@@ -63,19 +64,20 @@ def _parse_version(v):
         nums = [int(part) for part in parts]
         while len(nums) < 3:              # 补齐 3 段：1.0 → (1,0,0)
             nums.append(0)
+        # 1.0.0.0 与 1.0.0 等价；保留额外的非零段，且把主版本整体放在
+        # 固定位置，避免 3/4 段版本比较时拿 int 与预发布 tuple 相比。
+        while len(nums) > 3 and nums[-1] == 0:
+            nums.pop()
+        base = tuple(nums)
         if pre:
             # 拆预发布后缀为 (名称, 序号)：rc1 → ("rc", 1)，beta → ("beta", 0)
-            m = __import__("re").match(r"([a-zA-Z]+)(\d+)?", pre.strip())
+            m = re.fullmatch(r"([a-zA-Z]+)(\d*)", pre)
             if m:
-                nums.append(0)           # 预发布 < 正式版
-                nums.append((m.group(1).lower(), int(m.group(2) or 0)))
+                name, number = m.group(1).lower(), int(m.group(2) or 0)
             else:
-                nums.append(0)
-                nums.append((pre.strip().lower(), 0))
-        else:
-            nums.append(1)               # 正式版 > 预发布
-            nums.append(("", 0))
-        return tuple(nums)
+                name, number = pre.lower(), 0
+            return (base, 0, name, number)  # 预发布 < 正式版
+        return (base, 1, "", 0)
     except (ValueError, AttributeError, TypeError):
         return None
 

@@ -70,7 +70,7 @@ def _iter_hex_spans_in_hexdump(text, pat, flags, start=0):
     rx = re.compile(pat, flags)
     # 惰性翻页从包含 start 的行开始，避免每翻一页都重新遍历此前所有行。
     off = text.rfind("\n", 0, min(start, len(text))) + 1
-    for line in text[off:].splitlines():
+    for line in text[off:].splitlines(keepends=True):
         if _HEXDUMP_LINE.match(line):
             ascii_idx = line.find(" |", 10)
             if ascii_idx > 10:
@@ -79,7 +79,8 @@ def _iter_hex_spans_in_hexdump(text, pat, flags, start=0):
                     if a < start:
                         continue
                     yield a, off + 10 + m.end()
-        off += len(line) + 1     # splitlines 去掉了换行符，还原全文字符偏移
+        # 保留原始行尾，CRLF 的两个码点也必须计入全文偏移。
+        off += len(line)
 
 
 def _iter_spans(text, term, mode="plain", case_sensitive=False,

@@ -9014,6 +9014,20 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             return
+        strict_full_write = getattr(self, "_conn_proto", None) in (
+            PROTO_SERIAL, PROTO_TCP_CLIENT)
+        if strict_full_write and sent != len(data):
+            # 与普通发送/文件传输保持一致：短写只统计实际交付的前缀，不能把
+            # 整块登记到宏录制、数据录制或 PCAP。TCP 流还需断开重建。
+            if sent < len(data):
+                self.tx_bytes += sent
+                acc = getattr(self, "_io_stats", None)
+                if acc is not None:
+                    acc.note_tx_bytes(sent)
+            self._abort_partial_tcp_stream(sent, len(data))
+            self._stat_note_tx_error()
+            self._refresh_stat_labels(with_tooltip=False)
+            return
         self._stat_note_tx(len(data))
         self._macro_record_tx(data)
         # 终端是绕过 _send_text 的直发路径，采集入口得在这里补一次：数据录制录的是「线路

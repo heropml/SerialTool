@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -396,6 +397,32 @@ class TriggerIntegrationTests(unittest.TestCase):
             w._triggers_feed = orig_feed
             w._is_open = orig_open
             w.conn = orig_conn
+
+    def test_terminal_short_write_is_not_recorded_as_full_payload(self):
+        """A partial serial/TCP write must not become a full TX event/PCAP packet."""
+        w = self.w
+        old = (w.conn, w._conn_proto, w.tx_bytes)
+
+        class _Conn:
+            @staticmethod
+            def send(data, target=None):
+                return len(data) - 1
+
+        try:
+            w.conn = _Conn()
+            w._conn_proto = PROTO_SERIAL
+            with mock.patch.object(w, "_is_open", return_value=True), \
+                    mock.patch.object(w, "_record_stream_tx") as record, \
+                    mock.patch.object(w, "_macro_record_tx") as macro, \
+                    mock.patch.object(w, "_abort_partial_tcp_stream"), \
+                    mock.patch.object(w, "_stat_note_tx_error"), \
+                    mock.patch.object(w, "_refresh_stat_labels"), \
+                    mock.patch.object(w._io_stats, "note_tx_bytes"):
+                w._terminal_send(b"PING")
+            record.assert_not_called()
+            macro.assert_not_called()
+        finally:
+            w.conn, w._conn_proto, w.tx_bytes = old
 
     def test_keyword_split_across_serial_reads(self):
         """回归：串口按块回调，"ERROR" 可能被劈成 "ERR" + "OR" —— 只看单块必漏。"""
