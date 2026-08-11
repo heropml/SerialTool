@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                              QPlainTextEdit, QLineEdit, QScrollArea, QFrame)
 
 import rec_replay
+import pcap_export
 from theme import chrome_for
 from fonts import localize_qss, mono_font
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
@@ -213,7 +214,6 @@ class RecReplayDialog(QDialog):
         if not self._events:
             self.app.toast(self.app._t("rr_nothing"), error=True)
             return
-        import pcap_export
         link = self._link
         if not pcap_export.can_export_link(link):
             self.app.toast(self.app._t("rr_pcap_unsupported"), error=True)

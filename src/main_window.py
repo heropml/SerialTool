@@ -5495,7 +5495,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         Returns None when the active connection is out of scope (serial,
         TCP Server, multicast, UDP without a fixed remote peer).
         """
-        from pcap_export import PROTO_TCP_CLIENT, PROTO_UDP, can_export_link
+        from pcap_export import can_export_link
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         remote_ip = ""
         remote_port = None

@@ -16,10 +16,9 @@ import ipaddress
 import struct
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
-Event = Tuple[float, str, bytes]  # (t_rel, 'rx'|'tx', payload)
+from net_io import PROTO_TCP_CLIENT, PROTO_UDP
 
-PROTO_TCP_CLIENT = "TCP Client"
-PROTO_UDP = "UDP"
+Event = Tuple[float, str, bytes]  # (t_rel, 'rx'|'tx', payload)
 
 _PCAP_MAGIC = 0xA1B2C3D4
 _PCAP_VER_MAJOR = 2
@@ -259,17 +258,20 @@ def events_to_pcap(
             out += struct.pack("<IIII", sec, usec, len(frame), len(frame))
             out += frame
 
-    # Global header only → nothing usable
+    # Global header only → events existed but none had a usable payload
     if len(out) <= 24:
-        raise PcapExportError("no events to export")
+        raise PcapExportError("all events have empty payload")
     return bytes(out)
 
 
 def export_pcap_file(path: str, events: Iterable[Event], link: Mapping,
                      *, wall_t0: Optional[float] = None) -> int:
     """Write a .pcap file; return the number of packets written."""
-    ev = [(float(t), d, bytes(b)) for t, d, b in events
+    raw = list(events)
+    ev = [(float(t), d, bytes(b)) for t, d, b in raw
           if d in ("rx", "tx") and b]
+    if raw and not ev:
+        raise PcapExportError("all events have empty payload")
     data = events_to_pcap(ev, link, wall_t0=wall_t0)
     with open(path, "wb") as f:
         f.write(data)

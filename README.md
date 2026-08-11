@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
 
-[下载最新版](../../releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
+[下载最新版](./releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
 
 ![CommTool](./assets/icon_preview.png)
 
@@ -38,7 +38,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 ## 快速开始
 
-1. 打开 [Releases](../../releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
+1. 打开 [Releases](./releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
 2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
 3. 在「类型」选择 **Serial**、目标网络协议或 **Virtual**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
@@ -565,7 +565,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v4**: 侧边栏布局（USR 风格）+ QGridLayout 右对齐
 - **v5**: 换行分包 + 换行符模式选择（Auto / CRLF / LF / CR）
 - **v6**: 校验算法补全到 9 种（含 CCITT-CRC16 / CRC32 / ADD16）
-- **v7**: 拆分"时间戳"和"分包"为两个独立开关 + 追加换行符模式下拉 + MOBUS（CRC8 poly 0x31）→ 10 种校验
+- **v7**: 拆分"时间戳"和"分包"为两个独立开关 + 追加换行符模式下拉 + MOBUS（CRC8 poly 0x31）→ 9 种算法 +「无」
 - **v8**: 主控件统一 90px 左右齐平 + 保存/清空按钮也对齐
 - **v9**: 关闭确认对话框 + 系统托盘（最小化到托盘 / 退出 / 取消）
 - **v10**: 图标 base64 固化在源码内（防替换），运行时不再读外部 `icon.ico`

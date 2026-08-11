@@ -117,8 +117,26 @@ class PcapExportTests(unittest.TestCase):
             "remote_ip": "1.2.3.4",
             "remote_port": 80,
         }
-        with self.assertRaises(pcap_export.PcapExportError):
+        with self.assertRaises(pcap_export.PcapExportError) as ctx:
             pcap_export.events_to_pcap([], link)
+        self.assertIn("no events", str(ctx.exception))
+
+    def test_all_empty_payloads_fail_distinctly(self):
+        link = {
+            "proto": "TCP Client",
+            "remote_ip": "1.2.3.4",
+            "remote_port": 80,
+        }
+        with self.assertRaises(pcap_export.PcapExportError) as ctx:
+            pcap_export.events_to_pcap(
+                [(0.0, "tx", b""), (0.1, "rx", b"")], link)
+        self.assertIn("empty payload", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "empty.pcap")
+            with self.assertRaises(pcap_export.PcapExportError) as ctx2:
+                pcap_export.export_pcap_file(
+                    out, [(0.0, "tx", b""), (0.1, "rx", b"")], link)
+            self.assertIn("empty payload", str(ctx2.exception))
 
     def test_large_tcp_event_is_segmented_without_data_loss(self):
         link = {
