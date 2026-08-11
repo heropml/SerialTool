@@ -18,18 +18,19 @@
 
 > 附注（非 bug，记备查）：ASCII 切帧只认 `\n` 作帧尾（规范是 CRLF）。主流设备 CRLF/LF 都能处理；纯 CR（无 LF）的非标设备会让帧累积到下一帧的 `\n`。极罕见。
 
-### 审计暂不处理（Low，仅记录）
+### 审计 Low（打磨轮）
 
-| # | 位置 | 问题 | 备注 |
+| # | 位置 | 问题 | 状态 |
 |---|---|---|---|
-| L1 | `i18n.py` | `log_started` / `log_stopped` 无 `{path}` 占位符 | 无功能影响 |
-| L2 | `i18n.py` | 缺 `workspace_terminal_tip` 键 | 当前未触发 |
-| L3 | HEX 解析 | 两模块行为不一致 | Low，行为差异 |
-| L4 | `compile_regex` | 误拒所有格量词 | 保守安全 |
-| L5 | `requirements.txt` | 缺 pytest | dev 依赖 |
-| L6 | 连接层 | `open_conn` 无替换守卫、空闲计时器、CFG_KEYS 遗漏、TCP/UDP 失败对象未 `deleteLater` 等 | 防御性改进 |
+| L1 | `i18n.py` | `log_started` / `log_stopped` 无 `{path}` 占位符 | DONE：三语补 `{path}` |
+| L2 | `i18n.py` | 缺 `workspace_terminal_tip` 键 | DONE：补 tip；会话条 `session_list_tip` |
+| L3 | HEX 解析 | `search_helper` vs `triggers` 不一致 | DONE：`parse_hex_term` 对齐触发器清洗 |
+| L4 | `compile_regex` | 误拒所有格量词 | 仍保留（保守安全，不改） |
+| L5 | `requirements.txt` | 缺 pytest | DONE：`pytest>=7.0` |
+| L6 | 连接层 | open 替换守卫 / CFG_KEYS / deleteLater | DONE：`open_conn` 先 close；`sequence_split` 入 CFG；TCP/UDP 失败路径 `deleteLater` |
 
 > High/Medium（H1 + M1–M13）已按 2026-08 审计方案落地，见 `tests/test_bugfix_hm.py`。
+> v1.5 多会话：窗口级独占（AR/Modbus/序列等）与后台 RX 不喂引擎仍为**有意设计**；本轮仅补 UI 说明，不做引擎 per-session 化。
 
 ---
 

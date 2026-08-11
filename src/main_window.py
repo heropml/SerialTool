@@ -3034,6 +3034,12 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.toast(self._t(
                     "session_conflict", name=conflict.tab_label()))
             return "resource-conflict"
+        # Defense-in-depth: never orphan a live conn when open_conn is called
+        # again (UI toggle normally closes first; this covers racy/programmatic paths).
+        if self.conn is not None:
+            self.close_conn(
+                update_ui=(session is self.active_session()),
+                preserve_session_intent=True)
         port = checked.get("port") if proto == PROTO_SERIAL else None
         serial_extras = None
         if proto == PROTO_SERIAL:

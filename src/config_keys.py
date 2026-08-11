@@ -44,7 +44,7 @@ CFG_KEYS = (
     "device_plot_tags", "device_dash_tags",
     # 自动化测试序列
     "sequence_rules", "sequence_loops", "sequence_stop_on_fail",
-    "sequence_csv_path",
+    "sequence_csv_path", "sequence_split",
     # 触发告警
     "triggers",
     # 帧构造器

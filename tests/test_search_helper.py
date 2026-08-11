@@ -52,6 +52,13 @@ class FindSpansTests(unittest.TestCase):
         self.assertEqual(find_spans("AA BB", "GG", mode="hex"), [])     # 非法字节
         self.assertEqual(find_spans("AA BB", "010", mode="hex"), [])    # 奇数位
 
+    def test_hex_term_matches_trigger_sanitizer(self):
+        """Align with triggers.parse_hex_pattern: per-byte 0x and newlines."""
+        self.assertEqual(parse_hex_term("0x01,0x03"), b"\x01\x03")
+        self.assertEqual(parse_hex_term("0x01 0x03"), b"\x01\x03")
+        self.assertEqual(parse_hex_term("01\n03"), b"\x01\x03")
+        self.assertEqual(find_spans("01 03 AA", "0x01,0x03", mode="hex"), [(0, 5)])
+
     def test_spans_are_non_overlapping_and_ordered(self):
         spans = find_spans("aaaa", "aa")
         self.assertEqual(spans, [(0, 2), (2, 4)])

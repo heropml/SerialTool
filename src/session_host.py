@@ -269,6 +269,8 @@ class SessionHostMixin:
         lbl = QLabel(self._t("session_list"))
         lbl.setObjectName("SessionStripLabel")
         lbl.setProperty("tr_text", "session_list")
+        lbl.setProperty("tr_tooltip", "session_list_tip")
+        set_tooltip(lbl, self._t("session_list_tip"))
         row.addWidget(lbl, 0)
         self._session_strip_label = lbl
 

@@ -46,6 +46,7 @@ def test_cfg_keys_core_members():
     assert "autoreply_rules" in ck.CFG_KEYS
     assert "sequence_loops" in ck.CFG_KEYS
     assert "sequence_stop_on_fail" in ck.CFG_KEYS
+    assert "sequence_split" in ck.CFG_KEYS
     assert "terminal_mode" in ck.CFG_KEYS
     assert "frame_builder_split" in ck.CFG_KEYS
     assert "modbus_master_echo" in ck.CFG_KEYS

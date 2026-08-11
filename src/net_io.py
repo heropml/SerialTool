@@ -204,7 +204,10 @@ class TcpServerConn(NetConn):
         self._server.newConnection.connect(self._on_new)
         if not self._server.listen(_any_or(self._ip), self._port):
             self.error_occurred.emit(self._server.errorString())
+            srv = self._server
             self._server = None
+            _safe(srv.close)
+            _safe(srv.deleteLater)
             return False
         self.state_changed.emit(True)
         return True
@@ -312,8 +315,10 @@ class TcpServerConn(NetConn):
         self._clients = []
         was_open = bool(self._server)
         if self._server:
-            self._server.close()
+            srv = self._server
             self._server = None
+            _safe(srv.close)
+            _safe(srv.deleteLater)
         if was_open:
             self.state_changed.emit(False)
 
@@ -464,8 +469,10 @@ class UdpConn(NetConn):
         self._sock = QUdpSocket(self)
         if not self._sock.bind(_any_or(self._local_ip), self._local_port):
             self.error_occurred.emit(self._sock.errorString())
-            self._sock.close()
+            sock = self._sock
             self._sock = None
+            _safe(sock.close)
+            _safe(sock.deleteLater)
             return False
         self._sock.readyRead.connect(self._on_read)
         self.state_changed.emit(True)
@@ -598,8 +605,10 @@ class UdpGroupConn(NetConn):
         if not self._sock.bind(QHostAddress(QHostAddress.AnyIPv4), self._port,
                                QUdpSocket.ShareAddress | QUdpSocket.ReuseAddressHint):
             self.error_occurred.emit(self._sock.errorString())
-            self._sock.close()
+            sock = self._sock
             self._sock = None
+            _safe(sock.close)
+            _safe(sock.deleteLater)
             return False
         grp = QHostAddress(self._group)
         iface = _find_interface(self._iface_ip)
@@ -610,8 +619,10 @@ class UdpGroupConn(NetConn):
             joined = self._sock.joinMulticastGroup(grp)
         if not joined:
             self.error_occurred.emit(self._sock.errorString())
-            self._sock.close()
+            sock = self._sock
             self._sock = None
+            _safe(sock.close)
+            _safe(sock.deleteLater)
             return False
         # 组播 TTL：默认 1 仅限本子网，设大些以便跨网段/经路由器转发（按需可调）
         self._sock.setSocketOption(QAbstractSocket.MulticastTtlOption, 16)

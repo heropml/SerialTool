@@ -17,10 +17,11 @@ import re
 
 
 def parse_hex_term(term):
-    """``"01 03" / "0103" / "0x01,03"`` → bytes 或 None（非法 hex）。"""
-    t = (term or "").replace(" ", "").replace(",", "").replace("\t", "")
-    if t.lower().startswith("0x"):
-        t = t[2:]
+    """``"01 03" / "0103" / "0x01,0x03"`` → bytes 或 None（非法 hex）。
+
+    清洗规则与 ``triggers.parse_hex_pattern`` 对齐：去掉每段 ``0x`` 前缀及空白/逗号。
+    """
+    t = re.sub(r"(?i)0x|[\s,]+", "", str(term or ""))
     if not t or len(t) % 2 != 0:
         return None
     try:

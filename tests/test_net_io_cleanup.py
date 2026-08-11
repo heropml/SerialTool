@@ -86,6 +86,15 @@ def test_server_close_releases_every_client_when_one_close_raises():
     assert "deleteLater" in good.calls    # 后一个 socket 不被前一个连累
 
 
+def test_tcp_server_close_deleteLaters_listener():
+    conn = TcpServerConn("127.0.0.1", 0)
+    srv = FakeSock()
+    conn._server = srv
+    conn.close()
+    assert "close" in srv.calls and "deleteLater" in srv.calls
+    assert conn._server is None
+
+
 def test_send_drops_half_written_client_even_if_abort_raises():
     good = FakeSock()
     bad = FakeSock(raise_on=("abort",), write_n=1)   # 只写进 1 字节 = 半帧污染
