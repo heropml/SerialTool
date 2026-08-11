@@ -21,13 +21,53 @@ class PcapExportTests(unittest.TestCase):
             off += incl
         return frames
 
-    def test_rejects_serial_and_server(self):
+    def test_rejects_serial_and_incomplete(self):
         self.assertFalse(pcap_export.can_export_link({"proto": "Serial"}))
         self.assertFalse(pcap_export.can_export_link({"proto": "TCP Server"}))
         self.assertFalse(pcap_export.can_export_link({
             "proto": "UDP", "remote_ip": "", "remote_port": 502}))
         with self.assertRaises(pcap_export.PcapExportError):
             pcap_export.normalize_link({"proto": "UDP Multicast"})
+
+    def test_tcp_server_and_multicast_normalize(self):
+        srv = pcap_export.normalize_link({
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1",
+            "local_port": 9000,
+            "remote_ip": "192.168.1.50",
+            "remote_port": 50123,
+        })
+        self.assertEqual(srv["transport"], "tcp")
+        self.assertEqual(srv["remote_ip"], "192.168.1.50")
+        self.assertEqual(srv["remote_port"], 50123)
+        self.assertEqual(srv["local_ip"], "10.0.0.1")
+        mcast = pcap_export.normalize_link({
+            "proto": "UDP Multicast",
+            "local_ip": "192.168.1.10",
+            "local_port": 5000,
+            "remote_ip": "239.0.0.1",
+            "remote_port": 5000,
+        })
+        self.assertEqual(mcast["transport"], "udp")
+        self.assertEqual(mcast["remote_ip"], "239.0.0.1")
+        self.assertEqual(mcast["remote_port"], 5000)
+
+    def test_wildcard_local_ip_rejected(self):
+        with self.assertRaises(pcap_export.PcapExportError):
+            pcap_export.normalize_link({
+                "proto": "TCP Server",
+                "local_ip": "0.0.0.0",
+                "local_port": 9000,
+                "remote_ip": "192.168.1.50",
+                "remote_port": 50123,
+            })
+        self.assertFalse(pcap_export.can_export_link({
+            "proto": "UDP Multicast",
+            "local_ip": "0.0.0.0",
+            "local_port": 5000,
+            "remote_ip": "239.0.0.1",
+            "remote_port": 5000,
+        }))
 
     def test_tcp_client_roundtrip_payloads(self):
         link = {
@@ -187,6 +227,172 @@ class PcapExportTests(unittest.TestCase):
         rec = rec_replay.StreamRecorder()
         rec.start(link=link)
         rec.on_rx(b"unknown", t=1.0, source=None)
+        self.assertIsNone(rec.link)
+
+    def test_pcapng_magic_and_blocks(self):
+        link = {
+            "proto": "TCP Client",
+            "local_ip": "10.0.0.1", "local_port": 40000,
+            "remote_ip": "10.0.0.2", "remote_port": 502,
+        }
+        events = [(0.0, "tx", b"ABC"), (0.1, "rx", b"XYZ")]
+        data = pcap_export.events_to_pcapng(events, link, wall_t0=1_700_000_000.0)
+        self.assertEqual(struct.unpack_from("<I", data, 0)[0], 0x0A0D0D0A)
+        # Byte-order magic at offset 8 inside SHB
+        self.assertEqual(struct.unpack_from("<I", data, 8)[0], 0x1A2B3C4D)
+        # Walk blocks: SHB, IDB, then EPBs
+        off = 0
+        types = []
+        while off + 8 <= len(data):
+            btype, total = struct.unpack_from("<II", data, off)
+            types.append(btype)
+            if total < 12 or off + total > len(data):
+                break
+            off += total
+        self.assertEqual(types[0], 0x0A0D0D0A)
+        self.assertEqual(types[1], 0x00000001)  # IDB
+        self.assertGreaterEqual(types.count(0x00000006), 2)  # EPB
+
+    def test_export_pcap_file_format_from_extension(self):
+        link = {
+            "proto": "UDP Multicast",
+            "local_ip": "10.0.0.1", "local_port": 5000,
+            "remote_ip": "239.0.0.1", "remote_port": 5000,
+        }
+        events = [(0.0, "tx", b"hi")]
+        with tempfile.TemporaryDirectory() as td:
+            pcap_path = os.path.join(td, "a.pcap")
+            ng_path = os.path.join(td, "a.pcapng")
+            n1 = pcap_export.export_pcap_file(pcap_path, events, link)
+            n2 = pcap_export.export_pcap_file(ng_path, events, link)
+            self.assertEqual(n1, 1)
+            self.assertEqual(n2, 1)
+            with open(pcap_path, "rb") as f:
+                self.assertEqual(struct.unpack("<I", f.read(4))[0], 0xA1B2C3D4)
+            with open(ng_path, "rb") as f:
+                self.assertEqual(struct.unpack("<I", f.read(4))[0], 0x0A0D0D0A)
+
+    def test_tcp_server_frame_direction_and_ports(self):
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        frames = self._frames(pcap_export.events_to_pcap(
+            [(0.0, "tx", b"SRV"), (0.1, "rx", b"CLI")], link))
+        self.assertEqual(len(frames), 2)
+        # TX from server local:40000-default-or-9000 → client
+        sport_tx, dport_tx = struct.unpack_from("!HH", frames[0], 34)
+        self.assertEqual((sport_tx, dport_tx), (9000, 50123))
+        self.assertEqual(frames[0][54:], b"SRV")
+        # RX from client → server
+        sport_rx, dport_rx = struct.unpack_from("!HH", frames[1], 34)
+        self.assertEqual((sport_rx, dport_rx), (50123, 9000))
+        self.assertEqual(frames[1][54:], b"CLI")
+
+    def test_udp_multicast_frame_direction_and_ports(self):
+        link = {
+            "proto": "UDP Multicast",
+            "local_ip": "10.0.0.1", "local_port": 5000,
+            "remote_ip": "239.0.0.1", "remote_port": 5000,
+            "rx_peer_ip": "10.0.0.9", "rx_peer_port": 40000,
+        }
+        frames = self._frames(pcap_export.events_to_pcap(
+            [(0.0, "tx", b"OUT"), (0.1, "rx", b"IN")], link))
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(frames[0][23], 17)  # UDP
+        # TX: local → group
+        sport_tx, dport_tx = struct.unpack_from("!HH", frames[0], 34)
+        self.assertEqual((sport_tx, dport_tx), (5000, 5000))
+        self.assertEqual(frames[0][42:], b"OUT")
+        self.assertEqual(frames[0][26:30], bytes([10, 0, 0, 1]))
+        self.assertEqual(frames[0][30:34], bytes([239, 0, 0, 1]))
+        self.assertEqual(frames[0][:6], bytes([1, 0, 94, 0, 0, 1]))
+        # RX: sender → group (not group → local)
+        sport_rx, dport_rx = struct.unpack_from("!HH", frames[1], 34)
+        self.assertEqual((sport_rx, dport_rx), (40000, 5000))
+        self.assertEqual(frames[1][42:], b"IN")
+        self.assertEqual(frames[1][26:30], bytes([10, 0, 0, 9]))
+        self.assertEqual(frames[1][30:34], bytes([239, 0, 0, 1]))
+        self.assertEqual(frames[1][:6], bytes([1, 0, 94, 0, 0, 1]))
+
+    def test_udp_multicast_rejects_non_group_remote_ip(self):
+        with self.assertRaises(pcap_export.PcapExportError):
+            pcap_export.normalize_link({
+                "proto": "UDP Multicast",
+                "local_ip": "10.0.0.1", "local_port": 5000,
+                "remote_ip": "10.0.0.2", "remote_port": 5000,
+            })
+
+    def test_tcp_server_recording_loses_pcap_on_other_client(self):
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "0.0.0.0", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"ok", t=1.0, source="192.168.1.50:50123")
+        self.assertIsNotNone(rec.link)
+        rec.on_rx(b"other", t=1.1, source="192.168.1.51:50124")
+        self.assertIsNone(rec.link)
+
+    def test_multicast_recording_notes_rx_peer(self):
+        link = {
+            "proto": "UDP Multicast",
+            "local_ip": "10.0.0.1", "local_port": 5000,
+            "remote_ip": "239.0.0.1", "remote_port": 5000,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"hi", t=1.0, source=("10.0.0.9", 40000))
+        self.assertEqual(rec.link.get("rx_peer_ip"), "10.0.0.9")
+        self.assertEqual(rec.link.get("rx_peer_port"), 40000)
+
+    def test_multicast_recording_preserves_peer_per_event_after_save(self):
+        link = {
+            "proto": "UDP Multicast",
+            "local_ip": "10.0.0.1", "local_port": 5000,
+            "remote_ip": "239.0.0.1", "remote_port": 5000,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"A", t=1.0, source=("10.0.0.9", 40000))
+        rec.on_rx(b"B", t=1.1, source=("10.0.0.10", 40001))
+        rec.stop()
+        with tempfile.TemporaryDirectory() as td:
+            record_path = os.path.join(td, "group.ctrec")
+            pcap_path = os.path.join(td, "group.pcap")
+            rec.save(record_path)
+            events, header = rec_replay.load(record_path)
+            self.assertNotIn("rx_peer_ip", header["link"])
+            self.assertEqual(pcap_export.export_pcap_file(
+                pcap_path, events, header["link"]), 2)
+            with open(pcap_path, "rb") as f:
+                frames = self._frames(f.read())
+        self.assertEqual([frame[26:30] for frame in frames], [
+            bytes([10, 0, 0, 9]), bytes([10, 0, 0, 10])])
+
+    def test_multicast_recording_loses_pcap_without_sender_metadata(self):
+        link = {
+            "proto": "UDP Multicast",
+            "local_ip": "10.0.0.1", "local_port": 5000,
+            "remote_ip": "239.0.0.1", "remote_port": 5000,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"unknown", t=1.0, source=None)
+        self.assertIsNone(rec.link)
+
+    def test_tcp_server_recording_loses_pcap_on_other_tx_target(self):
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "0.0.0.0", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_tx(b"other", t=1.0, source="192.168.1.51:50124")
         self.assertIsNone(rec.link)
 
 

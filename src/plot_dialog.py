@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
                              QScrollArea, QFrame, QFileDialog)
 
 import binproto
+import plot_stats
 from theme import chrome_for
 from fonts import localize_qss
 from ui_tips import set_tooltip
@@ -43,6 +44,7 @@ _SEP_RX = [r",", r"\s+", r"\t", r";", r"[,\s;]+"]
 
 # 模式索引
 _MODE_DELIM, _MODE_REGEX, _MODE_HEX = 0, 1, 2
+_VIEW_WAVE, _VIEW_XY, _VIEW_HIST = 0, 1, 2
 _IO_GRAPH_TAGS = ("rx_Bps", "tx_Bps", "rx_pps", "tx_pps")
 _NO_JUMP_TAGS = frozenset(_IO_GRAPH_TAGS)
 
@@ -78,6 +80,14 @@ class PlotDialog(QDialog):
         self._name_to_idx = {}       # 寄存器联动：tag → 通道下标（按名而非位置定位）
         self._io_graph_mode = False
         self._io_graph_restore = None
+        self._right_vb = None          # dual-Y secondary ViewBox (lazy)
+        self._hist_item = None         # BarGraphItem for histogram mode
+        self._hist_scale = None        # x normalization scale for extreme histograms
+        self._v_line = None
+        self._h_line = None
+        self._last_cursor = (0.0, 0.0)
+        self._cursor_stats_fp = None   # cache key for channel stats text
+        self._cursor_stats_extra = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -110,6 +120,14 @@ class PlotDialog(QDialog):
         self.cb_xaxis = QComboBox()          # 0=样本序号 1=时间
         self.cb_xaxis.addItems(["", ""])
         self.cb_xaxis.currentIndexChanged.connect(self._on_xaxis_changed)
+        self.lbl_view = QLabel()
+        self.cb_view = QComboBox()           # 0=波形 1=XY 2=直方图
+        self.cb_view.setObjectName("plot_view")
+        self.cb_view.addItems(["", "", ""])
+        self.cb_view.currentIndexChanged.connect(self._on_view_changed)
+        self.cb_dual_y = QCheckBox()
+        self.cb_dual_y.setObjectName("plot_dual_y")
+        self.cb_dual_y.toggled.connect(self._on_dual_y_changed)
 
         self.btn_pause = QPushButton()
         self.btn_pause.setObjectName("PlotGhostBtn")
@@ -137,6 +155,9 @@ class PlotDialog(QDialog):
         bar.addWidget(self.cb_maxpts)
         bar.addWidget(self.lbl_x)
         bar.addWidget(self.cb_xaxis)
+        bar.addWidget(self.lbl_view)
+        bar.addWidget(self.cb_view)
+        bar.addWidget(self.cb_dual_y)
         bar.addSpacing(8)
         bar.addWidget(self.btn_pause)
         bar.addWidget(self.btn_clear)
@@ -152,6 +173,7 @@ class PlotDialog(QDialog):
         self.plot.getAxis("bottom").enableAutoSIPrefix(False)  # 样本序号不该被缩成 (x0.001)
         root.addWidget(self.plot, 1)
         self.plot.scene().sigMouseClicked.connect(self._on_plot_clicked)
+        self._init_cursor()
 
         # ===== 通道勾选条（横向滚动）=====
         self._ch_bar = QWidget()
@@ -175,6 +197,10 @@ class PlotDialog(QDialog):
         self.lbl_hint.setObjectName("MsHint")
         self.lbl_hint.setWordWrap(True)
         root.addWidget(self.lbl_hint)
+        self.lbl_cursor = QLabel()
+        self.lbl_cursor.setObjectName("MsHint")
+        self.lbl_cursor.setWordWrap(True)
+        root.addWidget(self.lbl_cursor)
 
         # 重绘定时器（随显示启停，见 show/hideEvent）
         self._timer = QTimer(self)
@@ -203,7 +229,13 @@ class PlotDialog(QDialog):
             self._max_points = self.cb_maxpts.currentData()
             self.cb_xaxis.setCurrentIndex(_to_int(s.value("plot_xaxis", 0), 0, 1))
             self._x_time = self.cb_xaxis.currentIndex() == 1
+            self.cb_view.setCurrentIndex(_to_int(s.value("plot_view", 0), 0, 2))
+            dual = s.value("plot_dual_y", False)
+            if isinstance(dual, str):
+                dual = dual.lower() in ("1", "true", "yes")
+            self.cb_dual_y.setChecked(bool(dual))
             self._on_mode_changed(save=False)
+            self._ensure_dual_y(self.cb_dual_y.isChecked())
         finally:
             self._loading_cfg = False
 
@@ -224,6 +256,8 @@ class PlotDialog(QDialog):
         s.setValue("plot_hex_header", self.ed_header.text())
         s.setValue("plot_maxpts", self.cb_maxpts.currentData())
         s.setValue("plot_xaxis", self.cb_xaxis.currentIndex())
+        s.setValue("plot_view", self.cb_view.currentIndex())
+        s.setValue("plot_dual_y", self.cb_dual_y.isChecked())
 
     # ---------------- 数据入口 ----------------
     def _codec(self):
@@ -295,6 +329,7 @@ class PlotDialog(QDialog):
             x = time.monotonic() - self._t0
         else:
             x = self._sample_idx
+        appended = False
         for i, v in enumerate(vals):
             if not isinstance(v, (int, float)):
                 continue
@@ -311,9 +346,12 @@ class PlotDialog(QDialog):
                 ch = self._channels[idx]
             ch["xs"].append(x)
             ch["ys"].append(v)
+            appended = True
             walls = ch.get("walls")
             if walls is not None:
                 walls.append(time.time())
+        if appended:
+            self._cursor_stats_fp = None
         self._sample_idx += 1
 
     def feed_named_samples(self, samples):
@@ -364,6 +402,7 @@ class PlotDialog(QDialog):
         ch = self._channels[idx]
         ch["xs"].append(x)
         ch["ys"].append(value)
+        self._cursor_stats_fp = None
         if name in _NO_JUMP_TAGS:
             ch["jumpable"] = False
         walls = ch.get("walls")
@@ -384,7 +423,7 @@ class PlotDialog(QDialog):
             cb = QCheckBox(nm)
             cb.setChecked(True)
             cb.setStyleSheet(f"color:{color}; font-weight:600;")
-            cb.toggled.connect(lambda on, c=curve: c.setVisible(on))
+            cb.toggled.connect(self._on_channel_toggled)
             self._ch_h.insertWidget(self._ch_h.count() - 1, cb)   # 插在末尾 stretch 之前
             self._channels.append({
                 "name": nm, "color": color, "curve": curve, "cb": cb,
@@ -392,8 +431,12 @@ class PlotDialog(QDialog):
                 "ys": deque(maxlen=self._max_points),
                 "walls": deque(maxlen=self._max_points),
                 "jumpable": nm not in _NO_JUMP_TAGS,
+                "on_right": False,
             })
         return self._channels[i]
+
+    def _on_channel_toggled(self, *_args):
+        self._redraw()
 
     def ensure_named_channels(self, names, exclusive=False):
         """Create named tag channels if missing; check them; optionally hide others."""
@@ -432,6 +475,8 @@ class PlotDialog(QDialog):
             ))
         return {
             "axis": self.cb_xaxis.currentIndex(),
+            "view": self.cb_view.currentIndex(),
+            "dual_y": self.cb_dual_y.isChecked(),
             "checks": checks,
             "sample_idx": self._sample_idx,
             "t0": self._t0,
@@ -449,6 +494,8 @@ class PlotDialog(QDialog):
             return False
         self._io_graph_restore = self._snapshot_io_graph_state()
         self._io_graph_mode = True
+        self._set_cursor_visible(False)
+        self._set_io_graph_controls(True)
         self.cb_xaxis.blockSignals(True)
         self.cb_xaxis.setCurrentIndex(1)
         self.cb_xaxis.blockSignals(False)
@@ -478,6 +525,7 @@ class PlotDialog(QDialog):
         snap = self._io_graph_restore
         self._io_graph_mode = False
         self._io_graph_restore = None
+        self._set_io_graph_controls(False)
         if not isinstance(snap, dict):
             # Backward-compatible tuple snapshot from older builds.
             axis, checks, sample_idx, time_origin = snap or (
@@ -498,6 +546,8 @@ class PlotDialog(QDialog):
             return
 
         axis = int(snap.get("axis", 0) or 0)
+        view = int(snap.get("view", _VIEW_WAVE) or 0)
+        dual_y = bool(snap.get("dual_y", False))
         self.cb_xaxis.blockSignals(True)
         self.cb_xaxis.setCurrentIndex(axis)
         self.cb_xaxis.blockSignals(False)
@@ -536,6 +586,14 @@ class PlotDialog(QDialog):
                 ch["cb"].setChecked(False)
                 ch["curve"].setVisible(False)
                 ch["curve"].setData([], [])
+        self.cb_view.blockSignals(True)
+        self.cb_view.setCurrentIndex(view)
+        self.cb_view.blockSignals(False)
+        self.cb_dual_y.blockSignals(True)
+        self.cb_dual_y.setChecked(dual_y)
+        self.cb_dual_y.blockSignals(False)
+        self._cursor_stats_fp = None
+        self._redraw()
 
     def restart_io_graph_series(self):
         """Start a fresh rate segment after the active session changes.
@@ -558,11 +616,261 @@ class PlotDialog(QDialog):
             ch["curve"].setData([], [])
         return True
 
-    # ---------------- 重绘 ----------------
+    # ---------------- 重绘 / 视图 ----------------
+    def _checked_channels(self):
+        return [(i, ch) for i, ch in enumerate(self._channels) if ch["cb"].isChecked()]
+
+    def _ensure_dual_y(self, enabled):
+        """Lazily create / show the right ViewBox for dual-Y mode."""
+        p1 = self.plot.plotItem
+        if enabled:
+            if self._right_vb is None:
+                self._right_vb = pg.ViewBox()
+                p1.scene().addItem(self._right_vb)
+                p1.getAxis("right").linkToView(self._right_vb)
+                self._right_vb.setXLink(p1)
+                p1.vb.sigResized.connect(self._sync_right_vb)
+            p1.showAxis("right")
+            self._right_vb.setVisible(True)
+            self._sync_right_vb()
+        else:
+            if self._right_vb is not None:
+                self._right_vb.setVisible(False)
+            p1.hideAxis("right")
+            for ch in self._channels:
+                self._place_curve(ch, on_right=False)
+
+    def _sync_right_vb(self):
+        if self._right_vb is None:
+            return
+        try:
+            self._right_vb.setGeometry(self.plot.plotItem.vb.sceneBoundingRect())
+        except Exception:
+            pass
+
+    def _place_curve(self, ch, on_right):
+        curve = ch.get("curve")
+        if curve is None:
+            return
+        want = bool(on_right) and self._right_vb is not None
+        if bool(ch.get("on_right")) == want:
+            return
+        try:
+            if ch.get("on_right") and self._right_vb is not None:
+                self._right_vb.removeItem(curve)
+            else:
+                self.plot.plotItem.removeItem(curve)
+        except Exception:
+            pass
+        try:
+            if want:
+                self._right_vb.addItem(curve)
+            else:
+                self.plot.plotItem.addItem(curve)
+        except Exception:
+            pass
+        ch["on_right"] = want
+
+    def _clear_hist_item(self):
+        if self._hist_item is not None:
+            try:
+                self.plot.removeItem(self._hist_item)
+            except Exception:
+                pass
+            self._hist_item = None
+
+    def _clear_hist_axis_scale(self):
+        if getattr(self, "_hist_scale", None) is not None:
+            self.plot.getAxis("bottom").setTicks(None)
+        self._hist_scale = None
+
+    def _set_hist_axis_scale(self, real_centers, plot_centers, scale):
+        if scale is None:
+            self._clear_hist_axis_scale()
+            return
+
+        tick_indexes = sorted(set((0, len(real_centers) // 2, len(real_centers) - 1)))
+        ticks = [
+            (plot_centers[index], "%.4g" % real_centers[index])
+            for index in tick_indexes
+        ]
+        self.plot.getAxis("bottom").setTicks([ticks])
+        self._hist_scale = scale
+
     def _redraw(self):
-        for ch in self._channels:
-            if ch["cb"].isChecked():
+        io_mode = bool(getattr(self, "_io_graph_mode", False))
+        view = _VIEW_WAVE if io_mode else self.cb_view.currentIndex()
+        dual = (not io_mode) and self.cb_dual_y.isChecked() and view == _VIEW_WAVE
+        self._ensure_dual_y(dual)
+
+        if view != _VIEW_HIST:
+            self._clear_hist_item()
+            self._clear_hist_axis_scale()
+
+        checked = self._checked_channels()
+
+        if view == _VIEW_XY:
+            for ch in self._channels:
+                self._place_curve(ch, on_right=False)
+                ch["curve"].setVisible(False)
+                ch["curve"].setData([], [])
+            if len(checked) >= 2:
+                (_i0, ch_a), (_i1, ch_b) = checked[0], checked[1]
+                xs, ys = plot_stats.xy_pairs(
+                    ch_a["xs"], ch_a["ys"], ch_b["xs"], ch_b["ys"])
+                ch_a["curve"].setVisible(True)
+                ch_a["curve"].setData(xs, ys)
+                for _i, ch in checked[2:]:
+                    ch["curve"].setVisible(False)
+            return
+
+        if view == _VIEW_HIST:
+            for ch in self._channels:
+                self._place_curve(ch, on_right=False)
+                ch["curve"].setVisible(False)
+                ch["curve"].setData([], [])
+            if checked:
+                _i, ch0 = checked[0]
+                centers, counts = plot_stats.histogram_bins(ch0["ys"])
+                if centers:
+                    plot_centers, scale = plot_stats.histogram_plot_centers(centers)
+                    self._set_hist_axis_scale(centers, plot_centers, scale)
+                    width = plot_stats.histogram_bar_width(plot_centers)
+                    if self._hist_item is None:
+                        self._hist_item = pg.BarGraphItem(
+                            x=plot_centers, height=counts, width=width,
+                            brush=ch0["color"])
+                        self.plot.addItem(self._hist_item)
+                    else:
+                        self._hist_item.setOpts(
+                            x=plot_centers, height=counts, width=width,
+                            brush=ch0["color"])
+                else:
+                    self._clear_hist_item()
+                    self._clear_hist_axis_scale()
+            else:
+                self._clear_hist_item()
+                self._clear_hist_axis_scale()
+            return
+
+        # waveform (default / I/O Graph)
+        for idx, ch in enumerate(self._channels):
+            on = ch["cb"].isChecked()
+            use_right = dual and idx > 0 and on
+            self._place_curve(ch, on_right=use_right)
+            ch["curve"].setVisible(on)
+            if on:
                 ch["curve"].setData(list(ch["xs"]), list(ch["ys"]))
+            else:
+                ch["curve"].setData([], [])
+
+    def _set_io_graph_controls(self, io_on):
+        """I/O Graph forces waveform; disable view/dual-Y while active."""
+        for w in (getattr(self, "lbl_view", None),
+                  getattr(self, "cb_view", None),
+                  getattr(self, "cb_dual_y", None)):
+            if w is not None:
+                w.setEnabled(not io_on)
+        if not io_on:
+            return
+        if hasattr(self, "cb_view"):
+            self.cb_view.blockSignals(True)
+            self.cb_view.setCurrentIndex(_VIEW_WAVE)
+            self.cb_view.blockSignals(False)
+        if hasattr(self, "cb_dual_y"):
+            self.cb_dual_y.blockSignals(True)
+            self.cb_dual_y.setChecked(False)
+            self.cb_dual_y.blockSignals(False)
+
+    def _init_cursor(self):
+        pen = pg.mkPen("#888888", width=1, style=Qt.DashLine)
+        self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pen)
+        self._h_line = pg.InfiniteLine(angle=0, movable=False, pen=pen)
+        self._v_line.setVisible(False)
+        self._h_line.setVisible(False)
+        self.plot.addItem(self._v_line, ignoreBounds=True)
+        self.plot.addItem(self._h_line, ignoreBounds=True)
+        self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+    def _set_cursor_visible(self, on):
+        if self._v_line is not None:
+            self._v_line.setVisible(on)
+        if self._h_line is not None:
+            self._h_line.setVisible(on)
+        if not on and hasattr(self, "lbl_cursor"):
+            self.lbl_cursor.setText("")
+
+    def _cursor_stats_fingerprint(self):
+        return tuple(
+            (ch["name"], len(ch["ys"]), ch["cb"].isChecked())
+            for ch in self._channels)
+
+    def _on_mouse_moved(self, pos):
+        if getattr(self, "_io_graph_mode", False):
+            self._set_cursor_visible(False)
+            return
+        if not self.plot.sceneBoundingRect().contains(pos):
+            self._set_cursor_visible(False)
+            return
+        try:
+            mouse = self.plot.plotItem.vb.mapSceneToView(pos)
+            x, y = float(mouse.x()), float(mouse.y())
+        except Exception:
+            return
+        display_x = x
+        hist_scale = getattr(self, "_hist_scale", None)
+        if hist_scale is not None:
+            x = max(-1.0, min(1.0, x)) * hist_scale
+
+        self._last_cursor = (x, y)
+        self._set_cursor_visible(True)
+        self._v_line.setPos(display_x)
+        self._h_line.setPos(y)
+        self._update_cursor_label(x, y)
+
+    def _refresh_cursor_stats_cache(self):
+        """Recompute channel min/max/mean text when series lengths change."""
+        fp = self._cursor_stats_fingerprint()
+        if fp == getattr(self, "_cursor_stats_fp", None):
+            return
+        self._cursor_stats_fp = fp
+        parts = []
+        for _idx, ch in self._checked_channels():
+            st = plot_stats.series_stats(ch["ys"])
+            if st["count"] <= 0:
+                continue
+            parts.append(
+                "%s: n=%d min=%.4g max=%.4g mean=%.4g" % (
+                    ch["name"], st["count"], st["min"], st["max"], st["mean"]))
+        self._cursor_stats_extra = (
+            ("  |  " + "  ".join(parts)) if parts else "")
+
+    def _update_cursor_label(self, x, y):
+        if not hasattr(self, "lbl_cursor"):
+            return
+        self._refresh_cursor_stats_cache()
+        extra = getattr(self, "_cursor_stats_extra", "") or ""
+        try:
+            text = self.app._t("plot_cursor_fmt", x=x, y=y, stats=extra)
+        except Exception:
+            text = "x=%.4g  y=%.4g%s" % (x, y, extra)
+        self.lbl_cursor.setText(text)
+
+    def _on_view_changed(self, *_args):
+        if self._loading_cfg:
+            return
+        # XY / histogram disable dual-Y placement without clearing buffers.
+        if self.cb_view.currentIndex() != _VIEW_WAVE:
+            self._ensure_dual_y(False)
+        self._cursor_stats_fp = None
+        self._redraw()
+        self._save_cfg()
+
+    def _on_dual_y_changed(self, *_args):
+        if self._loading_cfg:
+            return
+        self._redraw()
+        self._save_cfg()
 
     # ---------------- 工具条回调 ----------------
     def _on_mode_changed(self, *_args, save=True):
@@ -712,8 +1020,19 @@ class PlotDialog(QDialog):
         self._clear()
 
     def _clear(self):
+        self._clear_hist_item()
+        self._clear_hist_axis_scale()
         for ch in self._channels:
-            self.plot.removeItem(ch["curve"])
+            try:
+                if ch.get("on_right") and self._right_vb is not None:
+                    self._right_vb.removeItem(ch["curve"])
+                else:
+                    self.plot.removeItem(ch["curve"])
+            except Exception:
+                try:
+                    self.plot.removeItem(ch["curve"])
+                except Exception:
+                    pass
             ch["cb"].setParent(None)
             ch["cb"].deleteLater()
         self._channels = []
@@ -725,6 +1044,7 @@ class PlotDialog(QDialog):
         # Explicit clear discards the reversible I/O snapshot (user asked to wipe).
         self._io_graph_mode = False
         self._io_graph_restore = None
+        self._set_cursor_visible(False)
 
     def _export_csv(self):
         channels = self._channels
@@ -862,12 +1182,20 @@ class PlotDialog(QDialog):
         self.lbl_x.setText(t("plot_xaxis"))
         self.cb_xaxis.setItemText(0, t("plot_x_index"))
         self.cb_xaxis.setItemText(1, t("plot_x_time"))
+        self.lbl_view.setText(t("plot_view"))
+        self.cb_view.setItemText(_VIEW_WAVE, t("plot_view_wave"))
+        self.cb_view.setItemText(_VIEW_XY, t("plot_view_xy"))
+        self.cb_view.setItemText(_VIEW_HIST, t("plot_view_hist"))
+        self.cb_dual_y.setText(t("plot_dual_y"))
+        self.cb_dual_y.setToolTip(t("plot_dual_y_tip"))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         set_tooltip(self.plot, t("plot_jump_tip"))
         self.btn_export.setText(t("plot_export"))
         set_tooltip(self.btn_help, t("plot_help_btn"))
         self.lbl_hint.setText(t("plot_hint"))
+        if getattr(self, "_last_cursor", None):
+            self._update_cursor_label(*self._last_cursor)
         self.plot.setLabel("bottom",
                            t("plot_x_time" if self._x_time else "plot_x_index"))
 

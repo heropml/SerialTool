@@ -29,7 +29,7 @@ CFG_KEYS = (
     "keyword_groups", "keyword_active",
     "frame_rules",
     "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
-    "plot_hex_header", "plot_maxpts", "plot_xaxis",
+    "plot_hex_header", "plot_maxpts", "plot_xaxis", "plot_view", "plot_dual_y",
     # 数值仪表盘
     "dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header", "dash_thresholds",
     # 脚本控制台

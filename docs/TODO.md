@@ -48,9 +48,9 @@
 
 | # | 功能 | 对标 | 价值 | 量 | 复用点 |
 |---|---|---|---|---|---|
-| ⭐ | **绘图部件扩展：双 Y 轴 / XY / 柱状 / 直方图 / 仪表(gauge) / LED / 进度条** | Serial Studio/PlotJuggler | 可视化维度质变 | 中-高 | pyqtgraph 已在用；`plot_dialog.py` / `dashboard_dialog.py` |
+| ⭐ | **绘图部件扩展：双 Y 轴 / XY / 柱状 / 直方图 / 仪表(gauge) / LED / 进度条** | Serial Studio/PlotJuggler | 可视化维度质变 | 中-高 | 部分 DONE：`plot_dialog` 视图模式（波形/XY/直方图）+ 双 Y + 光标统计；仪表盘等仍见 `dashboard_dialog.py` |
 | ⭐ | **绘图/仪表盘数据持久化 + CSV 回放绘图** | PlotJuggler | 关掉不丢、离线回看 | 中 | `StructuredRecorder` CSV 思路复用 |
-| | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | DONE 初版：`pcap_export.py` 导出经典 `.pcap`（TCP Client / 单对端 UDP）；串口继续 `.ctrec` |
+| | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | DONE：`pcap_export.py` 经典 `.pcap` + `.pcapng`；TCP Client/Server（单对端）、UDP、UDP 组播；串口继续 `.ctrec` |
 | | Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | 现 CSV 已防注入，加 openpyxl |
 | | DONE **吞吐量随时间曲线（I/O Graph）** | Wireshark | 带宽抖动可视化 | 中 | 波形图已订阅 `rx_Bps`/`tx_Bps`/`rx_pps`/`tx_pps`；状态栏右键 / 工作区「I/O Graph」一键打开时间轴+四通道预设 |
 | ⭐ | DONE **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机与真·TCP↔RTU 网关路由均已完成；网关见 `modbus_gateway.py`） |
@@ -158,7 +158,7 @@
 | P2-1 | Headless / CLI | 暂缓 | 序列引擎、报告引擎与 GUI 解耦（S-2） |
 | P2-2 | REST / WebSocket API | 暂缓 | CLI/API 共用同一套核心服务层（S-2） |
 | P2-3 | 脚本化协议解析器/插件 | 暂缓 | 先稳定协议字段模型、变量上下文和资源包格式 |
-| P2-4 | TCP/UDP 专用 PCAP 导出 | **DONE（初版）**：TCP Client / 指定远程单对端 UDP → `.pcap`（合成 L2/L3/L4）；串口等仍用 `.ctrec` | 属导出格式而非平台化；见 `pcap_export.py` + 录制对话框「导出 PCAP」 |
+| P2-4 | TCP/UDP 专用 PCAP 导出 | **DONE**：TCP Client/Server（单客户端）、UDP、UDP 组播 → `.pcap` / `.pcapng`（合成 L2/L3/L4）；串口等仍用 `.ctrec` | 属导出格式而非平台化；见 `pcap_export.py` + 录制对话框「导出 PCAP」 |
 
 ### 暂不纳入近期排期
 

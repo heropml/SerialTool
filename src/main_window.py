@@ -44,7 +44,7 @@ _RECV_CHARS_PER_LINE = 256
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
-                    is_valid_ip, is_local_ipv4)
+                    is_valid_ip, is_local_ipv4, resolve_export_local_ipv4)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 import conn_error_tips
 from virtual_io import VirtualConn, PROTO_VIRTUAL
@@ -4200,9 +4200,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._rx_side("macro.on_rx", lambda: self._macro.on_rx(data))
         if self._recorder.recording:      # 数据录制：录原始 RX 现场
             peer = None
-            if (getattr(self, "_conn_proto", None) == PROTO_UDP
-                    and hasattr(self.conn, "peer_endpoint")):
+            proto = getattr(self, "_conn_proto", None)
+            if proto in (PROTO_UDP, PROTO_UDP_MULTICAST) and hasattr(
+                    self.conn, "peer_endpoint"):
                 peer = self.conn.peer_endpoint()
+            elif proto == PROTO_TCP_SERVER:
+                peer = reply_target
             self._rx_side(
                 "recorder.on_rx",
                 lambda peer=peer: self._recorder.on_rx(data, source=peer))
@@ -5076,7 +5079,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         """数据录制的 TX 采集：录线路上真实发出的字节（含自动应答/Modbus 回复，
         因为录的是「线路现场」而非「用户意图」——这点与宏录制相反）。"""
         if self._recorder.recording:
-            self._recorder.on_tx(data)
+            self._recorder.on_tx(data, source=source)
         self._triggers_feed(data, "tx", source=source)  # TCP Server 按发送目标隔离流尾巴
 
     # ---------------- 触发告警：命中规则 → 响铃 / 托盘通知 / 数据区打标 ----------------
@@ -5498,10 +5501,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         return None
 
     def _recorder_link_snapshot(self):
-        """Capture TCP Client / single-peer UDP endpoints for PCAP export.
+        """Capture TCP/UDP endpoints for PCAP export.
 
-        Returns None when the active connection is out of scope (serial,
-        TCP Server, multicast, UDP without a fixed remote peer).
+        Supports TCP Client, TCP Server (single selected client), UDP with a
+        fixed remote, and UDP Multicast (group as remote). Returns None when
+        out of scope (serial, Server __all__, UDP without remote, …).
+        Wildcard bind addresses (0.0.0.0 / ::) are resolved to a concrete host
+        IPv4 via route table / local NIC list; failure refuses export.
         """
         from pcap_export import can_export_link
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
@@ -5517,6 +5523,24 @@ class CommTool(SessionHostMixin, QMainWindow):
             ep = conn.local_endpoint() if hasattr(conn, "local_endpoint") else None
             if ep:
                 local_ip, local_port = ep
+        elif proto == PROTO_TCP_SERVER:
+            target = self._send_target()
+            if not target or target == "__all__":
+                return None
+            # Client keys are "ip:port" from TcpServerConn._key.
+            text = str(target).strip()
+            if ":" not in text:
+                return None
+            host, _, port_s = text.rpartition(":")
+            remote_ip = host.strip().strip("[]")
+            remote_port = self._parse_port(port_s)
+            local_ip = (self.cb_local_ip.currentText() or "").strip()
+            local_port = self._parse_port(self.ed_local_port.text())
+            conn = self.conn
+            if conn is not None and getattr(conn, "bound_port", None):
+                bp = conn.bound_port
+                if bp:
+                    local_port = bp
         elif proto == PROTO_UDP:
             # Single-peer only: require "指定远程" with a concrete peer.
             if not self.sw_udp_remote.isChecked():
@@ -5534,12 +5558,22 @@ class CommTool(SessionHostMixin, QMainWindow):
                     local_ip = lip
                 if lport:
                     local_port = lport
+        elif proto == PROTO_UDP_MULTICAST:
+            remote_ip = (self.ed_group.text() or "").strip()
+            remote_port = self._parse_port(self.ed_local_port.text())
+            local_ip = (self.cb_local_ip.currentText() or "").strip()
+            local_port = remote_port
         else:
+            return None
+
+        local_ip = resolve_export_local_ipv4(
+            local_ip, remote_ip=remote_ip, remote_port=remote_port)
+        if not local_ip:
             return None
 
         link = {
             "proto": proto,
-            "local_ip": local_ip or None,
+            "local_ip": local_ip,
             "local_port": local_port,
             "remote_ip": remote_ip or None,
             "remote_port": remote_port,

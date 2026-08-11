@@ -45,35 +45,46 @@ def _unhex(s):
     return bytes.fromhex(str(s).replace(" ", ""))
 
 
+class _RecordedEvents(list):
+    """Public event tuples plus optional per-event endpoint metadata for PCAP."""
+
+    def __init__(self):
+        super().__init__()
+        self.pcap_peers = []
+
+
 class StreamRecorder:
     """录制器：主窗在收/发处调 on_rx / on_tx，停止后 save() 落盘。"""
 
     def __init__(self, max_events=_MAX_EVENTS):
         self._max = max_events
-        self.events = []        # [(t_rel, 'rx'|'tx', bytes)]
+        self.events = _RecordedEvents()  # [(t_rel, 'rx'|'tx', bytes)]
         self.recording = False
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
         self.link = None        # optional net endpoint snapshot for PCAP export
+        self._mcast_multiple_peers = False
 
     def start(self, link=None):
-        self.events = []
+        self.events = _RecordedEvents()
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
         self.link = dict(link) if isinstance(link, dict) else None
+        self._mcast_multiple_peers = False
         self.recording = True
 
     def stop(self):
         self.recording = False
 
     def clear(self):
-        self.events = []
+        self.events = _RecordedEvents()
         self.truncated = False
         self._t0 = None
         self._wall_t0 = None
         self.link = None
+        self._mcast_multiple_peers = False
 
     def __len__(self):
         return len(self.events)
@@ -94,7 +105,7 @@ class StreamRecorder:
     def total_bytes(self):
         return sum(len(b) for _t, _d, b in self.events)
 
-    def _add(self, direction, data, t=None):
+    def _add(self, direction, data, t=None, pcap_peer=None):
         if not self.recording or not data:
             return
         now = time.monotonic() if t is None else t
@@ -105,12 +116,15 @@ class StreamRecorder:
             self._wall_t0 = time.time()
         rel = max(0.0, now - self._t0)
         payload = bytes(data)
+        peers = getattr(self.events, "pcap_peers", None)
         # 大块按同一时间戳拆事件，不能直接截掉尾部；录制的是原始流，静默丢字节会让复现失真。
         for off in range(0, len(payload), _MAX_CHUNK):
             if len(self.events) >= self._max:
                 self.truncated = True   # 到上限停止采集（保留最早的现场，不滚动丢头）
                 return
             self.events.append((rel, direction, payload[off:off + _MAX_CHUNK]))
+            if isinstance(peers, list):
+                peers.append(pcap_peer)
 
     @staticmethod
     def _same_udp_peer(link, source):
@@ -122,19 +136,83 @@ class StreamRecorder:
         except (TypeError, ValueError):
             return False
 
-    def on_rx(self, data, t=None, source=None):
-        if (self.recording and isinstance(self.link, dict)
-                and self.link.get("proto") == "UDP"
-                and not self._same_udp_peer(self.link, source)):
-            # A fixed TX destination does not filter inbound UDP. Once another
-            # peer contributes bytes, the 3-field recorder events no longer
-            # contain enough provenance for a truthful single-peer PCAP.
-            # source=None is also untrusted: without peer provenance the
-            # exported PCAP could falsely attribute RX bytes to the fixed peer.
-            self.link = None
-        self._add("rx", data, t)
+    @staticmethod
+    def _multicast_peer(source):
+        try:
+            src_ip, src_port = source
+            port = int(src_port)
+            if not 1 <= port <= 65535:
+                return None
+            return str(ipaddress.IPv4Address(str(src_ip))), port
+        except (TypeError, ValueError):
+            return None
 
-    def on_tx(self, data, t=None):
+    @staticmethod
+    def _same_tcp_server_peer(link, source):
+        """TCP Server client keys are 'ip:port' strings from TcpServerConn._key."""
+        try:
+            text = str(source or "").strip()
+            if ":" not in text:
+                return False
+            host, _, port_s = text.rpartition(":")
+            return (ipaddress.IPv4Address(host.strip().strip("[]")) ==
+                    ipaddress.IPv4Address(str(link.get("remote_ip")))
+                    and int(port_s) == int(link.get("remote_port")))
+        except (TypeError, ValueError):
+            return False
+
+    def _note_multicast_rx_peer(self, source):
+        """Remember the sender for legacy PCAP metadata and return it for this event."""
+        peer = self._multicast_peer(source)
+        if peer is None:
+            return None
+        if not isinstance(self.link, dict):
+            return peer
+        if self._mcast_multiple_peers:
+            return peer
+        previous = self._multicast_peer((self.link.get("rx_peer_ip"),
+                                         self.link.get("rx_peer_port")))
+        if previous is not None and previous != peer:
+            # Do not leave a stale header-level fallback that could mislabel a
+            # caller which drops the per-event sidecar.
+            self._mcast_multiple_peers = True
+            self.link.pop("rx_peer_ip", None)
+            self.link.pop("rx_peer_port", None)
+        else:
+            self.link["rx_peer_ip"], self.link["rx_peer_port"] = peer
+        return peer
+
+    def on_rx(self, data, t=None, source=None):
+        pcap_peer = None
+        if self.recording and isinstance(self.link, dict):
+            proto = self.link.get("proto")
+            if proto == "UDP" and not self._same_udp_peer(self.link, source):
+                # A fixed TX destination does not filter inbound UDP. Once another
+                # peer contributes bytes, the 3-field recorder events no longer
+                # contain enough provenance for a truthful single-peer PCAP.
+                # source=None is also untrusted: without peer provenance the
+                # exported PCAP could falsely attribute RX bytes to the fixed peer.
+                self.link = None
+            elif proto == "TCP Server":
+                if not self._same_tcp_server_peer(self.link, source):
+                    # Second client / reconnect after drop: stop attributing to
+                    # the originally selected single client.
+                    self.link = None
+            elif proto == "UDP Multicast":
+                pcap_peer = self._note_multicast_rx_peer(source)
+                if pcap_peer is None:
+                    # A multicast RX frame without a sender cannot be represented
+                    # truthfully in PCAP; keep the recording but disable export.
+                    self.link = None
+        self._add("rx", data, t, pcap_peer=pcap_peer)
+
+    def on_tx(self, data, t=None, source=None):
+        if self.recording and isinstance(self.link, dict):
+            if (self.link.get("proto") == "TCP Server"
+                    and not self._same_tcp_server_peer(self.link, source)):
+                # The selected client changed (or a broadcast was sent), so this
+                # no longer has a truthful single-peer TCP mapping.
+                self.link = None
         self._add("tx", data, t)
 
     # ---------------- 存盘 / 载入 ----------------
@@ -148,16 +226,21 @@ class StreamRecorder:
             # Keep a compact, JSON-friendly snapshot for offline PCAP export.
             clean = {}
             for key in ("proto", "local_ip", "local_port",
-                        "remote_ip", "remote_port"):
+                        "remote_ip", "remote_port",
+                        "rx_peer_ip", "rx_peer_port"):
                 if key in link_obj and link_obj[key] not in (None, ""):
                     clean[key] = link_obj[key]
             if clean:
                 header["link"] = clean
         with io.open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(header, ensure_ascii=False) + "\n")
-            for t, d, b in self.events:
-                f.write(json.dumps({"t": round(t, 4), "d": d, "b": _hex(b)},
-                                   ensure_ascii=False) + "\n")
+            peers = getattr(self.events, "pcap_peers", ()) or ()
+            for i, (t, d, b) in enumerate(self.events):
+                event = {"t": round(t, 4), "d": d, "b": _hex(b)}
+                peer = peers[i] if i < len(peers) else None
+                if peer is not None:
+                    event["p"] = peer
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
         return len(self.events)
 
 
@@ -170,7 +253,7 @@ def load(path):
             raise RecordError("文件过大（上限 %d MB）" % (_MAX_FILE_BYTES >> 20))
     except OSError as e:
         raise RecordError(str(e))
-    events, header, bad = [], {}, 0
+    events, header, bad = _RecordedEvents(), {}, 0
     first_content = True
     with io.open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -196,6 +279,7 @@ def load(path):
                 t = float(obj["t"])
                 d = obj["d"]
                 b = _unhex(obj["b"])
+                peer = obj.get("p") if "p" in obj else None
             except Exception:
                 bad += 1
                 continue
@@ -208,9 +292,13 @@ def load(path):
             if len(events) >= _MAX_EVENTS:
                 raise RecordError("事件过多（上限 %d 条）" % _MAX_EVENTS)
             events.append((max(0.0, t), d, b))
+            events.pcap_peers.append(peer)
     if not header:
         raise RecordError("不是有效的录制文件（缺文件头）")
-    events.sort(key=lambda e: e[0])     # 手改后时间戳可能乱序，回放前排好
+    # 手改后时间戳可能乱序，回放前排好；端点旁路须随事件一起排序。
+    ordered = sorted(zip(events, events.pcap_peers), key=lambda item: item[0][0])
+    events[:] = [event for event, _peer in ordered]
+    events.pcap_peers[:] = [peer for _event, peer in ordered]
     header["bad_lines"] = bad
     return events, header
 

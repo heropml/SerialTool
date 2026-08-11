@@ -1487,7 +1487,11 @@ def test_example_project_generation_is_stable_and_dual_session_loops_back(tmp_pa
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
-    builders = (builder.build_modbus, builder.build_at, builder.build_dual_session)
+    builders = (
+        builder.build_modbus, builder.build_at, builder.build_dual_session,
+        builder.build_nmea, builder.build_fixed_header,
+        builder.build_sensor_csv, builder.build_tcp_client_debug,
+    )
     for build in builders:
         build(first)
         build(second)

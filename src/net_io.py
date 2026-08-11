@@ -80,7 +80,7 @@ def _any_or(ip):
     return QHostAddress(ip)
 
 
-def _route_local_ipv4(remote_ip, remote_port):
+def route_local_ipv4(remote_ip, remote_port):
     """Resolve the concrete source IPv4 selected by the OS route table.
 
     UDP connect does not send a datagram; it only selects a route/source.
@@ -94,6 +94,34 @@ def _route_local_ipv4(remote_ip, remote_port):
         return None
     finally:
         sock.close()
+
+
+# Back-compat alias for older call sites / tests.
+_route_local_ipv4 = route_local_ipv4
+
+
+def resolve_export_local_ipv4(configured, remote_ip=None, remote_port=None):
+    """Pick a concrete host IPv4 for PCAP (never 0.0.0.0 / ::).
+
+    Order: non-wildcard configured → route toward remote/group → first
+    non-loopback local address → 127.0.0.1. Returns None if nothing usable.
+    """
+    text = str(configured or "").strip()
+    if text and text not in ("0.0.0.0", "::", "::0"):
+        return text
+    if remote_ip and remote_port not in (None, ""):
+        routed = route_local_ipv4(remote_ip, remote_port)
+        if routed:
+            return routed
+    fallback = None
+    for ip in local_ipv4_list():
+        if ip in ("0.0.0.0", "::", "::0"):
+            continue
+        if ip == "127.0.0.1":
+            fallback = fallback or ip
+            continue
+        return ip
+    return fallback
 
 
 def is_multicast_ipv4(ip):
@@ -536,7 +564,7 @@ class UdpConn(NetConn):
                 if configured and configured not in ("0.0.0.0", "::"):
                     ip = configured
                 elif self._remote_ip and self._remote_port:
-                    ip = _route_local_ipv4(self._remote_ip, self._remote_port)
+                    ip = route_local_ipv4(self._remote_ip, self._remote_port)
                 else:
                     ip = None
             if not ip or port <= 0:
@@ -557,6 +585,8 @@ class UdpGroupConn(NetConn):
         self._group = group_ip
         self._port = port
         self._sock = None
+        self._last_peer = None       # (QHostAddress, port) last datagram sender
+        self._last_peer_key = None
 
     def open(self):
         # 防御性守卫：重复 open() 先关闭旧的
@@ -592,8 +622,24 @@ class UdpGroupConn(NetConn):
         while self._sock and self._sock.hasPendingDatagrams():
             size = self._sock.pendingDatagramSize()
             data, host, port = self._sock.readDatagram(size)
+            self._last_peer = (host, port)
+            key = (host.toString(), port)
+            if key != self._last_peer_key:
+                self._last_peer_key = key
+                self.peer_changed.emit(host.toString(), port)
             if data:
                 self.data_received.emit(bytes(data))
+
+    def peer_endpoint(self):
+        """Return the source endpoint of the most recently emitted datagram."""
+        if not self._last_peer:
+            return None
+        try:
+            ip = self._last_peer[0].toString()
+            port = int(self._last_peer[1])
+        except (TypeError, ValueError, AttributeError):
+            return None
+        return (ip, port)
 
     def send(self, data, target=None):
         if not self._sock:
@@ -609,6 +655,8 @@ class UdpGroupConn(NetConn):
             _safe(self._sock.close)
             _safe(self._sock.deleteLater)
             self._sock = None
+        self._last_peer = None
+        self._last_peer_key = None
         if was_open:
             self.state_changed.emit(False)
 

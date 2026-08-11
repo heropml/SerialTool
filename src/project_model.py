@@ -12,7 +12,7 @@ SUPPORTED_PROJECT_VERSIONS = (1, 2)
 
 _PLOT_KEYS = (
     "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
-    "plot_hex_header", "plot_maxpts", "plot_xaxis",
+    "plot_hex_header", "plot_maxpts", "plot_xaxis", "plot_view", "plot_dual_y",
 )
 
 _DASHBOARD_KEYS = (

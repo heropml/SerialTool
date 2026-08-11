@@ -1,0 +1,134 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "Sensor CSV Demo",
+  "metadata": {
+    "device_type": "sensor",
+    "protocol_template": "delimiter",
+    "connection_type": "Virtual",
+    "description": "Comma-separated sensor lines for delimiter plot (e.g. 36.5,72,3.30)."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": false,
+    "packet_split": false,
+    "packet_timeout": "20",
+    "line_split": true,
+    "line_nl_mode": 0,
+    "tx_hex": false,
+    "append_newline": true,
+    "append_nl_mode": 0,
+    "checksum_idx": 0,
+    "encoding": "utf-8",
+    "frame_rules": "",
+    "plot_mode": 0,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "",
+    "plot_hex_header": "",
+    "dash_mode": 0,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "",
+    "dash_header": "",
+    "net_proto": "Virtual",
+    "rx_hex": false,
+    "vconn_loopback": true,
+    "show_timestamp": true,
+    "snippets": "[{\"name\": \"Sample CSV\", \"text\": \"36.5,72,3.30\", \"hex\": false}, {\"name\": \"Sample CSV 2\", \"text\": \"37.1,68,3.28\", \"hex\": false}]",
+    "multi_send_groups": "[{\"name\": \"Sensor CSV\", \"items\": [{\"checked\": true, \"name\": \"row1\", \"data\": \"36.5,72,3.30\", \"hex\": false, \"nl\": 1, \"delay\": 200}, {\"checked\": true, \"name\": \"row2\", \"data\": \"37.1,68,3.28\", \"hex\": false, \"nl\": 1, \"delay\": 200}]}]",
+    "connection_presets": "[{\"id\": \"example-sensor-csv-virtual\", \"name\": \"Sensor CSV loopback\", \"note\": \"Delimiter plot: temp,humidity,voltage\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "Sample CSV",
+          "text": "36.5,72,3.30",
+          "hex": false
+        },
+        {
+          "name": "Sample CSV 2",
+          "text": "37.1,68,3.28",
+          "hex": false
+        }
+      ],
+      "groups": [
+        {
+          "name": "Sensor CSV",
+          "items": [
+            {
+              "checked": true,
+              "name": "row1",
+              "data": "36.5,72,3.30",
+              "hex": false,
+              "nl": 1,
+              "delay": 200
+            },
+            {
+              "checked": true,
+              "name": "row2",
+              "data": "37.1,68,3.28",
+              "hex": false,
+              "nl": 1,
+              "delay": 200
+            }
+          ]
+        }
+      ]
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-sensor-csv-virtual",
+          "name": "Sensor CSV loopback",
+          "note": "Delimiter plot: temp,humidity,voltage",
+          "last_used": 0.0,
+          "net_proto": "Virtual",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": true,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 0,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "",
+      "dash_header": ""
+    },
+    "plot": {
+      "plot_mode": 0,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "",
+      "plot_hex_header": ""
+    }
+  }
+}

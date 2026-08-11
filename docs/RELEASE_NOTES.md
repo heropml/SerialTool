@@ -36,6 +36,7 @@
 ### 产品边界
 - P2（CLI / REST / 插件 dissector）继续暂缓
 - PCAP 导出已落地初版：仅 **TCP Client** / **指定远程单对端 UDP** 可从 `.ctrec` 导出合成 `.pcap`（非网卡抓包）；串口 / Server / 组播等仍用 `.ctrec`
+  - *后续扩展（未发版记录）：已支持 TCP Server（单客户端）、UDP 组播，以及经典 `.pcap` + `.pcapng`；通配 `0.0.0.0` 本地地址会解析为具体主机 IPv4 后再导出*
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
 
 ### 测试

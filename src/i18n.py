@@ -1229,8 +1229,8 @@ TR = {
         "rr_rec_stop": "■ 停止",
         "rr_save": "保存",
         "rr_export_pcap": "导出 PCAP",
-        "rr_export_pcap_tip": "将当前录制导出为 Wireshark 可打开的 .pcap（仅 TCP Client / 指定远程的单对端 UDP）",
-        "rr_pcap_unsupported": "当前录制无法导出 PCAP：仅支持 TCP Client，以及已指定远程对端的 UDP",
+        "rr_export_pcap_tip": "将当前录制导出为 Wireshark 可打开的 .pcap / .pcapng（TCP Client/Server 单对端、UDP、UDP 组播）",
+        "rr_pcap_unsupported": "当前录制无法导出 PCAP：需 TCP Client/Server（单客户端）、UDP（指定远程）或 UDP 组播",
         "rr_pcap_exported": "已导出 PCAP：{path}（{n} 包）",
         "rr_pcap_failed": "导出 PCAP 失败：{e}",
         "rr_replay": "回放",
@@ -1262,10 +1262,10 @@ TR = {
         "rr_play_started": "▶ 开始回放：{n} 条，预计 {sec}s",
         "rr_play_done": "■ 回放完成：{n} 条",
         "rr_play_stopped": "■ 已停止，已回放 {n} 条",
-        "rr_hint": "录制 = 把线路上的原始收发流按时序存成 .ctrec；回放 = 按原时间间隔重新注入，无硬件复现问题。回放需先连「虚拟连接」。TCP Client / 指定远程 UDP 可另导出 .pcap 给 Wireshark。",
+        "rr_hint": "录制 = 把线路上的原始收发流按时序存成 .ctrec；回放 = 按原时间间隔重新注入，无硬件复现问题。回放需先连「虚拟连接」。TCP Client/Server（单客户端）、UDP（指定远程）、UDP 组播可另导出 .pcap / .pcapng 给 Wireshark。",
         "rr_help_btn": "使用说明",
         "rr_help_title": "数据录制 / 回放 · 使用说明",
-        "rr_help": '<b>数据录制 / 回放</b> 把线路上的<b>原始收发流</b>按时序录下来存成 <code>.ctrec</code> 文件，之后可以当成「设备」重新播一遍 —— 用来无硬件复现问题、离线调试，或者把现场直接发给同事。<br><br><b>与「宏录制」的分工</b><br>• 宏录制录的是<b>你发了什么</b>，产出可编辑的脚本（语义化，用来重复操作）<br>• 本功能录的是<b>线路上的原始字节</b>（含设备回的数据），产出数据文件（用来重现现场）<br><br><b>录制</b><br>连上任意连接后点「● 录制」，正常收发，完成后点「■ 停止」，再「保存」成 <code>.ctrec</code>。文件是 JSON Lines 文本格式，可读、可 diff、可手改：每行一个事件，<code>t</code> 是相对开始的秒数、<code>d</code> 是方向、<code>b</code> 是 HEX 字节。<br><br><b>导出 PCAP</b><br>TCP Client，或已「指定远程」的单对端 UDP，可把当前事件导出为标准 <code>.pcap</code>（合成以太网/IP/传输层头），用 Wireshark 打开。串口、TCP Server、组播、UDP 回复模式不支持。这不是系统网卡抓包，只保留时序与载荷方向。<br><br><b>回放</b><br>「载入」一个 <code>.ctrec</code> → 点「播放」，录到的 RX 会按<b>原始时间间隔</b>重新注入。可调倍速（0.5x ~ 最快）、循环播放。<br><br><b>回放需要先连「虚拟连接」</b>：连接类型选 <code>Virtual</code> 并启动。因为往真实串口/网络「注入收到的数据」在物理上不成立 —— 数据只能从设备来。接上虚拟连接后，自动应答、Modbus 从机、波形图、仪表盘、协议高亮等照常工作，就像设备真的在发数据一样。<br><br>默认只回放 <b>RX</b>（设备发来的）。勾「含发送」会把当时我方发的也一起注入 —— 那会造成自问自答，一般只在纯看数据流时才用。',
+        "rr_help": '<b>数据录制 / 回放</b> 把线路上的<b>原始收发流</b>按时序录下来存成 <code>.ctrec</code> 文件，之后可以当成「设备」重新播一遍 —— 用来无硬件复现问题、离线调试，或者把现场直接发给同事。<br><br><b>与「宏录制」的分工</b><br>• 宏录制录的是<b>你发了什么</b>，产出可编辑的脚本（语义化，用来重复操作）<br>• 本功能录的是<b>线路上的原始字节</b>（含设备回的数据），产出数据文件（用来重现现场）<br><br><b>录制</b><br>连上任意连接后点「● 录制」，正常收发，完成后点「■ 停止」，再「保存」成 <code>.ctrec</code>。文件是 JSON Lines 文本格式，可读、可 diff、可手改：每行一个事件，<code>t</code> 是相对开始的秒数、<code>d</code> 是方向、<code>b</code> 是 HEX 字节。<br><br><b>导出 PCAP</b><br>TCP Client/Server（需选定单个客户端）、UDP（指定远程）、UDP 组播，可把当前事件导出为标准 <code>.pcap</code> / <code>.pcapng</code>（合成以太网/IP/传输层头），用 Wireshark 打开。串口、UDP 回复模式不支持。这不是系统网卡抓包，只保留时序与载荷方向。<br><br><b>回放</b><br>「载入」一个 <code>.ctrec</code> → 点「播放」，录到的 RX 会按<b>原始时间间隔</b>重新注入。可调倍速（0.5x ~ 最快）、循环播放。<br><br><b>回放需要先连「虚拟连接」</b>：连接类型选 <code>Virtual</code> 并启动。因为往真实串口/网络「注入收到的数据」在物理上不成立 —— 数据只能从设备来。接上虚拟连接后，自动应答、Modbus 从机、波形图、仪表盘、协议高亮等照常工作，就像设备真的在发数据一样。<br><br>默认只回放 <b>RX</b>（设备发来的）。勾「含发送」会把当时我方发的也一起注入 —— 那会造成自问自答，一般只在纯看数据流时才用。',
         "sc_title": "脚本控制台",
         "sc_script": "脚本",
         "sc_new": "新建",
@@ -1343,7 +1343,9 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>每帧 12 字节：3 个 f32le 浮点（X/Y/Z 加速度）\n"
             "模式 = HEX 字节字段   字段 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 条加速度曲线，每帧一个采样点</pre>"
-            "<br><b>X 轴</b>可切「样本序号」或「时间」；<b>窗口</b>下拉控制最多保留点数（超出滚动丢弃，长跑不爆内存）；右上角<b>暂停/清空/导出 CSV</b>。<br>"
+            "<br><b>X 轴</b>可切「样本序号」或「时间」；<b>窗口</b>下拉控制最多保留点数（超出滚动丢弃，长跑不爆内存）；"
+            "<b>视图</b>可切波形 / XY（需 ≥2 勾选通道）/ 直方图；勾选<b>双 Y 轴</b>时 CH1 走左轴、其余勾选通道走右轴；"
+            "鼠标十字光标下方显示各可见通道的 count/min/max/mean。右上角<b>暂停/清空/导出 CSV</b>。<br>"
             "<b>⚠️ HEX 字节字段模式按接收块分帧</b>（一块=一帧，不拆粘包）。串口/TCP 请配合数据区<b>「时间分包」</b>让每帧单独成块。"
         ),
         "plot_mode": "解析",
@@ -1491,6 +1493,13 @@ TR = {
         "plot_xaxis": "X 轴",
         "plot_x_index": "样本序号",
         "plot_x_time": "时间(s)",
+        "plot_view": "视图",
+        "plot_view_wave": "波形",
+        "plot_view_xy": "XY",
+        "plot_view_hist": "直方图",
+        "plot_dual_y": "双 Y 轴",
+        "plot_dual_y_tip": "第 2 通道起共用右侧 Y 轴；3+ 通道时刻度可能互相挤压",
+        "plot_cursor_fmt": "x={x:.4g}  y={y:.4g}{stats}",
         "plot_pause": "暂停",
         "plot_resume": "继续",
         "plot_clear": "清空",
@@ -2858,8 +2867,8 @@ TR = {
         "rr_rec_stop": "■ Stop",
         "rr_save": "Save",
         "rr_export_pcap": "Export PCAP",
-        "rr_export_pcap_tip": "Export the current capture as a Wireshark .pcap (TCP Client / single remote-peer UDP only)",
-        "rr_pcap_unsupported": "Cannot export PCAP: only TCP Client and UDP with a fixed remote peer are supported",
+        "rr_export_pcap_tip": "Export the current capture as Wireshark .pcap / .pcapng (TCP Client/Server single peer, UDP, UDP Multicast)",
+        "rr_pcap_unsupported": "Cannot export PCAP: need TCP Client/Server (single client), UDP with a fixed remote, or UDP Multicast",
         "rr_pcap_exported": "PCAP exported: {path} ({n} packets)",
         "rr_pcap_failed": "PCAP export failed: {e}",
         "rr_replay": "Replay",
@@ -2891,10 +2900,10 @@ TR = {
         "rr_play_started": "▶ Replaying {n} events, about {sec}s",
         "rr_play_done": "■ Replay finished: {n} events",
         "rr_play_stopped": "■ Stopped after {n} events",
-        "rr_hint": "Record captures the raw traffic with its timing into a .ctrec; replay injects it back at the original intervals so you can reproduce a problem without hardware. Replay needs the Virtual connection. TCP Client / fixed-remote UDP can also export a .pcap for Wireshark.",
+        "rr_hint": "Record captures the raw traffic with its timing into a .ctrec; replay injects it back at the original intervals so you can reproduce a problem without hardware. Replay needs the Virtual connection. TCP Client/Server (single client), UDP with a fixed remote, and UDP Multicast can also export .pcap / .pcapng for Wireshark.",
         "rr_help_btn": "Help",
         "rr_help_title": "Record / Replay · Help",
-        "rr_help": '<b>Data record / replay</b> captures the <b>raw traffic</b> on the link with its original timing into a <code>.ctrec</code> file, so you can play it back later as if the device were there — reproduce a problem without hardware, debug offline, or just send the capture to a colleague.<br><br><b>How this differs from macro recording</b><br>• Macro recording captures <b>what you sent</b> and produces an editable script (semantic, for repeating actions)<br>• This captures <b>the raw bytes on the wire</b> including the device\'s replies, and produces a data file (for reproducing a scene)<br><br><b>Recording</b><br>With any connection open, click "● Record", work as usual, click "■ Stop", then "Save" to a <code>.ctrec</code>. The format is JSON Lines: readable, diffable, hand-editable — one event per line with <code>t</code> (seconds from start), <code>d</code> (direction) and <code>b</code> (HEX bytes).<br><br><b>Export PCAP</b><br>TCP Client, or UDP with a fixed remote peer, can export the current events as a standard <code>.pcap</code> (synthetic Ethernet/IP/transport headers) for Wireshark. Serial, TCP Server, multicast and UDP reply mode are not supported. This is not a NIC capture — only timing and payload direction are preserved.<br><br><b>Replay</b><br>"Load" a <code>.ctrec</code> and hit "Play": the recorded RX is injected again at the <b>original intervals</b>. Speed is adjustable (0.5x … max) and it can loop.<br><br><b>Replay requires the Virtual connection</b>: pick <code>Virtual</code> as the connection type and start it. Injecting "received data" into a real serial port or socket is physically meaningless — data can only come from the device. With the virtual connection up, auto-reply, the Modbus slave, plots, the dashboard and protocol highlighting all work exactly as if a real device were sending.<br><br>Only <b>RX</b> is replayed by default. Ticking "include TX" also injects what you sent at the time, which makes the app answer itself — normally only useful when you just want to watch the data flow.',
+        "rr_help": '<b>Data record / replay</b> captures the <b>raw traffic</b> on the link with its original timing into a <code>.ctrec</code> file, so you can play it back later as if the device were there — reproduce a problem without hardware, debug offline, or just send the capture to a colleague.<br><br><b>How this differs from macro recording</b><br>• Macro recording captures <b>what you sent</b> and produces an editable script (semantic, for repeating actions)<br>• This captures <b>the raw bytes on the wire</b> including the device\'s replies, and produces a data file (for reproducing a scene)<br><br><b>Recording</b><br>With any connection open, click "● Record", work as usual, click "■ Stop", then "Save" to a <code>.ctrec</code>. The format is JSON Lines: readable, diffable, hand-editable — one event per line with <code>t</code> (seconds from start), <code>d</code> (direction) and <code>b</code> (HEX bytes).<br><br><b>Export PCAP</b><br>TCP Client/Server (single selected client), UDP with a fixed remote, or UDP Multicast can export the current events as a standard <code>.pcap</code> / <code>.pcapng</code> (synthetic Ethernet/IP/transport headers) for Wireshark. Serial and UDP reply-mode are unsupported. This is not NIC capture — only timing and payload direction are preserved.<br><br><b>Replay</b><br>"Load" a <code>.ctrec</code> and hit "Play": the recorded RX is injected again at the <b>original intervals</b>. Speed is adjustable (0.5x … max) and it can loop.<br><br><b>Replay requires the Virtual connection</b>: pick <code>Virtual</code> as the connection type and start it. Injecting "received data" into a real serial port or socket is physically meaningless — data can only come from the device. With the virtual connection up, auto-reply, the Modbus slave, plots, the dashboard and protocol highlighting all work exactly as if a real device were sending.<br><br>Only <b>RX</b> is replayed by default. Ticking "include TX" also injects what you sent at the time, which makes the app answer itself — normally only useful when you just want to watch the data flow.',
         "sc_title": "Script Console",
         "sc_script": "Script",
         "sc_new": "New",
@@ -2972,7 +2981,9 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>12-byte frame: 3× f32le (X/Y/Z accel)\n"
             "Mode = HEX byte field   Fields = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 acceleration curves, one sample per frame</pre>"
-            "<br><b>X axis</b> can switch to 'sample index' or 'time'; <b>Window</b> caps max points (older drops, prevents memory blow-up); <b>Pause/Clear/Export CSV</b> on the top-right.<br>"
+            "<br><b>X axis</b> can switch to 'sample index' or 'time'; <b>Window</b> caps max points (older drops, prevents memory blow-up); "
+            "<b>View</b> switches Waveform / XY (≥2 checked channels) / Histogram; <b>Dual Y</b> keeps CH1 on the left axis and later checked channels on the right; "
+            "crosshair cursor shows count/min/max/mean for visible channels. <b>Pause/Clear/Export CSV</b> on the top-right.<br>"
             "<b>⚠️ HEX byte field mode splits per received block</b> (one block = one frame, no de-framing). For serial/TCP, pair with data area's <b>'Packet Split'</b>."
         ),
         "plot_mode": "Parse",
@@ -3120,6 +3131,13 @@ TR = {
         "plot_xaxis": "X axis",
         "plot_x_index": "Sample #",
         "plot_x_time": "Time (s)",
+        "plot_view": "View",
+        "plot_view_wave": "Waveform",
+        "plot_view_xy": "XY",
+        "plot_view_hist": "Histogram",
+        "plot_dual_y": "Dual Y",
+        "plot_dual_y_tip": "Channels after the first share the right Y axis; 3+ channels may compress each other",
+        "plot_cursor_fmt": "x={x:.4g}  y={y:.4g}{stats}",
         "plot_pause": "Pause",
         "plot_resume": "Resume",
         "plot_clear": "Clear",
@@ -4473,8 +4491,8 @@ TR = {
         "rr_rec_stop": "■ 停止",
         "rr_save": "儲存",
         "rr_export_pcap": "匯出 PCAP",
-        "rr_export_pcap_tip": "將目前錄製匯出為 Wireshark 可開啟的 .pcap（僅 TCP Client / 指定遠端的單對端 UDP）",
-        "rr_pcap_unsupported": "目前錄製無法匯出 PCAP：僅支援 TCP Client，以及已指定遠端對端的 UDP",
+        "rr_export_pcap_tip": "將目前錄製匯出為 Wireshark 可開啟的 .pcap / .pcapng（TCP Client/Server 單對端、UDP、UDP 群播）",
+        "rr_pcap_unsupported": "目前錄製無法匯出 PCAP：需 TCP Client/Server（單客戶端）、UDP（指定遠端）或 UDP 群播",
         "rr_pcap_exported": "已匯出 PCAP：{path}（{n} 包）",
         "rr_pcap_failed": "匯出 PCAP 失敗：{e}",
         "rr_replay": "回放",
@@ -4506,10 +4524,10 @@ TR = {
         "rr_play_started": "▶ 開始回放：{n} 筆，預計 {sec}s",
         "rr_play_done": "■ 回放完成：{n} 筆",
         "rr_play_stopped": "■ 已停止，已回放 {n} 筆",
-        "rr_hint": "錄製 = 把線路上的原始收發流按時序存成 .ctrec；回放 = 按原時間間隔重新注入，無硬體重現問題。回放需先連「虛擬連線」。TCP Client / 指定遠端 UDP 可另匯出 .pcap 給 Wireshark。",
+        "rr_hint": "錄製 = 把線路上的原始收發流按時序存成 .ctrec；回放 = 按原時間間隔重新注入，無硬體重現問題。回放需先連「虛擬連線」。TCP Client/Server（單客戶端）、UDP（指定遠端）、UDP 群播可另匯出 .pcap / .pcapng 給 Wireshark。",
         "rr_help_btn": "使用說明",
         "rr_help_title": "資料錄製 / 回放 · 使用說明",
-        "rr_help": '<b>資料錄製 / 回放</b> 把線路上的<b>原始收發流</b>按時序錄下來存成 <code>.ctrec</code> 檔，之後可以當成「裝置」重新播一遍 —— 用來無硬體重現問題、離線除錯，或者把現場直接發給同事。<br><br><b>與「巨集錄製」的分工</b><br>• 巨集錄製錄的是<b>你發了什麼</b>，產出可編輯的腳本（語意化，用來重複操作）<br>• 本功能錄的是<b>線路上的原始位元組</b>（含裝置回的資料），產出資料檔（用來重現現場）<br><br><b>錄製</b><br>連上任意連線後點「● 錄製」，正常收發，完成後點「■ 停止」，再「儲存」成 <code>.ctrec</code>。檔案是 JSON Lines 文字格式，可讀、可 diff、可手改。<br><br><b>匯出 PCAP</b><br>TCP Client，或已「指定遠端」的單對端 UDP，可把目前事件匯出為標準 <code>.pcap</code>（合成乙太網/IP/傳輸層頭），用 Wireshark 開啟。序列埠、TCP Server、群播、UDP 回覆模式不支援。這不是系統網卡抓包，只保留時序與載荷方向。<br><br><b>回放</b><br>「載入」一個 <code>.ctrec</code> → 點「播放」，錄到的 RX 會按<b>原始時間間隔</b>重新注入。可調倍速（0.5x ~ 最快）、循環播放。<br><br><b>回放需要先連「虛擬連線」</b>：連線類型選 <code>Virtual</code> 並啟動。因為往真實串口/網路「注入收到的資料」在物理上不成立。接上虛擬連線後，自動應答、Modbus 從機、波形圖、儀表板、協定高亮等照常運作，就像裝置真的在發資料一樣。<br><br>預設只回放 <b>RX</b>。勾「含傳送」會把當時我方發的也一起注入 —— 那會造成自問自答。',
+        "rr_help": '<b>資料錄製 / 回放</b> 把線路上的<b>原始收發流</b>按時序錄下來存成 <code>.ctrec</code> 檔，之後可以當成「裝置」重新播一遍 —— 用來無硬體重現問題、離線除錯，或者把現場直接發給同事。<br><br><b>與「巨集錄製」的分工</b><br>• 巨集錄製錄的是<b>你發了什麼</b>，產出可編輯的腳本（語意化，用來重複操作）<br>• 本功能錄的是<b>線路上的原始位元組</b>（含裝置回的資料），產出資料檔（用來重現現場）<br><br><b>錄製</b><br>連上任意連線後點「● 錄製」，正常收發，完成後點「■ 停止」，再「儲存」成 <code>.ctrec</code>。檔案是 JSON Lines 文字格式，可讀、可 diff、可手改。<br><br><b>匯出 PCAP</b><br>TCP Client/Server（需選定單一客戶端）、UDP（指定遠端）、UDP 群播，可把目前事件匯出為標準 <code>.pcap</code> / <code>.pcapng</code>（合成乙太網/IP/傳輸層頭），用 Wireshark 開啟。序列埠、UDP 回覆模式不支援。這不是系統網卡抓包，只保留時序與載荷方向。<br><br><b>回放</b><br>「載入」一個 <code>.ctrec</code> → 點「播放」，錄到的 RX 會按<b>原始時間間隔</b>重新注入。可調倍速（0.5x ~ 最快）、循環播放。<br><br><b>回放需要先連「虛擬連線」</b>：連線類型選 <code>Virtual</code> 並啟動。因為往真實串口/網路「注入收到的資料」在物理上不成立。接上虛擬連線後，自動應答、Modbus 從機、波形圖、儀表板、協定高亮等照常運作，就像裝置真的在發資料一樣。<br><br>預設只回放 <b>RX</b>。勾「含傳送」會把當時我方發的也一起注入 —— 那會造成自問自答。',
         "sc_title": "腳本主控台",
         "sc_script": "腳本",
         "sc_new": "新增",
@@ -4587,7 +4605,9 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>每幀 12 位元組：3 個 f32le 浮點（X/Y/Z 加速度）\n"
             "模式 = HEX 位元組欄位   欄位 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 條加速度曲線，每幀一個取樣點</pre>"
-            "<br><b>X 軸</b>可切「樣本序號」或「時間」；<b>視窗</b>下拉控制最多保留點數（超出捲動丟棄，長跑不爆記憶體）；右上角<b>暫停/清空/匯出 CSV</b>。<br>"
+            "<br><b>X 軸</b>可切「樣本序號」或「時間」；<b>視窗</b>下拉控制最多保留點數（超出捲動丟棄，長跑不爆記憶體）；"
+            "<b>視圖</b>可切波形 / XY（需 ≥2 勾選通道）/ 直方圖；勾選<b>雙 Y 軸</b>時 CH1 走左軸、其餘勾選通道走右軸；"
+            "滑鼠十字游標下方顯示各可見通道的 count/min/max/mean。右上角<b>暫停/清空/匯出 CSV</b>。<br>"
             "<b>⚠️ HEX 位元組欄位模式按接收區塊分幀</b>（一塊=一幀，不拆黏包）。串口/TCP 請配合資料區<b>「時間分包」</b>讓每幀單獨成塊。"
         ),
         "plot_mode": "解析",
@@ -4735,6 +4755,13 @@ TR = {
         "plot_xaxis": "X 軸",
         "plot_x_index": "樣本序號",
         "plot_x_time": "時間(s)",
+        "plot_view": "視圖",
+        "plot_view_wave": "波形",
+        "plot_view_xy": "XY",
+        "plot_view_hist": "直方圖",
+        "plot_dual_y": "雙 Y 軸",
+        "plot_dual_y_tip": "第 2 通道起共用右側 Y 軸；3+ 通道時刻度可能互相擠壓",
+        "plot_cursor_fmt": "x={x:.4g}  y={y:.4g}{stats}",
         "plot_pause": "暫停",
         "plot_resume": "繼續",
         "plot_clear": "清空",

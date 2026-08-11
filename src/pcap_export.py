@@ -1,22 +1,29 @@
 # -*- coding: utf-8 -*-
-"""TCP Client / 单对端 UDP → 标准 libpcap (.pcap) 导出。
+"""TCP Client / TCP Server (single peer) / UDP / UDP Multicast → libpcap / pcapng.
 
 把 CommTool 录到的应用层收发事件封装成合成以太网 + IPv4 + TCP/UDP 帧，
 以便用 Wireshark / tcpdump 打开。不是系统级网卡抓包：没有真实 L2 帧，
 TCP 也无三次握手 / 重传语义，只保时间序与载荷方向。
 
-支持范围（与路线图 P2-4 一致）：
+支持范围：
 - TCP Client
+- TCP Server（须指定唯一客户端对端 remote_ip/remote_port）
 - UDP（必须指定唯一远程对端）
-串口 / TCP Server / UDP 组播 / 回复模式多对端 → 拒绝导出。
+- UDP Multicast（remote = 组播组地址/端口）
+串口 / TCP Server 广播(__all__) / 回复模式多对端 → 拒绝导出。
+
+导出格式：经典 ``.pcap`` 或 ``.pcapng``（由路径扩展名或 format= 选择）。
 """
 from __future__ import annotations
 
 import ipaddress
+import os
 import struct
-from typing import Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from net_io import PROTO_TCP_CLIENT, PROTO_UDP
+from net_io import (
+    PROTO_TCP_CLIENT, PROTO_TCP_SERVER, PROTO_UDP, PROTO_UDP_MULTICAST,
+)
 
 Event = Tuple[float, str, bytes]  # (t_rel, 'rx'|'tx', payload)
 
@@ -31,6 +38,12 @@ _IP_PROTO_UDP = 17
 _TCP_DATA_OFFSET = 5  # 20-byte header → offset field = 5
 _TCP_MAX_PAYLOAD = 65535 - 20 - 20   # IPv4 total length minus IP/TCP headers
 _UDP_MAX_PAYLOAD = 65535 - 20 - 8    # legal IPv4 UDP datagram payload
+
+# pcapng (little-endian section; byte-order magic value 0x1A2B3C4D)
+_PCAPNG_SHB = 0x0A0D0D0A
+_PCAPNG_BOM = 0x1A2B3C4D
+_PCAPNG_IDB = 0x00000001
+_PCAPNG_EPB = 0x00000006
 
 
 class PcapExportError(ValueError):
@@ -65,13 +78,14 @@ def normalize_link(link: Optional[Mapping]) -> dict:
     if not isinstance(link, Mapping):
         raise PcapExportError("missing link metadata")
     proto = str(link.get("proto") or "").strip()
-    if proto == PROTO_TCP_CLIENT:
+    if proto in (PROTO_TCP_CLIENT, PROTO_TCP_SERVER):
         transport = "tcp"
-    elif proto == PROTO_UDP:
+    elif proto in (PROTO_UDP, PROTO_UDP_MULTICAST):
         transport = "udp"
     else:
         raise PcapExportError(
-            "PCAP export only supports TCP Client and single-peer UDP "
+            "PCAP export only supports TCP Client/Server and "
+            "UDP / UDP Multicast with a single remote peer "
             "(got %r)" % proto)
 
     remote_ip = str(link.get("remote_ip") or "").strip()
@@ -81,20 +95,40 @@ def normalize_link(link: Optional[Mapping]) -> dict:
             "single remote peer required (remote_ip / remote_port)")
 
     local_ip = str(link.get("local_ip") or "").strip() or "10.0.0.1"
+    # Bind-all is valid for listening, but not as a synthetic PCAP host.
+    if local_ip in ("0.0.0.0", "::", "::0"):
+        raise PcapExportError(
+            "wildcard local_ip is not exportable (need a concrete host IPv4)")
     local_port = link.get("local_port")
     if local_port in (None, ""):
         local_port = 40000
 
-    return {
+    local_ip_b = _ipv4_bytes(local_ip)
+    remote_ip_b = _ipv4_bytes(remote_ip)
+    if proto == PROTO_UDP_MULTICAST and not 224 <= remote_ip_b[0] <= 239:
+        raise PcapExportError("UDP Multicast remote_ip must be an IPv4 multicast group")
+
+    meta = {
         "proto": proto,
         "transport": transport,
         "local_ip": local_ip,
         "local_port": _port(local_port),
         "remote_ip": remote_ip,
         "remote_port": _port(remote_port),
-        "local_ip_b": _ipv4_bytes(local_ip),
-        "remote_ip_b": _ipv4_bytes(remote_ip),
+        "local_ip_b": local_ip_b,
+        "remote_ip_b": remote_ip_b,
+        "rx_peer_ip_b": None,
+        "rx_peer_port": None,
     }
+    # Older recordings retain one sender in the header; current recordings
+    # carry the sender with each multicast RX event.
+    if proto == PROTO_UDP_MULTICAST:
+        peer_ip = str(link.get("rx_peer_ip") or "").strip()
+        peer_port = link.get("rx_peer_port")
+        if peer_ip and peer_port not in (None, ""):
+            meta["rx_peer_ip_b"] = _ipv4_bytes(peer_ip)
+            meta["rx_peer_port"] = _port(peer_port)
+    return meta
 
 
 def can_export_link(link: Optional[Mapping]) -> bool:
@@ -175,8 +209,13 @@ def _mac_pair() -> Tuple[bytes, bytes]:
     return (b"\x02\x00\x00\x00\x00\x01", b"\x02\x00\x00\x00\x00\x02")
 
 
+def _ipv4_multicast_mac(addr: bytes) -> bytes:
+    """Map an IPv4 multicast group to its Ethernet destination MAC."""
+    return b"\x01\x00\x5e" + bytes((addr[1] & 0x7F, addr[2], addr[3]))
+
+
 def build_frame(direction: str, payload: bytes, link: Mapping,
-                tcp_state: dict) -> bytes:
+                tcp_state: dict, event_peer=None) -> bytes:
     """Build one Ethernet frame for an rx/tx application payload."""
     if direction not in ("rx", "tx"):
         raise PcapExportError("bad direction: %r" % direction)
@@ -196,13 +235,39 @@ def build_frame(direction: str, payload: bytes, link: Mapping,
     rem_port = link["remote_port"]
 
     if direction == "tx":
+        # Unicast: local → remote. Multicast: local → group (remote=group).
         src_mac, dst_mac = local_mac, remote_mac
         src_ip, dst_ip = loc_ip, rem_ip
         sport, dport = loc_port, rem_port
+    elif link.get("proto") == PROTO_UDP_MULTICAST:
+        # Multicast RX is sender → group (not group → local).
+        if event_peer is not None:
+            try:
+                peer_ip_text, peer_port_value = event_peer
+            except (TypeError, ValueError) as e:
+                raise PcapExportError("invalid multicast RX peer") from e
+            peer_ip = _ipv4_bytes(peer_ip_text)
+            peer_port = _port(peer_port_value)
+        else:
+            # Old recordings only have a single sender in the header. New live
+            # recordings pass the sender with each RX event instead.
+            peer_ip = link.get("rx_peer_ip_b")
+            peer_port = link.get("rx_peer_port")
+        if peer_ip is None or peer_port is None:
+            raise PcapExportError("multicast RX requires sender endpoint")
+        src_mac, dst_mac = remote_mac, local_mac
+        src_ip, dst_ip = peer_ip, rem_ip
+        sport, dport = peer_port, rem_port
     else:
+        # Unicast RX: remote → local.
         src_mac, dst_mac = remote_mac, local_mac
         src_ip, dst_ip = rem_ip, loc_ip
         sport, dport = rem_port, loc_port
+
+    if link.get("proto") == PROTO_UDP_MULTICAST:
+        # Both outbound datagrams and received group traffic target the same
+        # IPv4 multicast Ethernet address, never the local host's unicast MAC.
+        dst_mac = _ipv4_multicast_mac(rem_ip)
 
     if link["transport"] == "udp":
         l4 = _udp(sport, dport, src_ip, dst_ip, data)
@@ -219,6 +284,34 @@ def build_frame(direction: str, payload: bytes, link: Mapping,
     return _ethernet(src_mac, dst_mac, ip)
 
 
+def _iter_frames(
+    events: Sequence[Event],
+    meta: Mapping,
+    *,
+    wall_t0: Optional[float] = None,
+) -> List[Tuple[float, bytes]]:
+    """Build (timestamp_sec, ethernet_frame) list from recorder events."""
+    tcp_state = {"tx": 1000, "rx": 2000}
+    base = float(wall_t0) if wall_t0 is not None else 0.0
+    frames: List[Tuple[float, bytes]] = []
+    event_peers = getattr(events, "pcap_peers", ()) or ()
+    for i, (t_rel, direction, payload) in enumerate(events):
+        if direction not in ("rx", "tx") or not payload:
+            continue
+        ts = base + max(0.0, float(t_rel))
+        data = bytes(payload)
+        if meta["transport"] == "tcp":
+            chunks = (data[off:off + _TCP_MAX_PAYLOAD]
+                      for off in range(0, len(data), _TCP_MAX_PAYLOAD))
+        else:
+            chunks = (data,)
+        event_peer = event_peers[i] if i < len(event_peers) else None
+        for chunk in chunks:
+            frames.append((ts, build_frame(direction, chunk, meta, tcp_state,
+                                           event_peer=event_peer)))
+    return frames
+
+
 def events_to_pcap(
     events: Sequence[Event],
     link: Mapping,
@@ -230,55 +323,147 @@ def events_to_pcap(
     if not events:
         raise PcapExportError("no events to export")
 
-    tcp_state = {"tx": 1000, "rx": 2000}
+    frames = _iter_frames(events, meta, wall_t0=wall_t0)
+    if not frames:
+        raise PcapExportError("all events have empty payload")
+
     out = bytearray()
     out += struct.pack(
         "<IHHIIII",
         _PCAP_MAGIC, _PCAP_VER_MAJOR, _PCAP_VER_MINOR,
         0, 0, _SNAPLEN, _LINKTYPE_ETHERNET)
 
-    base = float(wall_t0) if wall_t0 is not None else 0.0
-    for t_rel, direction, payload in events:
-        if direction not in ("rx", "tx") or not payload:
-            continue
-        ts = base + max(0.0, float(t_rel))
+    for ts, frame in frames:
+        ts = max(0.0, float(ts))
         sec = int(ts)
         usec = int(round((ts - sec) * 1_000_000.0))
         if usec >= 1_000_000:
             sec += 1
             usec -= 1_000_000
-        data = bytes(payload)
-        if meta["transport"] == "tcp":
-            chunks = (data[off:off + _TCP_MAX_PAYLOAD]
-                      for off in range(0, len(data), _TCP_MAX_PAYLOAD))
-        else:
-            chunks = (data,)
-        for chunk in chunks:
-            frame = build_frame(direction, chunk, meta, tcp_state)
-            out += struct.pack("<IIII", sec, usec, len(frame), len(frame))
-            out += frame
-
-    # Global header only → events existed but none had a usable payload
-    if len(out) <= 24:
-        raise PcapExportError("all events have empty payload")
+        out += struct.pack("<IIII", sec, usec, len(frame), len(frame))
+        out += frame
     return bytes(out)
 
 
-def export_pcap_file(path: str, events: Iterable[Event], link: Mapping,
-                     *, wall_t0: Optional[float] = None) -> int:
-    """Write a .pcap file; return the number of packets written."""
-    raw = list(events)
-    ev = [(float(t), d, bytes(b)) for t, d, b in raw
-          if d in ("rx", "tx") and b]
-    if raw and not ev:
+def _pcapng_pad(data: bytes) -> bytes:
+    pad = (4 - (len(data) & 3)) & 3
+    return data + (b"\x00" * pad)
+
+
+def _pcapng_block(block_type: int, body: bytes) -> bytes:
+    # total length includes type(4) + len(4) + padded body + trailing len(4)
+    body = _pcapng_pad(body)
+    total = 12 + len(body)
+    return (struct.pack("<II", block_type, total) + body
+            + struct.pack("<I", total))
+
+
+def events_to_pcapng(
+    events: Sequence[Event],
+    link: Mapping,
+    *,
+    wall_t0: Optional[float] = None,
+) -> bytes:
+    """Convert recorder events to a minimal little-endian pcapng byte string.
+
+    Layout: Section Header Block + Interface Description Block (Ethernet)
+    + one Enhanced Packet Block per synthetic frame.
+    """
+    meta = normalize_link(link)
+    if not events:
+        raise PcapExportError("no events to export")
+
+    frames = _iter_frames(events, meta, wall_t0=wall_t0)
+    if not frames:
         raise PcapExportError("all events have empty payload")
-    data = events_to_pcap(ev, link, wall_t0=wall_t0)
-    with open(path, "wb") as f:
-        f.write(data)
+
+    out = bytearray()
+    # SHB: type is endian-independent; BOM 0x1A2B3C4D written LE → 4D 3C 2B 1A
+    shb_body = struct.pack(
+        "<IHHQ",
+        _PCAPNG_BOM,
+        1, 0,                 # major, minor
+        0xFFFFFFFFFFFFFFFF,   # section length unknown
+    )
+    out += _pcapng_block(_PCAPNG_SHB, shb_body)
+
+    # IDB: LINKTYPE_ETHERNET, snaplen
+    idb_body = struct.pack("<HHI", _LINKTYPE_ETHERNET, 0, _SNAPLEN)
+    out += _pcapng_block(_PCAPNG_IDB, idb_body)
+
+    for ts, frame in frames:
+        # Default if_tsresol = microseconds
+        usec_total = int(round(max(0.0, float(ts)) * 1_000_000.0))
+        ts_high = (usec_total >> 32) & 0xFFFFFFFF
+        ts_low = usec_total & 0xFFFFFFFF
+        pkt = _pcapng_pad(frame)
+        epb_body = (
+            struct.pack("<IIIII", 0, ts_high, ts_low, len(frame), len(frame))
+            + pkt
+        )
+        out += _pcapng_block(_PCAPNG_EPB, epb_body)
+
+    return bytes(out)
+
+
+def _detect_format(path: str, format: Optional[str]) -> str:
+    if format:
+        fmt = str(format).strip().lower()
+        if fmt in ("pcap", "pcapng"):
+            return fmt
+        raise PcapExportError("unknown PCAP format: %r" % format)
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    return "pcapng" if ext == ".pcapng" else "pcap"
+
+
+def _count_classic_packets(data: bytes) -> int:
     off = 24
     n = 0
     while off + 16 <= len(data):
         incl = struct.unpack_from("<I", data, off + 8)[0]
         off += 16 + incl
         n += 1
+    return n
+
+
+def _count_pcapng_packets(data: bytes) -> int:
+    """Count Enhanced Packet Blocks in a little-endian pcapng blob."""
+    off = 0
+    n = 0
+    while off + 8 <= len(data):
+        btype, total = struct.unpack_from("<II", data, off)
+        if total < 12 or off + total > len(data):
+            break
+        if btype == _PCAPNG_EPB:
+            n += 1
+        off += total
+    return n
+
+
+def export_pcap_file(path: str, events: Iterable[Event], link: Mapping,
+                     *, wall_t0: Optional[float] = None,
+                     format: Optional[str] = None) -> int:
+    """Write a .pcap / .pcapng file; return the number of packets written.
+
+    ``format`` defaults from the path extension (``.pcapng`` → pcapng, else classic).
+    """
+    if hasattr(events, "pcap_peers"):
+        # StreamRecorder's event container keeps endpoint metadata parallel to
+        # its public three-tuples. Do not copy it into a plain list here.
+        raw = ev = events
+    else:
+        raw = list(events)
+        ev = [(float(t), d, bytes(b)) for t, d, b in raw
+              if d in ("rx", "tx") and b]
+    if raw and not ev:
+        raise PcapExportError("all events have empty payload")
+    fmt = _detect_format(path, format)
+    if fmt == "pcapng":
+        data = events_to_pcapng(ev, link, wall_t0=wall_t0)
+        n = _count_pcapng_packets(data)
+    else:
+        data = events_to_pcap(ev, link, wall_t0=wall_t0)
+        n = _count_classic_packets(data)
+    with open(path, "wb") as f:
+        f.write(data)
     return n

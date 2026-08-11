@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Wrap-up regression: tooltip HTML helper, Modbus advanced UI, plot jump."""
+import math
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -114,6 +116,79 @@ def test_plot_named_samples_keep_wall_and_jump(tmp_path, monkeypatch):
             dlg.plot.plotItem.vb = _VB()
             dlg._on_plot_clicked(_Ev())
             assert jumped and abs(jumped[0] - t0) < 1e-6
+        finally:
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_plot_cursor_stats_refresh_after_rolling_overflow(tmp_path, monkeypatch):
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
+    window = CommTool("plot-stats-roll")
+    try:
+        dlg = PlotDialog(window)
+        try:
+            dlg._max_points = 2
+            dlg._append_vals([1.0])
+            dlg._append_vals([2.0])
+            dlg._refresh_cursor_stats_cache()
+            assert "min=1" in dlg._cursor_stats_extra
+            dlg._append_vals([100.0])
+            dlg._refresh_cursor_stats_cache()
+            assert "min=2" in dlg._cursor_stats_extra
+            assert "max=100" in dlg._cursor_stats_extra
+            assert "mean=51" in dlg._cursor_stats_extra
+        finally:
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_histogram_extreme_range_has_finite_pyqtgraph_geometry(tmp_path, monkeypatch):
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
+    window = CommTool("plot-hist-extreme")
+    try:
+        dlg = PlotDialog(window)
+        try:
+            dlg._append_vals([-1e308])
+            dlg._append_vals([1e308])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", RuntimeWarning)
+                dlg.cb_view.setCurrentIndex(2)
+                _APP.processEvents()
+                assert dlg._hist_item is not None
+                assert math.isfinite(dlg._hist_item.opts["width"])
+                assert all(math.isfinite(float(value))
+                           for value in dlg._hist_item.opts["x"])
+                dlg._hist_item.boundingRect()
+
+            assert not any(issubclass(warning.category, RuntimeWarning)
+                           for warning in caught)
+        finally:
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_io_graph_restores_plot_view_and_dual_y(tmp_path, monkeypatch):
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
+    window = CommTool("plot-io-restore")
+    try:
+        dlg = PlotDialog(window)
+        try:
+            dlg.cb_view.setCurrentIndex(2)
+            assert dlg.apply_io_graph_preset()
+            dlg.leave_io_graph_preset()
+            assert dlg.cb_view.currentIndex() == 2
+
+            dlg.cb_view.setCurrentIndex(0)
+            dlg.cb_dual_y.setChecked(True)
+            assert dlg.apply_io_graph_preset()
+            dlg.leave_io_graph_preset()
+            assert dlg.cb_dual_y.isChecked()
         finally:
             dlg.deleteLater()
     finally:

@@ -32,7 +32,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 | 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环） |
 | 显示与检索 | 文本 / HEX / HEX 转储 / 数值；终端模式；关键字与协议高亮；搜索、书签 |
 | 协议与校验 | Modbus 主从 / 扫描 / TCP↔RTU 网关；CRC 等校验选项；寄存器 / 位域 |
-| 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client** 或**已指定远程的单对端 UDP** 可导出 `.pcap`（合成报文，非网卡抓包；串口 / Server / 组播不支持） |
+| 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client/Server（单客户端）**、**UDP（指定远程）**、**UDP 组播** 可导出 `.pcap` / `.pcapng`（合成报文，非网卡抓包；串口等仍用 `.ctrec`） |
 | 自动化 | 定时 / 多条发送、自动应答、触发器、脚本控制台、宏录制、序列测试与 JUnit |
 | 分析与工程 | 波形图 / I/O Graph / 仪表盘、多会话标签、`.ctproj` 工程与示例、桥接与文件传输、三语与在线更新 |
 

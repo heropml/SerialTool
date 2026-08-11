@@ -183,7 +183,7 @@ class RecReplayDialog(QDialog):
         if not r.recording:
             return
         r.stop()
-        self._events = list(r.events)
+        self._events = r.events
         self._src_name = self.app._t("rr_src_live")
         self._link = dict(r.link) if isinstance(getattr(r, "link", None), dict) else None
         self._wall_t0 = getattr(r, "_wall_t0", None)
@@ -201,7 +201,7 @@ class RecReplayDialog(QDialog):
             return
         try:
             rec = rec_replay.StreamRecorder()
-            rec.events = list(self._events)
+            rec.events = self._events
             rec._wall_t0 = self._wall_t0
             rec.link = dict(self._link) if isinstance(self._link, dict) else None
             n = rec.save(path)
@@ -220,7 +220,7 @@ class RecReplayDialog(QDialog):
             return
         path, _ = QFileDialog.getSaveFileName(
             self, self.app._t("rr_export_pcap"), "capture.pcap",
-            "Wireshark PCAP (*.pcap);;All Files (*)")
+            "Wireshark PCAP (*.pcap);;Wireshark PCAPNG (*.pcapng);;All Files (*)")
         if not path:
             return
         try:

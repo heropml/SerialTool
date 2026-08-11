@@ -1,0 +1,111 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "Fixed Header Demo",
+  "metadata": {
+    "device_type": "generic",
+    "protocol_template": "fixed_header",
+    "connection_type": "Virtual",
+    "description": "AA 55 fixed-header HEX frames on Virtual loopback with plot HEX fields."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": true,
+    "packet_split": true,
+    "packet_timeout": "20",
+    "line_split": false,
+    "line_nl_mode": 0,
+    "tx_hex": true,
+    "append_newline": false,
+    "append_nl_mode": 0,
+    "checksum_idx": 0,
+    "encoding": "auto",
+    "frame_rules": "AA 55 | 命令=2:u8x, 长度=3:u8, 数据=4:hex4",
+    "plot_mode": 2,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "数值=4:u16be",
+    "plot_hex_header": "AA 55",
+    "dash_mode": 2,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "数值=4:u16be",
+    "dash_header": "AA 55",
+    "net_proto": "Virtual",
+    "rx_hex": true,
+    "vconn_loopback": true,
+    "show_timestamp": true,
+    "snippets": "[{\"name\": \"AA55 cmd\", \"text\": \"AA 55 01 04 12 34 56 78\", \"hex\": true}, {\"name\": \"AA55 short\", \"text\": \"AA 55 02 02 AB CD\", \"hex\": true}]",
+    "connection_presets": "[{\"id\": \"example-fixed-header-virtual\", \"name\": \"Fixed header loopback\", \"note\": \"Virtual loopback for AA 55 frame practice\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "AA55 cmd",
+          "text": "AA 55 01 04 12 34 56 78",
+          "hex": true
+        },
+        {
+          "name": "AA55 short",
+          "text": "AA 55 02 02 AB CD",
+          "hex": true
+        }
+      ],
+      "groups": []
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-fixed-header-virtual",
+          "name": "Fixed header loopback",
+          "note": "Virtual loopback for AA 55 frame practice",
+          "last_used": 0.0,
+          "net_proto": "Virtual",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": true,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 2,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "数值=4:u16be",
+      "dash_header": "AA 55"
+    },
+    "plot": {
+      "plot_mode": 2,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "数值=4:u16be",
+      "plot_hex_header": "AA 55"
+    }
+  }
+}

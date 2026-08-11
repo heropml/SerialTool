@@ -169,12 +169,168 @@ def build_dual_session(out_dir):
     )
 
 
+def build_nmea(out_dir):
+    settings = protocol_template_settings("nmea", "Serial")
+    settings.update({
+        "ser_baud": "9600",
+        "show_timestamp": True,
+        "snippets": json.dumps(_snippets(
+            ("GPGGA sample",
+             "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47",
+             False),
+            ("GPGSA sample",
+             "$GPGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1*39",
+             False),
+        ), ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "NMEA GPS 9600",
+                {"net_proto": "Serial", "ser_baud": "9600",
+                 "ser_databits": "8", "ser_parity": "None", "ser_stopbits": "1"},
+                note="Typical GPS NMEA 0183 UART",
+                preset_id="example-nmea-gps-serial"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "nmea_gps_demo.ctproj",
+        "NMEA GPS Demo",
+        {
+            "device_type": "sensor",
+            "protocol_template": "nmea",
+            "connection_type": "Serial",
+            "description": "NMEA line mode @ 9600 with sample $GPGGA / $GPGSA snippets.",
+        },
+        settings,
+    )
+
+
+def build_fixed_header(out_dir):
+    settings = protocol_template_settings("fixed_header", "Virtual")
+    settings.update({
+        "net_proto": "Virtual",
+        "vconn_loopback": True,
+        "show_timestamp": True,
+        "snippets": json.dumps(_snippets(
+            ("AA55 cmd", "AA 55 01 04 12 34 56 78", True),
+            ("AA55 short", "AA 55 02 02 AB CD", True),
+        ), ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "Fixed header loopback",
+                {"net_proto": "Virtual", "vconn_loopback": True},
+                note="Virtual loopback for AA 55 frame practice",
+                preset_id="example-fixed-header-virtual"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "fixed_header_demo.ctproj",
+        "Fixed Header Demo",
+        {
+            "device_type": "generic",
+            "protocol_template": "fixed_header",
+            "connection_type": "Virtual",
+            "description": "AA 55 fixed-header HEX frames on Virtual loopback with plot HEX fields.",
+        },
+        settings,
+    )
+
+
+def build_sensor_csv(out_dir):
+    settings = protocol_template_settings("delimiter", "Virtual")
+    settings.update({
+        "net_proto": "Virtual",
+        "vconn_loopback": True,
+        "show_timestamp": True,
+        "line_split": True,
+        "append_newline": True,
+        "append_nl_mode": 0,  # CRLF — plot delimiter parser needs a line end
+        "plot_mode": 0,
+        "plot_sep": 0,
+        "snippets": json.dumps(_snippets(
+            ("Sample CSV", "36.5,72,3.30", False),
+            ("Sample CSV 2", "37.1,68,3.28", False),
+        ), ensure_ascii=False),
+        "multi_send_groups": json.dumps([{
+            "name": "Sensor CSV",
+            "items": [
+                {"checked": True, "name": "row1", "data": "36.5,72,3.30",
+                 "hex": False, "nl": 1, "delay": 200},
+                {"checked": True, "name": "row2", "data": "37.1,68,3.28",
+                 "hex": False, "nl": 1, "delay": 200},
+            ],
+        }], ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "Sensor CSV loopback",
+                {"net_proto": "Virtual", "vconn_loopback": True},
+                note="Delimiter plot: temp,humidity,voltage",
+                preset_id="example-sensor-csv-virtual"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "sensor_csv_demo.ctproj",
+        "Sensor CSV Demo",
+        {
+            "device_type": "sensor",
+            "protocol_template": "delimiter",
+            "connection_type": "Virtual",
+            "description": "Comma-separated sensor lines for delimiter plot (e.g. 36.5,72,3.30).",
+        },
+        settings,
+    )
+
+
+def build_tcp_client_debug(out_dir):
+    settings = protocol_template_settings("raw", "TCP Client")
+    settings.update({
+        "net_proto": "TCP Client",
+        "net_remote_ip": "127.0.0.1",
+        "net_remote_port": "9000",
+        "show_timestamp": True,
+        "snippets": json.dumps(_snippets(
+            ("Ping", "ping", False),
+            ("Hex ping", "70 69 6E 67", True),
+        ), ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "Local echo :9000",
+                {"net_proto": "TCP Client",
+                 "net_remote_ip": "127.0.0.1",
+                 "net_remote_port": "9000"},
+                note="TCP Client to localhost:9000",
+                preset_id="example-tcp-client-9000"),
+            make_preset(
+                "Alt port :9001",
+                {"net_proto": "TCP Client",
+                 "net_remote_ip": "127.0.0.1",
+                 "net_remote_port": "9001"},
+                note="Optional alternate debug port",
+                preset_id="example-tcp-client-9001"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "tcp_client_debug.ctproj",
+        "TCP Client Debug",
+        {
+            "device_type": "network",
+            "protocol_template": "raw",
+            "connection_type": "TCP Client",
+            "description": "Raw TCP Client to 127.0.0.1:9000 with connection presets.",
+        },
+        settings,
+    )
+
+
 def main():
     out = ROOT / "examples"
     out.mkdir(parents=True, exist_ok=True)
     build_modbus(out)
     build_at(out)
     build_dual_session(out)
+    build_nmea(out)
+    build_fixed_header(out)
+    build_sensor_csv(out)
+    build_tcp_client_debug(out)
     readme = out / "README.md"
     readme.write_text(
         "# CommTool example projects\n\n"
@@ -182,7 +338,11 @@ def main():
         "|---|---|\n"
         "| `modbus_rtu_demo.ctproj` | Modbus RTU HEX view, CRC, sample registers |\n"
         "| `at_modem_demo.ctproj` | AT line mode + snippets / smoke sequence |\n"
-        "| `dual_session_demo.ctproj` | Two Virtual presets for multi-tab practice |\n\n"
+        "| `dual_session_demo.ctproj` | Two Virtual presets for multi-tab practice |\n"
+        "| `nmea_gps_demo.ctproj` | NMEA GPS @ 9600 with $GPGGA sample snippets |\n"
+        "| `fixed_header_demo.ctproj` | AA 55 fixed-header HEX on Virtual loopback |\n"
+        "| `sensor_csv_demo.ctproj` | Delimiter CSV sensor lines + multi-send / plot |\n"
+        "| `tcp_client_debug.ctproj` | Raw TCP Client 127.0.0.1:9000 + presets |\n\n"
         "Open via **Project → Open**. Dual-session tabs are runtime-only: "
         "after opening the project, use **New Session** and apply the "
         "**Session B** connection preset.\n"

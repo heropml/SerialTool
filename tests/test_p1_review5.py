@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import rec_replay
+import pcap_export
 from main_window import CommTool, PortScannerThread
 from rec_replay_dialog import RecReplayDialog
 
@@ -98,6 +99,33 @@ def test_replay_controls_disabled_while_not_playing(tmp_path, monkeypatch):
             dlg._player = None
             dlg._sync_controls()
             assert [w.isEnabled() for w in widgets] == [False] * 4
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_recording_dialog_keeps_multicast_peer_sidecar(tmp_path, monkeypatch):
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
+    window = CommTool("rr-mcast-peer-sidecar")
+    try:
+        dlg = RecReplayDialog(window)
+        try:
+            link = {
+                "proto": "UDP Multicast",
+                "local_ip": "10.0.0.1", "local_port": 5000,
+                "remote_ip": "239.0.0.1", "remote_port": 5000,
+            }
+            window._recorder.start(link=link)
+            window._recorder.on_rx(b"A", t=1.0, source=("10.0.0.9", 40000))
+            window._recorder.on_rx(b"B", t=1.1, source=("10.0.0.10", 40001))
+            dlg.stop_recording()
+            frames = pcap_export._iter_frames(
+                dlg._events, pcap_export.normalize_link(dlg._link))
+            assert [frame[26:30] for _t, frame in frames] == [
+                bytes([10, 0, 0, 9]), bytes([10, 0, 0, 10])]
         finally:
             dlg.close()
             dlg.deleteLater()
