@@ -1,6 +1,6 @@
 # CommTool Usage Guide
 
-An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one app, designed for embedded development and protocol debugging.
+**Serial debugger + network debugging tool** in one app — UART serial terminal and TCP/UDP share the same UI, for embedded development, device bring-up, Modbus / custom protocols, and communication log analysis.
 
 ![UI preview](./icon_preview.png)
 
@@ -34,8 +34,9 @@ An iOS-style serial & network debugging tool — serial port plus TCP/UDP in one
 ## Quick Start
 
 1. Double-click the **CommTool** icon on your desktop
-2. In the left **Connection** panel, pick a **Type** (serial or network), fill in the serial parameters / network address & port, then click **Open Serial** / **Open** / **Connect** / **Listen** (depending on type)
+2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
+4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
 
 ---
 
@@ -113,7 +114,7 @@ This release finishes the remaining P1 polish:
 - **Multi-slave row table** -- the Modbus slave dialog replaces the JSON textarea with Addr / Server ID / Extra JSON rows (add/remove). Duplicate addresses are rejected with a toast; hand-edited project JSON still keeps the first address at runtime.
 - **Jump to session time** -- click the status-bar RX/TX stats to jump to the latest sample wall time; double-click a session-compare row to jump via `.ctrec` `wall_t0` (older recordings without the anchor show a toast). New recordings store `wall_t0`.
 - **Data-area bookmarks** -- `Ctrl+F2` toggles a bookmark on the current line; `F2` / `Shift+F2` move next/prev (wrapping). Clearing the data area or an ANSI full clear (`ESC[2J`) drops bookmarks.
-- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next up is P2 (CLI / API / plugins / PCAP).
+- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next up is P2 (CLI / API / plugins). PCAP export shipped later (TCP Client / fixed-remote UDP).
 - **v1.4 stability follow-up** -- register definitions now cover 64-bit values, bitfields and warning/alarm levels; Modbus Master adds grouped views, FC22 mask writes and FC43/14 device identification; trigger actions add Webhook / external commands with hit thresholds; and the Bridge page includes a real multi-client Modbus TCP↔RTU gateway. External command processes are reaped on shutdown, including POSIX child process groups.
 
 ---
@@ -186,7 +187,7 @@ This release is about seeing more clearly, changing faster, and telling recordin
 This release is about getting work done without hardware on the desk:
 
 - **Virtual connection** — a new `Virtual` entry in the Type dropdown: bring up a connection with no hardware attached, and auto-reply / test sequences / the script console / plot / dashboard / protocol highlighting all keep working as usual. Turn on **Loopback** and whatever you send comes back as if received, so you can write and verify rules and scripts on the road.
-- **Record / replay** — Function → Record / Replay: capture the raw traffic on the link together with its timing into a `.ctrec` file (plain text, readable and diffable), then re-inject it at the original pace with a 0.5x–max speed control and optional looping. Capture once on site and reproduce it later, or send the scene to a colleague. Division of labour with macro recording: the macro records *what you sent* and produces a script, this records *the raw bytes on the wire* and produces data. Replay targets the virtual connection (injecting "received data" into a real serial port isn't physically meaningful).
+- **Record / replay** — Function → Record / Replay: capture the raw traffic on the link together with its timing into a `.ctrec` file (plain text, readable and diffable), then re-inject it at the original pace with a 0.5x–max speed control and optional looping. Capture once on site and reproduce it later, or send the scene to a colleague. Division of labour with macro recording: the macro records *what you sent* and produces a script, this records *the raw bytes on the wire* and produces data. Replay targets the virtual connection (injecting "received data" into a real serial port isn't physically meaningful). Later releases add **Export PCAP** in the same dialog: TCP Client or fixed-remote single-peer UDP only (synthetic `.pcap`, not NIC capture); serial / Server / multicast unsupported.
 - **Command DSL** — write timing directly in the send box: `AT\r\n\!(Delay500)AT+VER\r\n` sends AT, waits 500 ms, then sends the next one; `\!(Repeat3)PING\!(Delay200)` repeats the whole thing three times; also `\!(Wait)` / `\!(Hex)` / `\!(Text)`. Without any directive the text is sent exactly as before, so it's handy for a quick bit of automation without opening the script console.
 - **Task exclusion extended** — recording / replay / DSL now join the shared task table alongside the script console, sequences, file transfer, timed send and the Modbus master, so two of them can never fight over the link. No new dependencies.
 
@@ -537,7 +538,7 @@ Merged from the serial-only SerialTool and the network-only NetworkTool — one 
 
 ## What's New in v1.0.2
 
-- **Compact UI** — smaller fonts, inputs and iOS switches, plus tighter card spacing, so more fits on screen
+- **Compact UI** — smaller fonts, inputs and toggle switches, plus tighter card spacing, so more fits on screen
 - **Keyword-highlight groups** — the highlight dialog now manages **rule groups**: a group list on the left (new / rename by double-click / delete), and a **group dropdown** in the Data-area title bar selects the active group (with an **(Off)** item to disable all highlighting). The group you're editing and the active group are independent
 - **Multi-Send groups** — the Multi-Send dialog now manages **command groups**: a group list on the left (new / delete / rename by double-click); each command row gains a **Name** column and a per-row **Delay (ms)** column
 - **Multi-Send quick bar** — a row above the Send box: **[Multi-Send (edit)]** **[▶ Cycle]** **[group dropdown]**, plus every command in the active group laid out as a button you click to send directly — no dialog needed. Cycle send waits each row's own delay before moving on
@@ -567,13 +568,14 @@ Merged from the serial-only SerialTool and the network-only NetworkTool — one 
 
 ### Connection
 
-The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with 5 options — serial plus network (**Serial** is the default on a fresh install):
+The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with **6** options (**Serial** is the default on a fresh install):
 
 - **Serial**
 - **UDP**
 - **UDP Multicast**
 - **TCP Server**
 - **TCP Client**
+- **Virtual** — no hardware; optional loopback; also the injection target for `.ctrec` replay
 
 The fields below change to match the selected type:
 
@@ -597,6 +599,9 @@ The fields below change to match the selected type:
   - Once clients connect, a **Target** dropdown appears so you can pick a specific client or **All** (broadcast) to send to
 - **TCP Client**
   - **Remote IP** (required), **Remote Port** (required) → **Connect**
+- **Virtual**
+  - Start without hardware; optional **Loopback**
+  - Used to verify auto-reply / scripts / sequences, and as the sink for session replay
 
 **Action button** — its text depends on the protocol and state:
 
@@ -607,6 +612,7 @@ The fields below change to match the selected type:
 | UDP Multicast | Open / Close |
 | TCP Server | Listen / Stop |
 | TCP Client | Connect / Disconnect |
+| Virtual | Start Virtual / Stop Virtual |
 
 Once connected, the whole card **locks and grays out** — disabled fields are shown greyed until you close / stop / disconnect.
 
@@ -621,7 +627,7 @@ RX and TX share one view; arrows indicate direction:
 
 **Display options** (Data card)
 
-- **HEX View** — toggle hex / text (UTF-8 first; falls back to GBK for Chinese)
+- **View mode** — Text / HEX / HEX dump / Numeric (mutually exclusive); RX and TX share the same mode (independent of **HEX Send**). Dump has configurable bytes-per-row; Numeric has type / endian options
 - **Word Wrap** — wrap long lines; off → horizontal scrollbar
 - **Encoding** — pick Auto / UTF-8 / GBK / GB2312 / GB18030 / Big5 / ASCII / Latin-1; affects RX decode, TX text encode, and file load
 - **Timestamp** — prefix each new block with `[2026/06/03 09:48:54 023]` plus the direction arrow ← / →
@@ -664,7 +670,7 @@ RX and TX share one view; arrows indicate direction:
 
 - **Append CRLF** + **mode (CRLF / LF / CR)** — auto-append a newline after every send (handy for AT commands)
 - **Auto Send** + **Period ms** — send the current content periodically; minimum 10 ms; stops automatically if a send fails (not connected, bad format, no target, etc.)
-- **Checksum** (10 algorithms) — append a checksum to each transmission
+- **Checksum** (9 algorithms + None) — append a checksum to each transmission
 
 | Algorithm | Bytes | Notes |
 |-----------|-------|-------|
@@ -710,10 +716,9 @@ Click the **Multi-Send** button in the Send area to open the multi-send dialog:
 
 ### Interface
 
-- **Frameless window** + **iOS-style rounded cards** with soft shadows
+- **Window chrome**: Windows / Linux use a frameless custom title bar with rounded cards and soft shadows; macOS uses the native title bar (traffic lights)
 - Left sidebar (connection / data / send settings) + right data area; the divider is **draggable**
-- Drag the title bar to move; double-click it to maximise
-- Native edge resize (feels identical to a system window)
+- On Windows: drag the title bar to move; double-click it to maximise; native edge resize
 
 ### Multilingual UI
 
@@ -725,7 +730,7 @@ A second dropdown in the top-left (right next to the language picker) switches t
 
 | Theme | Mode | Vibe |
 |-------|------|------|
-| Default | light | iOS-style — light cards on a soft grey background |
+| Default | light | Light default — light cards on a soft grey background |
 | Dark | dark | Generic VSCode-style dark grey |
 | One Half Light | light | Atom editor light, clean off-white |
 | One Half Dark | dark | Atom editor dark, blue-tinted grey |
@@ -787,8 +792,8 @@ If the install directory is read-only (e.g. Program Files without admin), the co
 
 ## Tips
 
-- **Modbus debugging**: HEX View + HEX Send + Packet Split (20 ms) + ModbusCRC16
-- **AT command debugging**: HEX View off + Append CRLF + Line Split (Auto)
+- **Modbus debugging**: View mode = HEX + HEX Send + Packet Split (20 ms) + ModbusCRC16
+- **AT command debugging**: View mode = Text + Append CRLF + Line Split (Auto)
 - **Long-running monitoring**: enable Log to File → open the `.log` later in Notepad++ / VS Code for analysis
 - **Comments in HEX**: in the HEX send box you can use `// line`, `/* block */`, `# line` comments — they're stripped at send time
 - **Custom layout**: every divider is draggable; once you find a comfortable ratio it's persisted across sessions
@@ -837,7 +842,7 @@ A: Check the firewall, that sender and receiver use the same group address and p
 A: The minimum period is 10 ms and you must stay connected. It pauses automatically on disconnect.
 
 **Q: Chinese characters show as garbled text?**
-A: Auto mode tries UTF-8 first and falls back to GBK. If that's still wrong, the device may use another encoding (e.g. Big5) — pick it explicitly from the **Encoding** dropdown, or switch to HEX View to inspect the raw bytes.
+A: Auto mode tries UTF-8 first and falls back to GBK. If that's still wrong, the device may use another encoding (e.g. Big5) — pick it explicitly from the **Encoding** dropdown, or switch **View mode** to HEX / HEX dump to inspect the raw bytes.
 
 **Q: HEX send reports "length must be even"?**
 A: HEX is parsed byte-by-byte. `AA B` has 3 hex chars which can't pair up — write it as `AA 0B` or `AAB0`.
@@ -849,8 +854,9 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## System Requirements
 
-- Windows 10 / 11 (64-bit)
+- Windows 10 / 11 (64-bit); macOS packages are also published on Releases
 - ~100 MB disk space
+- Linux: run from source / self-build; no official installer yet
 
 ---
 

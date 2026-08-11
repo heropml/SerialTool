@@ -1,10 +1,49 @@
-# CommTool
+# CommTool — 串口调试助手 + 网络调试工具
 
-iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyserial）与 TCP / UDP（QtNetwork）共用同一套数据区 / 发送 / 高亮 / 日志，「类型」下拉一键切换。支持 串口 / UDP / UDP 组播 / TCP Server / TCP Client 五种连接、中英文动态切换、无边框窗口 + 自绘标题栏、QSplitter 可拖拽布局、Xshell 风格日志、10 种校验算法、关闭确认 + 系统托盘、在线更新（关于 → 检查更新）、图标固化在源码内（防替换）。
+开源 **串口调试助手 / 网络调试工具**，把 UART 串口终端与 TCP/UDP 调试合在同一界面。面向嵌入式开发、设备联调、Modbus / 自定义协议测试与通信日志分析；正式发行包支持 **Windows** 与 **macOS**（Linux 可从源码自行构建，暂无官方安装包）。
 
-> 本分支（CommTool）由串口版 SerialTool 与网络版 NetworkTool 合并而来：左上角连接区的「类型」下拉统一了 **串口 + 网络**（串口走 `serial_io.SerialConn`、网络走 `net_io`，对外同一套 `open()/close()/send()/is_open` + 信号接口）；数据区/发送/高亮/日志/多条发送/主题/语言等其余功能两版共用。产品（窗口标题、Python 类、打包产物 exe/安装包/`dist` 目录、`%APPDATA%` 配置目录）统一命名为 **CommTool / 通信调试工具**。
+> Serial / UART terminal and TCP/UDP network debugger in one desktop app — HEX, logging, Modbus, scripting, and automated tests.
 
-![iOS 风格 UI](./assets/icon_preview.png)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D4?logo=windows&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-GPL--3.0-green)
+![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
+
+[下载最新版](../../releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
+
+![CommTool](./assets/icon_preview.png)
+
+CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。仓库历史名仍为 `SerialTool`，产品与发行包统一为 **CommTool**。
+
+**适合：** MCU / USB 转串口调试 · TCP/UDP 服务联调 · Modbus 主从与扫描 · 周期/批量指令 · 会话日志与（有限范围）PCAP 导出 · 无硬件时用 Virtual 回环复现问题
+
+## 为什么选择 CommTool
+
+- **串口 + 网络 + 虚拟一体**：串口参数、TCP/UDP、组播、多客户端 TCP Server，以及无硬件 Virtual 回环，同一套操作习惯。
+- **数据看得清、留得住**：文本 / HEX / HEX 转储 / 数值视图，可选终端模式；时间分包、关键字与协议高亮、搜索与书签；实时日志与 `.ctrec` 录制回放。
+- **从手工到自动化**：多条命令、定时发送、命令 DSL、自动应答、触发告警、脚本控制台、宏录制、序列测试与 JUnit 报告。
+- **面向设备协议**：多种校验（含 CRC / Modbus 等）、Modbus 主从机 / 扫描 / TCP↔RTU 网关、寄存器与位域、结构化记录、波形图与 I/O Graph。
+- **开箱即用**：Windows 安装包 / 便携版与 macOS `.dmg` 均可直接运行；简体中文、English、繁體中文；支持在线更新。
+
+## 主要功能
+
+| 能力 | 说明 |
+|------|------|
+| 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环） |
+| 显示与检索 | 文本 / HEX / HEX 转储 / 数值；终端模式；关键字与协议高亮；搜索、书签 |
+| 协议与校验 | Modbus 主从 / 扫描 / TCP↔RTU 网关；CRC 等校验选项；寄存器 / 位域 |
+| 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client** 或**已指定远程的单对端 UDP** 可导出 `.pcap`（合成报文，非网卡抓包；串口 / Server / 组播不支持） |
+| 自动化 | 定时 / 多条发送、自动应答、触发器、脚本控制台、宏录制、序列测试与 JUnit |
+| 分析与工程 | 波形图 / I/O Graph / 仪表盘、多会话标签、`.ctproj` 工程与示例、桥接与文件传输、三语与在线更新 |
+
+## 快速开始
+
+1. 打开 [Releases](../../releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
+2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
+3. 在「类型」选择 **Serial**、目标网络协议或 **Virtual**，填参数后连接。
+4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
+
+> 没有硬件？选 **Virtual（虚拟连接）** 并开回环，即可先验证发送、解析、脚本和自动化规则；回放 `.ctrec` 也需先连 Virtual。
 
 ---
 
@@ -54,15 +93,16 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 
 ### 1.1 连接设置（串口 / 网络）
 
-- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client**（新装默认 Serial）
+- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client / Virtual（虚拟）**（新装默认 Serial）
 - **串口（Serial）**：端口（下拉本机串口 + ⟳ 刷新）+ 波特率（可编辑，1200~2000000）+ 数据位（5/6/7/8）+ 校验位（None/Even/Odd/Mark/Space）+ 停止位（1/1.5/2）→「打开串口」；后台线程定时扫描串口热插拔
 - 网络类型字段随协议动态显隐：
   - **UDP**：本地IP（下拉本机网卡，0.0.0.0=所有）+ 本地端口 +「指定远程」开关（关=回复最近对端，开=固定发往远程IP/端口）；关闭时收到数据自动把灰显的远程框刷成最近对端地址（显示当前对端，打开开关即预填）
   - **UDP Multicast**：本地IP（出/入网卡）+ 组播地址（224.0.0.0~239.255.255.255）+ 本地端口
   - **TCP Server**：本地IP + 本地端口 →「开始监听」；连入后「目标」下拉可选某客户端或「全部」广播
   - **TCP Client**：远程IP + 远程端口 →「连接」
+- **Virtual（虚拟）**：不接硬件即可开连接；可开「回环」；用于无设备验证规则/脚本，以及 `.ctrec` 回放注入
 - 动作按钮随协议/状态：打开/关闭、开始监听/停止监听、连接/断开；连接后整卡片锁定变灰
-- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程
+- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，Virtual 为进程内注入
 
 ### 1.2 数据区（接收 + 发送日志）
 
@@ -71,11 +111,11 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 | 标记 | 含义 | 颜色 |
 |------|------|------|
 | `←` | RX 接收 | 灰黑（`#1C1C1E`）|
-| `→` | TX 发送 | iOS 蓝（`#007AFF`）|
+| `→` | TX 发送 | 主题强调蓝（`#007AFF`）|
 
 **显示选项**（侧边栏 → 数据区）
 
-- **HEX 显示** — 把字节渲染成 `AA BB CC ...`，否则按文本
+- **显示方式** — 文本 / HEX / HEX 转储 / 数值（互斥下拉）；转储可选行宽，数值可选类型与字节序；收发一致，与「HEX 发送」无关
 - **字符编码** — Auto / UTF-8 / GBK / GB2312 / GB18030 / Big5 / ASCII / Latin-1 共 8 项；Auto 走 UTF-8 优先 + GBK 容错回退，其他用 `codecs.IncrementalDecoder` 处理跨包多字节。影响 RX 解码 / TX 文本编码 / 文件加载
 - **自动换行** — 控制 `QTextEdit` 的 WordWrap 模式
 - **显示时间戳** — 每个新块前缀 `[2026/06/03 09:48:54 023]`（年月日补零，毫秒 3 位），**独立开关**
@@ -91,7 +131,6 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 - **单击行高亮**（v1.0.1）— 鼠标单击数据区某一行整行高亮，再点取消
 - **关键字高亮**（v1.0.1）— 标题栏「关键字高亮」按钮打开配置弹窗：多条关键字，每条独立颜色、可选「背景 / 文字」着色、可限定「收 / 发 / 收发」范围；**区分大小写**子串匹配、**跳过时间戳**、规则持久化
 - **只显高亮行**（v1.0.1，v1.0.2 移到数据区标题栏）— 标题栏「只显高亮行」可切换按钮（开启时高亮），只保留命中关键字的行（其余折叠隐藏，数据不丢）
-- 显示格式（HEX / 文本）**只由「HEX 显示」开关决定**，收发一致（与「HEX 发送」无关）
 - **关键字高亮分组**（v1.0.2）— 弹窗左侧分组列表（新建/双击改名/删除）；标题栏分组下拉选「哪个分组生效」（含「（关闭）」停用全部）；编辑分组与生效分组**相互独立**
 - **实时记录按大小分包**（v1.0.2）— 实时记录开关旁下拉：不分包 / 1M~100M / 自定义（如 3M）；写满自动切到 `_001`/`_002` 新文件；当前日志路径显示在底部状态栏
 - **中文右键菜单**（v1.0.2）— 数据区右键 复制 / 全选 / 清空 / 保存，**跟随程序语言**（非系统语言的 Qt 默认菜单）
@@ -103,7 +142,7 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 - **HEX 发送** — 把输入框内容当 HEX 字符解析（`AA BB`、`AABB`、`AA-BB`、`AA:BB`、`AA,BB`、带 `0x` 前缀等都接受）
 - **追加换行** + **换行符模式（CRLF / LF / CR）** — 自动在尾部追加对应字节，下拉框默认 CRLF
 - **定时发送** + **周期 ms** — 最小 10ms，发送失败时（未连接 / 数据格式错误 / 无目标等）自动停止
-- **追加校验**（10 种）
+- **追加校验**（9 种算法 +「无」）
 
 | 算法 | 长度 | 说明 |
 |------|------|------|
@@ -128,28 +167,27 @@ iOS 风格的串口 / 网络一体调试工具，基于 PyQt5。串口（pyseria
 
 ### 1.4 界面
 
-- **无边框窗口 + 自绘标题栏**：图标 + 标题 + 语言下拉 + 主题下拉 + 最小化/最大化/关闭按钮全在标题栏一行
-  - 语言 + 主题下拉都在标题栏**左侧**（紧挨标题）
-  - 拖标题栏移动窗口、双击切换最大化
-  - 边缘缩放走 Windows 原生 `WM_NCHITTEST`，手感和系统窗口完全一致（Aero Snap 拖边贴屏也照常工作）
-- **iOS 风格控件**
+- **窗口边框**：Windows / Linux 为无边框自绘标题栏（图标 + 标题 + 语言 / 主题下拉 + 最小化/最大化/关闭）；macOS 使用系统原生标题栏（红黄绿）
+  - 语言 + 主题下拉都在标题栏**左侧**（紧挨标题；macOS 布局随系统栏适配）
+  - Windows：拖标题栏移动、双击最大化；边缘缩放走原生 `WM_NCHITTEST`（Aero Snap 可用）
+- **圆角卡片与滑动开关**
   - 圆角卡片 + 柔和投影（`QGraphicsDropShadowEffect`）
-  - 自绘 `IOSSwitch` 滑动开关，带缓动动画
+  - 自绘滑动开关（历史类名 `IOSSwitch`），带缓动动画
   - 主按钮 / 幽灵按钮 / 图标按钮三套样式
-  - 默认 Accent `#007AFF` iOS 蓝、`#34C759` 绿、`#FF3B30` 红（其他主题各自有自己的 accent / danger）
+  - Default 主题强调色 `#007AFF`、`#34C759` 绿、`#FF3B30` 红（其他主题各自有 accent / danger）
 - **左侧 sidebar + 右侧数据区**
   - 左：连接设置 / 数据区设置 / 发送区设置 三张卡片，`QGridLayout` 让所有右侧控件右对齐
   - 右：数据日志区 + 发送输入框（垂直可拖）
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
-  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
+  - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
   - 右下：版本号 `v1.5.1`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
   | 主题 | mode | 风格 |
   |---|---|---|
-  | Default | light | iOS 默认（白卡片 + 浅灰窗口）|
+  | Default | light | 浅色默认（白卡片 + 浅灰窗口）|
   | Dark | dark | VSCode 通用暗 |
   | One Half Light / Dark | light/dark | Atom 编辑器风 |
   | Solarized Light / Dark | light/dark | 经典 Solarized |
@@ -542,7 +580,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v18 (v1.0.5)**: 数据区搜索（Ctrl+F：高亮全部匹配 + ▲/▼ 上下跳转 + 实时「N/总数」计数）+ 多屏下状态栏/窗口拖拽/任务栏最小化修复（WM_GETMINMAXINFO 多显示器对齐）+ 深色主题搜索/高亮对比优化 + 系统托盘单击 toggle 显示/隐藏
 - **v19 (v1.0.7)**: 稳定性与代码审查修复 —— TCP Client 连接新增超时保护（不可达地址不再卡约 20 秒）、UDP 断开后清理最近对端缓存（复用连接不再回复到旧地址）；搜索导航改 O(1) 着色（大文档点 ▲/▼ 不再全文重扫）、打开搜索消除双重扫描、查找栏 viewport/计数标签加守卫、_parse_version 修正预发布版本号比较；修复纯搜索（未配关键字规则）时实时新数据的搜索匹配/计数停更
 - **v20 (v1.0.8)**: 修复关键字 / 搜索高亮时，底部新接收的数据会「整批闪一下高亮」的问题（高亮选区不再随末尾插入延伸）
-- **CommTool 分支（统一版）**: 串口版 SerialTool 与网络版 NetworkTool 合并为一个产品 **CommTool / 通信调试工具**。「类型」下拉统一 串口 + 网络五种连接（串口 `SerialConn` 与网络 `net_io` 共用 `open()/close()/send()/is_open` + 信号接口，主窗口同一个 `self.conn`）；恢复 `serial_io.py` 与 pyserial 依赖；品牌、类名、AppUserModelID、`%APPDATA%` 配置目录、安装包 / dist / .iss 全部更名 CommTool（新独立安装 GUID，不覆盖旧版；旧 NetworkTool 配置自动回退读取）；发布走 CommTool 分支、tag 前缀 `comm-v`
+- **CommTool 分支（统一版）**: 串口版 SerialTool 与网络版 NetworkTool 合并为一个产品 **CommTool / 通信调试工具**。「类型」下拉统一串口 + 网络五种连接（其后增至含 Virtual 共六种；串口 `SerialConn` 与网络 `net_io` 共用 `open()/close()/send()/is_open` + 信号接口，主窗口同一个 `self.conn`）；恢复 `serial_io.py` 与 pyserial 依赖；品牌、类名、AppUserModelID、`%APPDATA%` 配置目录、安装包 / dist / .iss 全部更名 CommTool（新独立安装 GUID，不覆盖旧版；旧 NetworkTool 配置自动回退读取）；发布走 CommTool 分支、tag 前缀 `comm-v`
 - **v21 (v1.1.0)**: **收发速率 / 包统计**——底部状态栏的 RX/TX 由「纯字节数」升级为「字节 · 包数 · 实时速率(B/s)」：包计数（RX = 每次到达一块、TX = 每次成功发送）、1Hz 采样的实时速率、错误数 >0 时追加 ⚠ 标记；鼠标悬停 RX/TX 标签弹出 tooltip 看完整明细（总量 / 包数 / 当前速率 / **峰值速率** / 错误数）；状态栏**右键「重置统计」**清零计数器（不动数据区，跟随语言/主题）；速率采样常驻、断开后自然归零；三语 i18n 同步、无新依赖、无新文件
 - **v22 (v1.1.1)**: **数据波形图 + 协议帧解析**两大数据分析功能（标题栏「波形图」「帧解析」）。波形图（pyqtgraph）从 RX 解析数值实时绘多通道滚动曲线，三种解析（分隔符 / 正则 / HEX 字节字段 + 帧头过滤），通道显隐配色、窗口点数、X 轴样本/时间、暂停/清空/导出 CSV、窗口可缩放。帧解析表多帧多规则（规则列表「帧头 | 字段定义」，按帧头前缀匹配），「全部」+ 分规则标签、序号列 + 原始帧列、数值 x 后缀十六进制、hexN/strN、复制/导出、滚动锁定 +「↓最新」回底。二者共用 `binproto` 字段定义。新增依赖 pyqtgraph + numpy（安装包内置）；三语 i18n
 - **v23 (v1.1.2)**: **自动应答全面增强 + 命令历史 + 动态字段 + 自动重连 + 配置档导入/导出**。自动应答从 v1.1.1 实验版升级到生产可用：多帧应答（reply 用 `|` 分段顺次发，ACK+DATA 类协议）、HEX 通配 `??`、应答占位符大扩展（`{rN+K}`/`{rN^K}`/`{seq}`/`{ts}`）、四种时序控制（整包超时分帧 / 收包校验 / 应答延时 / 触发冷却）、双击按钮一键开关、`?` 帮助按钮带 6 个具体例子。发送区：**命令历史** ↑↓ 导航（FIFO 100 跨会话）+ **动态字段** `{count}/{ts}/{randN}`（发送失败回滚 count、N≤256）+ 悬停长寿命 tooltip。连接：**自动重连**按 1/2/4/8/16/30s 退避（仅对非主动断开生效）。**会话配置档导入/导出**（数据区右键 + Ctrl+Shift+S/O）一份 JSON 包含 35+ 项设置；导入立即生效，已开弹窗同步刷新。**Ctrl+F 全局快捷键**任何控件可用。波形图/帧解析顶部 `?` 按钮 + 独立说明窗（各 5 例）。**InfoDialog** 替代 QMessageBox（同主题圆角卡）。5 个子对话框统一 `parent=None` 修 Windows 主窗 resize 失效 bug。
@@ -568,16 +606,16 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v43 (v1.3.2)**: **脚本控制台 + 宏录制 + 收发任务统一互斥**（把自动化从 GUI 配置推进到代码级可编程）。①**脚本控制台**（功能 → 脚本控制台，`src/script_console.py` + `src/script_console_dialog.py`）：用 Python 脚本驱动当前连接的真实收发，API `send/recv/expect/sleep/log/check/hexs`；执行核心 `ScriptWorker(QThread)` —— 脚本要 `send();r=expect()` 顺序阻塞驱动连接，子进程碰不到连接对象故用线程，worker 只碰 deque/Condition/信号、发送经信号回主线程；收包**有界缓冲**（feed 入口就限流 1MB，脚本 sleep 时设备狂刷不撑爆内存）、发送**握手式背压**（一次一个在途 + worker 身份校验，停止/换轮的旧 worker 不会把积压数据发到新会话）、停止为协作式（send/expect/recv/sleep 检查点）；多脚本库（≤50）随配置持久化、JSON 导入导出走信任门禁。②**宏录制**（`src/macro_recorder.py`，Qt-free 可单测）：录下主界面手动收发并翻译成脚本 —— 每次发送出 `send(...)`、其后回包合并成 `expect(...)`+`check(...)`（超时按实测延迟留 3 倍余量）、间隔 ≥50ms 补 `sleep(ms)` 保留节奏，可打印字节用字符串字面量否则 `hexs(..)`，生成代码保证可编译；只录「用户手动发」——脚本自身 send、自动应答/Modbus 从机回复（`_ar_in_flight`）、序列/定时/多条循环（`record_macro=False`）全排除，采集判定收敛到 `_macro_record_tx` 单一入口。③**收发任务统一互斥**（`_io_task_busy`）：单一占用表（脚本/序列/传输/宏/定时/多条/Modbus）+ exclude 白名单，6 个启动入口共用，根除「各写一套互斥条件、漏项」；`_manual_send_blocked` 在独占回包期间禁止手动发送插入线路；脚本接管时取消 Modbus 在途请求并隔离一个完整超时窗（`_script_quiet_until`）避免旧响应污染首个 expect。④**功能菜单分组**：帧处理(1-3)/可视化(4-5)/自动化(6-7)/通信传输(8-10) 加分隔符、Modbus 仍末位；一次性菜单经 `_exec_transient_menu` 回收不再累积为主窗常驻子对象。⑤**对话框下拉框修复**：弹出层 `QComboBoxPrivateContainer` 显式刷底色（不设背景时 Windows 原生 palette 会在开合瞬间透出系统强调色）。`tests/test_script.py` 增至 343 项；三语使用文档补 v1.3.2 章节；无新依赖。
 - **v44 (v1.3.3)**: **虚拟连接 + 数据录制/回放 + 命令 DSL**（围绕「没有硬件也能干活」）。①**虚拟连接**（`src/virtual_io.py`，「类型」下拉新增 `Virtual`）：接口与串口/网络完全一致，故自动应答 / 序列 / 脚本 / 波形图 / 仪表盘 / 协议高亮全部直接可用、无需各自改造；「回环」开关把自己发出的数据当成收到的回来，可离线验证规则与脚本；回环与注入一律经 0ms QTimer 派发到下一轮事件循环——同步 emit 会在 `_send_text` 尚未返回时重入收包路径。②**数据录制/回放**（`src/rec_replay.py` + `src/rec_replay_dialog.py`）：录线路原始收发流含时序存 `.ctrec`（JSON Lines，可读可 diff，坏行跳过而非整体失败）；回放按原节奏重新注入，可调倍速/循环/含 TX；大块收包按同一时间戳拆事件而非截尾（录的是原始流，静默丢字节会让复现失真）；单 tick 派发上限 1000防「最快」模式一次排队几十万个 Qt 回调卡死 UI；载入校验版本/时间戳/事件数/文件大小；回放落点只接受虚拟连接（往真实串口注入「收到的数据」物理上不成立）。③**命令 DSL**（`src/send_dsl.py`）：发送框支持 `\!(Delay500)` / `\!(Wait50)` / `\!(Repeat3)` / `\!(Hex)` / `\!(Text)`，不含指令时完全走原发送路径、行为一字不变；编译成指令序列后由 QTimer 逐条执行不卡界面，发送失败/断连立即中止并作废已排队回调，次数/延时/展开条数三处上限；`\\` 转义不当指令。④**任务互斥扩展**：录制/回放/DSL 纳入 `_io_task_busy` 统一占用表，`_manual_send_blocked` 期间禁止手动发送插入；功能菜单自动化组加「数据录制 / 回放」，Modbus 主机仍末位。⑤发送框悬浮提示补 DSL 一节，并加测试把「提示里的示例必须真能编译」锁死（防改语法忘改文档）。`tests/test_script.py` 增至 406 项；三语使用文档补 v1.3.3 章节；无新依赖。
 - **v45 (v1.3.4)**: **数值视图 + 选中即算校验和 + 动态改串口参数 + 日志增强 + 会话比较**（围绕「看得更清、改得更快、比得出差异」）。①**数值视图**（`src/convert.py` `format_numeric` + `src/main_window.py`）：显示设置新开关，字节流按 u8/i8/u16/i16/u32/i32/f32 × 大小端 12 种组合解读成数值序列，看 ADC/传感器原始值不必手动换算；尾部不满一个数的字节留到下一包续拼、跨包不错位（TCP Server 按客户端 `source` 分桶隔离余数、断开自动回收），列宽按类型写死使多包纵向对齐；与 HEX 转储互斥（互相灰掉、配置两者同 True 时归一化为转储获胜）、数值视图下协议高亮让位。②**选中即算校验和**（`src/convert.py` `selection_to_bytes` + `ChecksumPopup`）：数据区选中一段字节，状态栏就地出 Modbus/XOR/SUM、悬浮弹全 9 种校验的主题化卡片（行控件复用不重建，避免连续悬停 QLabel 堆积）；字节还原按正文 fragment 的视图标记，自动跳过时间戳/箭头/转储偏移与 ASCII 列、切视图后回看历史数据仍按当时格式解析，文本/数值/终端视图不可无损还原则整段拒算；提取与计算全链路有界（行内 limit 提前收工 + 上限 16KB，全选百万行不卡界面），半个 HEX token 丢弃不猜值。③**动态改串口参数**（`src/serial_io.py` `apply_params`）：连接期间改波特率/数据位/校验位/停止位/流控即时应用到活动串口、不断开不丢接收缓冲；参数原子应用，中途赋值失败回滚已改属性到调用前快照，不留「硬件跑混合参数」半应用态；信号只挂 `activated`/`editingFinished` 避开手输逐字符与程序化 setCurrentText 误触发，应用成功同步 `_conn_cfg` 连接签名真源（Modbus 就绪门禁/RTU t3.5/掉线重连都读它）。④**日志增强**（`src/log_naming.py`，Qt-free）：实时记录文件名支持 `%date`/`%time`/`%datetime`/`%port`/`%n` 变量、未知 `%x` 原样保留；含日期变量时跨自然日自动开新文件、序号归零（按天归档），变量可出现在目录段并自动建目录，与原有按大小分包 `_001` 共存。⑤**会话比较**（`src/rec_diff.py` + `src/rec_diff_dialog.py`，功能菜单第 9 项）：选两个 `.ctrec` 逐条对齐比出 相同/内容不同/仅A有/仅B有 并报时差；对齐用 Hirschberg 线性空间 LCS（内存从朴素 DP 的 O(n·m) 降到 O(min(n,m))，3000² 约 70MB→约 2MB），某边少一帧只报一处、后续不整体错位；退化按格子数 n·m 判定（上限 50 万格）而非条数、超限退化成按下标并排并标 `degraded` 不悄悄截断；`_lcs_ops` 出口归一化删增顺序 + `_pair_ops` 块内逐条配对使连续多帧变更都合并成 diff；时间不参与是否相等的判定、只在配对后报偏差，CSV 导出防公式注入，空录制（0 事件）按是否选文件判定可比较。⑥**风格统一**：会话比较的「?」帮助改自绘主题窗（对齐录制/回放）、载入/导出失败改用主窗 toast，`rec_diff_dialog` 不再依赖 `QMessageBox`。`tests/test_script.py` 增至 520 项；三语使用文档补 v1.3.4 章节；无新依赖。
-- **v47 (v1.3.6)**: **工作台工程化 + 设备定义 / Modbus 扫描中心 + 结构化数据记录 + 工程资源包**。①工作台按终端、协议、仿真、自动化、数据、桥接分页，工程菜单提供新建、打开、保存、另存为、最近工程与启动恢复。②设备中心维护寄存器标签、类型、字节序、倍率、偏移和单位，可扫描 Modbus 从机地址或 03/04 寄存器区间；扫描临时接管原主机调度、保护在途 RTU 响应、锁定配置编辑并在结束后恢复内存和持久化状态，单批最多 512 项。③结构化记录将 Modbus 标签和协议字段保存为可筛选、CSV 导入导出、按时间轴回放的数据。④`.ctproj` v2 显式打包寄存器表、模板、分组、序列、脚本和仪表盘配置，兼容 v1；旧工程缺少寄存器表/模板资源时会按工程空资源初始化，需保留当前内容请先导出或另存 v2。同步更新三语用户文档与发布说明；无新依赖。
 - **v46 (v1.3.5)**: **ANSI 彩色显示 + 触发告警 + 发送模板库 + 显示方式整合**（围绕「日志更像终端、异常主动提醒、常用命令随手取用」）。①**ANSI 彩色显示**（`src/ansi.py`，Qt-free）：解析 SGR 基础色/亮色/256 色/真彩与粗体/下划线/反显，深浅主题用独立可读调色板；样式和未完成转义序列跨包延续，TCP Server 按客户端隔离，超长控制串有界丢弃；光标控制、窗口标题等非 SGR 序列直接吃掉，文本显示与终端模式均接入，切主题时历史文字按颜色标识重解析。②**触发告警**（`src/triggers.py` + `src/triggers_dialog.py`）：支持包含/相等/前缀/正则及文本/HEX 匹配，范围可选 RX/TX/收发；命中后响铃、托盘通知、数据区打标，冷却仅抑制动作而命中次数/最后时间照常累计；串口/TCP 连续流支持跨块关键字与半字符，UDP 保持数据报边界，TCP Server 按客户端隔离尾巴；正则预编译并拒绝明显灾难性回溯结构。③**发送模板库**（`src/snippets.py` + `src/snippets_dialog.py`）：在多条发送窗口一键打开，保存常用文本/HEX 命令，支持模糊搜索、增删、JSON 导入导出、双击填入或直接发送；最多 500 条、字段有界、编辑去抖落盘，空库/字符串布尔值/切行与搜索重建均有回归保护。④**显示方式整合**：文本/HEX/HEX 转储/数值四种渲染方式合并为互斥下拉，附属设置随模式切换，避免旧开关出现多个模式同时为真的冲突态。`tests` 增至 628 项；无新依赖。
- - **v55 (v1.5.1)**: **正式版** — **搜索惰性分页与全局导航、可逆一键 I/O Graph、示例工程包、Mac 发版门禁与多会话显示选项矩阵**；修复 macOS 启动时接收视图未就绪导致的 `qFatal` / `SIGABRT`，并使用 Apple Symbols；Modbus CRC/TCP tid 与虚拟注入加固；1359 passed / 11 skipped / 295 subtests。
- - **v54 (v1.5.0)**: **正式版** — **终端多会话标签**（同窗并发串口/TCP/UDP/虚拟；后台继续收发日志与周期发送；具名互斥 toast；标签状态点/重命名；关键字 Regex/HEX；草稿防抖自动保存；Windows offscreen CI）；1329 passed / 11 skipped / 291 subtests。
- - **v53 (v1.4.2)**: **正式版** — **S-2 R43–R55 运行时/显示/设置/连接抽离收尾 + S-3 断线与真机 soak**；发送历史可删除；历史/文件传输按钮样式对齐；v1.4 主线（S-1～S-5）功能冻结；1186 passed / 6 skipped / 291 subtests。
- - **v52 (v1.4.1)**: **正式版** — **S-2 主窗口可维护拆分（R1–R42） + S-1/S-3/S-4/S-5 稳定性与易用性**；服务层与 GUI build_* 工厂迁出；空 JSON 列表/字典解析、发送历史导航、未使用导入等修复；1148 passed / 4 skipped / 291 subtests。
- - **v51 (v1.4.0)**: **正式版** — **64 位寄存器 / 位域 / 告警级别 + Modbus 多视图与 FC22/FC43 + Webhook / 外部程序触发动作 + Modbus TCP↔RTU 网关**；地址基与阈值贯通；网关多客户端定向回包、超时恢复窗口防迟到串扰、同批重同步不丢合法帧；外部程序进程组回收（单动作最长 30s）、触发删除确认、SSRF 字面量私有地址拦截；1023 passed / 3 skipped。
- - **v50 (v1.3.9)**: **多从机行表 UI + 状态栏/会话比较跳转会话时间 + 数据区书签**（收尾 P1）、①从机对话框用 Addr/Server ID/Extra 行表替代 JSON，重复地址拒绝；②状态栏 RX/TX 与会话比较双击行接通 `jump_to_session_time`（`.ctrec` 写 `wall_t0`）；③`Ctrl+F2`/`F2`/`Shift+F2` 书签，清屏/ANSI 全清一并清除；④整理 TODO/三语文档过时表述。无新依赖。
-- **v49 (v1.3.8)**: **Tooltip 自动换行 + Modbus 异常注入/动态寄存器/FC08 配置界面 + 波形双击跳转会话时间**（收尾 1.3.7 体验与配置缺口）。①统一 `ui_tips.set_tooltip` 让长提示自动换行，托盘 tip 保持纯文本；②从机对话框补齐异常注入模式/过滤、动态寄存器表与 `server_id`，主机 FC08 数量列支持 `子功能:数据` 并在切功能码时刷新 tooltip；③波形图双击按 wall 时间调用 `jump_to_session_time`（速率通道不跳转）；④修复动态 `max=0` 被写成 65535、自动应答重复 `closeEvent` 导致 split 尺寸不刷盘、帮助文案过时等。全量测试 887 passed / 4 skipped；无新依赖。
+- **v47 (v1.3.6)**: **工作台工程化 + 设备定义 / Modbus 扫描中心 + 结构化数据记录 + 工程资源包**。①工作台按终端、协议、仿真、自动化、数据、桥接分页，工程菜单提供新建、打开、保存、另存为、最近工程与启动恢复。②设备中心维护寄存器标签、类型、字节序、倍率、偏移和单位，可扫描 Modbus 从机地址或 03/04 寄存器区间；扫描临时接管原主机调度、保护在途 RTU 响应、锁定配置编辑并在结束后恢复内存和持久化状态，单批最多 512 项。③结构化记录将 Modbus 标签和协议字段保存为可筛选、CSV 导入导出、按时间轴回放的数据。④`.ctproj` v2 显式打包寄存器表、模板、分组、序列、脚本和仪表盘配置，兼容 v1；旧工程缺少寄存器表/模板资源时会按工程空资源初始化，需保留当前内容请先导出或另存 v2。同步更新三语用户文档与发布说明；无新依赖。
 - **v48 (v1.3.7)**: **具名连接预设 + 序列变量 / CSV 数据驱动 + JUnit 测试报告 + 统计诊断增强 + Modbus 专业化 + 回放与差异分析**（把「设备预设 → 自动化测试 → 报告导出」串成闭环，并把 Modbus 模拟与记录回放做深）。①**连接预设**（`src/connection_presets.py` + `src/connection_presets_dialog.py`，核心 Qt-free 可单测）：具名保存串口/网络全部参数、备注与自动重连策略，normalize/sanitize 规整任意来源数据、同名 upsert 覆盖、复制/删除、MRU 排序与 JSON 导入导出；连接栏加预设下拉 + 保存/管理，已连接时拒绝应用并回退占位项，空 `ser_port` 预设会清空当前串口选择，应用后 MRU 重排同步刷新管理窗下标避免后续操作打到错项；预设纳入 `.ctproj` 工程资源（`connection.presets`）与 QSettings 持久化。②**序列变量与上下文**（`src/seq_context.py`）：步骤 send/expect 支持 `${name}` 展开、`$${` 转义为字面 `${`，回包提取器支持 text / hex / regex / modbus 与紧凑 DSL 双向转换，每轮独立 `RoundContext`；未定义变量不再静默降级成纯发送而是当步失败（`seq_st_var_missing`），避免循环老化假阳性。③**CSV 数据驱动序列**（`src/sequence_dataset.py`）：绑定 CSV 后每行跑一轮、表头作 `${var}` 种子、轮数取行数，行标签按 `device_id`/`sn`/`name` 等列优先取；编码按 utf-8-sig → gb18030（Excel/GBK）→ latin-1 回退，行数/列数/单元格长度与文件大小均有界。④**测试报告与 CI 产物**（`src/junit_report.py`，Qt-free 可单测）：导出新增 JUnit XML（testsuites/testsuite/testcase + properties + failure/skipped + system-out），HTML/CSV/JUnit 统一补充软件版本、开始与结束时间、测试参数（轮数、步骤数、失败即停）与 CSV 路径，每步记录耗时、失败原因和关键收发帧（TX / RX HEX）；**中途停止或断连改为一律出汇总并可导出**（标记 stopped 且保留已抓到的收发帧），多轮报告逐轮展开每步明细，无完整轮次时三种格式统一回退到逐步骤表；XML 按 XML 1.0 规则净化控制字符（否则 CI 侧解析直接失败），CSV 的标题、元信息与汇总行也走公式注入防护。⑤**统计与诊断增强**（`src/io_stats.py`，Qt-free 可单测）：包速率 pps、包大小 min/avg/max 与分布直方图、峰值速率与峰值包速、序列 / Modbus 主机 / 连接三类超时计数、约 3 分钟吞吐历史；所有 RX/TX/错误统一经 `_stat_note_*` 入口同时更新旧计数器与累加器（部分写入按底层实际字节数计入、不计包数），状态栏展示 pkt/s、悬浮提示展示分布与超时，波形图可订阅 `rx_Bps`/`tx_Bps`/`rx_pps`/`tx_pps`，重置统计不影响记录与数据区。⑥**多从机模拟**（`src/modbus_slave.py` `MultiSlaveBank` + `slave_bank_from_config`）：同一条总线上按 JSON 配多个从机，各自寄存器表 / 从机 ID，未填项按顶层继承（`_merge_slave_cfg`），非空 `slaves` 覆盖单地址表；`slaves` 为空数组或全非法条目时回落单从机，广播地址 0 只放写功能码、读与 0x08/0x0B/0x11/0x17 一律拒绝，TCP Server 仍按客户端隔离半包缓冲；对话框里 `slaves` 文本能解析但不是数组时报错拒绝，不再静默丢掉原有多从机配置。⑦**异常注入与动态寄存器**（`src/modbus_dyn.py`，Qt-free 可单测）：`ExceptionInjector` 支持 `always`/`once`/`n` 三种模式并按 `funcs`/`addrs` 过滤（FC23 的读段与写段起始地址都参与匹配，且一次调用只算一次命中，不重复消耗 once/n 计数）；`DynamicEngine` 支持 `inc`/`dec`/`random`/`sine`/`ramp`，主机写入形成 sticky override 直到 `reset()`，`reset()` 会重建带 `seed` 的 RNG 并清掉 random 的周期标记使序列真正回到开头。⑧**补齐功能码**（`src/modbus_master.py` / `src/modbus_slave.py`）：主从两侧支持 FC08 / FC11 / FC17 / FC23（0x08 / 0x0B / 0x11 / 0x17），`rtu_normal_len` 按功能码给帧长（01/02 按 `ceil(qty/8)`、0x17 按读数量、0x11 给 256 只作超时预算），0x11 变长响应在 RTU 按字节数字段、TCP 按 MBAP 长度取帧，未知功能码退回 CRC 探测重同步；FC08 子功能 0 校验回环数据是否与请求一致、结果同时给十进制与十六进制，FC23 写地址走轮询表 `读数量 @ 写地址 : 写入值` 紧凑语法并纳入 `.ctproj`，`normalize_poll` 对 `write_addr` 与 `diag_sub` 保证幂等（缺键才回退默认，配了但非法保持 None 让上层报错），越过 0xFFFF 的连续读写在轮询前就按「参数非法」拦下。⑨**图表持久化与结构化回放**（`src/rec_replay.py` + `src/structured_record_dialog.py`）：图表数据源 / 单位 / 布局随工程保存，结构化记录按原时间轴回放驱动同一套图表；`Player` 支持暂停、单步、倍速、循环与按秒定位，`pause(now)` 强制传入单调时钟避免墙钟跳变，`step()` 自动先暂停保证一次只前进一个事件，`seek()` 保持原播放态，暂停 / 单步 / 定位控件仅在回放中可用。⑩**会话差异筛选与导出**（`src/rec_diff.py` + `src/rec_diff_dialog.py`）：按方向与时间差绝对值筛选，汇总计数按筛选后可见行统计，筛选结果可导出 CSV/JSONL，筛空时导出按钮禁用不产出只有表头的文件。`tests` 增至 872 项 + 288 项子测试（新增 `tests/test_modbus_dyn.py`、`tests/test_rec_replay.py`、`tests/test_io_stats.py`、`tests/test_junit_report.py` 与 `tests/test_p1_*.py` 系列）；同步更新三语用户文档的 v1.3.7 章节与发布说明；无新依赖。
+- **v49 (v1.3.8)**: **Tooltip 自动换行 + Modbus 异常注入/动态寄存器/FC08 配置界面 + 波形双击跳转会话时间**（收尾 1.3.7 体验与配置缺口）。①统一 `ui_tips.set_tooltip` 让长提示自动换行，托盘 tip 保持纯文本；②从机对话框补齐异常注入模式/过滤、动态寄存器表与 `server_id`，主机 FC08 数量列支持 `子功能:数据` 并在切功能码时刷新 tooltip；③波形图双击按 wall 时间调用 `jump_to_session_time`（速率通道不跳转）；④修复动态 `max=0` 被写成 65535、自动应答重复 `closeEvent` 导致 split 尺寸不刷盘、帮助文案过时等。全量测试 887 passed / 4 skipped；无新依赖。
+- **v50 (v1.3.9)**: **多从机行表 UI + 状态栏/会话比较跳转会话时间 + 数据区书签**（收尾 P1）、①从机对话框用 Addr/Server ID/Extra 行表替代 JSON，重复地址拒绝；②状态栏 RX/TX 与会话比较双击行接通 `jump_to_session_time`（`.ctrec` 写 `wall_t0`）；③`Ctrl+F2`/`F2`/`Shift+F2` 书签，清屏/ANSI 全清一并清除；④整理 TODO/三语文档过时表述。无新依赖。
+- **v51 (v1.4.0)**: **正式版** — **64 位寄存器 / 位域 / 告警级别 + Modbus 多视图与 FC22/FC43 + Webhook / 外部程序触发动作 + Modbus TCP↔RTU 网关**；地址基与阈值贯通；网关多客户端定向回包、超时恢复窗口防迟到串扰、同批重同步不丢合法帧；外部程序进程组回收（单动作最长 30s）、触发删除确认、SSRF 字面量私有地址拦截；1023 passed / 3 skipped。
+- **v52 (v1.4.1)**: **正式版** — **S-2 主窗口可维护拆分（R1–R42） + S-1/S-3/S-4/S-5 稳定性与易用性**；服务层与 GUI build_* 工厂迁出；空 JSON 列表/字典解析、发送历史导航、未使用导入等修复；1148 passed / 4 skipped / 291 subtests。
+- **v53 (v1.4.2)**: **正式版** — **S-2 R43–R55 运行时/显示/设置/连接抽离收尾 + S-3 断线与真机 soak**；发送历史可删除；历史/文件传输按钮样式对齐；v1.4 主线（S-1～S-5）功能冻结；1186 passed / 6 skipped / 291 subtests。
+- **v54 (v1.5.0)**: **正式版** — **终端多会话标签**（同窗并发串口/TCP/UDP/虚拟；后台继续收发日志与周期发送；具名互斥 toast；标签状态点/重命名；关键字 Regex/HEX；草稿防抖自动保存；Windows offscreen CI）；1329 passed / 11 skipped / 291 subtests。
+- **v55 (v1.5.1)**: **正式版** — **搜索惰性分页与全局导航、可逆一键 I/O Graph、示例工程包、Mac 发版门禁与多会话显示选项矩阵**；修复 macOS 启动时接收视图未就绪导致的 `qFatal` / `SIGABRT`，并使用 Apple Symbols；Modbus CRC/TCP tid 与虚拟注入加固；1359 passed / 11 skipped / 295 subtests。
 
 ---
 

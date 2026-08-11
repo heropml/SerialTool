@@ -157,7 +157,7 @@
 | P2-1 | Headless / CLI | 暂缓 | 序列引擎、报告引擎与 GUI 解耦（S-2） |
 | P2-2 | REST / WebSocket API | 暂缓 | CLI/API 共用同一套核心服务层（S-2） |
 | P2-3 | 脚本化协议解析器/插件 | 暂缓 | 先稳定协议字段模型、变量上下文和资源包格式 |
-| P2-4 | TCP/UDP 专用 PCAP 导出 | **v1.6 进行中**：TCP Client / 指定远程单对端 UDP → `.pcap`（合成 L2/L3/L4）；串口等仍用 `.ctrec` | 属导出格式而非平台化；见 `pcap_export.py` + 录制对话框「导出 PCAP」 |
+| P2-4 | TCP/UDP 专用 PCAP 导出 | **DONE（初版）**：TCP Client / 指定远程单对端 UDP → `.pcap`（合成 L2/L3/L4）；串口等仍用 `.ctrec` | 属导出格式而非平台化；见 `pcap_export.py` + 录制对话框「导出 PCAP」 |
 
 ### 暂不纳入近期排期
 
