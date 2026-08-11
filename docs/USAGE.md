@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.2](#whats-new-in-v152)
 - [What's New in v1.5.1](#whats-new-in-v151)
 - [What's New in v1.5.0](#whats-new-in-v150)
 - [Features](#features)
@@ -37,6 +38,19 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+
+---
+
+## What's New in v1.5.2
+
+Visualization, export, and replay hardening on the v1.5.1 baseline:
+
+- **Plot & dashboard** — waveform / XY / histogram views, dual-Y + cursor stats; dashboard widgets Number / Gauge / LED / Progress; register-fed alert levels no longer blink off on text `feed`.
+- **Excel / PCAP** — sequence + structured-record `.xlsx` export; PCAP/pcapng for TCP Client/Server (single peer), UDP and multicast (serial stays `.ctrec`).
+- **Drive real TX replay** — optional `drive_tx` mode with confirmations, consecutive-fail pause, partial-write failure; default remains Virtual RX inject.
+- **Sessions / examples** — switching tabs auto-stops multi-send cycles; more example projects; UI tips for window-owned tools.
+- **Audit polish** — High/Medium/Low fixes (replay filter sync, serial reconfig race, stale RX drop, HEX search alignment, `open_conn` replace guard, …).
+- **Tests** — 1433 passed / 11 skipped / 295 subtests.
 
 ---
 

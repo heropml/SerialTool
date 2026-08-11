@@ -62,3 +62,7 @@ latest.json.keep
 /test.txt
 scripts/_release_commit_body.txt
 pytest-results.xml
+
+# local pytest capture
+dist_pytest_out.txt
+

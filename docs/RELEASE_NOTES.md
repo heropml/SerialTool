@@ -1,54 +1,47 @@
-**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.5.1 正式版**：在多会话基线上补齐搜索惰性分页与全局导航、可逆一键 I/O Graph、示例工程包，以及 Mac 发版门禁与显示选项矩阵回归。
+**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.5.2 正式版**：绘图与仪表盘可视化扩展、Excel/xlsx 导出、PCAP/pcapng 增强、回放驱动真实 TX，以及一轮 High/Medium/Low 稳定性打磨。
 
-## v1.5.1 正式版
+## v1.5.2 正式版
 
-### 搜索：惰性分页与全局导航
-- `find_spans(..., limit=, start=)` 扫描期即止损，避免大日志一次扫完全文卡 UI
-- ▲/▼ 跨页导航；`find_last_page()` 一趟定位末页；到顶/到底全局环绕
-- 零宽正则匹配后安全前进，避免死循环；有更多未展示命中时计数带 `+`
+### 绘图与仪表盘
+- 波形图：视图模式波形 / XY / 直方图；双 Y 轴与光标统计（min/max/mean）；`plot_stats` 有限值过滤与安全柱宽
+- 工程持久化 `plot_view` / `plot_dual_y`
+- 仪表盘控件：Number / Gauge / LED / Progress（`dash_widgets` + `dash_widget` 工程字段）
+- 寄存器来源通道的告警 level 不被文本 `feed` 清掉，避免阈值闪烁
 
-### 一键 I/O Graph（可逆临时模式）
-- 状态栏右键或工作区「I/O Graph」打开时间轴 + `rx_Bps` / `tx_Bps` / `rx_pps` / `tx_pps` 预设
-- 进入时按通道索引快照既有曲线，关闭 / 改轴 / 清空解析器时恢复，不冲掉用户序列
-- 临时模式隔离 RX `feed` 与非速率命名样本，打开时不清空已有数据
+### 导出与抓包互通
+- 序列报告 / 结构化记录支持 **Excel/xlsx**（`openpyxl`）；公式样单元格按文本落盘
+- PCAP：**TCP Client/Server（单客户端）、UDP、UDP 组播** → 经典 `.pcap` + `.pcapng`；通配 `0.0.0.0` 解析为具体主机 IPv4；串口等仍用 `.ctrec`
 
-### 示例工程与安装包资源
-- `examples/` 提供 Modbus RTU、AT 调制解调器、双会话预设 `.ctproj`（稳定 `preset_id`）
-- Windows 安装目录带 `examples`；macOS DMG 提供可见 `Examples` 文件夹
-- 双会话示例：打开后新建会话并应用 Session B；虚拟连接默认回环便于无硬件试用
+### 回放驱动真实 TX
+- `Player(mode=drive_tx)` + UI 危险确认（非默认；默认仍 Virtual 注入 RX）
+- 连续失败暂停、同 tick 立即停发；部分写视为失败；末帧 abort+finished 优先清理占用
+- 与 Modbus / 自动应答互斥；循环/最快需二次确认
 
-### Mac 发版门禁与更新源
-- `latest.json` 的 `url_mac` 仅在 DMG 经 GitHub 资产校验后写入，避免预填死链
-- 更新器 Mac 候选优先 GitHub；`scripts/check_mac_asset.py` + `release_macos.sh` 门禁
-- 关于/更新对话框对未就绪的 Mac 资产给出明确说明
+### 多会话与示例
+- 切标签时**自动停止多条循环发送**（toast）；脚本/Modbus 等仍硬拦切标签
+- 示例工程扩展：NMEA / 定长帧头 / 传感器 CSV / TCP Client / 关键字高亮 / 仪表盘等
+- 工作区与会话条补充多会话边界说明（`workspace_terminal_tip` / `session_list_tip`）
 
-### macOS 安装包热修复
-- 修复应用级 Qt 事件过滤器在接收视图尚未创建或会话销毁时访问 `None.viewport()`，避免 PyQt 回调异常升级为 `qFatal` / `SIGABRT`
-- 将 Windows 专用的 `Segoe UI Symbol` 映射为 macOS 的 `Apple Symbols`，消除启动时的字体回退告警
-- 11 项 macOS 针对性回归、Apple Silicon `.app` 启动冒烟、深度签名及 DMG 映像校验通过
-
-### 多会话显示选项与协议加固
-- 活动标签显示开关以实时 UI 为准；后台标签仍用各自 `display_opts`（时间戳 / HEX / 转储 / ANSI / 分包 / 编码 / 冻结 / 日志）
-- 冻结视图优先读 `display_context["freeze_view"]`
-- Modbus 从机 CRC 重同步性能；主机 TCP transaction id 校验；虚拟注入过长日志截断
-- 切会话时重置搜索状态，避免旧高亮串台
+### 稳定性与防御（审计收尾）
+- High/Medium：结构化回放过滤同步、串口重配竞态、`stop` 短等待、陈旧 RX 按连接身份丢弃、侧信道 warning+节流 toast、TCP Server 广播快照、搜索防抖、CSV 打开失败不静默停录、报告步骤号、keyword mode 白名单、MultiSend 安全 int、`.ctrec` 头扫描、`addr_base` 不静默钳位等
+- Low：日志 toast `{path}`、HEX 搜索与触发器清洗对齐、`sequence_split` 进 CFG、`open_conn` 替换守卫、TCP/UDP 失败路径 `deleteLater`、`pytest` 写入开发依赖
+- `compile_regex` 对所有格量词仍保守拒绝（有意保留）
 
 ### 产品边界
 - P2（CLI / REST / 插件 dissector）继续暂缓
-- PCAP 导出已落地初版：仅 **TCP Client** / **指定远程单对端 UDP** 可从 `.ctrec` 导出合成 `.pcap`（非网卡抓包）；串口 / Server / 组播等仍用 `.ctrec`
-  - *后续扩展（未发版记录）：已支持 TCP Server（单客户端）、UDP 组播，以及经典 `.pcap` + `.pcapng`；通配 `0.0.0.0` 本地地址会解析为具体主机 IPv4 后再导出*
+- 触发联动发送仍不做；完整 VT100 / BLE·HID·CAN 等不在范围
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
 
 ### 测试
-- 基线：**1359 passed / 11 skipped / 295 subtests**
+- 基线：**1433 passed / 11 skipped / 295 subtests**
 
 ## 下载
 
 | 形式 | 文件 | 说明 |
 |------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.5.1.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.5.1.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.5.1.dmg` | arm64；拖入「应用程序」。资产经门禁校验后才写入更新清单；未公证，首次打开见下方说明 |
+| Windows 安装版 | `CommTool_Setup_v1.5.2.exe` | 推荐，向导安装 + 桌面快捷方式 |
+| Windows 单文件版 | `CommTool_v1.5.2.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
+| macOS（Apple Silicon）| `CommTool_v1.5.2.dmg` | arm64；拖入「应用程序」。资产经门禁校验后才写入更新清单；未公证，首次打开见下方说明 |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 
