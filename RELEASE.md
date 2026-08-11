@@ -25,6 +25,8 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 `url_mac` 在 Windows 发版阶段保持空数组；macOS 脚本上传并校验 `.dmg` 后，才写入 GitHub 直链（标准流程不把 `.dmg` 传到 Gitee；运行时 `mac_download_candidates` 仍兼容旧清单并把 GitHub 提前）。
 改源顺序/下载地址 = 改 `updater.py` + `latest.json` / `release.ps1`；改 `updater.py` **要重打包**。
 
+> **`$Notes` 摘要建议**：以「串口调试助手 / 网络调试工具：…」开头写入 `latest.json` 的 `notes`（升级弹窗可见，也利于检索）。Release 正文仍用 `docs/RELEASE_NOTES.md` 全文，开头同样保留产品定位句。
+
 ---
 
 ## 一、各平台依赖

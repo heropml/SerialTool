@@ -14,6 +14,7 @@
 
 .PARAMETER Notes
     本次更新的一句话摘要，写进 latest.json（app 升级弹窗显示）与 git 提交说明。
+    建议以可检索定位开头，例如：「串口调试助手 / 网络调试工具：……」。
     注意：Release 正文不用它，而是用 docs/RELEASE_NOTES.md 全文（与 Gitee 同一真源）。
 
 .PARAMETER GithubProxy
@@ -178,7 +179,9 @@ $manifest = [ordered]@{
     notes = $Notes
 }
 $json = $manifest | ConvertTo-Json -Depth 3
-[IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json)
+# UTF-8 无 BOM：PowerShell 默认 WriteAllText 易写成系统编码，导致 notes 乱码
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json + "`n", $utf8NoBom)
 
 # ---- PyQt5 裁剪（folder 与 onefile 共用，去掉用不到的 Qt 模块缩小体积）----
 $excludes = @(

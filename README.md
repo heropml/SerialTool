@@ -9,11 +9,11 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
 
-[下载最新版](./releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
+[下载最新版](https://github.com/heropml/SerialTool/releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
 
 ![CommTool](./assets/icon_preview.png)
 
-CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。仓库历史名仍为 `SerialTool`，产品与发行包统一为 **CommTool**。
+CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。**产品与发行包名：CommTool**；Git 仓库路径仍为 `heropml/SerialTool`（不改仓名，避免更新链接断裂）。
 
 **适合：** MCU / USB 转串口调试 · TCP/UDP 服务联调 · Modbus 主从与扫描 · 周期/批量指令 · 会话日志与（有限范围）PCAP 导出 · 无硬件时用 Virtual 回环复现问题
 
@@ -38,7 +38,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 ## 快速开始
 
-1. 打开 [Releases](./releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
+1. 打开 [Releases](https://github.com/heropml/SerialTool/releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
 2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
 3. 在「类型」选择 **Serial**、目标网络协议或 **Virtual**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
