@@ -17,7 +17,7 @@ _PLOT_KEYS = (
 
 _DASHBOARD_KEYS = (
     "dash_mode", "dash_sep", "dash_regex", "dash_fields",
-    "dash_header", "dash_thresholds",
+    "dash_header", "dash_thresholds", "dash_widget",
 )
 
 

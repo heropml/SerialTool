@@ -321,6 +321,98 @@ def build_tcp_client_debug(out_dir):
     )
 
 
+def build_keyword_highlight_demo(out_dir):
+    settings = protocol_template_settings("at", "Virtual")
+    settings.update({
+        "net_proto": "Virtual",
+        "vconn_loopback": True,
+        "show_timestamp": True,
+        "keyword_active": "AT keywords",
+        "keyword_groups": json.dumps([{
+            "name": "AT keywords",
+            "rules": [
+                {"pattern": "ERROR", "match": "plain", "mode": "bg",
+                 "color": "#FF453A", "scope": "both", "enabled": True},
+                {"pattern": "OK", "match": "plain", "mode": "bg",
+                 "color": "#32D74B", "scope": "rx", "enabled": True},
+                {"pattern": r"\+CSQ:\s*(\d+)", "match": "regex", "mode": "bg",
+                 "color": "#0A84FF", "scope": "rx", "enabled": True},
+                {"pattern": "41 54", "match": "hex", "mode": "bg",
+                 "color": "#FFD60A", "scope": "tx", "enabled": True},
+            ],
+        }], ensure_ascii=False),
+        "snippets": json.dumps(_snippets(
+            ("AT", "AT", False),
+            ("CSQ", "AT+CSQ", False),
+            ("ERROR demo", "ERROR", False),
+        ), ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "AT keyword Virtual",
+                {"net_proto": "Virtual", "vconn_loopback": True},
+                note="Keyword highlight: plain / regex / HEX",
+                preset_id="example-keyword-at-virtual"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "keyword_highlight_demo.ctproj",
+        "Keyword Highlight Demo",
+        {
+            "device_type": "modem",
+            "protocol_template": "at",
+            "connection_type": "Virtual",
+            "description": "AT loopback with plain/regex/HEX keyword highlight rules.",
+        },
+        settings,
+    )
+
+
+def build_dash_gauge_demo(out_dir):
+    settings = protocol_template_settings("delimiter", "Virtual")
+    settings.update({
+        "net_proto": "Virtual",
+        "vconn_loopback": True,
+        "show_timestamp": True,
+        "dash_mode": 0,
+        "dash_sep": 0,
+        "dash_widget": "gauge",
+        "dash_thresholds": "CH1:10~40:C,CH2:20~80:%,CH3:3.0~3.6:V",
+        "plot_mode": 0,
+        "plot_sep": 0,
+        "snippets": json.dumps(_snippets(
+            ("Normal", "25.0,55,3.30", False),
+            ("Hot", "42.0,90,3.10", False),
+        ), ensure_ascii=False),
+        "multi_send_groups": json.dumps([{
+            "name": "Dash samples",
+            "items": [
+                {"checked": True, "name": "ok", "data": "25.0,55,3.30",
+                 "hex": False, "nl": 1, "delay": 300},
+                {"checked": True, "name": "alarm", "data": "42.0,90,3.10",
+                 "hex": False, "nl": 1, "delay": 300},
+            ],
+        }], ensure_ascii=False),
+        "connection_presets": json.dumps([
+            make_preset(
+                "Dash gauge Virtual",
+                {"net_proto": "Virtual", "vconn_loopback": True},
+                note="Dashboard gauge + thresholds",
+                preset_id="example-dash-gauge-virtual"),
+        ], ensure_ascii=False),
+    })
+    _write(
+        out_dir / "dash_gauge_demo.ctproj",
+        "Dashboard Gauge Demo",
+        {
+            "device_type": "sensor",
+            "protocol_template": "delimiter",
+            "connection_type": "Virtual",
+            "description": "CSV lines for dashboard gauge/LED/progress with thresholds.",
+        },
+        settings,
+    )
+
+
 def main():
     out = ROOT / "examples"
     out.mkdir(parents=True, exist_ok=True)
@@ -331,6 +423,8 @@ def main():
     build_fixed_header(out)
     build_sensor_csv(out)
     build_tcp_client_debug(out)
+    build_keyword_highlight_demo(out)
+    build_dash_gauge_demo(out)
     readme = out / "README.md"
     readme.write_text(
         "# CommTool example projects\n\n"
@@ -342,7 +436,9 @@ def main():
         "| `nmea_gps_demo.ctproj` | NMEA GPS @ 9600 with $GPGGA sample snippets |\n"
         "| `fixed_header_demo.ctproj` | AA 55 fixed-header HEX on Virtual loopback |\n"
         "| `sensor_csv_demo.ctproj` | Delimiter CSV sensor lines + multi-send / plot |\n"
-        "| `tcp_client_debug.ctproj` | Raw TCP Client 127.0.0.1:9000 + presets |\n\n"
+        "| `tcp_client_debug.ctproj` | Raw TCP Client 127.0.0.1:9000 + presets |\n"
+        "| `keyword_highlight_demo.ctproj` | AT keywords: plain / regex / HEX highlight |\n"
+        "| `dash_gauge_demo.ctproj` | Dashboard gauge + thresholds on Virtual |\n\n"
         "Open via **Project → Open**. Dual-session tabs are runtime-only: "
         "after opening the project, use **New Session** and apply the "
         "**Session B** connection preset.\n"

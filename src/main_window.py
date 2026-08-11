@@ -725,6 +725,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._structured_recorder = StructuredRecorder()
         self._structured_dlg = None
         self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
+        self._replay_drive_tx = False      # 驱动真实 TX：额外压制 Modbus 主机 / 自动应答发送
         self._rr_dlg = None                # 录制/回放对话框（单实例）
         self._rd_dlg = None                # 会话比较对话框（单实例，纯离线不碰连接）
         self._snip_dlg = None              # 发送模板库对话框（单实例）
@@ -4168,9 +4169,26 @@ class CommTool(SessionHostMixin, QMainWindow):
         try:
             fn()
         except Exception:
-            _log.debug("rx side-channel %s failed", name, exc_info=True)
+            _log.warning("rx side-channel %s failed", name, exc_info=True)
+            # Device-response paths: one throttled toast so silent failures are visible.
+            if name in ("auto_reply", "triggers.feed"):
+                self._toast_rx_side_throttled(name)
+
+    def _toast_rx_side_throttled(self, name):
+        now = time.monotonic()
+        last = getattr(self, "_rx_side_toast_at", None)
+        if last is None:
+            last = {}
+            self._rx_side_toast_at = last
+        if now - float(last.get(name, 0.0) or 0.0) < 5.0:
+            return
+        last[name] = now
+        self.toast(self._t("err_rx_side", name=name), error=True)
 
     def on_data_received(self, data: bytes, reply_target=None):
+        # Stale post-close / post-reconnect chunks are dropped in
+        # _route_session_data via source_conn identity (not here): tests and
+        # inject paths may call this without a live conn.
         # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
         # 协议传输(XMODEM/YMODEM)喂给引擎当 getc 源；原始字节流(raw)只发不收，收流直接丢弃。
         w = self._xfer_worker
@@ -5500,6 +5518,76 @@ class CommTool(SessionHostMixin, QMainWindow):
             return conn.inject
         return None
 
+    def _replay_send_target(self):
+        """回放「驱动真实 TX」：把录制的 TX 字节原样经当前连接发出。
+
+        不走发送框的 HEX/换行/校验和编码，避免二次加工。TCP Server 无单客户端时返回 None。
+        回调每次发送时重新取 self.conn，避免确认框期间连接被关掉后仍持有旧引用。
+        """
+        conn = self.conn
+        if conn is None or not getattr(conn, "is_open", False):
+            return None
+        if isinstance(conn, TcpServerConn):
+            target = self._send_target()
+            if not target or target == "__all__":
+                return None
+
+        def _send(data):
+            live = self.conn
+            if live is None or not getattr(live, "is_open", False):
+                raise RuntimeError("connection closed")
+            payload = bytes(data or b"")
+            if not payload:
+                return 0
+            target = None
+            if isinstance(live, TcpServerConn):
+                target = self._send_target()
+                if not target or target == "__all__":
+                    raise RuntimeError("tcp server needs a single client target")
+            n = live.send(payload, target) if target is not None else live.send(payload)
+            if n is None:
+                return 0
+            sent = int(n)
+            # Partial serial/TCP writes must not count as "sent as-is".
+            if sent < len(payload):
+                return 0
+            return sent
+
+        return _send
+
+    def _replay_conn_summary(self):
+        """Short connection label for the drive-TX confirm dialog."""
+        proto = getattr(self, "_conn_proto", None) or (
+            self.cb_proto.currentText() if hasattr(self, "cb_proto") else "")
+        if proto == PROTO_SERIAL:
+            port = ""
+            if hasattr(self, "cb_port"):
+                port = (self.cb_port.currentText() or "").strip()
+            return "%s %s" % (proto, port or "?").strip()
+        if proto == PROTO_TCP_CLIENT:
+            return "%s %s:%s" % (
+                proto,
+                (self.ed_remote_ip.text() or "").strip(),
+                (self.ed_remote_port.text() or "").strip())
+        if proto == PROTO_TCP_SERVER:
+            return "%s :%s → %s" % (
+                proto,
+                (self.ed_local_port.text() or "").strip(),
+                self._send_target() or "?")
+        if proto == PROTO_UDP:
+            return "%s %s:%s" % (
+                proto,
+                (self.ed_remote_ip.text() or "").strip(),
+                (self.ed_remote_port.text() or "").strip())
+        if proto == PROTO_UDP_MULTICAST:
+            return "%s %s:%s" % (
+                proto,
+                (self.ed_group.text() or "").strip(),
+                (self.ed_local_port.text() or "").strip())
+        if proto == PROTO_VIRTUAL:
+            return str(proto)
+        return str(proto or "?")
+
     def _recorder_link_snapshot(self):
         """Capture TCP/UDP endpoints for PCAP export.
 
@@ -5580,11 +5668,20 @@ class CommTool(SessionHostMixin, QMainWindow):
         }
         return link if can_export_link(link) else None
 
-    def _replay_begin(self):
+    def _replay_begin(self, *, drive_tx=False):
+        """Mark replay busy. drive_tx also suppresses Modbus master + auto-reply TX."""
         self._replay_on = True
+        self._replay_drive_tx = bool(drive_tx)
+        # Stop any in-flight Modbus poll schedule so it cannot race with replay TX/RX.
+        if hasattr(self, "_mbm_restart"):
+            self._mbm_restart()
 
     def _replay_end(self):
         self._replay_on = False
+        self._replay_drive_tx = False
+        # Resume Modbus schedule if it was still enabled.
+        if hasattr(self, "_mbm_restart"):
+            self._mbm_restart()
 
     def open_rec_replay(self):
         """打开数据录制 / 回放（单实例，复用并刷新主题/语言）。"""
@@ -6740,7 +6837,8 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _modbus_send(self, frame: bytes, reply_target=None):
         """发 Modbus 响应。响应同样经 C6 全局故障注入（可压测主机的重传/容错）。"""
-        if not self._ar_on or not self._is_open():
+        if (not self._ar_on or not self._is_open()
+                or getattr(self, "_replay_drive_tx", False)):
             return
         # Modbus 从机响应也走 _send_text，同样不是「用户手动发」——置标记让宏录制跳过
         # （与 _ar_schedule_send 一致；这是另一条独立发送路径，各自都要保护）。
@@ -6850,6 +6948,9 @@ class CommTool(SessionHostMixin, QMainWindow):
           3. 每包即时（默认）：上层一个接收块直接当一帧匹配。
         B4：Modbus 从机模式开启时整条引擎让位给 Modbus（按功能码自动应答，规则/状态机不参与；
         此时即使没有任何规则也生效）。"""
+        # Drive-TX replay owns the wire; do not let AR / Modbus-slave TX race it.
+        if getattr(self, "_replay_drive_tx", False):
+            return
         mode = _ar_gate.ingress_mode(
             ar_on=self._ar_on,
             is_open=self._is_open(),
@@ -8012,6 +8113,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         return bool(self._mbm_connection_ready()
                     and self._mbm_on and self._is_open()
                     and not getattr(self, "_seq_on", False)
+                    and not getattr(self, "_replay_on", False)
                     and getattr(self, "_script_worker", None) is None
                     and not bool(getattr(getattr(self, "_macro", None), "recording", False))
                     and not (_xw is not None and _xw.isRunning())

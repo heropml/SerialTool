@@ -5,6 +5,8 @@ pyserial>=3.5
 # 波形图：pyqtgraph 实时绘曲线（依赖 numpy）
 pyqtgraph>=0.13
 numpy>=1.21
+# 序列/结构化记录 Excel 导出（可选：无则跳过 .xlsx）
+openpyxl>=3.1
 
 # 开发时依赖（打包 exe / 重新生成图标）
 pyinstaller>=6.0

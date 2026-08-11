@@ -18,6 +18,19 @@
 
 > 附注（非 bug，记备查）：ASCII 切帧只认 `\n` 作帧尾（规范是 CRLF）。主流设备 CRLF/LF 都能处理；纯 CR（无 LF）的非标设备会让帧累积到下一帧的 `\n`。极罕见。
 
+### 审计暂不处理（Low，仅记录）
+
+| # | 位置 | 问题 | 备注 |
+|---|---|---|---|
+| L1 | `i18n.py` | `log_started` / `log_stopped` 无 `{path}` 占位符 | 无功能影响 |
+| L2 | `i18n.py` | 缺 `workspace_terminal_tip` 键 | 当前未触发 |
+| L3 | HEX 解析 | 两模块行为不一致 | Low，行为差异 |
+| L4 | `compile_regex` | 误拒所有格量词 | 保守安全 |
+| L5 | `requirements.txt` | 缺 pytest | dev 依赖 |
+| L6 | 连接层 | `open_conn` 无替换守卫、空闲计时器、CFG_KEYS 遗漏、TCP/UDP 失败对象未 `deleteLater` 等 | 防御性改进 |
+
+> High/Medium（H1 + M1–M13）已按 2026-08 审计方案落地，见 `tests/test_bugfix_hm.py`。
+
 ---
 
 ## 二、落地 C（数据区体验包）遗留
@@ -38,7 +51,7 @@
 | # | 功能 | 对标 | 价值 | 量 | 复用点 |
 |---|---|---|---|---|---|
 | ⭐ | **具名连接预设/收藏夹** | YAT/Termite | 不用每次重选 COM/波特 | 低 | 新 settings 列表 + 连接栏下拉 |
-| ⭐ | **关键字高亮支持正则/HEX** | 触发器已有、着色规则没有 | 统一两套匹配 | 低 | `KeywordHighlightDialog` 接 `triggers.py` 的 4 模式 (`MODE_*`) |
+| ⭐ | DONE **关键字高亮支持正则/HEX** | 触发器已有、着色规则没有 | 统一两套匹配 | 低 | `KeywordHighlightDialog` + `keyword_groups` / `search_helper`（plain/regex/hex） |
 | ⭐ | **自动化序列：变量/上下文传递** | Postman collection runner | 上一步解析值带入下一步断言（读 SN→后续用） | 中 | `main_window._seq_*` 加上下文字典 + 模板替换 |
 | ⭐ | **自动化序列：CSV 数据驱动** | 测试序列器标配 | 每行参数跑一轮、多设备批测 | 中 | `_seq_*` 读 CSV → 模板替换每步字段 |
 | ⭐ | **自动化序列：JUnit XML 报告** | CI 友好 | 接 CI 流水线 | 低 | `_build_report_html/csv` (`dialogs.py`) 旁加 xml 生成 |
@@ -48,15 +61,15 @@
 
 | # | 功能 | 对标 | 价值 | 量 | 复用点 |
 |---|---|---|---|---|---|
-| ⭐ | **绘图部件扩展：双 Y 轴 / XY / 柱状 / 直方图 / 仪表(gauge) / LED / 进度条** | Serial Studio/PlotJuggler | 可视化维度质变 | 中-高 | 部分 DONE：`plot_dialog` 视图模式（波形/XY/直方图）+ 双 Y + 光标统计；仪表盘等仍见 `dashboard_dialog.py` |
+| ⭐ | DONE **绘图部件扩展：双 Y 轴 / XY / 柱状 / 直方图 / 仪表(gauge) / LED / 进度条** | Serial Studio/PlotJuggler | 可视化维度质变 | 中-高 | `plot_dialog` 视图模式 + 双 Y；`dashboard_dialog` + `dash_widgets`（数值/仪表/LED/进度条） |
 | ⭐ | **绘图/仪表盘数据持久化 + CSV 回放绘图** | PlotJuggler | 关掉不丢、离线回看 | 中 | `StructuredRecorder` CSV 思路复用 |
 | | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | DONE：`pcap_export.py` 经典 `.pcap` + `.pcapng`；TCP Client/Server（单对端）、UDP、UDP 组播；串口继续 `.ctrec` |
-| | Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | 现 CSV 已防注入，加 openpyxl |
+| | DONE Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | `seq_report.build_xlsx` + 序列报告 / 结构化记录导出（openpyxl） |
 | | DONE **吞吐量随时间曲线（I/O Graph）** | Wireshark | 带宽抖动可视化 | 中 | 波形图已订阅 `rx_Bps`/`tx_Bps`/`rx_pps`/`tx_pps`；状态栏右键 / 工作区「I/O Graph」一键打开时间轴+四通道预设 |
 | ⭐ | DONE **Modbus 网关（TCP↔RTU 路由）+ 多从机模拟** | 工业网关/ModRSsim2 | 测多设备总线、网关转发 | 中-高 | `bridge.py` 引擎 + `modbus_slave` 多实例字典（多从机与真·TCP↔RTU 网关路由均已完成；网关见 `modbus_gateway.py`） |
 | ⭐ | DONE **更多 Modbus 功能码（FC08诊断/FC11/FC17/FC23读写多/FC22掩码写/FC43设备标识）** | ModbusSimulator(14码) | 覆盖诊断与一次读写 | 中 | `modbus_master/slave._exec` / `SUPPORTED_FUNCS` |
 | | DONE 位域(bitfield)解析 | 嵌入式协议工具 | 寄存器内部按位拆 | 中 | `device_resources.parse_bitfields` / `decode_bitfields` + 设备中心「位域」列 |
-| | 回放驱动真实 TX（不只注入虚拟连接） | IO Ninja | 录的帧从真实串口/网络发出去 | 中 | `rec_replay.Player` 注入路径加一条 TX 侧 |
+| | DONE 回放驱动真实 TX（不只注入虚拟连接） | IO Ninja | 录的帧从真实串口/网络发出去 | 中 | `Player(mode=drive_tx)` + 危险确认；默认仍为 Virtual 注入 RX |
 | | DONE 触发动作：webhook / 命中N次 / 运行外部程序 | Docklight action chain | 接运维/告警链路 | 中 | `_fire_trigger`（`main_window.py`）扩动作集；提前落地的取舍见第四节「Webhook / 外部程序提前落地的取舍」 |
 
 ### Tier 3 — 大工程/战略级（差异化壁垒，单独立项）
@@ -70,7 +83,7 @@
 | ⭐ | **Headless / CLI 模式**（无界面跑序列/脚本出报告） | socat/pyserial/商业 CLI | CI 里发收包+出 JUnit | 高（拆 GUI/逻辑） |
 | ⭐ | **插件式协议 dissector**（脚本化协议解码器） | Wireshark Lua / IO Ninja | 生态壁垒、用户自定义协议 | 高 |
 | | SSL/TLS 加密连接 | SecureCRT/MobaXterm | 加密调试通道 | 中-高（`QSslSocket` 包一层 `TcpClientConn`） |
-| | 部分 DONE **示例工程包**（examples/*.ctproj） | 工程化商业工具 | 开箱即用 | 中 | 已提供 Modbus/AT/双会话预设；完整模板库仍候补 |
+| | DONE **示例工程包**（examples/*.ctproj） | 工程化商业工具 | 开箱即用 | 中 | Modbus/AT/双会话/NMEA/定长/传感器/TCP/关键字/仪表盘 等示例；见 `scripts/build_example_projects.py` |
 
 ### 明确不建议借鉴（设计取舍 / 偏离定位）
 - **完整 VT100 仿真**（光标/滚动区/备用屏）——刻意只做 SGR 着色，PuTTY 类终端已够用
@@ -163,9 +176,9 @@
 ### 暂不纳入近期排期
 
 - 不做完整 VT100 仿真、BLE/HID/CAN/SPI/I2C、虚拟串口驱动等偏离核心定位的能力。
-- 不以“新增控件数量”为目标；图表先做双 Y 轴、XY、直方图、游标和统计，再考虑更多 gauge/LED。
-- Excel/xlsx 后置，优先保证 HTML、CSV、JUnit XML 三种交付格式。
-- 不支持“回放数据直接注入真实串口”作为默认能力，避免把历史 RX 数据误当成真实设备响应；如确有需要，单独设计明确的 TX 重放模式和安全确认。
+- 不以“新增控件数量”为目标；图表与仪表盘控件（双 Y / XY / 直方图 / 游标 / gauge / LED / 进度条）已落地。
+- Excel/xlsx 已提供（序列报告 + 结构化记录）；HTML、CSV、JUnit XML 仍保留。
+- 「回放驱动真实 TX」已落地为可选模式（危险确认，非默认）；默认仍是 Virtual 注入 RX，避免把历史 RX 误当成真实设备响应。
 - 触发联动发送（匹配后自动回发）仍不做，避免与自动应答引擎互斥打架（同第三节末「明确不建议借鉴」）。
 - v1.4 起明确划出边界、不做：远程 API / CLI / 插件系统（见上）、拖拽分屏/标签拖出成窗、
   云端与协作、AI 能力、更多冷门协议、复杂权限与操作员体系。

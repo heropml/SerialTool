@@ -1,0 +1,118 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "Keyword Highlight Demo",
+  "metadata": {
+    "device_type": "modem",
+    "protocol_template": "at",
+    "connection_type": "Virtual",
+    "description": "AT loopback with plain/regex/HEX keyword highlight rules."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": false,
+    "packet_split": false,
+    "packet_timeout": "20",
+    "line_split": true,
+    "line_nl_mode": 0,
+    "tx_hex": false,
+    "append_newline": true,
+    "append_nl_mode": 0,
+    "checksum_idx": 0,
+    "encoding": "ascii",
+    "frame_rules": "",
+    "plot_mode": 0,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "",
+    "plot_hex_header": "",
+    "dash_mode": 0,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "",
+    "dash_header": "",
+    "net_proto": "Virtual",
+    "rx_hex": false,
+    "vconn_loopback": true,
+    "show_timestamp": true,
+    "keyword_active": "AT keywords",
+    "keyword_groups": "[{\"name\": \"AT keywords\", \"rules\": [{\"pattern\": \"ERROR\", \"match\": \"plain\", \"mode\": \"bg\", \"color\": \"#FF453A\", \"scope\": \"both\", \"enabled\": true}, {\"pattern\": \"OK\", \"match\": \"plain\", \"mode\": \"bg\", \"color\": \"#32D74B\", \"scope\": \"rx\", \"enabled\": true}, {\"pattern\": \"\\\\+CSQ:\\\\s*(\\\\d+)\", \"match\": \"regex\", \"mode\": \"bg\", \"color\": \"#0A84FF\", \"scope\": \"rx\", \"enabled\": true}, {\"pattern\": \"41 54\", \"match\": \"hex\", \"mode\": \"bg\", \"color\": \"#FFD60A\", \"scope\": \"tx\", \"enabled\": true}]}]",
+    "snippets": "[{\"name\": \"AT\", \"text\": \"AT\", \"hex\": false}, {\"name\": \"CSQ\", \"text\": \"AT+CSQ\", \"hex\": false}, {\"name\": \"ERROR demo\", \"text\": \"ERROR\", \"hex\": false}]",
+    "connection_presets": "[{\"id\": \"example-keyword-at-virtual\", \"name\": \"AT keyword Virtual\", \"note\": \"Keyword highlight: plain / regex / HEX\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "AT",
+          "text": "AT",
+          "hex": false
+        },
+        {
+          "name": "CSQ",
+          "text": "AT+CSQ",
+          "hex": false
+        },
+        {
+          "name": "ERROR demo",
+          "text": "ERROR",
+          "hex": false
+        }
+      ],
+      "groups": []
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-keyword-at-virtual",
+          "name": "AT keyword Virtual",
+          "note": "Keyword highlight: plain / regex / HEX",
+          "last_used": 0.0,
+          "net_proto": "Virtual",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": true,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 0,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "",
+      "dash_header": ""
+    },
+    "plot": {
+      "plot_mode": 0,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "",
+      "plot_hex_header": ""
+    }
+  }
+}

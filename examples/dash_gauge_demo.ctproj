@@ -1,0 +1,138 @@
+{
+  "format": "commtool-project",
+  "format_version": 2,
+  "app_version": "1.5.1",
+  "name": "Dashboard Gauge Demo",
+  "metadata": {
+    "device_type": "sensor",
+    "protocol_template": "delimiter",
+    "connection_type": "Virtual",
+    "description": "CSV lines for dashboard gauge/LED/progress with thresholds."
+  },
+  "settings": {
+    "hexdump_view": false,
+    "numview": false,
+    "ansi_color": false,
+    "proto_highlight": false,
+    "packet_split": false,
+    "packet_timeout": "20",
+    "line_split": true,
+    "line_nl_mode": 0,
+    "tx_hex": false,
+    "append_newline": false,
+    "append_nl_mode": 0,
+    "checksum_idx": 0,
+    "encoding": "utf-8",
+    "frame_rules": "",
+    "plot_mode": 0,
+    "plot_sep": 0,
+    "plot_regex": "",
+    "plot_hex_fields": "",
+    "plot_hex_header": "",
+    "dash_mode": 0,
+    "dash_sep": 0,
+    "dash_regex": "",
+    "dash_fields": "",
+    "dash_header": "",
+    "net_proto": "Virtual",
+    "rx_hex": false,
+    "vconn_loopback": true,
+    "show_timestamp": true,
+    "dash_widget": "gauge",
+    "dash_thresholds": "CH1:10~40:C,CH2:20~80:%,CH3:3.0~3.6:V",
+    "snippets": "[{\"name\": \"Normal\", \"text\": \"25.0,55,3.30\", \"hex\": false}, {\"name\": \"Hot\", \"text\": \"42.0,90,3.10\", \"hex\": false}]",
+    "multi_send_groups": "[{\"name\": \"Dash samples\", \"items\": [{\"checked\": true, \"name\": \"ok\", \"data\": \"25.0,55,3.30\", \"hex\": false, \"nl\": 1, \"delay\": 300}, {\"checked\": true, \"name\": \"alarm\", \"data\": \"42.0,90,3.10\", \"hex\": false, \"nl\": 1, \"delay\": 300}]}]",
+    "connection_presets": "[{\"id\": \"example-dash-gauge-virtual\", \"name\": \"Dash gauge Virtual\", \"note\": \"Dashboard gauge + thresholds\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true}]"
+  },
+  "resources": {
+    "device": {
+      "registers": [],
+      "plot_tags": [],
+      "dash_tags": []
+    },
+    "send": {
+      "snippets": [
+        {
+          "name": "Normal",
+          "text": "25.0,55,3.30",
+          "hex": false
+        },
+        {
+          "name": "Hot",
+          "text": "42.0,90,3.10",
+          "hex": false
+        }
+      ],
+      "groups": [
+        {
+          "name": "Dash samples",
+          "items": [
+            {
+              "checked": true,
+              "name": "ok",
+              "data": "25.0,55,3.30",
+              "hex": false,
+              "nl": 1,
+              "delay": 300
+            },
+            {
+              "checked": true,
+              "name": "alarm",
+              "data": "42.0,90,3.10",
+              "hex": false,
+              "nl": 1,
+              "delay": 300
+            }
+          ]
+        }
+      ]
+    },
+    "connection": {
+      "presets": [
+        {
+          "id": "example-dash-gauge-virtual",
+          "name": "Dash gauge Virtual",
+          "note": "Dashboard gauge + thresholds",
+          "last_used": 0.0,
+          "net_proto": "Virtual",
+          "ser_port": "",
+          "ser_baud": "115200",
+          "ser_databits": "8",
+          "ser_parity": "None",
+          "ser_stopbits": "1",
+          "ser_flow": "None",
+          "serial_dtr": true,
+          "serial_rts": true,
+          "net_local_ip": "0.0.0.0",
+          "net_local_port": "8080",
+          "net_remote_ip": "",
+          "net_remote_port": "",
+          "net_use_remote": false,
+          "net_group_addr": "239.0.0.1",
+          "vconn_loopback": true,
+          "auto_reconnect": true
+        }
+      ]
+    },
+    "automation": {
+      "sequences": [],
+      "scripts": []
+    },
+    "dashboard": {
+      "dash_mode": 0,
+      "dash_sep": 0,
+      "dash_regex": "",
+      "dash_fields": "",
+      "dash_header": "",
+      "dash_thresholds": "CH1:10~40:C,CH2:20~80:%,CH3:3.0~3.6:V",
+      "dash_widget": "gauge"
+    },
+    "plot": {
+      "plot_mode": 0,
+      "plot_sep": 0,
+      "plot_regex": "",
+      "plot_hex_fields": "",
+      "plot_hex_header": ""
+    }
+  }
+}

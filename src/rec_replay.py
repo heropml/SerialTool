@@ -254,7 +254,7 @@ def load(path):
     except OSError as e:
         raise RecordError(str(e))
     events, header, bad = _RecordedEvents(), {}, 0
-    first_content = True
+    header_found = False
     with io.open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -264,16 +264,17 @@ def load(path):
                 obj = json.loads(line)
             except Exception:
                 bad += 1
-                first_content = False
                 continue
-            if first_content:
-                first_content = False
-                if not isinstance(obj, dict) or obj.get("_") != _MAGIC:
+            if not header_found:
+                # Keep scanning until _MAGIC; a corrupt first content line must
+                # not permanently disable header detection.
+                if isinstance(obj, dict) and obj.get("_") == _MAGIC:
+                    if obj.get("v") != _VERSION:
+                        raise RecordError("不支持的录制文件版本：%s" % obj.get("v"))
+                    header = obj
+                    header_found = True
+                else:
                     bad += 1
-                    continue
-                if obj.get("v") != _VERSION:
-                    raise RecordError("不支持的录制文件版本：%s" % obj.get("v"))
-                header = obj
                 continue
             try:
                 t = float(obj["t"])
@@ -304,15 +305,29 @@ def load(path):
 
 
 class Player:
-    """回放器：按原始时序把 rx 事件交给 inject 回调。
+    """回放器：按原始时序派发事件。
+
+    mode=\"inject\"（默认）：把 RX（可选含 TX）交给 inject，仅适合虚拟连接注入。
+    mode=\"drive_tx\"：只回放 TX，交给 send_tx 经真实/虚拟连接发出原始字节。
 
     调用方每隔一小段调 tick(now)，本类返回这段时间内到期的事件。这样定时精度、
     暂停/停止都由调用方（QTimer）控制，本类保持纯逻辑、可单测。
     """
 
-    def __init__(self, events, inject, speed=1.0, include_tx=False, loop=False):
-        self.events = [e for e in events if include_tx or e[1] == "rx"]
-        self.inject = inject
+    # drive_tx: pause after this many consecutive send failures
+    _DRIVE_TX_FAIL_PAUSE = 3
+
+    def __init__(self, events, inject, speed=1.0, include_tx=False, loop=False,
+                 mode="inject", send_tx=None):
+        self.mode = "drive_tx" if str(mode or "").strip() == "drive_tx" else "inject"
+        if self.mode == "drive_tx":
+            self.events = [e for e in events if e[1] == "tx"]
+            self.inject = None
+            self.send_tx = send_tx
+        else:
+            self.events = [e for e in events if include_tx or e[1] == "rx"]
+            self.inject = inject
+            self.send_tx = None
         self.speed = max(0.01, float(speed))
         self.loop = bool(loop)
         self.idx = 0
@@ -321,6 +336,10 @@ class Player:
         self.loops_done = 0
         self.paused = False
         self._pause_elapsed = 0.0
+        self.send_fail_count = 0
+        self.send_ok_count = 0
+        self._consec_fail = 0
+        self.send_aborted = False
 
     def __len__(self):
         return len(self.events)
@@ -336,6 +355,10 @@ class Player:
         self.started_at = now
         self.paused = False
         self._pause_elapsed = 0.0
+        self.send_fail_count = 0
+        self.send_ok_count = 0
+        self._consec_fail = 0
+        self.send_aborted = False
 
     def pause(self, now):
         """暂停并记下已播进度。now 必须与 start()/tick() 同一时钟（调用方显式传），
@@ -351,6 +374,10 @@ class Player:
         if self.started_at is not None and self.paused and not self.finished:
             self.started_at = now - (self._pause_elapsed / self.speed)
             self.paused = False
+            if self.mode == "drive_tx":
+                # Allow retry after user resumes; consecutive streak resets.
+                self._consec_fail = 0
+                self.send_aborted = False
 
     def _emit_one(self):
         if self.idx >= len(self.events):
@@ -358,12 +385,32 @@ class Player:
         _t, _d, b = self.events[self.idx]
         self.idx += 1
         try:
-            self.inject(b)
+            if self.mode == "drive_tx":
+                if self.send_tx is None:
+                    raise RuntimeError("drive_tx mode requires send_tx callback")
+                n = self.send_tx(b)
+                # None = success for callbacks that don't return a count (tests).
+                # Must deliver the full payload; partial / SEND_NO_TARGET / 0 → fail.
+                if n is not None:
+                    sent = int(n)
+                    if sent < len(b):
+                        raise RuntimeError(
+                            "send failed/partial: %r of %d" % (sent, len(b)))
+                self.send_ok_count += 1
+                self._consec_fail = 0
+            else:
+                self.inject(b)
         except Exception:
-            _log.debug("rec_replay inject failed", exc_info=True)
+            _log.debug("rec_replay emit failed (mode=%s)", self.mode, exc_info=True)
+            if self.mode == "drive_tx":
+                self.send_fail_count += 1
+                self._consec_fail += 1
+                if self._consec_fail >= self._DRIVE_TX_FAIL_PAUSE:
+                    self.paused = True
+                    self.send_aborted = True
         if self.idx >= len(self.events):
             self.loops_done += 1
-            if self.loop:
+            if self.loop and not self.paused:
                 self.idx = 0
                 self.finished = False
             else:
@@ -419,7 +466,8 @@ class Player:
                and self.events[self.idx][0] <= elapsed):
             just = self._emit_one()
             n += just
-            if self.finished:
+            # Stop the same tick immediately after a drive_tx abort (or finish).
+            if self.paused or self.finished:
                 break
             if just and self.loop and self.idx == 0 and self.loops_done:
                 self.started_at = now

@@ -1491,6 +1491,7 @@ def test_example_project_generation_is_stable_and_dual_session_loops_back(tmp_pa
         builder.build_modbus, builder.build_at, builder.build_dual_session,
         builder.build_nmea, builder.build_fixed_header,
         builder.build_sensor_csv, builder.build_tcp_client_debug,
+        builder.build_keyword_highlight_demo, builder.build_dash_gauge_demo,
     )
     for build in builders:
         build(first)

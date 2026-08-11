@@ -2,10 +2,9 @@
 """数据录制 / 回放对话框 RecReplayDialog。
 
 录制：把当前连接上的原始收发流按时序录下来，存成 .ctrec（JSON Lines，可读可手改）。
-回放：载入 .ctrec，按原始时间间隔把 RX 注入当前连接 —— 无硬件复现问题、离线调试。
-
-回放落点是 VirtualConn.inject（虚拟连接），因为往真实串口/网络「注入收到的数据」在
-物理上不成立。未连虚拟连接时会明确提示，而不是假装成功。
+回放两种模式：
+  - 默认：注入 VirtualConn.inject（RX），未连虚拟连接会明确拒绝；
+  - 驱动真实 TX：经当前打开连接原样发出录制的 TX（危险确认，非默认）。
 """
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -98,6 +97,8 @@ class RecReplayDialog(QDialog):
         self.btn_seek.setFixedHeight(28)
         self.btn_seek.clicked.connect(self._on_seek)
         self.chk_tx = QCheckBox()
+        self.chk_drive_tx = QCheckBox()
+        self.chk_drive_tx.toggled.connect(self._on_drive_tx_toggled)
         self.btn_play = QPushButton()
         self.btn_play.setObjectName("PlotPrimaryBtn")
         self.btn_play.setMinimumSize(68, 34)
@@ -122,6 +123,7 @@ class RecReplayDialog(QDialog):
         rep.addWidget(self.ed_seek)
         rep.addWidget(self.btn_seek)
         rep.addWidget(self.chk_tx)
+        rep.addWidget(self.chk_drive_tx)
         rep.addStretch(1)
         rep.addWidget(self.btn_play)
         rep.addWidget(self.btn_stop)
@@ -259,31 +261,83 @@ class RecReplayDialog(QDialog):
     def is_playing(self):
         return self._player is not None and not self._player.finished
 
+    def _on_drive_tx_toggled(self, on):
+        # Drive-TX ignores Virtual inject-TX; keep the old checkbox for inject mode only.
+        self.chk_tx.setEnabled(not bool(on))
+        if on:
+            self.chk_tx.setChecked(False)
+
     def _on_play(self):
         if self.is_playing():
             return
         if not self._events:
             self.app.toast(self.app._t("rr_nothing"), error=True)
             return
-        inject = self.app._replay_inject_target()
-        if inject is None:
-            # 往真实串口/网络「注入收到的数据」物理上不成立，明确拒绝而不是假装成功
-            self.app.toast(self.app._t("rr_need_virtual"), error=True)
-            return
         if self.app._io_task_busy():
             self.app.toast_io_exclusive_busy()
             return
+        drive_tx = bool(self.chk_drive_tx.isChecked())
         speed = _SPEEDS[max(0, self.cb_speed.currentIndex())][1]
-        self._player = rec_replay.Player(self._events, inject, speed=speed,
-                                         include_tx=self.chk_tx.isChecked(),
-                                         loop=self.chk_loop.isChecked())
+        if drive_tx:
+            if self.app._replay_send_target() is None:
+                self.app.toast(self.app._t("rr_need_open_conn"), error=True)
+                return
+            tx_n = sum(1 for _t, d, _b in self._events if d == "tx")
+            if tx_n <= 0:
+                self.app.toast(self.app._t("rr_no_tx"), error=True)
+                return
+            conn_label = self.app._replay_conn_summary()
+            tx_dur = 0.0
+            for t_rel, d, _b in self._events:
+                if d == "tx":
+                    tx_dur = float(t_rel)
+            loop_on = bool(self.chk_loop.isChecked())
+            ok = self.app._confirm_dlg(
+                self.app._t("rr_drive_tx_confirm_title"),
+                self.app._t("rr_drive_tx_confirm",
+                            n=tx_n,
+                            conn=conn_label,
+                            sec=round(tx_dur, 1)),
+                danger=True)
+            if not ok:
+                return
+            # Loop / Max speed can flood hardware; require a second explicit confirm.
+            if loop_on or speed >= 1000.0:
+                ok2 = self.app._confirm_dlg(
+                    self.app._t("rr_drive_tx_loop_title"),
+                    self.app._t("rr_drive_tx_loop_confirm",
+                                loop=("ON" if loop_on else "OFF"),
+                                speed=("Max" if speed >= 1000.0 else ("%gx" % speed))),
+                    danger=True)
+                if not ok2:
+                    return
+            # TOCTOU: confirm dialog can block; connection may close/switch.
+            send_tx = self.app._replay_send_target()
+            if send_tx is None:
+                self.app.toast(self.app._t("rr_need_open_conn"), error=True)
+                return
+            self._player = rec_replay.Player(
+                self._events, None, speed=speed, loop=loop_on,
+                mode="drive_tx", send_tx=send_tx)
+            empty_toast = "rr_no_tx"
+        else:
+            inject = self.app._replay_inject_target()
+            if inject is None:
+                # 往真实串口/网络「注入收到的数据」物理上不成立，明确拒绝而不是假装成功
+                self.app.toast(self.app._t("rr_need_virtual"), error=True)
+                return
+            self._player = rec_replay.Player(
+                self._events, inject, speed=speed,
+                include_tx=self.chk_tx.isChecked(),
+                loop=self.chk_loop.isChecked())
+            empty_toast = "rr_no_rx"
         if len(self._player) == 0:
-            self.app.toast(self.app._t("rr_no_rx"), error=True)
+            self.app.toast(self.app._t(empty_toast), error=True)
             self._player = None
             return
         import time
         self._player.start(time.monotonic())
-        self.app._replay_begin()
+        self.app._replay_begin(drive_tx=drive_tx)
         self._set_playing_ui(True)
         self._log(self.app._t("rr_play_started", n=len(self._player),
                               sec=round(self._player.duration, 1)))
@@ -300,10 +354,16 @@ class RecReplayDialog(QDialog):
             return
         self._timer.stop()
         done = self._player.idx
+        fails = int(getattr(self._player, "send_fail_count", 0) or 0)
         self._player = None
         self.app._replay_end()
         self._set_playing_ui(False)
         self._log(self.app._t("rr_play_stopped", n=done))
+        self._toast_drive_tx_fails(fails)
+
+    def _toast_drive_tx_fails(self, fails):
+        if fails > 0:
+            self.app.toast(self.app._t("rr_drive_tx_fails", n=fails), error=True)
 
     def _tick(self):
         p = self._player
@@ -313,13 +373,31 @@ class RecReplayDialog(QDialog):
         import time
         p.tick(time.monotonic())
         self.bar.setValue(int(p.progress * 100))
+        # Finish first: abort on the last frame sets both paused+finished; must
+        # release _replay_on / UI instead of leaving a stuck "paused" occupation.
         if p.finished:
             self._timer.stop()
             n = len(p)
+            fails = int(getattr(p, "send_fail_count", 0) or 0)
+            aborted = bool(getattr(p, "send_aborted", False))
             self._player = None
             self.app._replay_end()
             self._set_playing_ui(False)
-            self._log(self.app._t("rr_play_done", n=n))
+            if aborted and fails > 0:
+                self._log(self.app._t("rr_drive_tx_paused", n=fails))
+                self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
+            else:
+                self._log(self.app._t("rr_play_done", n=n))
+                self._toast_drive_tx_fails(fails)
+            return
+        if getattr(p, "send_aborted", False) and p.paused:
+            self._timer.stop()
+            fails = int(getattr(p, "send_fail_count", 0) or 0)
+            self.retranslate()
+            self._log(self.app._t("rr_drive_tx_paused", n=fails))
+            self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
+            p.send_aborted = False  # toast once until next abort
+            return
 
     def _on_pause(self):
         import time
@@ -386,8 +464,10 @@ class RecReplayDialog(QDialog):
         playing = self.is_playing()
         self.btn_rec.setEnabled(not playing)
         for w in (self.btn_load, self.btn_save, self.btn_pcap,
-                  self.cb_speed, self.chk_loop, self.chk_tx):
+                  self.cb_speed, self.chk_loop, self.chk_tx, self.chk_drive_tx):
             w.setEnabled(not recording and not playing)
+        if (not recording and not playing) and self.chk_drive_tx.isChecked():
+            self.chk_tx.setEnabled(False)
         self.btn_play.setEnabled(not recording and not playing)
         # 暂停/单步/定位 只在回放中有意义（无 player 时点了也不会有反应）。
         for w in (self.btn_pause, self.btn_step, self.ed_seek, self.btn_seek):
@@ -531,6 +611,10 @@ class RecReplayDialog(QDialog):
         self.btn_seek.setText(t("rr_seek"))
         self.ed_seek.setPlaceholderText(t("rr_seek_ph"))
         self.chk_tx.setText(t("rr_include_tx"))
+        self.chk_drive_tx.setText(t("rr_drive_tx"))
+        set_tooltip(self.chk_drive_tx, t("rr_drive_tx_tip"))
+        if self.chk_drive_tx.isChecked():
+            self.chk_tx.setEnabled(False)
         self.btn_play.setText(t("rr_play"))
         self.btn_stop.setText(t("rr_stop"))
         set_tooltip(self.btn_help, t("rr_help_btn"))

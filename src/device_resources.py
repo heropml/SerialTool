@@ -85,13 +85,29 @@ def normalize_register(record):
         order = default_order
     if width == 4 and len(order) != 8:
         order = default_order
-    addr_base = _int(record.get("addr_base", 0), 0, 0, 1)
+    # Keep raw addr_base (normally 0/1).  Do not silently clamp — that rewrites
+    # display addresses without the user noticing.
+    try:
+        raw_base = record.get("addr_base", 0)
+        if isinstance(raw_base, str):
+            text = raw_base.strip()
+            base = 0 if text[:2].lower() in ("0x", "0o", "0b") else 10
+            addr_base = int(text, base)
+        else:
+            addr_base = int(raw_base)
+    except (TypeError, ValueError):
+        addr_base = 0
+    if addr_base not in (0, 1):
+        _LOG.warning("addr_base out of range: %r (expected 0 or 1); keeping value",
+                     addr_base)
     if record.get("display_address") not in (None, "") and \
             record.get("address") in (None, ""):
         # 界面上填的是按所选地址基显示的地址，这里换回协议用的 0 基地址。
         # 解码和匹配一律用 0 基，addr_base 只影响显示。
-        address = _int(record["display_address"], addr_base,
-                       addr_base, 0xFFFF + addr_base) - addr_base
+        lo = addr_base if addr_base in (0, 1) else 0
+        hi = 0xFFFF + (addr_base if addr_base in (0, 1) else 0)
+        address = _int(record["display_address"], lo, lo, hi) - (
+            addr_base if addr_base in (0, 1) else 0)
     else:
         address = _int(record.get("address", 0), 0, 0, 0xFFFF)
     bit = _int(record.get("bit", 0), 0, 0, 15)
@@ -375,6 +391,28 @@ class StructuredRecorder:
                 out = normalize_sample(row)
                 out["timestamp"] = "%.6f" % out["timestamp"]
                 writer.writerow(out)
+        return len(selected)
+
+    def save_xlsx(self, path, rows=None):
+        """Export structured samples to Excel. Requires openpyxl."""
+        try:
+            from openpyxl import Workbook
+        except ImportError as e:
+            raise RuntimeError("openpyxl is required for Excel export") from e
+        from seq_report import _xlsx_set
+
+        selected = list(self.rows if rows is None else rows)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Samples"
+        for col, name in enumerate(STRUCTURED_COLUMNS, 1):
+            _xlsx_set(ws.cell(row=1, column=col), name)
+        for row_i, row in enumerate(selected, 2):
+            out = normalize_sample(row)
+            out["timestamp"] = "%.6f" % out["timestamp"]
+            for col, name in enumerate(STRUCTURED_COLUMNS, 1):
+                _xlsx_set(ws.cell(row=row_i, column=col), out.get(name, ""))
+        wb.save(path)
         return len(selected)
 
     def load_csv(self, path):

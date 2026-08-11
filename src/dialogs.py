@@ -1159,11 +1159,18 @@ class MultiSendDialog(QDialog):
             items = [{"data": "", "checked": False}]
         for it in items:
             self._add_row(str(it.get("data", "")), bool(it.get("checked", False)),
-                          bool(it.get("hex", False)), int(it.get("nl", 0)),
-                          int(it.get("cs", 0)), str(it.get("name", "")),
-                          int(it.get("delay", 1000)))
+                          bool(it.get("hex", False)), self._to_int(it.get("nl", 0), 0),
+                          self._to_int(it.get("cs", 0), 0), str(it.get("name", "")),
+                          self._to_int(it.get("delay", 1000), 1000))
         self.refresh_theme()
         self._refresh_select_all()
+
+    @staticmethod
+    def _to_int(s, default):
+        try:
+            return max(0, int(str(s).strip()))
+        except (ValueError, TypeError):
+            return default
 
     def closeEvent(self, e):
         self._commit_now()    # 关窗时立即落盘待提交编辑
@@ -1237,8 +1244,8 @@ class MultiSendDialog(QDialog):
 
 # ============== 关键字高亮配置弹窗 ==============
 class KeywordHighlightDialog(QDialog):
-    """配置多条关键字高亮：每条选 背景/文字 着色 + 颜色。
-    区分大小写子串匹配，RX/TX 都高亮；规则持久化、即时生效。"""
+    """配置多条关键字高亮：每条选匹配方式（纯文本/正则/HEX）+ 背景/文字着色 + 颜色。
+    规则持久化、即时生效；匹配引擎与搜索栏共用 search_helper.find_spans。"""
     PRESET_COLORS = ["#FFD60A", "#FF453A", "#32D74B", "#0A84FF", "#BF5AF2", "#FF9F0A"]
 
     def __init__(self, app):
@@ -1328,8 +1335,8 @@ class KeywordHighlightDialog(QDialog):
         self._commit_now()
 
     _SCOPES = ("both", "rx", "tx")
-
     _MATCHES = ("plain", "regex", "hex")
+    _MODES = ("bg", "fg")
 
     def _add_row(self, pattern="", mode="bg", color="#FFD60A", enabled=True,
                  scope="both", match="plain"):
@@ -1363,7 +1370,8 @@ class KeywordHighlightDialog(QDialog):
         h.addWidget(cb_match)
         cb_mode = QComboBox()
         cb_mode.addItems([self.app._t("kw_mode_bg"), self.app._t("kw_mode_fg")])
-        cb_mode.setCurrentIndex(0 if mode == "bg" else 1)
+        mode = mode if mode in self._MODES else "bg"
+        cb_mode.setCurrentIndex(self._MODES.index(mode))
         cb_mode.setFixedWidth(78)
         cb_mode.currentIndexChanged.connect(self._commit)
         h.addWidget(cb_mode)
@@ -1488,7 +1496,7 @@ class KeywordHighlightDialog(QDialog):
         self._commit_timer.stop()
         rules = [
             {"pattern": r["edit"].text(),
-             "mode": "bg" if r["mode"].currentIndex() == 0 else "fg",
+             "mode": self._MODES[r["mode"].currentIndex()],
              "scope": self._SCOPES[r["scope"].currentIndex()],
              "match": self._MATCHES[r["match"].currentIndex()],
              "color": r["color"],
@@ -1593,7 +1601,7 @@ class KeywordHighlightDialog(QDialog):
         """))
         for r in self._rows:                       # 颜色按钮保持各自底色
             self._paint_color_btn(r)
-            for key in ("mode", "scope"):
+            for key in ("mode", "scope", "match"):
                 _style_one_combo_popup(r[key], c)
 
 
@@ -2424,9 +2432,11 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                 for r in rounds:
                     defs = r.get("step_defs") or []
                     results = r.get("steps") or []
+                    step_no = 0
                     for i, step in enumerate(defs):
                         if not step.get("on", True):
                             continue
+                        step_no += 1
                         res = results[i] if i < len(results) else {}
                         st = res.get("status", "pending")
                         detail = self._result_detail(res)
@@ -2444,7 +2454,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                         cells = [r.get("round", "")]
                         if has_csv:
                             cells += [r.get("csv_row", ""), r.get("csv_label", "") or ""]
-                        cells += [i + 1, str(step.get("name", "") or ""), send, exp,
+                        cells += [step_no, str(step.get("name", "") or ""), send, exp,
                                   self._status_report_text(res),
                                   "%dms" % int(res.get("ms", 0)), detail]
                         cls = ("ok" if st in ("pass", "sent", "skip")
@@ -2544,7 +2554,8 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # 留给 _report_fmt 根据过滤器补全，用户手动输入的扩展名仍优先。
         default = "CommTool_seq_report_%s" % (ts or "report")
         path, _sel = QFileDialog.getSaveFileName(self, self.app._t("seq_export"), default,
-                                                 "HTML (*.html);;CSV (*.csv);;JUnit XML (*.xml)")
+                                                 "HTML (*.html);;CSV (*.csv);;"
+                                                 "Excel (*.xlsx);;JUnit XML (*.xml)")
         if not path:
             return
         try:
@@ -2554,6 +2565,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             if fmt == "csv":
                 with open(path, "w", encoding="utf-8-sig", newline="") as f:
                     f.write(self._build_report_csv(rows))
+            elif fmt == "xlsx":
+                t = self.app._t
+                summ_line, _passed = self._report_summary_line()
+                header, body = self._report_table(rows)
+                seq_report.build_xlsx(
+                    t("seq_report_title"), self._report_meta_rows(),
+                    summ_line, header, body, path)
             elif fmt == "junit":
                 with open(path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(self._build_report_junit(rows))

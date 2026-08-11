@@ -3905,17 +3905,23 @@ class DashboardTests(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
-    def test_text_feed_clears_a_stale_register_level(self):
-        """同名通道先从寄存器样本拿到 alarm，再走文本解析时不能一直标红。"""
+    def test_text_feed_keeps_register_named_source_level(self):
+        """寄存器喂过的通道：文本 feed 不得清掉 warn/alarm（避免告警闪烁）。"""
         w, dlg = self._dlg()
         try:
             dlg.feed_named_samples([{"tag": "CH1", "value": 99, "level": "alarm"}])
             dlg._refresh_tiles()
             self.assertEqual(dlg._tiles["CH1"]["level"], "alarm")
 
-            dlg.feed(b"20\n")            # 文本路径：无阈值概念
+            dlg.feed(b"20\n")            # 文本路径：寄存器来源通道保留阈值态
             dlg._refresh_tiles()
             self.assertEqual(dlg._values["CH1"], 20)
+            self.assertEqual(dlg._tiles["CH1"]["level"], "alarm")
+
+            # 纯文本通道仍可清掉残留 level。
+            dlg._named_sources.discard("CH1")
+            dlg.feed(b"21\n")
+            dlg._refresh_tiles()
             self.assertEqual(dlg._tiles["CH1"]["level"], "")
             self.assertEqual(dlg._tiles["CH1"]["state"], "")
         finally:

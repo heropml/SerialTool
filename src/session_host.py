@@ -1257,12 +1257,15 @@ class SessionHostMixin:
     # ---- Signal routing ----
     def _bind_conn_signals(self, conn, session):
         sid = session.id
+        # Capture conn identity so queued RX after close/reconnect is dropped.
         if hasattr(conn, "data_received_from"):
             conn.data_received_from.connect(
-                lambda data, target=None, _sid=sid: self._route_session_data(_sid, data, target))
+                lambda data, target=None, _sid=sid, _c=conn:
+                    self._route_session_data(_sid, data, target, _c))
         else:
             conn.data_received.connect(
-                lambda data, _sid=sid: self._route_session_data(_sid, data, None))
+                lambda data, _sid=sid, _c=conn:
+                    self._route_session_data(_sid, data, None, _c))
         conn.error_occurred.connect(
             lambda msg, _sid=sid: self._route_session_error(_sid, msg))
         conn.state_changed.connect(
@@ -1275,9 +1278,11 @@ class SessionHostMixin:
             conn.peer_changed.connect(
                 lambda ip, port, _sid=sid: self._route_session_peer(_sid, ip, port))
 
-    def _route_session_data(self, session_id, data, reply_target=None):
+    def _route_session_data(self, session_id, data, reply_target=None, source_conn=None):
         s = self.find_session(session_id)
         if s is None:
+            return
+        if source_conn is not None and s.conn is not source_conn:
             return
         with self._with_session(s):
             if s.id == self._active_session_id:

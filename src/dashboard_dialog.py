@@ -3,6 +3,8 @@
 超阈值变红（闪烁）。解析复用 stream_parse.NumericStreamParser（分隔符/正则/HEX字段三模式），
 配置与波形图相互独立（自己的 dash_* 设置）。单实例非模态，复用刷新主题/语言。
 """
+import math
+
 from PyQt5.QtCore import Qt, QTimer, QRect, QSize, QPoint
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
                              QComboBox, QLineEdit, QPushButton, QScrollArea, QFrame,
@@ -11,14 +13,16 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
 import stream_parse
 from stream_parse import MODE_DELIM, MODE_REGEX, MODE_HEX
 import binproto
+import dash_widgets
 from theme import chrome_for, _mix
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from ui_tips import set_tooltip
 
-_TILE_W, _TILE_H = 160, 90
+_TILE_W, _TILE_H = 168, 110
 _WARN_RGB = "#E6A23C"   # 主题里没有预警色，固定琥珀色与 danger 区分
 _MAX_TILES = 64        # 通道卡片上限：防分隔符模式下畸形长行（上千列）建出海量卡片卡死 UI
+_ACCENT_FALLBACK = "#4C8BF5"
 
 
 class FlowLayout(QLayout):
@@ -88,11 +92,17 @@ class FlowLayout(QLayout):
 def _fmt(v):
     """数值 → 紧凑显示：整数去小数点，其余最多 6 位有效数字。"""
     try:
-        if float(v).is_integer() and abs(v) < 1e15:
-            return str(int(v))
+        fv = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    if not math.isfinite(fv):
+        return "--"
+    try:
+        if fv.is_integer() and abs(fv) < 1e15:
+            return str(int(fv))
     except (ValueError, OverflowError):
         pass
-    return f"{v:.6g}"
+    return f"{fv:.6g}"
 
 
 class DashboardDialog(QDialog):
@@ -111,6 +121,7 @@ class DashboardDialog(QDialog):
         self._parser = stream_parse.NumericStreamParser()
         self._values = {}          # name -> 最新 float
         self._levels = {}          # name -> 寄存器表给的 '' / warn / alarm
+        self._named_sources = set()  # tags fed via feed_named_samples (keep levels)
         self._tiles = {}           # name -> {frame, lbl_name, lbl_val, lbl_unit, level, state}
         self._order = []           # 通道出现顺序
         self._thresholds = {}      # name -> (lo, hi, unit)
@@ -170,6 +181,12 @@ class DashboardDialog(QDialog):
         self.ed_thresh.editingFinished.connect(self._on_thresh_changed)
         thr.addWidget(self.lbl_thresh)
         thr.addWidget(self.ed_thresh, 1)
+        self.lbl_widget = QLabel()
+        self.cb_widget = QComboBox()
+        self.cb_widget.addItems(["", "", "", ""])  # number/gauge/led/progress
+        self.cb_widget.currentIndexChanged.connect(self._on_widget_changed)
+        thr.addWidget(self.lbl_widget)
+        thr.addWidget(self.cb_widget)
         root.addLayout(thr)
 
         # ===== 卡片区（流式布局 + 滚动）=====
@@ -217,6 +234,8 @@ class DashboardDialog(QDialog):
             self._on_header_changed(save=False)
             self.ed_thresh.setText(s.value("dash_thresholds", "") or "")
             self._on_thresh_changed(save=False)
+            kind = dash_widgets.normalize_widget(s.value("dash_widget", "number"))
+            self.cb_widget.setCurrentIndex(dash_widgets.WIDGET_KINDS.index(kind))
             self._on_mode_changed(save=False)
         finally:
             self._loading_cfg = False
@@ -236,6 +255,7 @@ class DashboardDialog(QDialog):
         s.setValue("dash_fields", self.ed_fields.text())
         s.setValue("dash_header", self.ed_header.text())
         s.setValue("dash_thresholds", self.ed_thresh.text())
+        s.setValue("dash_widget", self._widget_kind())
 
     # ---------------- 数据入口 ----------------
     def feed(self, data: bytes):
@@ -250,9 +270,10 @@ class DashboardDialog(QDialog):
                 self._ensure_tile(name)
             else:
                 continue    # 已到卡片上限的新通道：不建卡、不记值，避免畸形长行卡死
-            # 文本解析没有寄存器阈值概念；不清的话，同名通道曾经从寄存器
-            # 样本拿到的 warn/alarm 会一直留在卡片上，值已经正常了还标红。
-            self._levels.pop(name, None)
+            # Text-only channels clear stale levels.  Register-fed names keep
+            # warn/alarm so a concurrent CSV-style feed() cannot blink them off.
+            if name not in self._named_sources:
+                self._levels.pop(name, None)
 
     def reset_stream(self):
         """切断当前数据流的跨包状态，但保留卡片上的最近值。用于暂停/隐藏/重连等
@@ -275,13 +296,47 @@ class DashboardDialog(QDialog):
                     continue
                 self._ensure_tile(name)
             self._values[name] = val
+            self._named_sources.add(name)
             self._levels[name] = str(s.get("level") or "")
             unit = s.get("unit") or ""
             if unit:
                 self._tiles[name]["unit"] = str(unit)
 
     # ---------------- 卡片 ----------------
+    def _widget_kind(self):
+        idx = max(0, min(len(dash_widgets.WIDGET_KINDS) - 1,
+                         self.cb_widget.currentIndex()))
+        return dash_widgets.WIDGET_KINDS[idx]
+
+    def _on_widget_changed(self, *_a):
+        if self._loading_cfg:
+            return
+        # Rebuild tile widgets only — keep parser buffer / latest values / units.
+        names = list(self._order)
+        values = dict(self._values)
+        levels = dict(self._levels)
+        units = {n: (self._tiles[n].get("unit") or "") for n in names}
+        while self._flow.count():
+            item = self._flow.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._tiles.clear()
+        self._order = []
+        for name in names:
+            self._ensure_tile(name)
+            if name in values:
+                self._values[name] = values[name]
+            if name in levels:
+                self._levels[name] = levels[name]
+            if units.get(name):
+                self._tiles[name]["unit"] = units[name]
+        self._save_cfg()
+        self._refresh_tiles()
+
     def _ensure_tile(self, name):
+        kind = self._widget_kind()
         frame = QFrame()
         frame.setObjectName("DashTile")
         frame.setFixedSize(_TILE_W, _TILE_H)
@@ -290,22 +345,45 @@ class DashboardDialog(QDialog):
         v.setSpacing(2)
         lbl_name = QLabel(name)
         lbl_name.setObjectName("DashName")
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        lbl_val = QLabel("--")
-        lbl_val.setObjectName("DashVal")
-        lbl_unit = QLabel("")
-        lbl_unit.setObjectName("DashUnit")
-        row.addWidget(lbl_val)
-        row.addWidget(lbl_unit, 0, Qt.AlignBottom)
-        row.addStretch(1)
         v.addWidget(lbl_name)
-        v.addStretch(1)
-        v.addLayout(row)
+        lbl_val = lbl_unit = None
+        widget = None
+        if kind == dash_widgets.WIDGET_GAUGE:
+            widget = dash_widgets.DashGaugeWidget()
+            v.addWidget(widget, 1)
+        elif kind == dash_widgets.WIDGET_LED:
+            widget = dash_widgets.DashLedWidget()
+            v.addWidget(widget, 1)
+        elif kind == dash_widgets.WIDGET_PROGRESS:
+            widget = dash_widgets.DashProgressWidget()
+            v.addWidget(widget, 1)
+        else:
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            lbl_val = QLabel("--")
+            lbl_val.setObjectName("DashVal")
+            lbl_unit = QLabel("")
+            lbl_unit.setObjectName("DashUnit")
+            row.addWidget(lbl_val)
+            row.addWidget(lbl_unit, 0, Qt.AlignBottom)
+            row.addStretch(1)
+            v.addStretch(1)
+            v.addLayout(row)
         self._flow.addWidget(frame)
-        self._tiles[name] = {"frame": frame, "lbl_name": lbl_name, "lbl_val": lbl_val,
-                             "lbl_unit": lbl_unit, "level": "", "state": None}
+        self._tiles[name] = {
+            "frame": frame, "lbl_name": lbl_name, "lbl_val": lbl_val,
+            "lbl_unit": lbl_unit, "widget": widget, "kind": kind,
+            "unit": "", "level": "", "state": None,
+        }
         self._order.append(name)
+
+    def _tile_accent(self, level):
+        c = chrome_for(self.app._theme_id())
+        if level == "alarm":
+            return c.get("danger", "#E03131")
+        if level == "warn":
+            return _WARN_RGB
+        return c.get("accent", _ACCENT_FALLBACK)
 
     def _refresh_tiles(self):
         for name in self._order:
@@ -314,13 +392,27 @@ class DashboardDialog(QDialog):
             if val is None:
                 continue
             lo, hi, unit = self._thresholds.get(name, (None, None, ""))
-            tile["lbl_val"].setText(_fmt(val))
-            tile["lbl_unit"].setText(unit or tile.get("unit", ""))
+            unit_text = unit or tile.get("unit", "")
+            text = _fmt(val)
+            if unit_text and tile.get("kind") != dash_widgets.WIDGET_NUMBER:
+                text = "%s %s" % (text, unit_text)
             out_of_range = ((lo is not None and val < lo)
                             or (hi is not None and val > hi))
-            # 面板自己的阈值行和寄存器表的 warn/alarm 都可能命中，取更严重的
             level = self._levels.get(name, "")
             tile["level"] = "alarm" if (out_of_range or level == "alarm") else level
+            kind = tile.get("kind") or dash_widgets.WIDGET_NUMBER
+            accent = self._tile_accent(tile["level"])
+            if kind == dash_widgets.WIDGET_NUMBER:
+                if tile["lbl_val"] is not None:
+                    tile["lbl_val"].setText(_fmt(val))
+                if tile["lbl_unit"] is not None:
+                    tile["lbl_unit"].setText(unit_text)
+            elif kind == dash_widgets.WIDGET_LED:
+                led = dash_widgets.led_state(tile["level"], out_of_range)
+                tile["widget"].set_state(led, text)
+            else:
+                ratio = dash_widgets.progress_ratio(val, lo, hi)
+                tile["widget"].set_value(text, ratio, accent)
             self._apply_tile_style(tile)
 
     def _apply_tile_style(self, tile):
@@ -354,39 +446,57 @@ class DashboardDialog(QDialog):
         self.ed_regex.setVisible(mode == MODE_REGEX)
         self.ed_header.setVisible(mode == MODE_HEX)
         self.ed_fields.setVisible(mode == MODE_HEX)
+        # setCurrentIndex during _load_cfg fires this signal with save=True default;
+        # never persist a half-loaded config.
+        if self._loading_cfg:
+            return
         if save:                # 切模式：通道含义变了，清空重建
             self._clear()
             self._save_cfg()
 
-    def _on_sep_changed(self, *_a):
+    def _on_sep_changed(self, *_a, save=True):
         self._parser.sep_index = self.cb_sep.currentIndex()
-        if not self._loading_cfg:
+        if self._loading_cfg:
+            return
+        if save:
             self._clear()
             self._save_cfg()
 
     def _on_regex_changed(self, *_a, save=True):
         if not self._parser.set_regex(self.ed_regex.text()):
-            self.app.toast(self.app._t("plot_regex_bad"), error=True)
+            # During _load_cfg an invalid saved pattern must not spam an error toast.
+            if not self._loading_cfg:
+                self.app.toast(self.app._t("plot_regex_bad"), error=True)
+        if self._loading_cfg:
+            return
         if save:
             self._clear()
             self._save_cfg()
 
     def _on_fields_changed(self, *_a, save=True):
         if not self._parser.set_fields(self.ed_fields.text()):
-            self.app.toast(self.app._t("plot_fields_bad"), error=True)
+            if not self._loading_cfg:
+                self.app.toast(self.app._t("plot_fields_bad"), error=True)
+        if self._loading_cfg:
+            return
         if save:
             self._clear()
             self._save_cfg()
 
     def _on_header_changed(self, *_a, save=True):
         if not self._parser.set_header(self.ed_header.text()):
-            self.app.toast(self.app._t("plot_header_bad"), error=True)
+            if not self._loading_cfg:
+                self.app.toast(self.app._t("plot_header_bad"), error=True)
+        if self._loading_cfg:
+            return
         if save:
             self._clear()
             self._save_cfg()
 
     def _on_thresh_changed(self, *_a, save=True):
         self._thresholds = self._parse_thresholds(self.ed_thresh.text())
+        if self._loading_cfg:
+            return
         if save:
             self._save_cfg()
 
@@ -435,6 +545,7 @@ class DashboardDialog(QDialog):
         self._order = []
         self._values.clear()
         self._levels.clear()
+        self._named_sources.clear()
         self._parser.reset()
         # 窗口仍可见时不能停刷新表：feed 只写 _values，显示靠 _timer → _refresh_tiles。
         # 停了又要等 hide/show 才 restart，清除/改模式后新数据会进内存但卡片不更新。
@@ -536,6 +647,10 @@ class DashboardDialog(QDialog):
         self.ed_fields.setPlaceholderText(t("plot_fields_ph"))
         self.lbl_thresh.setText(t("dash_thresh"))
         self.ed_thresh.setPlaceholderText(t("dash_thresh_ph"))
+        self.lbl_widget.setText(t("dash_widget"))
+        for i, key in enumerate(("dash_widget_number", "dash_widget_gauge",
+                                 "dash_widget_led", "dash_widget_progress")):
+            self.cb_widget.setItemText(i, t(key))
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         set_tooltip(self.btn_help, t("plot_help_btn"))

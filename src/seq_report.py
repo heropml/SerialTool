@@ -24,6 +24,8 @@ def csv_safe(value):
 def report_fmt(path, sel=""):
     """Resolve export format + ensure extension. Returns (fmt, path)."""
     low = (path or "").lower()
+    if low.endswith(".xlsx"):
+        return "xlsx", path
     if low.endswith(".csv"):
         return "csv", path
     if low.endswith(".xml"):
@@ -31,6 +33,8 @@ def report_fmt(path, sel=""):
     if low.endswith(".html") or low.endswith(".htm"):
         return "html", path
     sel_l = (sel or "").lower()
+    if "xlsx" in sel_l or "excel" in sel_l:
+        return "xlsx", path + ".xlsx"
     if "csv" in sel_l:
         return "csv", path + ".csv"
     if "xml" in sel_l or "junit" in sel_l:
@@ -99,3 +103,57 @@ def build_csv(title, meta_rows, summary_line, header, body):
     for b in body or []:
         w.writerow([csv_safe(x) for x in b.get("cells", [])])
     return buf.getvalue()
+
+
+def _xlsx_set(cell, value):
+    """Write a cell for Excel without CSV apostrophe pollution.
+
+    openpyxl does not evaluate formulas the way CSV+Excel does, so csv_safe()'s
+    leading ``'`` would show up literally. Force string data_type for
+    formula-like text so Excel still won't auto-run them.
+    """
+    if value is None:
+        cell.value = ""
+        return
+    if isinstance(value, bool):
+        cell.value = value
+        return
+    if isinstance(value, (int, float)):
+        cell.value = value
+        return
+    text = str(value)
+    cell.value = text
+    if text[:1] in "=+-@\t\r\n":
+        cell.data_type = "s"
+
+
+def build_xlsx(title, meta_rows, summary_line, header, body, path):
+    """Write an .xlsx workbook mirroring build_csv layout. Requires openpyxl."""
+    try:
+        from openpyxl import Workbook
+    except ImportError as e:
+        raise RuntimeError("openpyxl is required for Excel export") from e
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    row_i = 1
+    _xlsx_set(ws.cell(row=row_i, column=1), str(title or ""))
+    row_i += 1
+    for k, v in (meta_rows or []):
+        _xlsx_set(ws.cell(row=row_i, column=1), k)
+        _xlsx_set(ws.cell(row=row_i, column=2), v)
+        row_i += 1
+    if summary_line:
+        _xlsx_set(ws.cell(row=row_i, column=1), summary_line)
+        row_i += 1
+    row_i += 1
+    for col, h in enumerate(header or [], 1):
+        _xlsx_set(ws.cell(row=row_i, column=col), h)
+    row_i += 1
+    for b in body or []:
+        for col, cell in enumerate(b.get("cells", []), 1):
+            _xlsx_set(ws.cell(row=row_i, column=col), cell)
+        row_i += 1
+    wb.save(path)
+    return path

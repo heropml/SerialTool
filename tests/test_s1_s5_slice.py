@@ -126,7 +126,7 @@ def test_rx_side_logs_without_raising():
     with mock.patch("main_window._log") as log:
         CommTool._rx_side(None, "plot.feed", boom)
     assert calls == ["boom"]
-    assert log.debug.called
+    assert log.warning.called
 
 
 def test_ar_kill_worker_continues_after_conn_close_fails():

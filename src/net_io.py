@@ -254,7 +254,8 @@ class TcpServerConn(NetConn):
         if not self._clients:
             return SEND_NO_TARGET
         if target in (None, "", "__all__"):
-            targets = self._clients
+            # Snapshot: _on_disc may remove clients while we iterate.
+            targets = list(self._clients)
         else:
             targets = [s for s in self._clients if self._key(s) == target]
             if not targets:

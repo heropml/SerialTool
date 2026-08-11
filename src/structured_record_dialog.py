@@ -27,6 +27,10 @@ class StructuredRecordDialog(QDialog):
         self._replay_started = 0.0
         self._replay_base = 0.0
         self._timer = QTimer(self)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self.refresh_rows)
         self._replay_speed = 1.0
         self._replay_paused = False
         self._replay_elapsed = 0.0
@@ -56,7 +60,7 @@ class StructuredRecordDialog(QDialog):
         self.btn_replay_pause.clicked.connect(self._toggle_replay_pause)
         self.btn_replay = self._button("structured_replay", self._toggle_replay)
         self.ed_search = QLineEdit()
-        self.ed_search.textChanged.connect(self.refresh_rows)
+        self.ed_search.textChanged.connect(self._schedule_search_refresh)
         self.cb_source = QComboBox()
         self.cb_source.addItem("", "")
         self.cb_source.addItem("Modbus", "modbus")
@@ -114,24 +118,34 @@ class StructuredRecordDialog(QDialog):
             self, self.app._t("structured_open"), "", "CSV (*.csv)")
         if not path:
             return
+        # Load first so a failed open does not silently stop an active recording.
         try:
-            self.recorder.stop()
             self.recorder.load_csv(path)
         except Exception as exc:
             self.app.toast(str(exc), error=True)
             return
+        self.recorder.stop()
         self.app._refresh_workspace_statuses()
         self.refresh_rows()
 
     def _save_csv(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.app._t("structured_save"), "structured.csv", "CSV (*.csv)")
+        path, sel = QFileDialog.getSaveFileName(
+            self, self.app._t("structured_save"), "structured",
+            "CSV (*.csv);;Excel (*.xlsx)")
         if not path:
             return
-        if not path.lower().endswith(".csv"):
+        low = path.lower()
+        want_xlsx = low.endswith(".xlsx") or "xlsx" in (sel or "").lower()
+        if want_xlsx:
+            if not low.endswith(".xlsx"):
+                path += ".xlsx"
+        elif not low.endswith(".csv"):
             path += ".csv"
         try:
-            count = self.recorder.save_csv(path, self._visible_rows)
+            if want_xlsx:
+                count = self.recorder.save_xlsx(path, self._visible_rows)
+            else:
+                count = self.recorder.save_csv(path, self._visible_rows)
         except Exception as exc:
             self.app.toast(str(exc), error=True)
             return
@@ -161,11 +175,17 @@ class StructuredRecordDialog(QDialog):
             self._timer.stop()
         self._sync_state()
 
+    def _stop_replay(self):
+        """End replay (playing or paused) and clear occupation flags."""
+        self._timer.stop()
+        self._replay_paused = False
+        self._replay_index = 0
+        self._replay_elapsed = 0.0
+
     def _toggle_replay(self):
         # Active or paused: stop (do not restart from zero while paused).
         if self._timer.isActive() or self._replay_paused:
-            self._timer.stop()
-            self._replay_paused = False
+            self._stop_replay()
             self._sync_state()
             return
         if not self._replay_rows:
@@ -206,7 +226,16 @@ class StructuredRecordDialog(QDialog):
             return "%.9g" % value
         return str(value)
 
+    def _schedule_search_refresh(self, *_):
+        """Debounce search typing; source filter refreshes immediately."""
+        self._search_timer.start()
+
     def refresh_rows(self, *_):
+        # H1: filtering rebuilds _replay_rows; stop mid-replay so index/base
+        # cannot point into a stale/shorter list.
+        if (hasattr(self, "_timer")
+                and (self._timer.isActive() or self._replay_paused)):
+            self._stop_replay()
         source = self.cb_source.currentData() if hasattr(self, "cb_source") else ""
         text = self.ed_search.text() if hasattr(self, "ed_search") else ""
         self._visible_rows = self.recorder.query(text, source)

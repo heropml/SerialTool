@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """串口后台线程：SerialReader / PortScannerThread / OneShotPortScanner。"""
 import logging
+import threading
 import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
@@ -98,6 +99,12 @@ class SerialReader(QThread):
         super().__init__()
         self.ser = ser
         self._running = True
+        self._reconfig_lock = threading.Lock()
+        self._reconfiguring = False
+
+    def set_reconfiguring(self, on):
+        with self._reconfig_lock:
+            self._reconfiguring = bool(on)
 
     def run(self):
         while self._running:
@@ -112,17 +119,23 @@ class SerialReader(QThread):
                         self.msleep(10)
                 else:
                     self.msleep(50)
+            except serial.SerialException as e:
+                # Live baud/parity reconfigure races the reader; ignore while flagged.
+                with self._reconfig_lock:
+                    if self._reconfiguring and self._running:
+                        continue
+                self.error_occurred.emit(str(e))
+                break
             except Exception as e:
                 self.error_occurred.emit(str(e))
                 break
 
     def stop(self):
         self._running = False
-        # in_waiting 不阻塞、read 仅在有数据时调用，run 循环最多 50ms 就检查一次
-        # _running，正常 1s 内必退出；给足 3s 余量应对设备异常时底层调用偶发卡顿。
-        # 万一仍未退出，此后 ser 已被上层 close()，run 里 is_open=False 只会空转
-        # msleep 并在下一轮 _running=False 自行结束，不会再访问已关闭的串口句柄。
-        self.wait(3000)
+        # Short wait keeps the GUI responsive.  If the OS read is stuck, continue;
+        # close() disconnects signals first and _running stops further work.
+        if self.isRunning() and not self.wait(200):
+            _log.warning("SerialReader still running after 200ms stop timeout")
 
 # ============== 串口连接（接口对齐 net_io 的 NetConn，供统一连接层用）==============
 class SerialConn(QObject):
@@ -188,6 +201,10 @@ class SerialConn(QObject):
             except (TypeError, RuntimeError):
                 pass
             self._reader.stop()
+            # Prefer closing the port only after the reader loop has noticed
+            # _running=False; if still alive, close anyway (signals already cut).
+            if self._reader.isRunning() and not self._reader.wait(100):
+                _log.debug("closing serial port while reader still alive")
             self._reader = None
         if self._ser:
             _safe(self._ser.close)
@@ -227,17 +244,24 @@ class SerialConn(QObject):
             steps.append(("xonxoff", flow == "xonxoff", None))
         snapshot = {attr: getattr(self._ser, attr) for attr, _v, _rec in steps}
         done = []
+        reader = self._reader
+        if reader is not None:
+            reader.set_reconfiguring(True)
         try:
-            for attr, val, _rec in steps:
-                setattr(self._ser, attr, val)     # 每次赋值即 reconfigure，可能抛
-                done.append(attr)
-        except Exception as e:
-            for attr in reversed(done):           # 回滚已改的，退回快照
-                if not _safe(setattr, self._ser, attr, snapshot[attr]):
-                    # 回滚都失败 → 端口确已坏，交给掉线路径
-                    pass
-            self.error_occurred.emit(str(e))
-            return False
+            try:
+                for attr, val, _rec in steps:
+                    setattr(self._ser, attr, val)     # 每次赋值即 reconfigure，可能抛
+                    done.append(attr)
+            except Exception as e:
+                for attr in reversed(done):           # 回滚已改的，退回快照
+                    if not _safe(setattr, self._ser, attr, snapshot[attr]):
+                        # 回滚都失败 → 端口确已坏，交给掉线路径
+                        pass
+                self.error_occurred.emit(str(e))
+                return False
+        finally:
+            if reader is not None:
+                reader.set_reconfiguring(False)
         # 全部硬件赋值成功，再同步内部记录（重连真源）；flow 单独记
         for _attr, val, rec in steps:
             if rec is not None:
