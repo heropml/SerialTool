@@ -307,13 +307,32 @@ def test_close_middle_active_session_rebinds_receive_ui(monkeypatch, tmp_path):
 
 
 def test_receive_scroll_has_one_session_route(monkeypatch, tmp_path):
+    """Only the active tab's receive scrollbar drives the shared UI.
+
+    Qt owns QTextEdit's vertical scrollbar, so QObject.receivers() is a
+    protected API for that object on some PyQt/macOS builds.  Exercise the
+    public signal path instead of introspecting Qt's private connection list.
+    """
     w = _window(monkeypatch, tmp_path, "single-scroll-route")
     first = w.active_session()
     second = w.add_session(activate=False)
     first_sb = first.txt_recv.verticalScrollBar()
     second_sb = second.txt_recv.verticalScrollBar()
-    assert first_sb.receivers(first_sb.valueChanged) == \
-        second_sb.receivers(second_sb.valueChanged)
+    calls = []
+    monkeypatch.setattr(w, "_on_recv_scroll", lambda value: calls.append(value))
+
+    first_sb.setRange(0, 100)
+    second_sb.setRange(0, 100)
+    calls.clear()
+    first_sb.setValue(10)
+    second_sb.setValue(20)
+    assert calls == [10]
+
+    assert w.switch_session(second.id)
+    calls.clear()
+    first_sb.setValue(30)
+    second_sb.setValue(40)
+    assert calls == [40]
     w._close_all_sessions()
 
 
