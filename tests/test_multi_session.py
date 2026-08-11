@@ -736,18 +736,41 @@ def test_reset_sessions_closes_every_connection(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_multi_send_blocks_session_switch(monkeypatch, tmp_path):
-    """A window-owned multi-send timer must never migrate to another conn."""
+def test_multi_send_stops_on_session_switch(monkeypatch, tmp_path):
+    """Window-owned multi-send stops on leave instead of hard-blocking the tab."""
     w = _window(monkeypatch, tmp_path, "multi-switch")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    toasts = []
+    monkeypatch.setattr(w, "toast", lambda msg, error=False: toasts.append((msg, error)))
+    w._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
+    w._ms_cycle_timer.start(60000)
+    try:
+        assert w.switch_session(s2.id) is True
+        assert w.active_session().id == s2.id
+        assert not w._ms_cycle_timer.isActive()
+        assert toasts and w._t("io_task_multi") in toasts[-1][0]
+        assert toasts[-1][1] is False
+    finally:
+        w._ms_cycle_timer.stop()
+        w._close_all_sessions()
+
+
+def test_hard_busy_still_blocks_even_with_multi_send(monkeypatch, tmp_path):
+    """Script/seq/xfer/modbus/… keep hard-blocking; multi alone is leave-safe."""
+    w = _window(monkeypatch, tmp_path, "multi-hard-busy")
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
     w._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
     w._ms_cycle_timer.start(60000)
+    w._replay_on = True
     try:
         assert w.switch_session(s2.id) is False
         assert w.active_session().id == s1.id
+        # Multi was not released because hard busy aborted the leave.
         assert w._ms_cycle_timer.isActive()
     finally:
+        w._replay_on = False
         w._ms_cycle_timer.stop()
         w._close_all_sessions()
 

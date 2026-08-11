@@ -5031,9 +5031,17 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.toast(self._io_busy_message("io_exclusive_busy", exclude=exclude),
                    error=True)
 
-    def toast_session_busy(self, exclude=("periodic",)):
+    def toast_session_busy(self, exclude=("periodic", "multi")):
         self.toast(self._io_busy_message("session_busy", exclude=exclude),
                    error=True)
+
+    def toast_session_leave_stopped(self, stopped):
+        """Informational toast after leave-safe window tasks were auto-stopped."""
+        if not stopped:
+            return
+        sep = self._t("io_task_sep")
+        tasks = sep.join(self._t("io_task_%s" % name) for name in stopped)
+        self.toast(self._t("session_leave_stopped", tasks=tasks))
 
     def _manual_send_blocked(self, allow_running_dsl=False) -> bool:
         """Block manual TX while exclusive engines own the RX stream."""

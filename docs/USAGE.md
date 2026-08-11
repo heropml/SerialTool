@@ -60,8 +60,8 @@ Follow-ups on the v1.5.0 multi-session baseline:
 **Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual), similar to Xshell-style tabs:
 
 - **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, and **periodic send** belong to the tab. Background tabs keep receiving, logging, and period-sending.
-- **Window-owned tools** — auto-reply / Modbus-slave configuration and RX processing belong to the window and apply to the active tab. Script Console, Sequence, file transfer, Modbus master, recording/replay, send DSL, device scan, and multi-send **cycle** share one occupancy table. Starting another exclusive task shows which task is already running; leaving the active tab is blocked while an exclusive task owns the link.
-- **Multi-send cycle** — the cycle timer is window-owned; tab switching is **blocked until the cycle stops** (unlike per-session periodic send).
+- **Window-owned tools** — auto-reply / Modbus-slave configuration and RX processing belong to the window and apply to the active tab. Script Console, Sequence, file transfer, Modbus master, recording/replay, send DSL, device scan, and multi-send **cycle** share one occupancy table. Starting another exclusive task shows which task is already running; leaving the active tab is blocked while a hard exclusive task (script / sequence / transfer / Modbus / …) owns the link.
+- **Multi-send cycle** — the cycle timer is window-owned; switching tabs **auto-stops the cycle** with a toast (it does not migrate). Per-session periodic send keeps running after a switch.
 - **Tab cues** — green = connected, yellow = reconnect wait, gray = disconnected. Hover the tab for connection / periodic-send / live-log status. Double-click a tab to set an optional custom name (tooltip still shows the real port/address).
 - **Keyword highlight** — each rule can match as plain text, regex (ReDoS-safe), or HEX bytes (same engine as Find).
 - **Draft autosave** — connection/send edits debounce to disk after ~1.5s; period-send ticks do not write the config.

@@ -514,12 +514,34 @@ class SessionHostMixin:
             self._on_recv_scroll(value)
 
     def _session_exclusive_busy(self):
-        """Block leaving active session for exclusive I/O tasks only.
+        """Hard leave blockers (script/seq/xfer/modbus/…).
 
-        Periodic send is session-owned and continues after switching. Multi-send
-        stays exclusive because its timer is window-owned and cannot migrate.
+        Periodic send is session-owned and continues after switching.
+        Multi-send is window-owned and cannot migrate, but is leave-safe:
+        `_release_leave_safe_window_tasks` stops it instead of hard-blocking.
         """
-        return bool(self._io_task_busy(exclude=("periodic",)))
+        return bool(self._io_task_busy(exclude=("periodic", "multi")))
+
+    def _release_leave_safe_window_tasks(self):
+        """Stop window tasks that must not migrate across tabs; return keys stopped."""
+        stopped = []
+        timer = getattr(self, "_ms_cycle_timer", None)
+        if timer is not None and timer.isActive():
+            self._ms_stop_cycle()
+            stopped.append("multi")
+        return stopped
+
+    def _toast_leave_safe_stopped(self, stopped):
+        if not stopped:
+            return
+        toast_fn = getattr(self, "toast_session_leave_stopped", None)
+        if callable(toast_fn):
+            toast_fn(stopped)
+            return
+        # Fallback when host mixin is used without CommTool toast helper.
+        sep = self._t("io_task_sep")
+        tasks = sep.join(self._t("io_task_%s" % name) for name in stopped)
+        self.toast(self._t("session_leave_stopped", tasks=tasks))
 
     def close_session(self, session_id, confirm=True):
         if len(self._sessions) <= 1:
@@ -570,6 +592,9 @@ class SessionHostMixin:
                         self._schedule_reconnect()
                 return False
         was_active = s.id == self._active_session_id
+        if was_active:
+            # Confirmed leave: drop leave-safe window tasks (e.g. multi-send).
+            self._release_leave_safe_window_tasks()
         # Close connection for this session
         with self._with_session(s):
             s._user_closing = True
@@ -643,12 +668,16 @@ class SessionHostMixin:
         if target is None:
             return False
         cur = self.active_session()
-        # Block leaving a busy session
+        # Block leaving a hard-busy session (script/seq/xfer/modbus/…).
         if cur is not None and self._session_exclusive_busy():
             self.toast_session_busy()
             # Snap tab bar back
             self._rebuild_session_tabs(select_id=self._active_session_id)
             return False
+        # Multi-send cannot migrate; stop it so the switch can proceed.
+        if cur is not None:
+            stopped = self._release_leave_safe_window_tasks()
+            self._toast_leave_safe_stopped(stopped)
         begin_autosave_pause = getattr(
             self, "_begin_workspace_autosave_pause", None)
         end_autosave_pause = getattr(
