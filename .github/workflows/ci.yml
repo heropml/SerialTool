@@ -32,17 +32,57 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run full suite (offscreen)
+      - name: Ruff (critical rules only)
+        run: python -m ruff check src tests scripts
+
+      - name: Run full suite (offscreen) + coverage
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest --junitxml=pytest-results.xml
+        run: >
+          python -m pytest
+          --junitxml=pytest-results.xml
+          --cov=src
+          --cov-report=xml:coverage.xml
+          --cov-report=term-missing:skip-covered
 
       - name: Upload pytest report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-results-windows
-          path: pytest-results.xml
+          path: |
+            pytest-results.xml
+            coverage.xml
+
+  macos-smoke:
+    name: macOS smoke (offscreen subset)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Smoke suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >
+          python -m pytest
+          tests/test_i18n_parity.py
+          tests/test_split_persist.py
+          tests/test_silent_except_budget.py
+          tests/test_session_host.py
+          tests/test_updater_mac.py
+          tests/test_multi_session.py
+          -q --tb=short
 
   windows-soak-nightly:
     name: Nightly soak / disconnect churn

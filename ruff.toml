@@ -1,0 +1,12 @@
+# 零门槛起步：只拦明确错误（语法 / 未定义名等），不强制风格大扫除。
+target-version = "py39"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[lint]
+select = [
+  "E9",   # runtime syntax errors
+  "F63",  # invalid print/assert syntax
+  "F7",   # __future__ annotation issues
+  "F82",  # undefined names
+]

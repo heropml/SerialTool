@@ -1,0 +1,8 @@
+# 本地：pip install pre-commit && pre-commit install
+# CI 直接跑 ruff，不依赖本文件；本文件给开发者提交前钩子用。
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.2
+    hooks:
+      - id: ruff
+        args: [--config, ruff.toml]
