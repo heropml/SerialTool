@@ -211,3 +211,18 @@ def test_route_background_session_data_skips_on_data_received(monkeypatch, tmp_p
     assert calls["received"] == 1
     assert calls["bg"] == 1
     w._close_all_sessions()
+
+
+def test_themed_text_input_dialog_uses_ms_buttons(monkeypatch, tmp_path):
+    """Rename / preset prompts use MsPrimaryBtn + MsGhostBtn (not native QInputDialog)."""
+    from PyQt5.QtWidgets import QPushButton, QInputDialog
+
+    w = _window(monkeypatch, tmp_path, "themed-input")
+    dlg = w._build_themed_text_input_dialog("T", "P", "hello")
+    assert not isinstance(dlg, QInputDialog)
+    assert dlg.textValue() == "hello"
+    names = {b.objectName() for b in dlg.findChildren(QPushButton)}
+    assert "MsPrimaryBtn" in names
+    assert "MsGhostBtn" in names
+    dlg.close()
+    w._close_all_sessions()

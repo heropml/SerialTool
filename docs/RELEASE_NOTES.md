@@ -5,6 +5,7 @@
 ### 主界面防误触
 - 主窗口内的 `QComboBox`（含其内部编辑框）在弹出列表未打开时**忽略鼠标滚轮**，避免划过参数区时误改波特率 / 类型等
 - 应用级 `eventFilter` 常驻安装；仅拦截「主窗口祖先 + 未弹列表」路径，不影响其它对话框与已展开的下拉
+- 会话重命名 / 连接预设命名等单行输入框改用主题按钮（`MsPrimaryBtn` / `MsGhostBtn`），不再落回 Windows 原生 `QInputDialog` 样式
 
 ### 数据区选区转换
 - 接收区右键新增 **转为文本** / **转为 HEX**：按当前选区做 HEX↔文本互转
@@ -24,7 +25,7 @@
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
 
 ### 测试
-- 基线：**1464 passed / 11 skipped / 295 subtests**（CI 在既有 1454 上叠加本版相关用例）
+- 基线：**1465 passed / 11 skipped / 295 subtests**（CI 在既有 1454 上叠加本版相关用例）
 
 ## 下载
 

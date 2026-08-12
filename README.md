@@ -627,7 +627,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v54 (v1.5.0)**: **正式版** — **终端多会话标签**（同窗并发串口/TCP/UDP/虚拟；后台继续收发日志与周期发送；具名互斥 toast；标签状态点/重命名；关键字 Regex/HEX；草稿防抖自动保存；Windows offscreen CI）；1329 passed / 11 skipped / 291 subtests。
 - **v55 (v1.5.1)**: **正式版** — **搜索惰性分页与全局导航、可逆一键 I/O Graph、示例工程包、Mac 发版门禁与多会话显示选项矩阵**；修复 macOS 启动时接收视图未就绪导致的 `qFatal` / `SIGABRT`，并使用 Apple Symbols；Modbus CRC/TCP tid 与虚拟注入加固；1359 passed / 11 skipped / 295 subtests。
 - **v56 (v1.5.2)**: **正式版** — **绘图扩展（双 Y / XY / 直方图）、仪表盘四控件、Excel/xlsx、PCAP/pcapng 增强、回放驱动真实 TX**；切标签自动停多条循环；High/Medium/Low 审计收尾；1433 passed / 11 skipped / 295 subtests。
-- **v57 (v1.5.3)**: **正式版** — **主界面下拉防滚轮误触、数据区选区转文本/HEX（弹窗+剪贴板，64 KiB）**；阶段 A/B 工程打磨与 CI（契约、静默预算、macOS 烟雾、ruff、覆盖率）；1464 passed / 11 skipped / 295 subtests。
+- **v57 (v1.5.3)**: **正式版** — **主界面下拉防滚轮误触、数据区选区转文本/HEX（弹窗+剪贴板，64 KiB）、会话重命名等主题输入框按钮对齐**；阶段 A/B 工程打磨与 CI（契约、静默预算、macOS 烟雾、ruff、覆盖率）；1465 passed / 11 skipped / 295 subtests。
 
 ---
 

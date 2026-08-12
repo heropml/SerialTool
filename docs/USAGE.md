@@ -48,8 +48,9 @@ UX polish and engineering gates on the v1.5.2 baseline:
 
 - **Combo anti-misclick** — mouse wheel over main-window combo boxes is ignored while the popup is closed (baud / type / etc.).
 - **Selection convert** — Data-area context menu: **Convert to Text** / **Convert to HEX**; result shown in a dialog and copied to the clipboard (64 KiB cap).
+- **Themed prompts** — session rename / connection-preset name dialogs use the same primary/ghost buttons as File Transfer (no native `QInputDialog` chrome).
 - **Phase A/B** — contract tests, silent-`except` budget, macOS CI smoke, ruff, coverage upload, multi-session boundary notes in README.
-- **Tests** — 1464 passed / 11 skipped / 295 subtests.
+- **Tests** — 1465 passed / 11 skipped / 295 subtests.
 
 ---
 

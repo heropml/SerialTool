@@ -5977,58 +5977,90 @@ class CommTool(SessionHostMixin, QMainWindow):
         return True
 
     def _build_themed_text_input_dialog(self, title, prompt, default_text=""):
-        """Build the shared themed single-line text prompt."""
-        from PyQt5.QtWidgets import QInputDialog
-        dlg = QInputDialog(self)
+        """Build the shared themed single-line text prompt.
+
+        Avoid QInputDialog: on Windows its QDialogButtonBox often keeps the
+        native chrome, so OK/Cancel look unlike MsPrimaryBtn / MsGhostBtn.
+        """
+        ok_text = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(
+            self._lang, "OK")
+        cancel_text = {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(
+            self._lang, "Cancel")
+        c = chrome_for(self._theme_id())
+
+        dlg = QDialog(self)
         dlg.setWindowTitle(title)
-        dlg.setLabelText(prompt)
-        dlg.setTextValue(default_text or "")
-        dlg.setOkButtonText(
-            {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(self._lang, "OK"))
-        dlg.setCancelButtonText(
-            {"zh": "取消", "en": "Cancel", "zh_tw": "取消"}.get(
-                self._lang, "Cancel"))
         dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         dlg.setMinimumWidth(380)
-        dlg.setMinimumHeight(160)
-        dlg.resize(380, 154)
-        c = chrome_for(self._theme_id())
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+
+        lbl = QLabel(prompt)
+        lbl.setWordWrap(True)
+        root.addWidget(lbl)
+
+        ed = QLineEdit(default_text or "")
+        ed.setObjectName("ThemedTextInput")
+        root.addWidget(ed)
+        dlg._ed = ed
+
+        def _text_value():
+            return dlg._ed.text()
+
+        dlg.textValue = _text_value  # same API as former QInputDialog
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        btn_ok = QPushButton(ok_text)
+        btn_ok.setObjectName("MsPrimaryBtn")
+        btn_ok.setMinimumHeight(32)
+        btn_ok.setMinimumWidth(88)
+        btn_ok.setDefault(True)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel = QPushButton(cancel_text)
+        btn_cancel.setObjectName("MsGhostBtn")
+        btn_cancel.setMinimumHeight(32)
+        btn_cancel.setMinimumWidth(88)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        root.addLayout(btn_row)
+
+        ed.returnPressed.connect(dlg.accept)
         dlg.setStyleSheet(localize_qss(f"""
-        QInputDialog {{
+        QDialog {{
             background-color: {c['window_bg']};
             color: {c['text']};
         }}
-        QInputDialog QLabel {{
+        QLabel {{
             color: {c['text']}; background: transparent;
             font-family: 'Segoe UI'; font-size: 12px; font-weight: 500;
         }}
-        QInputDialog QLineEdit {{
+        QLineEdit#ThemedTextInput {{
             background-color: {c['input_bg']}; color: {c['text']};
             border: 1px solid {c['separator']}; border-radius: 7px;
             min-height: 22px; padding: 5px 9px;
             selection-background-color: {c['accent']};
         }}
-        QInputDialog QLineEdit:focus {{
+        QLineEdit#ThemedTextInput:focus {{
             background-color: {c['input_focus_bg']};
             border-color: {c['accent']};
         }}
-        QInputDialog QPushButton {{
-            background-color: {c['ghost_bg']}; color: {c['text']};
-            border: 1px solid {c['separator']}; border-radius: 7px;
-            min-width: 82px; min-height: 30px;
-            font-family: 'Segoe UI'; font-size: 12px; font-weight: 500;
+        QPushButton#MsPrimaryBtn {{
+            background-color: {c['accent']}; color: white; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px;
+            font-weight: 600; padding: 6px 14px;
         }}
-        QInputDialog QPushButton:hover {{
-            background-color: {c['ghost_hover']};
+        QPushButton#MsPrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
+        QPushButton#MsPrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
+        QPushButton#MsGhostBtn {{
+            background-color: {c['ghost_bg']}; color: {c['text']}; border: 0px;
+            border-radius: 9px; font-family: 'Segoe UI'; font-size: 13px;
+            font-weight: 500; padding: 6px 14px;
         }}
-        QInputDialog QPushButton:default {{
-            background-color: {c['accent']}; color: #FFFFFF;
-            border-color: {c['accent']}; font-weight: 600;
-        }}
-        QInputDialog QPushButton:default:hover {{
-            background-color: {c['accent_hover']};
-            border-color: {c['accent_hover']};
-        }}
+        QPushButton#MsGhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
         """))
         QTimer.singleShot(
             0, lambda d=dlg: _set_win_titlebar_dark(
