@@ -28,12 +28,12 @@ echo "[1/4] 使用虚拟环境: $VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 
-# [2/4] 安装依赖（从 requirements.txt 装，避免漏装运行时依赖如 pyqtgraph/numpy）
+# [2/4] 安装依赖（requirements-dev：运行时 + pyinstaller/Pillow；避免漏装 pyqtgraph/numpy）
 #       国内可用清华镜像加速；海外可 export PIP_INDEX=https://pypi.org/simple
 echo "[2/4] 安装依赖 ..."
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 python -m pip install --upgrade pip -i "$PIP_INDEX" >/dev/null
-python -m pip install -i "$PIP_INDEX" -r requirements.txt >/dev/null
+python -m pip install -i "$PIP_INDEX" -r requirements-dev.txt >/dev/null
 
 # [3/4] 生成 .icns 图标
 echo "[3/4] 生成 .icns 图标 ..."

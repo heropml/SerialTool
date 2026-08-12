@@ -12,6 +12,7 @@
 
 单实例非模态，复用时刷新主题/语言。pyqtgraph 为可选依赖，main_window 懒导入 + try/except。
 """
+import logging
 import re
 import time
 from collections import deque
@@ -28,6 +29,8 @@ from theme import chrome_for
 from fonts import localize_qss
 from ui_tips import set_tooltip
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
+
+_log = logging.getLogger("commtool.plot")
 
 pg.setConfigOptions(antialias=True)
 
@@ -278,6 +281,7 @@ class PlotDialog(QDialog):
         try:
             text = data.decode(self._codec(), errors="replace")
         except Exception:
+            _log.debug("plot decode failed", exc_info=True)
             return
         self._decode_buf += text
         if len(self._decode_buf) > 65536:    # 长期收不到换行：防缓冲无限膨胀
@@ -646,7 +650,7 @@ class PlotDialog(QDialog):
         try:
             self._right_vb.setGeometry(self.plot.plotItem.vb.sceneBoundingRect())
         except Exception:
-            pass
+            _log.debug("sync right viewbox geometry failed", exc_info=True)
 
     def _place_curve(self, ch, on_right):
         curve = ch.get("curve")
@@ -661,14 +665,14 @@ class PlotDialog(QDialog):
             else:
                 self.plot.plotItem.removeItem(curve)
         except Exception:
-            pass
+            _log.debug("remove curve before reparent failed", exc_info=True)
         try:
             if want:
                 self._right_vb.addItem(curve)
             else:
                 self.plot.plotItem.addItem(curve)
         except Exception:
-            pass
+            _log.debug("place curve on axis failed", exc_info=True)
         ch["on_right"] = want
 
     def _clear_hist_item(self):
@@ -676,7 +680,7 @@ class PlotDialog(QDialog):
             try:
                 self.plot.removeItem(self._hist_item)
             except Exception:
-                pass
+                _log.debug("remove histogram item failed", exc_info=True)
             self._hist_item = None
 
     def _clear_hist_axis_scale(self):
@@ -816,6 +820,7 @@ class PlotDialog(QDialog):
             mouse = self.plot.plotItem.vb.mapSceneToView(pos)
             x, y = float(mouse.x()), float(mouse.y())
         except Exception:
+            _log.debug("map cursor scene to view failed", exc_info=True)
             return
         display_x = x
         hist_scale = getattr(self, "_hist_scale", None)
@@ -976,10 +981,12 @@ class PlotDialog(QDialog):
             mouse_point = self.plot.plotItem.vb.mapSceneToView(event.scenePos())
             x_click = float(mouse_point.x())
         except Exception:
+            _log.debug("map plot click to view failed", exc_info=True)
             return
         try:
             y_click = float(mouse_point.y())
         except Exception:
+            _log.debug("plot click y fallback", exc_info=True)
             y_click = 0.0
         best_wall, best_score = None, None
         for ch in self._channels:
@@ -1032,7 +1039,7 @@ class PlotDialog(QDialog):
                 try:
                     self.plot.removeItem(ch["curve"])
                 except Exception:
-                    pass
+                    _log.debug("remove curve on clear failed", exc_info=True)
             ch["cb"].setParent(None)
             ch["cb"].deleteLater()
         self._channels = []

@@ -26,7 +26,7 @@
 | L2 | `i18n.py` | 缺 `workspace_terminal_tip` 键 | DONE：补 tip；会话条 `session_list_tip` |
 | L3 | HEX 解析 | `search_helper` vs `triggers` 不一致 | DONE：`parse_hex_term` 对齐触发器清洗 |
 | L4 | `compile_regex` | 误拒所有格量词 | 仍保留（保守安全，不改） |
-| L5 | `requirements.txt` | 缺 pytest | DONE：`pytest>=7.0` |
+| L5 | `requirements.txt` | 缺 pytest | DONE：已拆 `requirements-dev.txt`（含 pytest/pyinstaller/Pillow） |
 | L6 | 连接层 | open 替换守卫 / CFG_KEYS / deleteLater | DONE：`open_conn` 先 close；`sequence_split` 入 CFG；TCP/UDP 失败路径 `deleteLater` |
 
 > High/Medium（H1 + M1–M13）已按 2026-08 审计方案落地，见 `tests/test_bugfix_hm.py`。
@@ -51,11 +51,11 @@
 
 | # | 功能 | 对标 | 价值 | 量 | 复用点 |
 |---|---|---|---|---|---|
-| ⭐ | **具名连接预设/收藏夹** | YAT/Termite | 不用每次重选 COM/波特 | 低 | 新 settings 列表 + 连接栏下拉 |
+| ⭐ | DONE **具名连接预设/收藏夹** | YAT/Termite | 不用每次重选 COM/波特 | 低 | `connection_presets` + 连接栏；见 P0-1 |
 | ⭐ | DONE **关键字高亮支持正则/HEX** | 触发器已有、着色规则没有 | 统一两套匹配 | 低 | `KeywordHighlightDialog` + `keyword_groups` / `search_helper`（plain/regex/hex） |
-| ⭐ | **自动化序列：变量/上下文传递** | Postman collection runner | 上一步解析值带入下一步断言（读 SN→后续用） | 中 | `main_window._seq_*` 加上下文字典 + 模板替换 |
-| ⭐ | **自动化序列：CSV 数据驱动** | 测试序列器标配 | 每行参数跑一轮、多设备批测 | 中 | `_seq_*` 读 CSV → 模板替换每步字段 |
-| ⭐ | **自动化序列：JUnit XML 报告** | CI 友好 | 接 CI 流水线 | 低 | `_build_report_html/csv` (`dialogs.py`) 旁加 xml 生成 |
+| ⭐ | DONE **自动化序列：变量/上下文传递** | Postman collection runner | 上一步解析值带入下一步断言（读 SN→后续用） | 中 | `seq_context` / `sequence_engine`；见 P0-2 |
+| ⭐ | DONE **自动化序列：CSV 数据驱动** | 测试序列器标配 | 每行参数跑一轮、多设备批测 | 中 | `sequence_dataset`；见 P0-3 |
+| ⭐ | DONE **自动化序列：JUnit XML 报告** | CI 友好 | 接 CI 流水线 | 低 | `junit_report`；见 P0-4 |
 | ⭐ | DONE **统计补 pps + 包大小分布 + min/max/avg** | Wireshark I/O Graph | 排障带宽/异常包 | 中 | 状态栏 + tooltip；见 P0-5 |
 
 ### Tier 2 — 中等投入（旗舰体验、单点突破）
@@ -63,7 +63,7 @@
 | # | 功能 | 对标 | 价值 | 量 | 复用点 |
 |---|---|---|---|---|---|
 | ⭐ | DONE **绘图部件扩展：双 Y 轴 / XY / 柱状 / 直方图 / 仪表(gauge) / LED / 进度条** | Serial Studio/PlotJuggler | 可视化维度质变 | 中-高 | `plot_dialog` 视图模式 + 双 Y；`dashboard_dialog` + `dash_widgets`（数值/仪表/LED/进度条） |
-| ⭐ | **绘图/仪表盘数据持久化 + CSV 回放绘图** | PlotJuggler | 关掉不丢、离线回看 | 中 | `StructuredRecorder` CSV 思路复用 |
+| ⭐ | DONE **绘图/仪表盘数据持久化 + CSV 回放绘图** | PlotJuggler | 关掉不丢、离线回看 | 中 | 见 P1-4；`plot_dialog` / `dashboard_dialog` / `StructuredRecorder` |
 | | **TCP/UDP 专用 PCAP/pcapng 导出** | Wireshark | 网络流量与 Wireshark 互通 | 中 | DONE：`pcap_export.py` 经典 `.pcap` + `.pcapng`；TCP Client/Server（单对端）、UDP、UDP 组播；串口继续 `.ctrec` |
 | | DONE Excel/xlsx 导出 | ModbusSimulator | 报表交非技术同事 | 中 | `seq_report.build_xlsx` + 序列报告 / 结构化记录导出（openpyxl） |
 | | DONE **吞吐量随时间曲线（I/O Graph）** | Wireshark | 带宽抖动可视化 | 中 | 波形图已订阅 `rx_Bps`/`tx_Bps`/`rx_pps`/`tx_pps`；状态栏右键 / 工作区「I/O Graph」一键打开时间轴+四通道预设 |
@@ -129,8 +129,8 @@
 
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
-| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成：静默 pass 9→8（本轮结构化侧路改 debug）；余下 8 处为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 12334 行、占 src 37865 行 33% 的巨类拆成可单测的服务层 | 55 knives DONE: GUI build_* + R43-R55 runtime/display/settings/conn extracts; main_window keeps Qt/QSS/i18n shells and thin wrappers (intentional; not further knife targets) |
+| S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成；宽泛 `except Exception` 仍多（~247），静默 `pass` 现约 **9**（`count_exception_handling.py`；阶段 A 已把 `plot_dialog` / `session_host` 静默改 debug）。余下多为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
+| S-2 | **拆分 `main_window.py`** | 巨类拆成可单测的服务层（历史峰值曾 ~12334 行 / src 33%） | 55 knives DONE: GUI build_* + R43-R55 runtime/display/settings/conn extracts; 现 ~11850 行壳层（Qt/QSS/i18n + 薄包装）有意保留，不再作为 knife 目标。后续见 `docs/SCHEDULE.md` |
 | S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端突发+重连 churn 已落地；`VirtualConn.simulate_link_drop` 断线重连基线已补；`COMMTOOL_SOAK_DISCONNECT=1` 可选长跑；`COMMTOOL_SOAK_SERIAL=COMx[,COMy]` 真机 open/close soak （未设/占用则 skip）；`COMMTOOL_SOAK_NIGHTLY=1` 加密循环 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
@@ -160,12 +160,13 @@
 
 > 整体暂缓，不排期。暂缓不等于否定，而是前置条件尚未满足：
 >
- > - 本节末验收要求第 1 条要求核心逻辑抽成 Qt-free 模块，而 `main_window.py` 现有 12334 行、
- >   占 src 全部 37865 行的 33%，内含 146 处宽泛异常捕获（68 处静默）。CLI 与 API 都要从这里
->   往外拆逻辑，插件式 dissector 还要等协议字段模型稳定之后才能定接口。
-> - 在此前提下开 P2，等于在一个尚未解耦、异常路径不透明的核心上再架一层远程接口。
+ > - 本节末验收要求第 1 条要求核心逻辑抽成 Qt-free 模块。S-2 knives 已收口，但 `main_window.py`
+>   仍约 1.2 万行壳层 + 大量宽泛 `except`；CLI / API 要从这里继续往外拆服务层，插件式
+>   dissector 还要等协议字段模型稳定之后才能定接口。
+> - 在此前提下开 P2，等于在尚未充分解耦的核心上再架一层远程接口。
 >
-> 恢复排期的判据：S-2 拆分完成、S-1 异常收敛到位、S-3 有长跑与吞吐基线数据。
+> 恢复排期的判据：核心服务层 Qt-free 边界清晰、S-1 静默/宽泛捕获可度量且热点已收敛、
+> S-3 有长跑与吞吐基线数据。近期推进顺序见 `docs/SCHEDULE.md`（阶段 A/B），**不以 P2 为下一版主线**。
 
 | 顺序 | 功能 | 状态 | 恢复排期的前置条件 |
 |---|---|---|---|
@@ -362,4 +363,5 @@
     并带默认值，只有这一列直接 `.checkState()`；缺项按启用算，与
     `normalize_registers` 的默认值一致
 
-测试基线：**1023 passed, 3 skipped, 291 subtests**（3 个 skip 全是 POSIX-only 进程组用例；Qt 平台插件落到 offscreen 时另有 1 个排版用例会 skip）。
+测试基线（v1.5.2 发布）：**1433 passed / 11 skipped / 295 subtests**。  
+后续排期与纠偏见 **`docs/SCHEDULE.md`**（阶段 A：文档真源 / split 抽取 / i18n 对拍 / session_host 契约 / requirements 拆分 / 静默复核）。

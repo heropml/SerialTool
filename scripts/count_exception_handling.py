@@ -36,6 +36,16 @@ def is_silent(handler):
     return len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass)
 
 
+def iter_silent_handlers(path):
+    """Yield ``(lineno, end_lineno)`` for each silent broad ``except`` in *path*."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.ExceptHandler)
+                and is_broad(node) and is_silent(node)):
+            end = getattr(node, "end_lineno", None) or node.lineno
+            yield node.lineno, end
+
+
 def scan(path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     broad = silent = 0

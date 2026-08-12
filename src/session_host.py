@@ -784,12 +784,12 @@ class SessionHostMixin:
             try:
                 self._reposition_to_bottom_btn()
             except Exception:
-                pass
+                _log.debug("reposition to-bottom button failed", exc_info=True)
         if hasattr(self, "_reposition_search_bar"):
             try:
                 self._reposition_search_bar()
             except Exception:
-                pass
+                _log.debug("reposition search bar failed", exc_info=True)
 
     def _save_ui_into_session(self, session):
         if session is None:
@@ -1166,7 +1166,8 @@ class SessionHostMixin:
             try:
                 self._update_conn_status()
             except Exception:
-                pass
+                _log.debug("update conn status after session sync failed",
+                           exc_info=True)
 
     # ---- Resource conflict ----
     @staticmethod
@@ -1551,6 +1552,7 @@ class SessionHostMixin:
         try:
             payload = json.loads(str(raw))
         except Exception:
+            _log.debug("sessions_v1 JSON parse failed", exc_info=True)
             return
         if not isinstance(payload, list) or not payload:
             return

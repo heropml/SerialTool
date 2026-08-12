@@ -17,6 +17,7 @@ from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
 from updater import UpdateChecker, UpdateDownloader, run_installer
 from ui_tips import set_tooltip
+from split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
 
 
 # ============== 无边框对话框「按住空白处拖动」混入 ==============
@@ -1069,34 +1070,23 @@ class MultiSendDialog(QDialog):
         self._commit_now()
 
     def _load_split_sizes(self):
-        """从 settings 读上次拖好的名称/数据列宽 "w_name,w_data"；无效则 None（用默认）。"""
-        raw = self.app.settings.value("multi_send_split", "")
-        try:
-            parts = [int(x) for x in str(raw).split(",")]
-            if len(parts) == 2 and all(p > 0 for p in parts):
-                return parts
-        except (ValueError, TypeError):
-            pass
-        return None
+        """从 settings 读上次拖好的名称/数据列宽；无效则 None（用默认）。"""
+        return load_split_sizes(self.app.settings, "multi_send_split", 2)
 
     def _sync_splits(self, src):
         """一行拖动名称/数据分隔条 → 所有行同步到相同比例（列对齐），并持久化列宽。"""
-        if self._syncing_split:
-            return
-        sizes = src.sizes()
-        if len(sizes) != 2 or sum(sizes) <= 0:
-            return
-        self._name_split_sizes = sizes
-        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
-        self.app.settings.setValue("multi_send_split", "%d,%d" % (sizes[0], sizes[1]))
-        self._syncing_split = True
-        try:
-            for r in self._rows:
-                sp = r.get("split")
-                if sp is not None and sp is not src:
-                    sp.setSizes(sizes)
-        finally:
-            self._syncing_split = False
+        def _persist(sizes):
+            self._name_split_sizes = sizes
+            # sync 放在 closeEvent，避免拖动时频繁刷盘
+            save_split_sizes(self.app.settings, "multi_send_split", sizes)
+
+        sync_splitter_group(
+            src, [r.get("split") for r in self._rows],
+            get_busy=lambda: self._syncing_split,
+            set_busy=lambda v: setattr(self, "_syncing_split", v),
+            on_sizes=_persist,
+            expected_len=2,
+        )
 
     def _on_chk_changed(self, *_):
         """某行勾选变化：落盘(去抖) + 刷新顶部全选三态。"""
@@ -1839,39 +1829,25 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         return box
 
     def _load_split_sizes(self):
-        """从 settings 读上次拖好的列宽 'w1,...,wN'；列数不符/非法则 None（用默认）。"""
-        raw = self.app.settings.value("sequence_split", "")
-        try:
-            parts = [int(x) for x in str(raw).split(",")]
-            if len(parts) == len(self._DEFAULT_SPLIT) and all(p > 0 for p in parts):
-                return parts
-        except (ValueError, TypeError):
-            pass
-        return None
+        """从 settings 读上次拖好的列宽；列数不符/非法则 None（用默认）。"""
+        return load_split_sizes(
+            self.app.settings, "sequence_split", len(self._DEFAULT_SPLIT))
 
     def _sync_splits(self, src):
         """任一行(或表头)拖动分隔条 → 所有行 + 表头同步到相同比例（列对齐），并持久化列宽。"""
-        if self._syncing_split:
-            return
-        try:                       # 对话框已关(deleteLater)后 singleShot 仍可能触发 → C++ 已删，忽略
-            sizes = src.sizes()
-        except RuntimeError:
-            return
-        if not sizes or sum(sizes) <= 0:
-            return
-        self._split_sizes = sizes
-        self.app.settings.setValue("sequence_split", ",".join(str(s) for s in sizes))
-        self._syncing_split = True
-        try:
-            targets = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
-            for sp in targets:
-                if sp is not None and sp is not src:
-                    try:
-                        sp.setSizes(sizes)
-                    except RuntimeError:
-                        pass
-        finally:
-            self._syncing_split = False
+        def _persist(sizes):
+            self._split_sizes = sizes
+            save_split_sizes(self.app.settings, "sequence_split", sizes)
+
+        peers = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
+        # 对话框已关(deleteLater)后 singleShot 仍可能触发 → C++ 已删，忽略 RuntimeError
+        sync_splitter_group(
+            src, peers,
+            get_busy=lambda: self._syncing_split,
+            set_busy=lambda v: setattr(self, "_syncing_split", v),
+            on_sizes=_persist,
+            guard_runtime=True,
+        )
 
     def _update_header_scroll_margin(self, *_args):
         """数据区出现垂直滚动条时，表头右侧预留同宽空间，保持 splitter 像素对齐。"""

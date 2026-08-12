@@ -17,6 +17,7 @@ from theme import chrome_for
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from ui_tips import set_tooltip
+from split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
 
 _log = logging.getLogger(__name__)
 
@@ -226,34 +227,24 @@ class ModbusMasterDialog(QDialog):
         return sp
 
     def _load_split_sizes(self):
-        """从 settings 读上次拖好的七列宽 'w1,...,wN'；列数不符/非法则 None（用默认）。"""
-        raw = self.app.settings.value("modbus_master_split", "")
-        try:
-            parts = [int(x) for x in str(raw).split(",")]
-            if len(parts) == len(_DEFAULT_SPLIT) and all(p > 0 for p in parts):
-                return parts
-        except (ValueError, TypeError):
-            pass
-        return None
+        """从 settings 读上次拖好的七列宽；列数不符/非法则 None（用默认）。"""
+        return load_split_sizes(
+            self.app.settings, "modbus_master_split", len(_DEFAULT_SPLIT))
 
     def _sync_splits(self, src):
         """任一行(或表头)拖动分隔条 → 所有行 + 表头同步到相同比例（列对齐），并持久化列宽。"""
-        if self._syncing_split:
-            return
-        sizes = src.sizes()
-        if not sizes or sum(sizes) <= 0:
-            return
-        self._split_sizes = sizes
-        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
-        self.app.settings.setValue("modbus_master_split", ",".join(str(s) for s in sizes))
-        self._syncing_split = True
-        try:
-            targets = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
-            for sp in targets:
-                if sp is not None and sp is not src:
-                    sp.setSizes(sizes)
-        finally:
-            self._syncing_split = False
+        def _persist(sizes):
+            self._split_sizes = sizes
+            # sync 放在 closeEvent，避免拖动时频繁刷盘
+            save_split_sizes(self.app.settings, "modbus_master_split", sizes)
+
+        peers = [getattr(self, "_hdr_split", None)] + [r.get("split") for r in self._rows]
+        sync_splitter_group(
+            src, peers,
+            get_busy=lambda: self._syncing_split,
+            set_busy=lambda v: setattr(self, "_syncing_split", v),
+            on_sizes=_persist,
+        )
 
     def closeEvent(self, e):
         self.app.settings.sync()   # 把拖动列宽刷到磁盘

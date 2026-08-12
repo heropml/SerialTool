@@ -274,7 +274,8 @@ dist\CommTool\CommTool.exe
 ```
 CommTool/
 ├── README.md               开发者文档（本文件，留在根目录）
-├── requirements.txt        Python 依赖
+├── requirements.txt        运行时依赖
+├── requirements-dev.txt    开发/打包/单测依赖（含 -r requirements.txt）
 ├── latest.json             在线更新版本清单（version / url / notes）
 │
 ├── src/                    Python 源码（按模块拆分）
@@ -330,7 +331,8 @@ CommTool/
 
 ```powershell
 # 1. 装依赖（清华镜像，国内快）
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 仅运行：requirements.txt；开发/单测/打包：requirements-dev.txt
+pip install -r requirements-dev.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 2. 启动
 py -3 src\main.py

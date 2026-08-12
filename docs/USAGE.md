@@ -128,7 +128,7 @@ This release finishes the remaining P1 polish:
 - **Multi-slave row table** -- the Modbus slave dialog replaces the JSON textarea with Addr / Server ID / Extra JSON rows (add/remove). Duplicate addresses are rejected with a toast; hand-edited project JSON still keeps the first address at runtime.
 - **Jump to session time** -- click the status-bar RX/TX stats to jump to the latest sample wall time; double-click a session-compare row to jump via `.ctrec` `wall_t0` (older recordings without the anchor show a toast). New recordings store `wall_t0`.
 - **Data-area bookmarks** -- `Ctrl+F2` toggles a bookmark on the current line; `F2` / `Shift+F2` move next/prev (wrapping). Clearing the data area or an ANSI full clear (`ESC[2J`) drops bookmarks.
-- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next up is P2 (CLI / API / plugins). PCAP export supports TCP Client/Server (single peer), UDP, UDP Multicast as `.pcap` / `.pcapng`.
+- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next focus is stability / multi-session polish and cross-platform CI (P2 CLI / API / plugins remain deferred). PCAP export supports TCP Client/Server (single peer), UDP, UDP Multicast as `.pcap` / `.pcapng`.
 - **v1.4 stability follow-up** -- register definitions now cover 64-bit values, bitfields and warning/alarm levels; Modbus Master adds grouped views, FC22 mask writes and FC43/14 device identification; trigger actions add Webhook / external commands with hit thresholds; and the Bridge page includes a real multi-client Modbus TCP↔RTU gateway. External command processes are reaped on shutdown, including POSIX child process groups.
 
 ---

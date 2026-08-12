@@ -17,6 +17,7 @@ from fonts import localize_qss
 from i18n import CHECKSUM_KEYS
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
 from ui_tips import set_tooltip
+from split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
 
 
 class AutoReplyDialog(QDialog):
@@ -446,34 +447,23 @@ class AutoReplyDialog(QDialog):
         self._refresh_stats()
 
     def _load_split_sizes(self):
-        """从 settings 读上次拖好的收到/回复两列宽 'w1,w2'；非法则 None（用默认均分）。"""
-        raw = self.app.settings.value("autoreply_split", "")
-        try:
-            parts = [int(x) for x in str(raw).split(",")]
-            if len(parts) == 2 and all(p > 0 for p in parts):
-                return parts
-        except (ValueError, TypeError):
-            pass
-        return None
+        """从 settings 读上次拖好的收到/回复两列宽；非法则 None（用默认均分）。"""
+        return load_split_sizes(self.app.settings, "autoreply_split", 2)
 
     def _sync_splitters(self, src):
         """一行拖动分隔条 → 所有行同步到相同比例（列对齐），并持久化列宽。"""
-        if self._syncing:
-            return
-        sizes = src.sizes()
-        if len(sizes) != 2 or sum(sizes) <= 0:
-            return
-        self._split_sizes = sizes
-        # 写回 settings：下次开窗 / 重启后列宽保持现状（sync 放在 closeEvent，避免拖动时频繁刷盘）
-        self.app.settings.setValue("autoreply_split", "%d,%d" % (sizes[0], sizes[1]))
-        self._syncing = True
-        try:
-            for rec in self._rows:
-                sp = rec.get("split")
-                if sp is not None and sp is not src:
-                    sp.setSizes(sizes)
-        finally:
-            self._syncing = False
+        def _persist(sizes):
+            self._split_sizes = sizes
+            # sync 放在 closeEvent，避免拖动时频繁刷盘
+            save_split_sizes(self.app.settings, "autoreply_split", sizes)
+
+        sync_splitter_group(
+            src, [rec.get("split") for rec in self._rows],
+            get_busy=lambda: self._syncing,
+            set_busy=lambda v: setattr(self, "_syncing", v),
+            on_sizes=_persist,
+            expected_len=2,
+        )
 
 
     def _del_row(self, rec):

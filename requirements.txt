@@ -7,8 +7,3 @@ pyqtgraph>=0.13
 numpy>=1.21
 # 序列/结构化记录 Excel 导出（可选：无则跳过 .xlsx）
 openpyxl>=3.1
-
-# 开发时依赖（打包 exe / 重新生成图标 / 单测）
-pyinstaller>=6.0
-Pillow>=10.0
-pytest>=7.0
