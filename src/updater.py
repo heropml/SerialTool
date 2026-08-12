@@ -10,6 +10,7 @@
 注意：清单 URL 必须能**免登录**访问（开放的内网 HTTP，或公开仓库的 raw / Releases）。
 """
 import glob
+import http.client
 import json
 import logging
 import os
@@ -194,7 +195,8 @@ class _ManifestWorker(QThread):
                 m = json.loads(data.decode("utf-8"))
                 ver = str(m["version"])
             except (urllib.error.URLError, TimeoutError, OSError,
-                    ValueError, TypeError, KeyError, UnicodeError) as e:
+                    http.client.HTTPException, ValueError, TypeError,
+                    KeyError, UnicodeError) as e:
                 last_err = "%s: %s" % (host, e)      # 记最后一个源的错误，全失败时回传
                 continue
             if self._stop:
@@ -280,7 +282,7 @@ class _DownloadWorker(QThread):
                     got += len(chunk)
                     self.progressed.emit(got, total)
         except (urllib.error.URLError, TimeoutError, OSError,
-                ValueError, TypeError) as e:
+                http.client.HTTPException, ValueError, TypeError) as e:
             self._remove()
             self.done.emit("", str(e))
             return

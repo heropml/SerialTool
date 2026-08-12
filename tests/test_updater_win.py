@@ -2,6 +2,7 @@
 """Windows updater paths: manifest order, Setup URL, MZ gate, installer launch."""
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -202,12 +203,75 @@ def test_manifest_worker_falls_back_to_second_source(monkeypatch):
     w.start()
     assert w.wait(5000)
     _pump(0.1)
-    assert len(calls) == 2
+    assert len(calls) >= 2
+    assert calls[0] == UPDATE_MANIFEST_URLS[0]
+    assert calls[1] == UPDATE_MANIFEST_URLS[1]
     assert got and got[0][1] == ""
     info = got[0][0]
     assert info["version"] == "9.9.9"
     assert info["newer"] is True
     assert info["source"] == UPDATE_MANIFEST_URLS[1]
+
+
+def test_manifest_worker_handles_truncated_http_body(monkeypatch):
+    """IncompleteRead must not kill the worker without emitting got."""
+    assert issubclass(http.client.IncompleteRead, http.client.HTTPException)
+
+    class _Trunc:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *a, **k: _Trunc())
+
+    got = []
+    w = _ManifestWorker("1.0.0")
+    w.got.connect(lambda info, err: got.append((info, err)))
+    w.start()
+    assert w.wait(5000)
+    _pump(0.1)
+    assert got
+    info, err = got[0]
+    assert info is None
+    assert err  # last source IncompleteRead message
+
+
+def test_download_worker_handles_truncated_http_body(tmp_path, monkeypatch):
+    """Truncated body must emit done and remove the partial installer."""
+    out = tmp_path / "CommTool_Setup_v1.5.3_trunc.exe"
+
+    class _Trunc:
+        headers = {"Content-Length": "100"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            raise http.client.IncompleteRead(b"MZ")
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *a, **k: _Trunc())
+
+    done = []
+    w = _DownloadWorker("https://example.com/trunc.exe", str(out))
+    w.done.connect(lambda path, err: done.append((path, err)))
+    w.start()
+    assert w.wait(5000)
+    _pump(0.1)
+    assert done
+    path, err = done[0]
+    assert path == ""
+    assert "IncompleteRead" in err or err
+    assert not out.exists()
 
 
 def test_run_installer_false_off_windows(monkeypatch):

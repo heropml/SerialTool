@@ -1,6 +1,6 @@
 # CommTool 排期报告
 
-> 基线：**v1.5.3**（2026-08-12）  
+> 基线：**v1.5.4**（2026-08-12）  
 > 综合：`docs/TODO.md`、阶段 A/B 收口事实、发版后路线图复核。  
 > 产品定位不变：**轻量、稳定、好用的串口/网络协议调试工具**；闭环止于「预设 → 自动化 → 记录 → 定位 → 报告」。
 
@@ -21,11 +21,11 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.5.3` | Win Setup/onefile；`url_mac` 待 Mac 协作者补门禁 |
+| 发布版 | `comm-v1.5.4` | Win Setup/onefile；`url_mac` 待 Mac 协作者补门禁 |
 | 测试 | **~1465+ passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
-| `except Exception` | 宽泛仍多 / 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
+| `except Exception` | 宽泛约 **199**（B6 二批后）/ 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
 | 多会话 | `SessionHostMixin` + 契约单测 | `test_session_host` / `test_multi_session` |
 | 功能路线 | P0 / P1 / v1.4 / v1.5 / v1.5.2 / v1.5.3 | **均已收口** |
 
@@ -81,7 +81,7 @@
 | # | 项 | 量 | 完成标准 |
 |---|---|---|---|
 | **B5** | 拆 `apply_style` / `_apply_language` | 1–2d | 抽出 QSS/文案表；薄包装；**不**重启 55 knives 式全仓搬家；**DONE**（`app_style` / `i18n_ui`） |
-| **B6** | 宽泛 except 抽样收敛 | 1d | 热点路径加类型或 debug；禁止为指标把吞异常改成炸 UI；**首批**已收 `updater` / `serial_io` / `net_io` 端点与 I/O |
+| **B6** | 宽泛 except 抽样收敛 | 1d | 热点路径加类型或 debug；禁止为指标把吞异常改成炸 UI；**首批** `updater`/`serial_io`/`net_io`；**第二批** `main_window` 连接/发送/日志/设置 + `session_host` 会话路径 |
 
 ---
 
@@ -115,7 +115,7 @@
 1. ~~**A1–A6 / B1–B3 / B4c**~~ **DONE**（含 v1.5.3 发版与 Windows CI 隔离加固）  
 2. **v1.5.4 打磨（无产品痛点时的默认序）**  
    1. ~~**updater Windows 路径单测**~~（`tests/test_updater_win.py`）  
-   2. ~~**B6 首批**~~（`updater` / `serial_io` / `net_io` 类型收窄；`main_window` 仍多，后续按热点再抽）  
+   2. ~~**B6 首批 + 第二批**~~（`updater`/`serial_io`/`net_io`；`main_window` 连接/发送/日志/设置与 `session_host` 抽样；其余按痛点再抽）  
    3. ~~**B4b** 网关 UI timeout / unit_map~~；~~**B4a** 循环 per-session~~  
    4. ~~**B5** 薄拆 `apply_style` / `_apply_language`~~（`src/app_style.py` + `src/i18n_ui.py`）  
 3. **不上**覆盖率硬门槛（B3 只收集，见 §6）  

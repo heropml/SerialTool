@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (QWidget, QMainWindow, QLabel, QPushButton, QComboBo
                              QGraphicsOpacityEffect, QStackedLayout, QWidgetAction)
 try:
     from version import __version__ as APP_VERSION
-except Exception:
+except ImportError:
     APP_VERSION = "0.0.0"
 import app_style
 import i18n_ui
@@ -3337,7 +3337,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                     session.log_wanted = True
                 try:
                     self._close_log_file(session=session, toast=False)
-                except Exception:
+                except (OSError, RuntimeError, TypeError):
                     _log.debug("close_conn log failed", exc_info=True)
                 if not preserve_session_intent:
                     session.log_wanted = False
@@ -3380,7 +3380,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             try:
                 conn.blockSignals(True)
                 conn.close()
-            except Exception:
+            except (RuntimeError, OSError, TypeError):
                 _log.debug("connection close failed", exc_info=True)
             conn.deleteLater()
 
@@ -4645,7 +4645,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                     {"tag": "rx_pps", "value": float(getattr(acc, "rx_pps", 0) or 0)},
                     {"tag": "tx_pps", "value": float(getattr(acc, "tx_pps", 0) or 0)},
                 ])
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, AttributeError):
             _log.debug("open_io_graph seed failed", exc_info=True)
 
     def _on_active_session_plot_changed(self):
@@ -6120,7 +6120,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             payload = bytes(data)
             try:
                 sent = self.conn.send(payload, self._xfer_target)
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 return
             # 录制与 TX 告警描述的是线路上真实发出的字节；无目标、零写或短写都不能
             # 把整块登记为成功。TCP Client 半帧还要沿用普通发送路径的断流保护。
@@ -6130,7 +6130,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             # 文件传输同样绕过 _send_text：补上采集入口，否则「发送」范围的触发规则盯不到
             try:
                 self._record_stream_tx(payload, source=self._xfer_target)
-            except Exception:
+            except (TypeError, ValueError, RuntimeError, OSError):
                 _log.debug("_xfer_send failed", exc_info=True)
 
     def _seq_start(self, steps, loops=1, stop_on_fail=False, dataset=None):
@@ -6638,7 +6638,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                                     target=reply_target)
                 if fault:
                     self._ar_fault_note(fault)
-        except Exception:
+        except (ValueError, TypeError, UnicodeError, OSError, RuntimeError):
             _log.debug("_modbus_send failed", exc_info=True)
         finally:
             self._ar_in_flight = False
@@ -7283,7 +7283,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         try:
             self._send_text(reply, hex_mode=hexmode, newline=0, checksum=cs,
                             record_macro=False)
-        except Exception:
+        except (ValueError, TypeError, UnicodeError, OSError, RuntimeError):
             _log.debug("_ar_send failed", exc_info=True)
 
     def _ar_frame_ok(self, frame: bytes, idx: int) -> bool:
@@ -7734,7 +7734,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         try:
             self.settings.setValue("send_history", _hist_dumps(self._send_hist))
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, OSError):
             _log.debug("persist send_history failed", exc_info=True)
 
     def _delete_send_hist(self, idx):
@@ -7748,7 +7748,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._send_hist = new_hist
         try:
             self.settings.setValue("send_history", _hist_dumps(self._send_hist))
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, OSError):
             _log.debug("persist send_history failed", exc_info=True)
         return True
 
@@ -7756,7 +7756,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         raw = self.settings.value("send_history", "")
         try:
             loaded = _hist_load_list(raw)
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             _log.debug("load send_history failed", exc_info=True)
             return
         if loaded is not None:
@@ -7851,7 +7851,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         raw = self.settings.value("modbus_master", "")
         try:
             data = json.loads(raw) if raw else []
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             return []
         if not isinstance(data, list):
             return []
@@ -7859,7 +7859,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         for r in data:                       # 逐条规范化：单条损坏只跳过它，不清空整张表
             try:
                 out.append(modbus_master.normalize_poll(r))
-            except Exception:
+            except (TypeError, ValueError, KeyError, AttributeError):
                 _log.debug("_load_mbm_rules failed", exc_info=True)
         return out
 
@@ -7868,7 +7868,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.settings.setValue("modbus_master", json.dumps(
                 [modbus_master.normalize_poll(r) for r in self._mbm_rules], ensure_ascii=False))
             self.settings.sync()
-        except Exception:
+        except (TypeError, ValueError, AttributeError, RuntimeError, OSError):
             _log.debug("persist mbm_rules failed", exc_info=True)
 
     def _mbm_variant_eff(self):
@@ -8098,12 +8098,13 @@ class CommTool(SessionHostMixin, QMainWindow):
                 disp = frame.decode(self._send_codec(), errors="replace")
             self._append_block_data(disp, direction="tx", force_new_block=True)
             self._last_direction = "tx"
-        except Exception:
+        except (UnicodeError, LookupError, ValueError, TypeError, RuntimeError,
+                OSError):
             _log.debug("_mbm_send_raw failed", exc_info=True)
         # Modbus 主机也是绕过 _send_text 的直发路径：录制与「发送」范围的触发规则都得盯到
         try:
             self._record_stream_tx(frame, source=send_target)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, OSError):
             _log.debug("_mbm_send_raw failed", exc_info=True)
         return True
 
@@ -8958,7 +8959,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 否则在终端里敲的命令永远不命中。两件事都由 _record_stream_tx 一个入口带上。
         try:
             self._record_stream_tx(data, source=send_target)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, OSError):
             _log.debug("_terminal_send failed", exc_info=True)
         if self._terminal_echo and echo:
             self._terminal_append(echo)
@@ -9330,11 +9331,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             session._log_file.write(self._t(
                 "log_footer", time=when.strftime("%Y-%m-%d %H:%M:%S")))
             session._log_file.flush()
-        except Exception:
+        except (OSError, TypeError, ValueError, KeyError):
             _log.debug("log footer/flush failed", exc_info=True)
         try:
             session._log_file.close()
-        except Exception:
+        except OSError:
             _log.debug("log close failed", exc_info=True)
         session._log_file = None
         session._log_ends_with_nl = True
@@ -9357,7 +9358,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         try:
             cur = session._log_file.tell()
-        except Exception:
+        except (OSError, ValueError):
             _log.debug("log tell() failed", exc_info=True)
             return
         if not log_naming.should_roll_size(cur, session._log_limit):
@@ -9823,7 +9824,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                     return legacy
             try:
                 os.makedirs(cfg_dir, exist_ok=True)
-            except Exception:
+            except OSError:
                 _log.debug("_settings_file failed", exc_info=True)
             return new_ini
 
@@ -9873,7 +9874,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 return old_ini
         try:
             os.makedirs(cfg_dir, exist_ok=True)
-        except Exception:
+        except OSError:
             _log.debug("_settings_file failed", exc_info=True)
         return new_ini
 
@@ -10100,7 +10101,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             h_state = s.value("h_splitter")
             if h_state:
                 self.h_splitter.restoreState(h_state)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError):
             _log.debug("_load_settings geometry failed", exc_info=True)
 
         self._recv_font_size = _cfg_clamp_font(s.value("recv_font_size", 10))
