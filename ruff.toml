@@ -1,4 +1,6 @@
 # 零门槛起步：只拦明确错误（语法 / 未定义名等），不强制风格大扫除。
+# target-version=py39 与 README 声明的最低 Python 3.9 一致：保持该值可让 ruff
+# 拦截任何 3.10+ 语法（match / PEP 604 / PEP 695），守住最低版本兼容。
 target-version = "py39"
 line-length = 100
 src = ["src", "tests", "scripts"]

@@ -181,3 +181,33 @@ def test_background_rx_does_not_feed_window_engines(monkeypatch, tmp_path):
     assert fed["script"] == 0
     assert s1.rx_bytes >= 9
     w._close_all_sessions()
+
+
+def test_route_background_session_data_skips_on_data_received(monkeypatch, tmp_path):
+    """_route_session_data 对非活跃会话走 _on_background_session_data，不调 on_data_received。"""
+    w = _window(monkeypatch, tmp_path, "route-bg")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    _open_virtual(w)
+
+    calls = {"received": 0, "bg": 0}
+    monkeypatch.setattr(
+        w, "on_data_received",
+        lambda data, reply_target=None: calls.__setitem__(
+            "received", calls["received"] + 1))
+    monkeypatch.setattr(
+        w, "_on_background_session_data",
+        lambda data, reply_target=None: calls.__setitem__(
+            "bg", calls["bg"] + 1))
+
+    w._route_session_data(s1.id, b"HELLO")  # s1 现在是后台会话
+    assert calls["received"] == 0           # 不喂窗口级引擎
+    assert calls["bg"] == 1                 # 走后台渲染路径
+
+    # 正向路径：活跃会话仍走 on_data_received（与后台分支对称钉死）
+    s2 = w.active_session()
+    w._route_session_data(s2.id, b"ACTIVE")
+    assert calls["received"] == 1
+    assert calls["bg"] == 1
+    w._close_all_sessions()
