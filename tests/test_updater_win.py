@@ -70,7 +70,7 @@ def test_downloader_rejects_non_https():
 
 
 def test_download_worker_rejects_non_mz_on_win32(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("updater._is_windows", lambda: True)
     out = tmp_path / "CommTool_Setup_v1.5.3_1.exe"
 
     class _Resp:
@@ -106,7 +106,7 @@ def test_download_worker_rejects_non_mz_on_win32(tmp_path, monkeypatch):
 
 
 def test_download_worker_accepts_mz_header_on_win32(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("updater._is_windows", lambda: True)
     out = tmp_path / "CommTool_Setup_v1.5.3_2.exe"
     payload = b"MZ" + b"\0" * 64
 
@@ -140,7 +140,7 @@ def test_download_worker_accepts_mz_header_on_win32(tmp_path, monkeypatch):
 
 
 def test_download_worker_skips_mz_check_off_windows(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("updater._is_windows", lambda: False)
     out = tmp_path / "CommTool_v1.5.3_1.dmg"
     payload = b"not-an-mz-but-ok-on-mac"
 
@@ -275,12 +275,12 @@ def test_download_worker_handles_truncated_http_body(tmp_path, monkeypatch):
 
 
 def test_run_installer_false_off_windows(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("updater._is_windows", lambda: False)
     assert run_installer(r"C:\Temp\Setup.exe") is False
 
 
 def test_run_installer_windows_launches_detached(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("updater._is_windows", lambda: True)
     setup = tmp_path / "CommTool_Setup_v1.5.3.exe"
     setup.write_bytes(b"MZ")
     seen = {}
@@ -293,11 +293,11 @@ def test_run_installer_windows_launches_detached(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", _popen)
     assert run_installer(str(setup)) is True
     assert seen["args"] == [str(setup)]
-    assert seen["flags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+    assert seen["flags"] == getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
 def test_run_installer_windows_oserror_returns_false(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("updater._is_windows", lambda: True)
     setup = tmp_path / "missing_setup.exe"
 
     def _boom(*_a, **_k):

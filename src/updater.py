@@ -166,6 +166,11 @@ def _ssl_context():
         return None
 
 
+def _is_windows():
+    """Keep platform checks mockable without mutating process-global sys.platform."""
+    return sys.platform == "win32"
+
+
 class _ManifestWorker(QThread):
     """子线程逐个试 UPDATE_MANIFEST_URLS（urllib + 系统证书 + UA），拿到清单即停。"""
     got = pyqtSignal(object, str)        # (info|None, err)
@@ -292,7 +297,7 @@ class _DownloadWorker(QThread):
             return
         # 校验下载到的是不是真正的 Windows 可执行文件（防 404/错误页被当成功）。
         # 仅 Windows：mac 下的是 .dmg（非 MZ/PE），跳过此校验（错误页会在 HTTP 层 404、不会存下）。
-        if sys.platform == "win32":
+        if _is_windows():
             try:
                 with open(self._path, "rb") as f:
                     head = f.read(2)
@@ -354,13 +359,16 @@ class UpdateDownloader(QObject):
 def run_installer(path):
     """启动下载好的安装程序（正常向导，由用户手动点击完成安装）。
     返回 True 表示已拉起安装程序；随后本 app 会退出，让安装程序能覆盖文件。"""
-    if sys.platform != "win32":
+    if not _is_windows():
         return False
     try:
         import subprocess
         # 不加 /SILENT —— 弹出正常安装向导，用户手动点「下一步/安装」。
         # CREATE_NEW_PROCESS_GROUP：让安装向导独立成组，不受本 app 退出影响。
-        subprocess.Popen([path], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        # getattr fallback also keeps this path safely testable on non-Windows
+        # Python builds, where the Windows-only constant is absent.
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen([path], creationflags=flags)
         return True
     except OSError:
         _log.debug("run_installer failed for %s", path, exc_info=True)
