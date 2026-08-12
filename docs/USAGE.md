@@ -61,7 +61,7 @@ Visualization, export, and replay hardening on the v1.5.1 baseline:
 - **Plot & dashboard** — waveform / XY / histogram views, dual-Y + cursor stats; dashboard widgets Number / Gauge / LED / Progress; register-fed alert levels no longer blink off on text `feed`.
 - **Excel / PCAP** — sequence + structured-record `.xlsx` export; PCAP/pcapng for TCP Client/Server (single peer), UDP and multicast (serial stays `.ctrec`).
 - **Drive real TX replay** — optional `drive_tx` mode with confirmations, consecutive-fail pause, partial-write failure; default remains Virtual RX inject.
-- **Sessions / examples** — switching tabs auto-stops multi-send cycles; more example projects; UI tips for window-owned tools.
+- **Sessions / examples** — multi-send cycles continue per session like periodic send; more example projects; UI tips for window-owned tools.
 - **Audit polish** — High/Medium/Low fixes (replay filter sync, serial reconfig race, stale RX drop, HEX search alignment, `open_conn` replace guard, …).
 - **Tests** — 1433 passed / 11 skipped / 295 subtests.
 
@@ -86,9 +86,9 @@ Follow-ups on the v1.5.0 multi-session baseline:
 
 **Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual), similar to Xshell-style tabs:
 
-- **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, and **periodic send** belong to the tab. Background tabs keep receiving, logging, and period-sending.
-- **Window-owned tools** — auto-reply / Modbus-slave configuration and RX processing belong to the window and apply to the active tab. Script Console, Sequence, file transfer, Modbus master, recording/replay, send DSL, device scan, and multi-send **cycle** share one occupancy table. Starting another exclusive task shows which task is already running; leaving the active tab is blocked while a hard exclusive task (script / sequence / transfer / Modbus / …) owns the link.
-- **Multi-send cycle** — the cycle timer is window-owned; switching tabs **auto-stops the cycle** with a toast (it does not migrate). Per-session periodic send keeps running after a switch.
+- **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, **periodic send**, and **multi-send cycle** belong to the tab. Background tabs keep receiving, logging, period-sending, and cycling.
+- **Window-owned tools** — auto-reply / Modbus-slave configuration and RX processing belong to the window and apply to the active tab. Script Console, Sequence, file transfer, Modbus master, recording/replay, send DSL, and device scan share one occupancy table. Periodic send and multi-send **cycle** are per-session (continue in background). Starting another exclusive task shows which task is already running; leaving the active tab is blocked while a hard exclusive task (script / sequence / transfer / Modbus / …) owns the link.
+- **Multi-send cycle** — the cycle timer is per-session; switching tabs leaves background cycles running (same as periodic send). Group lists remain window-shared.
 - **Tab cues** — green = connected, yellow = reconnect wait, gray = disconnected. Hover the tab for connection / periodic-send / live-log status. Double-click a tab to set an optional custom name (tooltip still shows the real port/address).
 - **Keyword highlight** — each rule can match as plain text, regex (ReDoS-safe), or HEX bytes (same engine as Find).
 - **Draft autosave** — connection/send edits debounce to disk after ~1.5s; period-send ticks do not write the config.

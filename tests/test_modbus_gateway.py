@@ -6,7 +6,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import modbus_master as mm
 import modbus_slave as ms
-from modbus_gateway import ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE
+import pytest
+
+from modbus_gateway import (
+    ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE,
+    parse_unit_map, clamp_timeout_s,
+)
+
+
+def test_parse_unit_map_empty_and_pairs():
+    assert parse_unit_map("") == {}
+    assert parse_unit_map("  ") == {}
+    assert parse_unit_map("1:7, 2=10") == {1: 7, 2: 10}
+    assert parse_unit_map("1:7;2:10\n3:11") == {1: 7, 2: 10, 3: 11}
+
+
+def test_parse_unit_map_rejects_bad_tokens():
+    with pytest.raises(ValueError):
+        parse_unit_map("1")
+    with pytest.raises(ValueError):
+        parse_unit_map("1:x")
+    with pytest.raises(ValueError):
+        parse_unit_map("256:1")
+    with pytest.raises(ValueError):
+        parse_unit_map("1:256")
+    with pytest.raises(ValueError):
+        parse_unit_map("-1:1")
+
+
+def test_clamp_timeout_s():
+    assert clamp_timeout_s("1.0") == 1.0
+    assert clamp_timeout_s(0) == 0.05
+    assert clamp_timeout_s(100) == 30.0
+    assert clamp_timeout_s("bad") == 1.0
+    assert clamp_timeout_s(None) == 1.0
+    assert clamp_timeout_s(float("nan")) == 1.0
+    assert clamp_timeout_s(-3) == 0.05
 
 
 def test_tcp_to_rtu_and_back():

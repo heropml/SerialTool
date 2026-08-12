@@ -93,6 +93,7 @@ class Session:
         "_ar_generation",
         "_modbus_buffers", "_reset_timer",
         "_period_timer",
+        "_ms_cycle_timer", "_ms_cycle_seq", "_ms_cycle_idx",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
         "conn_fields", "send_draft", "period_ms", "period_on",
@@ -175,6 +176,14 @@ class Session:
         self._period_timer = QTimer(app)
         self._period_timer.timeout.connect(
             lambda _s=self: _s.app._period_send_for(_s.id))
+
+        # Multi-send cycle: per-session (align with period TX); survives tab switch.
+        self._ms_cycle_seq = []
+        self._ms_cycle_idx = 0
+        self._ms_cycle_timer = QTimer(app)
+        self._ms_cycle_timer.setSingleShot(True)
+        self._ms_cycle_timer.timeout.connect(
+            lambda _s=self: _s.app._ms_cycle_step_for(_s.id))
 
         self.txt_recv = None
         self._bookmarks = []

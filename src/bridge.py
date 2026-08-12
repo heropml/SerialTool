@@ -72,7 +72,11 @@ class BridgeEngine(QObject):
     # ── 公开 API ─────────────────────────────────────────────
 
     def set_modbus_gateway(self, enabled, unit_map=None, timeout_s=1.0):
-        """When enabled, A->B is MBAP->RTU and B->A is RTU->MBAP."""
+        """When enabled, A->B is MBAP->RTU and B->A is RTU->MBAP.
+
+        ``unit_map`` maps TCP Unit ID → RTU slave address (empty = pass-through).
+        ``timeout_s`` is the RTU response wait (clamped in ModbusGatewayEngine).
+        """
         if not enabled or ModbusGatewayEngine is None:
             self._gateway = None
             self._gw_timer.stop()

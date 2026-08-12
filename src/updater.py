@@ -144,7 +144,7 @@ def cleanup_temp_installers():
                     os.remove(f)
                 except OSError:
                     pass
-    except Exception:
+    except (OSError, TypeError, ValueError):
         _log.debug("cleanup_temp_installers failed", exc_info=True)
 
 
@@ -161,7 +161,7 @@ def _ssl_context():
     """Windows 上 ssl 默认 context 用系统证书存储（与浏览器一致），避免 OpenSSL 找不到根 CA。"""
     try:
         return ssl.create_default_context()
-    except Exception:
+    except (OSError, ValueError, ssl.SSLError):
         return None
 
 
@@ -193,7 +193,8 @@ class _ManifestWorker(QThread):
                     data = resp.read(1 << 20)        # 清单很小，限 1MB 防异常超大响应
                 m = json.loads(data.decode("utf-8"))
                 ver = str(m["version"])
-            except Exception as e:
+            except (urllib.error.URLError, TimeoutError, OSError,
+                    ValueError, TypeError, KeyError, UnicodeError) as e:
                 last_err = "%s: %s" % (host, e)      # 记最后一个源的错误，全失败时回传
                 continue
             if self._stop:
@@ -278,7 +279,8 @@ class _DownloadWorker(QThread):
                     fp.write(chunk)
                     got += len(chunk)
                     self.progressed.emit(got, total)
-        except Exception as e:
+        except (urllib.error.URLError, TimeoutError, OSError,
+                ValueError, TypeError) as e:
             self._remove()
             self.done.emit("", str(e))
             return
@@ -358,5 +360,6 @@ def run_installer(path):
         # CREATE_NEW_PROCESS_GROUP：让安装向导独立成组，不受本 app 退出影响。
         subprocess.Popen([path], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         return True
-    except Exception:
+    except OSError:
+        _log.debug("run_installer failed for %s", path, exc_info=True)
         return False

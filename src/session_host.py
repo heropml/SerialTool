@@ -182,6 +182,56 @@ def _install_session_proxies(cls):
 
         cls.send_timer = property(_st_get, _st_set)
 
+    # Multi-send cycle timer / seq / idx → context (or active) session.
+    if not (hasattr(cls, "_ms_cycle_timer")
+            and isinstance(getattr(cls, "_ms_cycle_timer"), property)):
+        def _ms_timer_get(self):
+            ov = self.__dict__.get("_ms_cycle_timer_override")
+            if ov is not None:
+                return ov
+            _ctx = getattr(self, "_session_ctx", None)
+            sess = _ctx() if callable(_ctx) else None
+            if sess is None:
+                _active = getattr(self, "active_session", None)
+                sess = _active() if callable(_active) else None
+            if sess is not None and getattr(sess, "_ms_cycle_timer", None) is not None:
+                return sess._ms_cycle_timer
+            return getattr(self, "_ms_cycle_timer_fallback", None)
+
+        def _ms_timer_set(self, value):
+            self.__dict__["_ms_cycle_timer_override"] = value
+            self._ms_cycle_timer_fallback = value
+
+        cls._ms_cycle_timer = property(_ms_timer_get, _ms_timer_set)
+
+    for _ms_attr in ("_ms_cycle_seq", "_ms_cycle_idx"):
+        if hasattr(cls, _ms_attr) and isinstance(getattr(cls, _ms_attr), property):
+            continue
+
+        def _make_ms(attr):
+            def getter(self, _a=attr):
+                _ctx = getattr(self, "_session_ctx", None)
+                sess = _ctx() if callable(_ctx) else None
+                if sess is None:
+                    _active = getattr(self, "active_session", None)
+                    sess = _active() if callable(_active) else None
+                if sess is not None:
+                    return getattr(sess, _a)
+                return [] if _a == "_ms_cycle_seq" else 0
+
+            def setter(self, value, _a=attr):
+                _ctx = getattr(self, "_session_ctx", None)
+                sess = _ctx() if callable(_ctx) else None
+                if sess is None:
+                    _active = getattr(self, "active_session", None)
+                    sess = _active() if callable(_active) else None
+                if sess is not None:
+                    setattr(sess, _a, value)
+
+            return property(getter, setter)
+
+        setattr(cls, _ms_attr, _make_ms(_ms_attr))
+
 
 class SessionHostMixin:
     """Mixin: sessions tab bar, active binding, conflict checks."""
@@ -518,20 +568,18 @@ class SessionHostMixin:
     def _session_exclusive_busy(self):
         """Hard leave blockers (script/seq/xfer/modbus/…).
 
-        Periodic send is session-owned and continues after switching.
-        Multi-send is window-owned and cannot migrate, but is leave-safe:
-        `_release_leave_safe_window_tasks` stops it instead of hard-blocking.
+        Periodic send and multi-send cycle are session-owned and keep running
+        after a tab switch (same leave policy as each other).
         """
         return bool(self._io_task_busy(exclude=("periodic", "multi")))
 
     def _release_leave_safe_window_tasks(self):
-        """Stop window tasks that must not migrate across tabs; return keys stopped."""
-        stopped = []
-        timer = getattr(self, "_ms_cycle_timer", None)
-        if timer is not None and timer.isActive():
-            self._ms_stop_cycle()
-            stopped.append("multi")
-        return stopped
+        """Stop window tasks that must not migrate across tabs; return keys stopped.
+
+        Currently empty — multi-send cycle is per-session like periodic send.
+        Kept as an extension point for future leave-safe window tasks.
+        """
+        return []
 
     def _toast_leave_safe_stopped(self, stopped):
         if not stopped:
@@ -595,7 +643,7 @@ class SessionHostMixin:
                 return False
         was_active = s.id == self._active_session_id
         if was_active:
-            # Confirmed leave: drop leave-safe window tasks (e.g. multi-send).
+            # Confirmed leave: drop any remaining leave-safe window tasks.
             self._release_leave_safe_window_tasks()
         # Close connection for this session
         with self._with_session(s):
@@ -610,6 +658,15 @@ class SessionHostMixin:
             if s._period_timer.isActive():
                 s._period_timer.stop()
             s.period_on = False
+            ms_timer = getattr(s, "_ms_cycle_timer", None)
+            if ms_timer is not None and ms_timer.isActive():
+                stop_ms = getattr(self, "_ms_stop_cycle", None)
+                if callable(stop_ms):
+                    stop_ms(s)
+                else:
+                    ms_timer.stop()
+                    s._ms_cycle_seq = []
+                    s._ms_cycle_idx = 0
             if getattr(s, "_log_file", None) is not None:
                 try:
                     self._close_log_file(session=s, toast=False)
@@ -676,7 +733,6 @@ class SessionHostMixin:
             # Snap tab bar back
             self._rebuild_session_tabs(select_id=self._active_session_id)
             return False
-        # Multi-send cannot migrate; stop it so the switch can proceed.
         if cur is not None:
             stopped = self._release_leave_safe_window_tasks()
             self._toast_leave_safe_stopped(stopped)
@@ -730,7 +786,8 @@ class SessionHostMixin:
     @staticmethod
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
-        for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer", "_reset_timer"):
+        for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer",
+                     "_reset_timer", "_ms_cycle_timer"):
             timer = getattr(session, name, None)
             if timer is None:
                 continue
@@ -894,6 +951,10 @@ class SessionHostMixin:
             if hasattr(self, "ed_period_ms") and session.period_ms:
                 self.ed_period_ms.setText(str(session.period_ms))
             self._restore_session_periodic(session)
+            if hasattr(self, "_set_ms_cycle_btn"):
+                ms_timer = getattr(session, "_ms_cycle_timer", None)
+                self._set_ms_cycle_btn(
+                    bool(ms_timer is not None and ms_timer.isActive()))
             # Missing fields in an old/partial snapshot must not inherit the
             # previously active tab's controls.  Use the same deterministic
             # defaults as background processing, then overlay this session.
@@ -1618,6 +1679,11 @@ class SessionHostMixin:
                 s._period_timer.stop()
             if s._reset_timer.isActive():
                 s._reset_timer.stop()
+            ms_timer = getattr(s, "_ms_cycle_timer", None)
+            if ms_timer is not None and ms_timer.isActive():
+                ms_timer.stop()
+            s._ms_cycle_seq = []
+            s._ms_cycle_idx = 0
             s.period_on = False
             with self._with_session(s):
                 update_ui = bool(update_active_ui and s.id == active_id)

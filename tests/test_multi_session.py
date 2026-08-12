@@ -768,43 +768,126 @@ def test_reset_sessions_closes_every_connection(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_multi_send_stops_on_session_switch(monkeypatch, tmp_path):
-    """Window-owned multi-send stops on leave instead of hard-blocking the tab."""
+def test_multi_send_cycle_keeps_running_after_session_switch(
+        monkeypatch, tmp_path):
+    """Per-session multi-send cycle survives tab switch (like period TX)."""
     w = _window(monkeypatch, tmp_path, "multi-switch")
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
     toasts = []
     monkeypatch.setattr(w, "toast", lambda msg, error=False: toasts.append((msg, error)))
-    w._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
-    w._ms_cycle_timer.start(60000)
+    s1._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
+    s1._ms_cycle_timer.start(60000)
     try:
         assert w.switch_session(s2.id) is True
         assert w.active_session().id == s2.id
-        assert not w._ms_cycle_timer.isActive()
-        assert toasts and w._t("io_task_multi") in toasts[-1][0]
-        assert toasts[-1][1] is False
+        assert s1._ms_cycle_timer.isActive()
+        assert not any(w._t("io_task_multi") in (t[0] or "") for t in toasts)
+        assert not w._session_ms_cycle_active()  # active tab has no cycle
     finally:
-        w._ms_cycle_timer.stop()
+        s1._ms_cycle_timer.stop()
         w._close_all_sessions()
 
 
 def test_hard_busy_still_blocks_even_with_multi_send(monkeypatch, tmp_path):
-    """Script/seq/xfer/modbus/… keep hard-blocking; multi alone is leave-safe."""
+    """Script/seq/xfer/modbus/… keep hard-blocking; multi alone does not."""
     w = _window(monkeypatch, tmp_path, "multi-hard-busy")
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
-    w._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
-    w._ms_cycle_timer.start(60000)
+    s1._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
+    s1._ms_cycle_timer.start(60000)
     w._replay_on = True
     try:
         assert w.switch_session(s2.id) is False
         assert w.active_session().id == s1.id
-        # Multi was not released because hard busy aborted the leave.
-        assert w._ms_cycle_timer.isActive()
+        assert s1._ms_cycle_timer.isActive()
     finally:
         w._replay_on = False
-        w._ms_cycle_timer.stop()
+        s1._ms_cycle_timer.stop()
         w._close_all_sessions()
+
+
+def test_concurrent_multi_send_cycle_keeps_running_in_background(
+        monkeypatch, tmp_path):
+    """Two sessions can cycle concurrently; leaving a tab must not stop others."""
+    w = _window(monkeypatch, tmp_path, "dual-ms-cycle")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s1._ms_cycle_seq = [("A", False, 0, 0, 40)]
+    s1._ms_cycle_idx = 0
+    s1._ms_cycle_timer.start(40)
+    # Drive via public step so TX actually happens.
+    w._ms_cycle_step_for(s1.id)
+    assert s1._ms_cycle_timer.isActive()
+
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    s2._ms_cycle_seq = [("B", False, 0, 0, 40)]
+    s2._ms_cycle_idx = 0
+    w._ms_cycle_step_for(s2.id)
+
+    before_s1_tx = s1.tx_bytes
+    before_s2_tx = s2.tx_bytes
+    _pump(25, 0.02)
+    assert s1.tx_bytes > before_s1_tx
+    assert s2.tx_bytes > before_s2_tx
+    assert s1._ms_cycle_timer.isActive()
+    w._close_all_sessions()
+    assert not s1._ms_cycle_timer.isActive()
+    assert not s2._ms_cycle_timer.isActive()
+
+
+def test_ms_groups_changed_refreshes_background_cycle_seq(monkeypatch, tmp_path):
+    """Editing shared multi-send groups refreshes every running cycle, not only active."""
+    w = _window(monkeypatch, tmp_path, "ms-groups-refresh")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w._ms_groups = [{
+        "name": "G",
+        "items": [
+            {"name": "old", "data": "OLD", "checked": True,
+             "hex": False, "nl": 0, "cs": 0, "delay": 1000},
+            {"name": "new", "data": "NEW", "checked": True,
+             "hex": False, "nl": 0, "cs": 0, "delay": 500},
+        ],
+    }]
+    w._ms_group_idx = 0
+    s1._ms_cycle_seq = [("OLD", False, 0, 0, 1000)]
+    s1._ms_cycle_timer.start(60000)
+
+    s2 = w.add_session(activate=True)
+    # Background s1 still cycling; edit unchecks OLD (active is s2).
+    w._ms_groups[0]["items"][0]["checked"] = False
+    w._ms_groups_changed()
+
+    assert s1._ms_cycle_timer.isActive()
+    assert s1._ms_cycle_seq == [("NEW", False, 0, 0, 500)]
+    w._close_all_sessions()
+
+
+def test_ms_groups_changed_stops_background_when_seq_empty(monkeypatch, tmp_path):
+    """Empty rebuilt cycle seq stops every running session, including background."""
+    w = _window(monkeypatch, tmp_path, "ms-groups-empty")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w._ms_groups = [{
+        "name": "G",
+        "items": [
+            {"name": "a", "data": "AA", "checked": True,
+             "hex": False, "nl": 0, "cs": 0, "delay": 1000},
+        ],
+    }]
+    w._ms_group_idx = 0
+    s1._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
+    s1._ms_cycle_timer.start(60000)
+    w.add_session(activate=True)
+
+    w._ms_groups[0]["items"][0]["checked"] = False
+    w._ms_groups_changed()
+
+    assert not s1._ms_cycle_timer.isActive()
+    assert s1._ms_cycle_seq == []
+    w._close_all_sessions()
 
 
 def test_background_rx_uses_own_display_options(monkeypatch, tmp_path):

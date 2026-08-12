@@ -3,7 +3,7 @@
 
 S-2 R40: CommTool.build_send_card thin wrapper.
 """
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QPushButton, QScrollArea, QTextEdit, QVBoxLayout,
     QWidget,
@@ -41,11 +41,7 @@ def build(app):
     if not _cpreset_ok:
         app._save_connection_presets()
     app._rebuild_connection_preset_combo()
-    app._ms_cycle_seq = []
-    app._ms_cycle_idx = 0
-    app._ms_cycle_timer = QTimer(app)
-    app._ms_cycle_timer.setSingleShot(True)
-    app._ms_cycle_timer.timeout.connect(app._ms_cycle_step)
+    # Multi-send cycle timer/seq live on each Session (see session.py).
 
     ms_bar = QHBoxLayout()
     ms_bar.setSpacing(6)

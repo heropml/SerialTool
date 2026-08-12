@@ -27,6 +27,8 @@ try:
     from version import __version__ as APP_VERSION
 except Exception:
     APP_VERSION = "0.0.0"
+import app_style
+import i18n_ui
 from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, _mix,
                    chrome_for, COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_BLUE)
 from i18n import TR, CHECKSUM_KEYS
@@ -2291,394 +2293,11 @@ class CommTool(SessionHostMixin, QMainWindow):
 
         # Tooltip 在 dark mode 用浅色 (反差)，light 用深色
         tooltip_bg, tooltip_fg = _term_vt.tooltip_colors(t.get("mode"))
-
-        qss = f"""
-        QMainWindow, QWidget#Central, QWidget#Content {{
-            background-color: {c['window_bg']};
-        }}
-        QFrame#Card {{
-            background-color: {c['card_bg']};
-            border-radius: 14px;
-            border: 0px;
-        }}
-        QLabel {{ color: {c['text']}; background: transparent; }}
-        QComboBox, QLineEdit {{
-            background-color: {c['input_bg']};
-            border: 1px solid {c['separator']};
-            border-radius: 6px;
-            padding: 2px 7px;
-            min-height: 16px;
-            font-family: 'Segoe UI';
-            font-size: 11px;
-            color: {c['text']};
-            selection-background-color: {c['accent']};
-        }}
-        QComboBox:focus, QLineEdit:focus {{
-            border: 1px solid {c['accent']};
-            background-color: {c['input_focus_bg']};
-        }}
-        QComboBox:disabled, QLineEdit:disabled {{
-            background-color: {c['card_bg']};
-            color: {_mix(c['text_sec'], c['card_bg'], 0.45)};
-            border: 1px solid {_mix(c['separator'], c['card_bg'], 0.5)};
-        }}
-        QComboBox::drop-down {{ border: none; width: 22px; }}
-        QComboBox::down-arrow {{
-            image: none;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 5px solid {c['text_sec']};
-            margin-right: 8px;
-        }}
-        QComboBox QAbstractItemView {{
-            background-color: {c['combo_dropdown_bg']};
-            color: {c['text']};
-            border: 1px solid {c['separator']};
-            border-radius: 0px;
-            padding: 4px;
-            outline: 0px;
-            selection-background-color: {c['accent']};
-            selection-color: #FFFFFF;
-        }}
-        QPushButton#PrimaryBtn {{
-            background-color: {c['accent']};
-            color: white;
-            border: 0px;
-            border-radius: 9px;
-            font-family: 'Segoe UI';
-            font-size: 12px;
-            font-weight: 600;
-            padding: 5px 16px;
-        }}
-        QPushButton#PrimaryBtn:hover {{ background-color: {c['accent_hover']}; }}
-        QPushButton#PrimaryBtn:pressed {{ background-color: {c['accent_pressed']}; }}
-        QPushButton#PrimaryBtn[state="open"] {{ background-color: {c['danger']}; }}
-        QPushButton#PrimaryBtn[state="open"]:hover {{ background-color: {c['danger_hover']}; }}
-        QPushButton#GhostBtn {{
-            background-color: {c['ghost_bg']};
-            color: {c['accent']};
-            border: 0px;
-            border-radius: 7px;
-            font-family: 'Segoe UI';
-            font-size: 13px;
-            font-weight: 500;
-            padding: 5px 12px;
-            min-height: 18px;
-        }}
-        QPushButton#GhostBtn:hover {{ background-color: {c['ghost_hover']}; }}
-        QPushButton#GhostBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
-        QPushButton#GhostBtnSm {{
-            background-color: {c['ghost_bg']};
-            color: {c['accent']};
-            border: 0px;
-            border-radius: 7px;
-            font-family: 'Segoe UI';
-            font-size: 12px;
-            font-weight: 500;
-            padding: 3px 8px;
-            min-height: 16px;
-        }}
-        QPushButton#GhostBtnSm:hover {{ background-color: {c['ghost_hover']}; }}
-        QPushButton#GhostBtnSm:pressed {{ background-color: {c['ghost_pressed']}; }}
-        QPushButton#GhostBtn:checked {{ background-color: {c['accent']}; color: white; }}
-        QPushButton#GhostBtn[arActive="true"] {{ background-color: {c['accent']}; color: white; }}
-        QPushButton#GhostBtn[arActive="true"]:hover {{ background-color: {c['accent_hover']}; }}
-        QPushButton#IconBtn {{
-            background-color: {c['ghost_bg']};
-            color: {c['text_sec']};
-            border: 0px;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: bold;
-        }}
-        QPushButton#IconBtn:hover {{
-            background-color: {c['ghost_hover']};
-            color: {c['accent']};
-        }}
-        QScrollArea#MsQuickScroll, QWidget#MsQuickHost {{ background: transparent; border: 0px; }}
-        QPushButton#MsQuickBtn {{
-            background-color: {c['ghost_bg']}; color: {c['text']}; border: 1px solid {c['separator']};
-            border-radius: 6px; font-family: 'Segoe UI'; font-size: 11px; padding: 2px 10px;
-        }}
-        QPushButton#MsQuickBtn:hover {{ background-color: {c['ghost_hover']}; color: {c['accent']}; }}
-        QPushButton#MsQuickBtn:pressed {{ background-color: {c['ghost_pressed']}; }}
-        QPushButton#ToBottomBtn {{
-            background-color: {c['accent']};
-            color: white;
-            border: 0px;
-            border-radius: 13px;
-            padding: 4px 14px;
-            font-family: 'Segoe UI';
-            font-size: 12px;
-            font-weight: 600;
-        }}
-        QPushButton#ToBottomBtn:hover {{ background-color: {c['accent_hover']}; }}
-        QPushButton#ToBottomBtn:pressed {{ background-color: {c['accent_pressed']}; }}
-        QTextEdit#RecvBox {{
-            background-color: {t['bg']};
-            border: 1px solid {c['separator']};
-            border-radius: 10px;
-            padding: 10px;
-            color: {t['fg']};
-            selection-background-color: {c['accent']};
-        }}
-        QTextEdit#SendBox {{
-            background-color: {c['input_bg']};
-            border: 1px solid {c['separator']};
-            border-radius: 10px;
-            padding: 10px;
-            color: {c['text']};
-            selection-background-color: {c['accent']};
-        }}
-        QTextEdit#RecvBox:focus, QTextEdit#SendBox:focus {{
-            border: 1px solid {c['accent']};
-        }}
-        QScrollBar:vertical {{
-            background: transparent;
-            width: 10px;
-            margin: 4px;
-        }}
-        QScrollBar::handle:vertical {{
-            background: {c['scrollbar']};
-            border-radius: 5px;
-            min-height: 30px;
-        }}
-        QScrollBar::handle:vertical:hover {{ background: {c['scrollbar_hover']}; }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
-        QStatusBar {{
-            background: {c['window_bg']};
-            color: {c['text_sec']};
-            border-top: 1px solid {c['separator']};
-        }}
-        QStatusBar QLabel {{ color: {c['text_sec']}; background: transparent; }}
-        QStatusBar::item {{ border: 0px; }}
-        QToolTip {{
-            background-color: {tooltip_bg};
-            color: {tooltip_fg};
-            border: 0px;
-            border-radius: 6px;
-            padding: 5px 9px;
-            font-size: 12px;
-            font-weight: 500;
-        }}
-        QWidget#TitleBar {{
-            background-color: {c['window_bg']};
-            border-bottom: 1px solid {c['separator']};
-        }}
-        QPushButton#CtrlBtn, QPushButton#CloseBtn {{
-            background-color: transparent;
-            color: {c['text']};       /* 自绘 paintEvent 读 palette.ButtonText 取此色 */
-            border: 0px;              /* 必须两个 objectName 都覆盖，否则 CloseBtn 留默认边框 */
-        }}
-        QPushButton#CtrlBtn:hover {{ background-color: {c['title_btn_hover']}; }}
-        QPushButton#CloseBtn:hover {{
-            background-color: {c['danger']};
-            color: #FFFFFF;
-        }}
-        QPushButton#TbHelpBtn {{
-            background-color: transparent; color: {c['text']};
-            border: 1px solid transparent; border-radius: 4px;
-            padding: 1px 10px; font-family: 'Segoe UI'; font-size: 12px;
-        }}
-        QPushButton#TbHelpBtn:hover {{ background-color: {c['title_combo_hover']};
-                                       border: 1px solid {c['separator']}; }}
-
-        QWidget#WorkbenchBar {{
-            background-color: {c['window_bg']};
-            border-bottom: 1px solid {c['separator']};
-        }}
-        QLabel#WorkbenchLabel {{
-            color: {c['text_sec']};
-            background: transparent;
-            padding-right: 4px;
-            font-size: 12px;
-            font-weight: 600;
-        }}
-        QPushButton#WorkbenchBtn {{
-            background-color: transparent;
-            color: {c['text']};
-            border: 1px solid transparent;
-            border-radius: 6px;
-            padding: 2px 14px;
-            font-size: 12px;
-            font-weight: 600;
-        }}
-        QPushButton#WorkbenchBtn:hover {{
-            background-color: {c['title_combo_hover']};
-            border-color: {c['separator']};
-        }}
-        QPushButton#WorkbenchBtn:pressed {{
-            background-color: {c['accent']};
-            color: #FFFFFF;
-        }}
-        QPushButton#WorkbenchBtn[active="true"] {{
-            background-color: {c['accent']}; color: #FFFFFF; font-weight: 600;
-        }}
-        QWidget#SessionTabBar {{
-            background: transparent;
-            border: 0px;
-        }}
-        QLabel#SessionStripLabel {{
-            color: {c['text_sec']};
-            background: transparent;
-            border: 0px;
-            font-size: 11px;
-            font-weight: 500;
-        }}
-        QFrame#SessionSeparator {{
-            color: {c['separator']};
-            background-color: {c['separator']};
-            max-width: 1px;
-            margin: 4px 6px;
-        }}
-        QTabBar#SessionTabs {{
-            background: transparent;
-            border: 0px;
-        }}
-        QTabBar#SessionTabs::tab {{
-            background: transparent;
-            color: {c['text_sec']};
-            border: 1px solid transparent;
-            border-radius: 6px;
-            min-height: 22px;
-            padding: 2px 9px;
-            margin: 1px;
-            font-size: 12px;
-        }}
-        QTabBar#SessionTabs::tab:hover {{
-            background-color: {c['title_combo_hover']};
-            color: {c['text']};
-        }}
-        QTabBar#SessionTabs::tab:selected {{
-            background-color: {c['accent']};
-            color: #FFFFFF;
-            border-color: {c['accent']};
-            font-weight: 600;
-        }}
-        QTabBar#SessionTabs QAbstractButton#SessionCloseBtn {{
-            background: transparent;
-            border: 0px;
-            border-radius: 5px;
-            padding: 0px;
-            margin: 0px 2px 0px 0px;
-        }}
-        QTabBar#SessionTabs QAbstractButton#SessionCloseBtn:hover {{
-            background-color: rgba(255, 255, 255, 42);
-        }}
-        QPushButton#SessionAddBtn {{
-            background: transparent;
-            border: 1px solid transparent;
-            border-radius: 7px;
-            padding: 0px;
-        }}
-        QPushButton#SessionAddBtn:hover {{
-            background-color: {c['title_combo_hover']};
-            border-color: {c['separator']};
-        }}
-        QPushButton#SessionAddBtn:pressed {{
-            background-color: {c['ghost_pressed']};
-        }}
-        QWidget#WorkspaceHost, QWidget#WorkspacePage {{ background-color: {c['window_bg']}; }}
-        QLabel#WorkspacePageTitle {{
-            color: {c['text']}; background: transparent;
-            font-family: 'Segoe UI'; font-size: 22px; font-weight: 700;
-        }}
-        QLabel#WorkspacePageSubtitle {{
-            color: {c['text_sec']}; background: transparent;
-            font-family: 'Segoe UI'; font-size: 12px;
-        }}
-        QFrame#WorkspaceToolCard {{
-            background-color: {c['card_bg']}; border: 1px solid {c['separator']};
-            border-radius: 12px;
-        }}
-        QFrame#WorkspaceTemplatePanel {{
-            background-color: {_mix(c['card_bg'], c['accent'], 0.05)};
-            border: 1px solid {_mix(c['separator'], c['accent'], 0.25)};
-            border-radius: 12px;
-        }}
-        QLabel#WorkspaceTemplatePreview {{
-            color: {c['text_sec']}; background: transparent; border: 0px;
-            font-family: 'Segoe UI'; font-size: 11px;
-        }}
-        QFrame#WorkspaceToolCard:hover {{
-            background-color: {c['title_combo_hover']}; border-color: {c['accent']};
-        }}
-        QLabel#WorkspaceToolIcon {{
-            background-color: {_mix(c['card_bg'], c['accent'], 0.14)};
-            color: {c['accent']}; border: 0px; border-radius: 10px;
-            font-family: 'Segoe UI Symbol', 'Segoe UI';
-            font-size: 17px; font-weight: 700;
-        }}
-        QLabel#WorkspaceToolTitle {{
-            color: {c['text']}; background: transparent; border: 0px;
-            font-family: 'Segoe UI'; font-size: 14px; font-weight: 600;
-        }}
-        QLabel#WorkspaceStatusBadge {{
-            background-color: {_mix(c['card_bg'], c['text_sec'], 0.12)};
-            color: {c['text_sec']}; border: 0px; border-radius: 8px;
-            padding: 2px 8px; font-family: 'Segoe UI'; font-size: 10px;
-        }}
-        QLabel#WorkspaceStatusBadge[active="true"] {{
-            background-color: {_mix(c['card_bg'], '#34C759', 0.16)};
-            color: #28A745; font-weight: 600;
-        }}
-        QPushButton#WorkspaceOpenBtn {{
-            background-color: {c['accent']}; color: #FFFFFF; border: 0px;
-            border-radius: 6px; padding: 2px 14px;
-            font-family: 'Segoe UI'; font-size: 12px; font-weight: 600;
-        }}
-        QPushButton#WorkspaceOpenBtn:hover {{ background-color: {c['accent_hover']}; }}
-        QFrame#WorkbenchSeparator {{
-            color: {c['separator']};
-            background-color: {c['separator']};
-            max-width: 1px;
-            margin: 4px 6px;
-        }}
-        QPushButton#ProjectBtn {{
-            background-color: transparent;
-            color: {c['text']};
-            border: 1px solid {c['separator']};
-            border-radius: 6px;
-            padding: 2px 23px 2px 9px;
-            font-size: 12px;
-        }}
-        QPushButton#ProjectBtn:hover {{
-            background-color: {c['title_combo_hover']};
-            border-color: {c['accent']};
-        }}
-        QWidget#TitleBar QComboBox {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: 4px;
-            padding: 1px 8px;
-            min-height: 22px;
-            font-size: 12px;
-            color: {c['text']};
-        }}
-        QWidget#TitleBar QComboBox:hover {{
-            background-color: {c['title_combo_hover']};
-        }}
-        QWidget#TitleBar QComboBox::drop-down {{
-            border: none;
-            width: 18px;
-        }}
-        QScrollArea#Sidebar {{
-            background: transparent;
-            border: 0px;
-        }}
-        QScrollArea#Sidebar > QWidget > QWidget {{
-            background: transparent;
-        }}
-        QWidget#SidebarHost {{
-            background: transparent;
-        }}
-        """
+        qss = app_style.build_app_qss(c, t, tooltip_bg, tooltip_fg)
         self.setStyleSheet(localize_qss(qss))
         # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
         # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
-        for w in self.findChildren(QWidget):
-            w.style().unpolish(w)
-            w.style().polish(w)
+        app_style.polish_widget_tree(self)
 
         # 下拉弹出容器(QComboBoxPrivateContainer)是独立顶层窗口，其底色走系统调色板默认白，
         # 深色主题下圆角/边框处会露白边。这里把每个下拉的弹出容器背景刷成下拉色，彻底消除白边。
@@ -3735,7 +3354,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.sw_period.blockSignals(True)
                 self.sw_period.setChecked(False)
                 self.sw_period.blockSignals(False)
-            self._ms_stop_cycle()
+            self._ms_stop_cycle(session)
         self._flush_pending_cr()
         if (update_ui and not preserve_session_intent
                 and self.sw_log_file.isChecked()):
@@ -4807,9 +4426,10 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _on_ms_group_changed(self, _i=None):
         data = self.cb_ms_group.currentData()
         self._ms_group_idx = data if data is not None else 0
-        self._ms_stop_cycle()
         self._save_ms_groups()
         self._rebuild_ms_quick_bar()
+        # 分组是整窗共享：所有正在循环的会话同步到新分组序列（空则停）
+        self._ms_refresh_running_cycles()
 
     def _rebuild_ms_quick_bar(self):
         """重建快捷发送按钮：选中分组里每条非空命令一个按钮，点击立即发。"""
@@ -4841,18 +4461,39 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._save_ms_groups()
         self._rebuild_ms_group_combo()
         self._rebuild_ms_quick_bar()
-        # 循环运行中编辑了条目：实时刷新发送序列，下一轮即用新数据（序列变空则下一步自停）
-        if self._ms_cycle_timer.isActive():
-            self._ms_cycle_seq = self._build_ms_cycle_seq()
+        # 分组整窗共享：所有正在循环的会话同步刷新（含后台；空序列则停）
+        self._ms_refresh_running_cycles()
 
-    # ----- 多条发送：循环（按每行延时）-----
+    # ----- 多条发送：循环（按每行延时，per-session）-----
     def _build_ms_cycle_seq(self):
         """Checked non-empty items -> cycle send sequence."""
         return _ms_build_cycle_seq(self._ms_active_items())
 
+    def _ms_refresh_running_cycles(self):
+        """Rebuild cycle seq for every session currently cycling; stop if empty."""
+        seq = self._build_ms_cycle_seq()
+        for session in getattr(self, "_sessions", []) or []:
+            timer = getattr(session, "_ms_cycle_timer", None)
+            if timer is None or not timer.isActive():
+                continue
+            if not seq:
+                self._ms_stop_cycle(session)
+            else:
+                session._ms_cycle_seq = list(seq)
+
+    def _session_ms_cycle_active(self, session=None) -> bool:
+        """True if the given (or context/active) session's multi-send cycle is running."""
+        session = session or self._session_ctx() or self.active_session()
+        timer = getattr(session, "_ms_cycle_timer", None) if session is not None else None
+        return bool(timer is not None and timer.isActive())
+
     def _ms_toggle_cycle(self):
-        if self._ms_cycle_timer.isActive():
-            self._ms_stop_cycle()
+        session = self.active_session()
+        if session is None:
+            return
+        timer = session._ms_cycle_timer
+        if timer.isActive():
+            self._ms_stop_cycle(session)
             return
         if self._io_task_busy(exclude=("multi",)):
             self.toast_io_exclusive_busy(exclude=("multi",))
@@ -4864,34 +4505,74 @@ class CommTool(SessionHostMixin, QMainWindow):
         if not self._is_open():
             self.toast(self._t("net_not_open"), error=True)
             return
-        self._ms_cycle_seq = seq
-        self._ms_cycle_idx = 0
+        session._ms_cycle_seq = seq
+        session._ms_cycle_idx = 0
         self._set_ms_cycle_btn(True)
-        self._ms_cycle_step()
+        self._ms_cycle_step_for(session.id)
 
-    def _ms_cycle_step(self):
-        if not self._ms_cycle_seq:
-            self._ms_stop_cycle()
+    def _ms_cycle_step_for(self, sid):
+        """Timer callback: TX one multi-send item on the owning session."""
+        session = self.find_session(sid)
+        if session is None:
             return
-        if not self._is_open():
-            self.toast(self._t("net_not_open"), error=True)
-            self._ms_stop_cycle()
+        seq = session._ms_cycle_seq or []
+        if not seq:
+            self._ms_stop_cycle(session)
             return
-        data, hx, nl, cs, delay = self._ms_cycle_seq[self._ms_cycle_idx % len(self._ms_cycle_seq)]
-        # 循环路径走 _send_with_subst：替换 + 失败回滚 {count}
-        # 发送失败(坏数据/写异常等)立即停止，避免每轮都刷错误 toast
-        # (空命令在 _ms_toggle_cycle 构建序列时已过滤，这里的 False 都是真失败)
-        if not self._send_with_subst(data, hex_mode=hx, newline=nl, checksum=cs,
-                                     record_macro=False):
-            self._ms_stop_cycle()
+        if not session.is_open():
+            if session is self.active_session():
+                self.toast(self._t("net_not_open"), error=True)
+            self._ms_stop_cycle(session)
             return
-        self._ms_cycle_idx += 1
-        self._ms_cycle_timer.start(delay)
+        data, hx, nl, cs, delay = seq[session._ms_cycle_idx % len(seq)]
+        delay_ms = max(1, int(delay))
+        is_active = session is self.active_session()
+        target = None
+        if "Server" in str(session._conn_proto or ""):
+            target = session.send_target
+        with self._with_session(session):
+            # Window engines are shared; pause this tick and retry (single-shot).
+            if self._period_tx_blocked():
+                session._ms_cycle_timer.start(max(50, delay_ms))
+                return
+            opts = None
+            previous_ctx = getattr(self, "_display_context", None)
+            if not is_active:
+                opts = self._background_display_opts(session)
+                self._display_context = dict(opts)
+                self._display_context["background"] = True
+            try:
+                # 循环路径走 _send_with_subst：替换 + 失败回滚 {count}
+                # 发送失败(坏数据/写异常等)立即停止，避免每轮都刷错误 toast
+                ok = self._send_with_subst(
+                    data, hex_mode=hx, newline=nl, checksum=cs,
+                    target=target,
+                    encoding=(opts or {}).get("encoding") if opts else None,
+                    record_macro=False, notify_ui=is_active,
+                    feed_window_engines=is_active)
+            finally:
+                if not is_active:
+                    self._display_context = previous_ctx
+        if not ok:
+            self._ms_stop_cycle(session)
+            return
+        session._ms_cycle_idx += 1
+        session._ms_cycle_timer.start(delay_ms)
 
-    def _ms_stop_cycle(self):
-        if hasattr(self, "_ms_cycle_timer"):
-            self._ms_cycle_timer.stop()
-        self._set_ms_cycle_btn(False)
+    def _ms_stop_cycle(self, session=None):
+        session = session or self._session_ctx() or self.active_session()
+        if session is not None:
+            timer = getattr(session, "_ms_cycle_timer", None)
+            if timer is not None and timer.isActive():
+                timer.stop()
+            session._ms_cycle_seq = []
+            session._ms_cycle_idx = 0
+        if session is None or session is self.active_session():
+            self._set_ms_cycle_btn(False)
+
+    def _ms_stop_all_cycles(self):
+        for session in getattr(self, "_sessions", []) or []:
+            self._ms_stop_cycle(session)
 
     def _set_ms_cycle_btn(self, running):
         if hasattr(self, "btn_ms_cycle"):
@@ -5084,9 +4765,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             "sequence": self._seq_running(),
             "transfer": self._xfer_active(),
             "macro": bool(getattr(getattr(self, "_macro", None), "recording", False)),
-            # Context/active session only -- other tabs may period concurrently.
+            # Context/active session only -- other tabs may period/cycle concurrently.
             "periodic": self._session_period_active(),
-            "multi": self._ms_cycle_timer.isActive(),
+            "multi": self._session_ms_cycle_active(),
             "modbus": bool(self._mbm_inflight is not None or self._mbm_active()),
             "replay": bool(getattr(self, "_replay_on", False)),
             "dsl": bool(getattr(self, "_dsl_ops", None)),
@@ -6233,7 +5914,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 cb.setChecked(bool(scan_state["old_on"]))
                 cb.blockSignals(False)
             return
-        if enabled and (self.send_timer.isActive() or self._ms_cycle_timer.isActive()):
+        if enabled and (self.send_timer.isActive() or self._session_ms_cycle_active()):
             self.toast_io_exclusive_busy()
             if getattr(self, "_mbm_dlg", None) is not None:
                 cb = self._mbm_dlg.cb_enable
@@ -9137,8 +8818,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.txt_send.setProperty("tr_placeholder", ph)   # 语言切换时也用对的占位文案
             self.txt_send.setPlaceholderText(self._t(ph))
         if on:
-            # Entering terminal mode stops ALL sessions' period timers (not only
-            # the active tab switch), plus the window multi-send cycle.
+            # Entering terminal mode stops ALL sessions' period timers and
+            # multi-send cycles (not only the active tab).
             if hasattr(self, "sw_period") and self.sw_period.isChecked():
                 self.sw_period.setChecked(False)
             for session in getattr(self, "_sessions", []) or []:
@@ -9146,7 +8827,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 timer = getattr(session, "_period_timer", None)
                 if timer is not None and timer.isActive():
                     timer.stop()
-            self._ms_stop_cycle()
+            self._ms_stop_all_cycles()
         self._apply_terminal_ui(on)
         self.toast(self._t("term_on") if on else self._t("term_off"))
 
@@ -10016,28 +9697,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         if hasattr(self, "title_bar"):
             self.title_bar.set_title(self._t("app_title") + self._title_suffix)
 
-        for w in self.findChildren(QWidget):
-            k = w.property("tr_text")
-            if k:
-                try:
-                    w.setText(self._t(k))
-                except Exception:
-                    _log.debug("_apply_language failed", exc_info=True)
-            k = w.property("tr_placeholder")
-            if k:
-                try:
-                    w.setPlaceholderText(self._t(k))
-                except Exception:
-                    _log.debug("_apply_language failed", exc_info=True)
-            k = w.property("tr_tooltip")
-            if k:
-                try:
-                    set_tooltip(w, self._t(k))
-                except Exception:
-                    _log.debug("_apply_language failed", exc_info=True)
-            # 固定宽标签（网络设置左列）随语言调整列宽，避免英文被遮挡
-            if w.property("tr_fixedw"):
-                w.setFixedWidth(self._label_col_width())
+        i18n_ui.apply_tr_properties(
+            self.findChildren(QWidget), self._t, set_tooltip,
+            label_col_width=self._label_col_width, log=_log)
 
         self._apply_theme_label_styles()
         self._update_legend_label()
@@ -10052,33 +9714,15 @@ class CommTool(SessionHostMixin, QMainWindow):
                 _log.debug("retranslate session tabs failed", exc_info=True)
 
         if hasattr(self, "cb_checksum"):
-            idx = self.cb_checksum.currentIndex()
-            self.cb_checksum.blockSignals(True)
-            self.cb_checksum.clear()
-            for ck_key in CHECKSUM_KEYS:
-                self.cb_checksum.addItem(self._t(ck_key))
-            if 0 <= idx < self.cb_checksum.count():
-                self.cb_checksum.setCurrentIndex(idx)
-            self.cb_checksum.blockSignals(False)
+            i18n_ui.refill_combo_keys(
+                self.cb_checksum, CHECKSUM_KEYS, self._t)
 
         if hasattr(self, "cb_ts_format"):
-            data = self.cb_ts_format.currentData()
-            self.cb_ts_format.blockSignals(True)
-            self.cb_ts_format.clear()
-            for d, key in _ui_ts_format_items:
-                self.cb_ts_format.addItem(self._t(key), d)
-            idx = self.cb_ts_format.findData(data)
-            self.cb_ts_format.setCurrentIndex(idx if idx >= 0 else 0)
-            self.cb_ts_format.blockSignals(False)
+            i18n_ui.refill_combo_data_items(
+                self.cb_ts_format, _ui_ts_format_items, self._t)
         if hasattr(self, "cb_search_mode"):
-            data = self.cb_search_mode.currentData()
-            self.cb_search_mode.blockSignals(True)
-            self.cb_search_mode.clear()
-            for d, key in _ui_search_mode_items:
-                self.cb_search_mode.addItem(self._t(key), d)
-            idx = self.cb_search_mode.findData(data)
-            self.cb_search_mode.setCurrentIndex(idx if idx >= 0 else 0)
-            self.cb_search_mode.blockSignals(False)
+            i18n_ui.refill_combo_data_items(
+                self.cb_search_mode, _ui_search_mode_items, self._t)
 
         if hasattr(self, "cb_line_nl"):
             self.cb_line_nl.setItemText(0, self._t("nl_auto"))
@@ -10141,7 +9785,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.cb_log_split.blockSignals(False)
         # 多条发送循环按钮文字随语言变
         if hasattr(self, "btn_ms_cycle"):
-            self._set_ms_cycle_btn(self._ms_cycle_timer.isActive())
+            self._set_ms_cycle_btn(self._session_ms_cycle_active())
         # 发送卡片两行三列等列宽：必须在 btn_ms_cycle 文字更新之后，否则取的是旧语言的 sizeHint
         self._align_send_card_cols()
         self._fit_data_toolbar()   # 数据区工具栏按钮宽度随语言重算，防新语言文字被裁
@@ -10150,50 +9794,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._update_project_label()
         self._refresh_workspace_statuses()
         self._retranslate_workspace_template_panel()
-        # 多条发送/关键字高亮弹窗若开着也跟着切语言
-        if getattr(self, "_multi_send_dlg", None) is not None:
-            self._multi_send_dlg.retranslate()
-        if getattr(self, "_keyword_dlg", None) is not None:
-            self._keyword_dlg.retranslate()
-        if getattr(self, "_plot_dlg", None) is not None:
-            self._plot_dlg.retranslate()
-        if getattr(self, "_dash_dlg", None) is not None:
-            self._dash_dlg.retranslate()
-        if getattr(self, "_script_dlg", None) is not None:
-            self._script_dlg.retranslate()
-        if getattr(self, "_rr_dlg", None) is not None:
-            self._rr_dlg.retranslate()
-        if getattr(self, "_rd_dlg", None) is not None:
-            self._rd_dlg.retranslate()
-        if getattr(self, "_snip_dlg", None) is not None:
-            self._snip_dlg.retranslate()
-        if getattr(self, "_send_hist_dlg", None) is not None:
-            self._send_hist_dlg.retranslate()
-        if getattr(self, "_cpreset_dlg", None) is not None:
-            self._cpreset_dlg.retranslate()
+        i18n_ui.retranslate_dialogs(self)
         self._rebuild_connection_preset_combo()
-        if getattr(self, "_triggers_dlg", None) is not None:
-            self._triggers_dlg.retranslate()
-        if getattr(self, "_frame_dlg", None) is not None:
-            self._frame_dlg.retranslate()
-        if getattr(self, "_ar_dlg", None) is not None:
-            self._ar_dlg.retranslate()
-        if getattr(self, "_mbm_dlg", None) is not None:
-            self._mbm_dlg.retranslate()
-        if getattr(self, "_device_center_dlg", None) is not None:
-            self._device_center_dlg.retranslate()
-        if getattr(self, "_structured_dlg", None) is not None:
-            self._structured_dlg.retranslate()
-        if getattr(self, "_seq_dlg", None) is not None:
-            self._seq_dlg.retranslate()
-        if getattr(self, "_frame_builder_dlg", None) is not None:
-            self._frame_builder_dlg.retranslate()
-        if getattr(self, "_toolbox_dlg", None) is not None:
-            self._toolbox_dlg.retranslate()
-        if getattr(self, "_xfer_dlg", None) is not None:
-            self._xfer_dlg.retranslate()
-        if getattr(self, "_bridge_dlg", None) is not None:
-            self._bridge_dlg.retranslate()
         # 选中即算校验和的状态栏文案是算出来的（含「选中」「选区过大」等译词），
         # tr_text 机制刷不到 —— 重算一次，让它跟着切语言
         self._update_sel_checksum()
@@ -11863,8 +11465,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._user_closing = True             # 退出 → 跳过自动重连
         self._begin_workspace_autosave_pause()
         self._cancel_reconnect()
-        if hasattr(self, "_ms_cycle_timer"):
-            self._ms_cycle_timer.stop()   # 先停循环定时器，避免销毁中触发 toast
+        self._ms_stop_all_cycles()       # 先停各会话循环定时器，避免销毁中触发 toast
         if hasattr(self, "_rate_timer"):
             self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
         self._ar_stop_script_worker()      # B5：回收常驻脚本子进程

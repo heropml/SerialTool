@@ -130,7 +130,7 @@
 | 顺序 | 功能 | 目标 | 完成标准 |
 |---|---|---|---|
 | S-1 | **收敛静默异常** | 异常不再被无声吞掉，故障可追溯 | 主目标已达成；宽泛 `except Exception` 仍多（~247），静默 `pass` 现约 **9**（`count_exception_handling.py`；阶段 A 已把 `plot_dialog` / `session_host` 静默改 debug）。余下多为窗口几何/nativeEvent/_shutdown/DPI/AppUserModelID 等故意保留 |
-| S-2 | **拆分 `main_window.py`** | 巨类拆成可单测的服务层（历史峰值曾 ~12334 行 / src 33%） | 55 knives DONE: GUI build_* + R43-R55 runtime/display/settings/conn extracts; 现 ~11850 行壳层（Qt/QSS/i18n + 薄包装）有意保留，不再作为 knife 目标。后续见 `docs/SCHEDULE.md` |
+| S-2 | **拆分 `main_window.py`** | 巨类拆成可单测的服务层（历史峰值曾 ~12334 行 / src 33%） | 55 knives DONE + B5：`app_style` / `i18n_ui` 薄拆 QSS/切语言表；壳层仍有意保留。后续见 `docs/SCHEDULE.md` |
 | S-3 | **长时间运行与高频收发测试** | 把「稳定」变成可度量的 | CI 基线+终端突发+重连 churn 已落地；`VirtualConn.simulate_link_drop` 断线重连基线已补；`COMMTOOL_SOAK_DISCONNECT=1` 可选长跑；`COMMTOOL_SOAK_SERIAL=COMx[,COMy]` 真机 open/close soak （未设/占用则 skip）；`COMMTOOL_SOAK_NIGHTLY=1` 加密循环 |
 | S-4 | **日志按大小切分** | 长期监测不产生超大单文件 | DONE：`parse_size_limit` / `should_roll_size` 已落地，与 `should_roll_date` 组合（跨日优先并归零序号）；回归见 `tests/test_s4_s5_next.py` / `LogRotationTests` |
 | S-5 | **错误提示与高频操作打磨** | 降低日常使用的心智负担 | 连接/断线/发送失败已映射可操作提示；发送历史搜索已落地；`net_*` 文案已补全；Modbus 主机「单次读写」条已落地（FC01-06，复用 `_start_device_scan`） |
@@ -149,9 +149,9 @@
 | 非目标 | 暂不做 | 会话树、拖拽分屏、标签拖出成窗 |
 
 **多会话 v1 已知限制**：
-- 多条循环发送：窗口级定时器，切走前**自动停止**（toast「已自动停止：多条循环发送」），不迁移到新标签；定时发送仍按会话独立继续跑
+- 多条循环发送：与定时发送一样按会话独立，切标签后后台会话循环继续；分组编辑仍窗口共享
 - 实时日志 / 周期发送：每会话独立（后台会话继续写日志、继续定时发）；两会话不可共用同一展开后的日志路径
-- 自动应答状态机 / Modbus / 序列等工具：窗口级占用，同窗仅一份；独占任务运行时禁止切走该会话（多条循环除外，见上）
+- 自动应答状态机 / Modbus / 序列等工具：窗口级占用，同窗仅一份；独占任务运行时禁止切走该会话（定时发送 / 多条循环除外）
 - 后台标签 RX 只更新该会话收发区/统计/本会话日志，不喂入窗口级传输/脚本/序列/Modbus/录制引擎
 - 自动应答开关本身不占用离开互斥表；仅脚本/序列/传输/宏/Modbus/回放/DSL/录制/扫描会硬拦切标签
 
@@ -233,7 +233,7 @@
 - **E** Modbus 主机多视图分组轮询：分标签编辑、共用一套半双工引擎；提交时按全局下标就地合并，不打乱其他视图的规则顺序；标签顺序取自持久化的 `modbus_master_views`
 - **F** FC22 掩码写（0x16）+ FC43/14 设备标识（0x2B/0x0E）：主机、从机、UI 与单测齐全
 - **G** 触发动作链：Webhook / 外部程序 / 命中阈值（`min_hits`、`every_n`），带在途并发上限与配置导入门禁（取舍见第四节）
-- **H** 真·Modbus TCP/RTU 网关（`modbus_gateway.py`）：TCP 流缓冲重组、请求排队（上限 32）、广播不等回包、超时回 MBAP 异常 0x0B、从机异常响应原样转发；`bridge.py` 挂 100ms 专用 tick 并双向记速。**默认行为**：Unit ID 原样透传（`unit_map` 留空）、从机超时 1s，这两项界面暂不开放，已写进网关开关的提示文字。**多客户端**：每个 TCP 客户端独立重组缓冲（上限 16 个），请求入队时记来源，响应经 `TcpReply(client, frame)` 定向回发起方；客户端断开时清掉它的缓冲与排队请求，在途请求的响应直接丢弃而不广播；**超时后恢复窗口**（默认 `recovery_s=0.2`）先空闲再发下一笔，避免迟到 RTU 响应冒充下一笔答复；同批噪声后的合法帧在单次 feed 内继续重同步，不再因 8/64 字节片上限卡住到超时
+- **H** 真·Modbus TCP/RTU 网关（`modbus_gateway.py`）：TCP 流缓冲重组、请求排队（上限 32）、广播不等回包、超时回 MBAP 异常 0x0B、从机异常响应原样转发；`bridge.py` 挂 100ms 专用 tick 并双向记速。**默认行为**：Unit ID 原样透传（`unit_map` 留空）、从机超时 1s；桥接对话框已可配超时与 Unit 映射（`parse_unit_map` / `clamp_timeout_s`，写入 `bridge/gw_*`）。**多客户端**：每个 TCP 客户端独立重组缓冲（上限 16 个），请求入队时记来源，响应经 `TcpReply(client, frame)` 定向回发起方；客户端断开时清掉它的缓冲与排队请求，在途请求的响应直接丢弃而不广播；**超时后恢复窗口**（默认 `recovery_s=0.2`）先空闲再发下一笔，避免迟到 RTU 响应冒充下一笔答复；同批噪声后的合法帧在单次 feed 内继续重同步，不再因 8/64 字节片上限卡住到超时
 - 修复：启动时 `QStackedLayout` 页面未挂父窗口导致的窗口闪现；`QComboBox` 弹出层取样式时的瞬时白框（`dialogs._style_one_combo_popup`）
 - **I（v1.4 S-1 首块）** `net_io.py` 异常收敛：9 处静默 `except Exception: pass` 归零。清理动作改为分步兜底（`_safe`）——
   退组或 abort 失败不再连带跳过 `close`/`deleteLater`（原会泄漏 socket 且没退组），半帧污染的客户端先摘表再释放
@@ -294,7 +294,7 @@
 - **R54 (v1.4 S-2)** expand `connection_presets` (open_fields_from_ui / open_fields_from_reconnect / serial_extras_from_reconnect); `open_conn` field harvest thin wrappers.
 - **R55 (v1.4 S-2)** extract `src/term_vt.py` (resolve/store stream state / term_pos_after_trim / tooltip_colors); `_terminal_append` / `apply_style` thin wrappers.
 - **S-3 disconnect soak:** `VirtualConn.simulate_link_drop`; CI virtual drop/reconnect tests; env gates `COMMTOOL_SOAK_DISCONNECT` / `COMMTOOL_SOAK_SERIAL` (real COM open/close harness, busy->skip).
-- **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. Remaining size is intentional Qt shells (QSS/`_apply_language` widget walks, `_settings_file` path I/O, VT parse loop) plus thin wrappers over extracted helpers.
+- **S-2 GUI build_* milestone:** all sidebar/main cards and workspace chrome builders extracted; main_window keep thin wrappers. B5 moved global QSS + retranslate tables to `app_style` / `i18n_ui`. Remaining size is intentional Qt shells (`_settings_file` path I/O, VT parse loop, glue) plus thin wrappers.
 
 - **S-2 intentional deltas (not bugs):** seq_report HTML footer `CommTool - title` (was middle-dot); `apply_fault` returns `(frame, tags_list)` not localized string; extracted helpers tolerate None via or-empty guards (b"" / "" / [] / ()); `trigger_safe.shell_value` adds optional `platform=` for tests; `view_format.timestamp_prefix` is pure (caller owns `_ts_anchor` / timestamp switch);  R44: `validate_response` uses `info.get("qty")` (missing qty -> badresp instead of KeyError; normalize_poll / inflight always supply qty on real path); `_mbm_poll` first-reject due uses `r.get("period") or 1000` (was hard-coded 1000; keeps 1000 only when period itself is missing).
 - **S-2 review (post R33):** logic/dead-code/imports/DAG/tests clean; no bug regressions vs last commit. Low-pri polish: drop unused top-level time noqa + rename compute_checksum locals (done); `print_function` kept as project convention; R17 `subst_reply`/`build_parts` covered in `tests/test_s2_r17_r18.py` (not r14_r16).

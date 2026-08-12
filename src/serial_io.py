@@ -126,7 +126,7 @@ class SerialReader(QThread):
                         continue
                 self.error_occurred.emit(str(e))
                 break
-            except Exception as e:
+            except (OSError, ValueError, TypeError) as e:
                 self.error_occurred.emit(str(e))
                 break
 
@@ -164,7 +164,7 @@ class SerialConn(QObject):
                 parity=self._parity, stopbits=self._stopbits, timeout=0,
                 rtscts=(self._flow == "rtscts"), xonxoff=(self._flow == "xonxoff"),
             )
-        except Exception as e:
+        except (serial.SerialException, ValueError, OSError) as e:
             self.error_occurred.emit(str(e))
             self._ser = None
             return False
@@ -183,7 +183,7 @@ class SerialConn(QObject):
             try:
                 n = self._ser.write(data)
                 return n if n is not None else len(data)
-            except Exception:
+            except (serial.SerialException, OSError, TypeError):
                 _log.debug("serial write failed on %s", self._port, exc_info=True)
                 return 0
         return 0
@@ -252,7 +252,7 @@ class SerialConn(QObject):
                 for attr, val, _rec in steps:
                     setattr(self._ser, attr, val)     # 每次赋值即 reconfigure，可能抛
                     done.append(attr)
-            except Exception as e:
+            except (serial.SerialException, ValueError, OSError) as e:
                 for attr in reversed(done):           # 回滚已改的，退回快照
                     if not _safe(setattr, self._ser, attr, snapshot[attr]):
                         # 回滚都失败 → 端口确已坏，交给掉线路径
@@ -295,7 +295,7 @@ class SerialConn(QObject):
             for k, a in attr.items():
                 try:
                     out[k] = bool(getattr(self._ser, a))
-                except Exception:
+                except (serial.SerialException, OSError, AttributeError):
                     _log.debug("read line %s failed", k, exc_info=True)
                     out[k] = None
         return out
@@ -319,7 +319,8 @@ class PortScannerThread(QThread):
                 # thread is a common Windows access-violation source in CI.
                 if self._running:
                     self.scan_complete.emit(ports)
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError,
+                    serial.SerialException):
                 _log.debug("port scan failed", exc_info=True)
             if self._running:
                 self.msleep(self._interval)
@@ -340,7 +341,8 @@ class OneShotPortScanner(QThread):
     def run(self):
         try:
             self.scan_complete.emit(_scan_ports())
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError,
+                serial.SerialException):
             _log.debug("one-shot port scan failed", exc_info=True)
             self.scan_complete.emit([])
 

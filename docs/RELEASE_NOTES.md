@@ -21,7 +21,8 @@
 ### 产品边界
 - P2（CLI / REST / 插件 dissector）继续暂缓
 - 触发联动发送仍不做；完整 VT100 / BLE·HID·CAN 等不在范围
-- 多条循环发送 per-session、网关 UI 暴露 timeout/unit_map 仍为可选未做
+- 多条循环发送已改为 per-session（切标签不停，与定时发送对齐）；网关 UI 的 timeout / unit_map 已在桥接对话框开放
+- 工程向：全局 QSS / 切语言表抽出为 `app_style` / `i18n_ui`（CommTool 薄包装）
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
 
 ### 测试

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Modbus TCP <-> RTU gateway (framing, not byte tunnel)."""
 import logging
+import re
 import time
 from collections import deque, namedtuple
 
@@ -10,6 +11,53 @@ from modbus_master import MAX_TCP_MBAP_LENGTH, take_rtu_response, _u16
 MAX_QUEUE = 32
 # 超时后总线保持空闲的时长（即 RTU 主站的 turnaround delay）。
 RECOVERY_S = 0.2
+_DEFAULT_TIMEOUT_S = 1.0
+_TIMEOUT_S_MIN = 0.05
+_TIMEOUT_S_MAX = 30.0
+
+
+def parse_unit_map(text):
+    """Parse UI text ``1:7, 2=10`` into ``{1: 7, 2: 10}``.
+
+    Empty / whitespace → ``{}`` (pass-through). Separators: comma, semicolon,
+    or whitespace. Pair forms: ``tcp:rtu`` or ``tcp=rtu``. Raises ValueError
+    on a non-empty malformed token or out-of-range unit (0–255).
+    """
+    out = {}
+    if text is None:
+        return out
+    s = str(text).strip()
+    if not s:
+        return out
+    for tok in re.split(r"[,;\s]+", s):
+        if not tok:
+            continue
+        if ":" in tok:
+            left, right = tok.split(":", 1)
+        elif "=" in tok:
+            left, right = tok.split("=", 1)
+        else:
+            raise ValueError("unit_map token %r" % tok)
+        left, right = left.strip(), right.strip()
+        if not left.isdigit() or not right.isdigit():
+            raise ValueError("unit_map token %r" % tok)
+        a, b = int(left), int(right)
+        if not (0 <= a <= 255 and 0 <= b <= 255):
+            raise ValueError("unit_map out of range %r" % tok)
+        out[a] = b
+    return out
+
+
+def clamp_timeout_s(value, default=_DEFAULT_TIMEOUT_S):
+    """Coerce UI/config timeout to ``[0.05, 30]`` seconds."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = float(default)
+    if v != v:  # NaN
+        v = float(default)
+    return max(_TIMEOUT_S_MIN, min(_TIMEOUT_S_MAX, v))
+
 # 重同步每片最多丢掉这么多字节后「让片」，避免噪声线上 take_* 反复扫整缓冲拖死 UI。
 # 同一次 feed 会继续扫后续片，直到本批缓冲耗尽或触达硬顶——否则噪声后紧跟的合法帧
 # 会留在缓冲里，从机不再发数据时只能等到超时被清掉（静默丢合法响应）。
@@ -44,10 +92,11 @@ class ModbusGatewayEngine:
     路径则会把 A 的响应广播给 B、C。
     """
 
-    def __init__(self, unit_map=None, timeout_s=1.0, max_queue=MAX_QUEUE,
-                 max_clients=MAX_CLIENTS, recovery_s=RECOVERY_S):
+    def __init__(self, unit_map=None, timeout_s=_DEFAULT_TIMEOUT_S,
+                 max_queue=MAX_QUEUE, max_clients=MAX_CLIENTS,
+                 recovery_s=RECOVERY_S):
         self.unit_map = dict(unit_map or {})
-        self.timeout_s = max(0.05, float(timeout_s))
+        self.timeout_s = clamp_timeout_s(timeout_s)
         self.max_queue = max(1, int(max_queue))
         self.max_clients = max(1, int(max_clients))
         self.recovery_s = max(0.0, float(recovery_s))

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """session_host 契约单测：资源互斥键、后台显示默认、代理与关键多会话不变量。
 
-行为级覆盖（切标签硬拦 / 后台 RX 不喂引擎 / 循环发送自动停）仍在
+行为级覆盖（切标签硬拦 / 后台 RX 不喂引擎 / 循环 per-session）仍在
 ``tests/test_multi_session.py``；本文件钉住可 Qt-free / 轻量复现的契约。
 """
 from __future__ import print_function
@@ -137,8 +137,8 @@ def test_session_proxies_track_active_session(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_exclusive_busy_blocks_leave_and_cycle_stops(monkeypatch, tmp_path):
-    """窗口独占任务硬拦切标签；多条循环发送切走时自动停（leave-safe）。"""
+def test_exclusive_busy_blocks_leave_and_cycle_continues(monkeypatch, tmp_path):
+    """窗口独占任务硬拦切标签；多条循环 per-session，切走后仍继续。"""
     w = _window(monkeypatch, tmp_path, "busy")
     _open_virtual(w)
     s1 = w.active_session()
@@ -148,15 +148,13 @@ def test_exclusive_busy_blocks_leave_and_cycle_stops(monkeypatch, tmp_path):
     assert w.switch_session(s2.id) is False
     assert w.active_session().id == s1.id
 
-    # Multi-send is leave-safe (excluded from exclusive busy): switch stops it.
-    # Only the timer matters for _release_leave_safe_window_tasks — avoid
-    # hard-coding _ms_cycle_seq tuple shape.
+    # Multi-send is excluded from exclusive busy and keeps running after leave.
     monkeypatch.setattr(w, "_io_task_busy", lambda exclude=(): False)
-    w._ms_cycle_timer.start(60000)
-    assert w._ms_cycle_timer.isActive()
+    s1._ms_cycle_timer.start(60000)
+    assert s1._ms_cycle_timer.isActive()
     assert w.switch_session(s2.id) is True
     assert w.active_session().id == s2.id
-    assert not w._ms_cycle_timer.isActive()
+    assert s1._ms_cycle_timer.isActive()
     w._close_all_sessions()
 
 

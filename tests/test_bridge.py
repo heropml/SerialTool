@@ -370,6 +370,15 @@ class FakeTcpServerConn(QObject):
 class GatewayRoutingTests(unittest.TestCase):
     """网关回包必须只发给发起请求的客户端。"""
 
+    def test_set_modbus_gateway_applies_timeout_and_unit_map(self):
+        eng = BridgeEngine()
+        eng.set_modbus_gateway(True, unit_map={1: 7}, timeout_s=2.5)
+        self.assertIsNotNone(eng._gateway)
+        self.assertEqual(eng._gateway.unit_map, {1: 7})
+        self.assertEqual(eng._gateway.timeout_s, 2.5)
+        eng.set_modbus_gateway(False)
+        self.assertIsNone(eng._gateway)
+
     def _setup(self):
         import modbus_master as mm
         import modbus_slave as ms

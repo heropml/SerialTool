@@ -1,7 +1,7 @@
 # CommTool 排期报告
 
-> 基线：**v1.5.2**（2026-08-12）  
-> 综合：`docs/TODO.md` 执行版路线图、全景审查报告、仓库事实核对后的取舍结论。  
+> 基线：**v1.5.3**（2026-08-12）  
+> 综合：`docs/TODO.md`、阶段 A/B 收口事实、发版后路线图复核。  
 > 产品定位不变：**轻量、稳定、好用的串口/网络协议调试工具**；闭环止于「预设 → 自动化 → 记录 → 定位 → 报告」。
 
 ---
@@ -13,7 +13,7 @@
 | 下一阶段主线 | 可信度 + 体验 + 跨平台回归，**不堆大功能** |
 | P2 | CLI / REST / 插件 **继续暂缓** |
 | 工程债 | 只排有明确 ROI 的项；不为指标而洁癖 |
-| 版本策略 | 阶段 A 可不升版；阶段 B → **v1.5.3**；大功能/P2 才考虑 v1.6 |
+| 版本策略 | 阶段 A/B → **v1.5.3 已发**；打磨向 → **v1.5.4**；大功能/P2 才考虑 v1.6 |
 
 ---
 
@@ -21,13 +21,13 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.5.2` | Win Setup/onefile + macOS DMG（`url_mac` 已启用） |
-| 测试 | **1433 passed / 11 skipped** | CI 仍仅 Windows offscreen |
-| `main_window.py` | ~11852 行 / ~546 方法 | S-2 55 knives **已收口**；壳层有意保留 |
-| 最长函数 | `apply_style` ~403 | 其次 `__init__` ~317、`_apply_language` ~189 |
-| `except Exception` | ~247 宽泛 / ~17 静默 | 静默热点：`plot_dialog`、`session_host` |
-| 多会话 | `SessionHostMixin` | `test_multi_session` 有行为覆盖，缺契约单测文件 |
-| 功能路线 | P0 / P1 / v1.4 / v1.5 / v1.5.2 | **均已收口** |
+| 发布版 | `comm-v1.5.3` | Win Setup/onefile；`url_mac` 待 Mac 协作者补门禁 |
+| 测试 | **~1465+ passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
+| `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
+| 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
+| `except Exception` | 宽泛仍多 / 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
+| 多会话 | `SessionHostMixin` + 契约单测 | `test_session_host` / `test_multi_session` |
+| 功能路线 | P0 / P1 / v1.4 / v1.5 / v1.5.2 / v1.5.3 | **均已收口** |
 
 审查纠偏（避免排错）：
 
@@ -72,16 +72,16 @@
 
 | # | 选项 | 量 | 何时选 | 状态 |
 |---|---|---|---|---|
-| **B4a** | 多条循环发送 per-session | 1–2d | 与定时发送语义对齐 | 可选未做 |
-| **B4b** | 网关 UI 暴露 timeout / unit_map | 0.5–1d | 产线网关要可配映射/超时 | 可选未做 |
+| **B4a** | 多条循环发送 per-session | 1–2d | 与定时发送语义对齐 | **DONE**（会话级定时器；切标签不停） |
+| **B4b** | 网关 UI 暴露 timeout / unit_map | 0.5–1d | 产线网关要可配映射/超时 | **DONE**（桥接对话框 + 持久化） |
 | **B4c** | README 补多会话边界 3–5 条 | 0.2d | 成本最低的体验补强 | **DONE**（本轮选型） |
 
 ### 4.3 按痛点可选
 
 | # | 项 | 量 | 完成标准 |
 |---|---|---|---|
-| **B5** | 拆 `apply_style` / `_apply_language` | 1–2d | 抽出 QSS/文案表；薄包装；**不**重启 55 knives 式全仓搬家 |
-| **B6** | 宽泛 except 抽样收敛 | 1d | 热点路径加类型或 debug；禁止为指标把吞异常改成炸 UI |
+| **B5** | 拆 `apply_style` / `_apply_language` | 1–2d | 抽出 QSS/文案表；薄包装；**不**重启 55 knives 式全仓搬家；**DONE**（`app_style` / `i18n_ui`） |
+| **B6** | 宽泛 except 抽样收敛 | 1d | 热点路径加类型或 debug；禁止为指标把吞异常改成炸 UI；**首批**已收 `updater` / `serial_io` / `net_io` 端点与 I/O |
 
 ---
 
@@ -112,17 +112,19 @@
 
 ## 7. 推荐执行顺序
 
-1. ~~**A1** 文档真源 + **A5** requirements 拆分~~ **DONE（2026-08-12）**  
-2. ~~**A2** split 抽取 + **A3** i18n 全量对拍~~ **DONE**  
-3. ~~**A4** session_host 契约单测 + **A6** 静默复核~~ **DONE**（静默 pass ~17→9）  
-4. ~~**B1** macOS CI 烟雾~~ + ~~**B2/B3** ruff/pre-commit + cov 收集~~ + ~~**B4c** README 多会话边界~~ **DONE（2026-08-12）**  
-5. **B4a** 循环发送 per-session / **B4b** 网关 UI（可选，未做）  
-6. 按需 **B5/B6**；阶段 C 仅按触发条件启动  
+1. ~~**A1–A6 / B1–B3 / B4c**~~ **DONE**（含 v1.5.3 发版与 Windows CI 隔离加固）  
+2. **v1.5.4 打磨（无产品痛点时的默认序）**  
+   1. ~~**updater Windows 路径单测**~~（`tests/test_updater_win.py`）  
+   2. ~~**B6 首批**~~（`updater` / `serial_io` / `net_io` 类型收窄；`main_window` 仍多，后续按热点再抽）  
+   3. ~~**B4b** 网关 UI timeout / unit_map~~；~~**B4a** 循环 per-session~~  
+   4. ~~**B5** 薄拆 `apply_style` / `_apply_language`~~（`src/app_style.py` + `src/i18n_ui.py`）  
+3. **不上**覆盖率硬门槛（B3 只收集，见 §6）  
+4. 阶段 C / P2 / PyQt6 仅按触发条件启动  
 
 ---
 
 ## 8. 与 `docs/TODO.md` 的关系
 
 - **历史功能池 / P0–P1 / v1.4–v1.5 备查** → 仍以 `TODO.md` 为准。  
-- **v1.5.2 之后「接下来做什么」** → 以本文件阶段 A/B/C 为准。  
+- **v1.5.3 之后「接下来做什么」** → 以本文件 §7 与阶段 C 为准。  
 - 完成 A1 时应把 `TODO.md` 过时数字与「Next up is P2」类表述一并校正，避免双真源。

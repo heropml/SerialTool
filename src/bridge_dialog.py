@@ -24,6 +24,7 @@ from net_io import (
     TcpServerConn, TcpClientConn, UdpConn,
     ERR_CONN_TIMEOUT, local_ipv4_list, is_valid_ip,
 )
+from modbus_gateway import parse_unit_map, clamp_timeout_s
 from theme import chrome_for
 from widgets import IOSSwitch
 from fonts import localize_qss
@@ -670,6 +671,21 @@ class BridgeDialog(QDialog):
 
         self.chk_modbus_gw = QCheckBox()
         self.chk_modbus_gw.setObjectName('BgGwCheck')
+        self.chk_modbus_gw.toggled.connect(self._sync_gw_controls)
+
+        self.lbl_gw_timeout = QLabel()
+        self.lbl_gw_timeout.setObjectName("BgStat")
+        self.ed_gw_timeout = QLineEdit("1.0")
+        self.ed_gw_timeout.setObjectName("BgGwField")
+        self.ed_gw_timeout.setFixedWidth(52)
+        self.ed_gw_timeout.setAlignment(Qt.AlignCenter)
+
+        self.lbl_gw_unit_map = QLabel()
+        self.lbl_gw_unit_map.setObjectName("BgStat")
+        self.ed_gw_unit_map = QLineEdit()
+        self.ed_gw_unit_map.setObjectName("BgGwField")
+        self.ed_gw_unit_map.setMinimumWidth(120)
+        self.ed_gw_unit_map.setPlaceholderText("1:7, 2:10")
 
         row_ctrl = QHBoxLayout()
         row_ctrl.setSpacing(10)
@@ -682,6 +698,15 @@ class BridgeDialog(QDialog):
         row_ctrl.addWidget(self.btn_stop)
         row_ctrl.addWidget(self.btn_help)
         root.addLayout(row_ctrl)
+
+        row_gw = QHBoxLayout()
+        row_gw.setSpacing(8)
+        row_gw.addWidget(self.lbl_gw_timeout)
+        row_gw.addWidget(self.ed_gw_timeout)
+        row_gw.addWidget(self.lbl_gw_unit_map)
+        row_gw.addWidget(self.ed_gw_unit_map, 1)
+        root.addLayout(row_gw)
+        self._sync_gw_controls()
 
         # ── 流量日志（section 标签 + 工具栏 + 文本框）──
         self.lbl_log_section = QLabel()
@@ -763,8 +788,20 @@ class BridgeDialog(QDialog):
 
         self.engine.set_connection(0, c_a)
         self.engine.set_connection(1, c_b)
+        gw_on = bool(
+            getattr(self, "chk_modbus_gw", None) and self.chk_modbus_gw.isChecked())
+        unit_map = {}
+        timeout_s = 1.0
+        if gw_on:
+            try:
+                unit_map = parse_unit_map(self.ed_gw_unit_map.text())
+            except ValueError:
+                self.app.toast(self.app._t("bg_gw_unit_map_bad"), error=True)
+                return
+            timeout_s = clamp_timeout_s(self.ed_gw_timeout.text())
+            self.ed_gw_timeout.setText(str(timeout_s))
         self.engine.set_modbus_gateway(
-            bool(getattr(self, "chk_modbus_gw", None) and self.chk_modbus_gw.isChecked()))
+            gw_on, unit_map=unit_map, timeout_s=timeout_s)
         if self.engine.start():
             self._log_to_view("Bridge started")
         else:
@@ -774,12 +811,22 @@ class BridgeDialog(QDialog):
         if self.engine.is_active():
             self.engine.stop("User stopped")
 
+    def _sync_gw_controls(self, *_args):
+        """Gateway options editable only when checked and bridge is idle."""
+        idle = not self.engine.is_active()
+        self.chk_modbus_gw.setEnabled(idle)
+        on = idle and self.chk_modbus_gw.isChecked()
+        for w in (self.lbl_gw_timeout, self.ed_gw_timeout,
+                  self.lbl_gw_unit_map, self.ed_gw_unit_map):
+            w.setEnabled(on)
+
     def _on_bridge_started(self):
         self.btn_start.setVisible(False)
         self.btn_stop.setVisible(True)
         self.lbl_bridge_status.setText(self.app._t("bg_bridging"))
         self.panel_a.set_settings_enabled(False)
         self.panel_b.set_settings_enabled(False)
+        self._sync_gw_controls()
         refresh = getattr(self.app, "_refresh_workspace_statuses", None)
         if refresh is not None:
             refresh()
@@ -790,6 +837,7 @@ class BridgeDialog(QDialog):
         self.lbl_bridge_status.setText(self.app._t("bg_stopped_status"))
         self.panel_a.set_settings_enabled(True)
         self.panel_b.set_settings_enabled(True)
+        self._sync_gw_controls()
         refresh = getattr(self.app, "_refresh_workspace_statuses", None)
         if refresh is not None:
             refresh()
@@ -889,6 +937,12 @@ class BridgeDialog(QDialog):
         if hasattr(self, "chk_modbus_gw"):
             self.chk_modbus_gw.setText(t("bg_modbus_gw"))
             set_tooltip(self.chk_modbus_gw, t("bg_modbus_gw_tip"))
+        if hasattr(self, "lbl_gw_timeout"):
+            self.lbl_gw_timeout.setText(t("bg_gw_timeout"))
+            set_tooltip(self.ed_gw_timeout, t("bg_gw_timeout_tip"))
+            self.lbl_gw_unit_map.setText(t("bg_gw_unit_map"))
+            set_tooltip(self.ed_gw_unit_map, t("bg_gw_unit_map_tip"))
+            self.ed_gw_unit_map.setPlaceholderText(t("bg_gw_unit_map_ph"))
         self.btn_stop.setText(t("bg_stop"))
         self.sw_log.setText(t("bg_log_enable"))
         self.sw_log_hex.setText(t("bg_log_hex"))
@@ -964,7 +1018,7 @@ class BridgeDialog(QDialog):
                 border: 1px solid {separator}; border-radius: 4px;
                 font-family: monospace; font-size: 11px;
             }}
-            QLineEdit#BgMaxLines {{
+            QLineEdit#BgMaxLines, QLineEdit#BgGwField {{
                 background-color: {input_bg}; color: {text};
                 border: 1px solid {separator}; border-radius: 3px;
                 padding: 2px 4px; font-family: monospace; font-size: 11px;
@@ -1043,6 +1097,14 @@ class BridgeDialog(QDialog):
         max_lines = max(1, min(100000, max_lines))
         self.ed_max_lines.setText(str(max_lines))
         self.txt_log.setMaximumBlockCount(max_lines)
+        if hasattr(self, "chk_modbus_gw"):
+            self.chk_modbus_gw.setChecked(
+                s.value("bridge/modbus_gw", False, bool))
+            self.ed_gw_timeout.setText(str(clamp_timeout_s(
+                s.value("bridge/gw_timeout_s", "1.0"))))
+            self.ed_gw_unit_map.setText(
+                str(s.value("bridge/gw_unit_map", "") or ""))
+            self._sync_gw_controls()
         geo = s.value("bridge/geometry")
         if geo:
             self.restoreGeometry(geo)
@@ -1055,6 +1117,12 @@ class BridgeDialog(QDialog):
         s.setValue("bridge/log_enabled", self.sw_log.isChecked())
         s.setValue("bridge/log_hex", self.sw_log_hex.isChecked())
         s.setValue("bridge/log_max_lines", int(self.ed_max_lines.text()))
+        if hasattr(self, "chk_modbus_gw"):
+            s.setValue("bridge/modbus_gw", self.chk_modbus_gw.isChecked())
+            s.setValue(
+                "bridge/gw_timeout_s",
+                str(clamp_timeout_s(self.ed_gw_timeout.text())))
+            s.setValue("bridge/gw_unit_map", self.ed_gw_unit_map.text().strip())
         s.setValue("bridge/geometry", self.saveGeometry())
 
     def _apply_max_log_lines(self):

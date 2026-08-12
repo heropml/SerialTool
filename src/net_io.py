@@ -66,7 +66,7 @@ def local_ipv4_list():
                 s = addr.toString()
                 if s and s not in ips:
                     ips.append(s)
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, OSError):
         _log.debug("枚举本机 IPv4 地址失败，回退到默认地址表", exc_info=True)
     if "127.0.0.1" not in ips:
         ips.append("127.0.0.1")
@@ -154,7 +154,7 @@ def _find_interface(ip):
             for entry in nif.addressEntries():
                 if entry.ip().toString() == ip:
                     return nif
-    except Exception:
+    except (RuntimeError, TypeError, ValueError, OSError):
         _log.debug("按 IP %s 查找网卡失败，回退到默认路由", ip, exc_info=True)
     return None
 
@@ -337,7 +337,7 @@ class TcpServerConn(NetConn):
             return 0
         try:
             return int(self._server.serverPort())
-        except Exception:
+        except (RuntimeError, TypeError, ValueError):
             return 0
 
 
@@ -446,7 +446,7 @@ class TcpClientConn(NetConn):
             if not ip or port <= 0:
                 return None
             return (ip, port)
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError):
             return None
 
 
@@ -537,7 +537,7 @@ class UdpConn(NetConn):
             return 0
         try:
             return int(self._sock.localPort())
-        except Exception:
+        except (RuntimeError, TypeError, ValueError):
             return 0
 
     @property
@@ -555,7 +555,7 @@ class UdpConn(NetConn):
                 ip = ip[7:]
             port = int(self._last_peer[1])
             return (ip, port) if ip and port > 0 else None
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError, IndexError):
             return None
 
     def local_endpoint(self):
@@ -578,7 +578,7 @@ class UdpConn(NetConn):
             if not ip or port <= 0:
                 return None
             return (ip, port)
-        except Exception:
+        except (RuntimeError, TypeError, ValueError, AttributeError, OSError):
             return None
 
 
