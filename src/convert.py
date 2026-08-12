@@ -38,6 +38,45 @@ def bytes_to_text(b, encoding="utf-8"):
     return b.decode(encoding, errors="backslashreplace")
 
 
+def normalize_qtext_selection(s):
+    """QTextEdit.selectedText 用 U+2029 表示段落分隔，转成普通换行便于再编码。"""
+    return str(s or "").replace("\u2029", "\n")
+
+
+def selection_bytes_for_text_convert(hex_bytes, raw_selected):
+    """右键「转为文本」用的字节：优先 HEX 视图提取结果，否则把选区当 HEX 字符串解析。
+
+    hex_bytes：已由界面从 HEX/转储行提取的 bytes，或 None（选区含非 HEX 视图）。
+    返回 bytes；两边都解析不出时返回 None。
+
+    空白选区：strip 后空 → None（空白不是合法 HEX）。与「转为 HEX」不对称是有意的——
+    那边把空白当文本编码（空格→0x20）。
+    """
+    if hex_bytes:
+        return bytes(hex_bytes)
+    raw = normalize_qtext_selection(raw_selected).strip()
+    if not raw:
+        return None
+    try:
+        data = hex_to_bytes(raw)
+    except ValueError:
+        return None
+    return data or None
+
+
+def selection_bytes_for_hex_convert(hex_bytes, raw_selected, encoding="utf-8"):
+    """右键「转为 HEX」用的字节：HEX 视图提取优先（规范化输出）；否则按文本编码。
+
+    空白选区不 strip：空格等是合法文本，编码为 0x20…（与「转为文本」的 HEX 解析路径不同）。
+    """
+    if hex_bytes:
+        return bytes(hex_bytes)
+    raw = normalize_qtext_selection(raw_selected)
+    if raw == "":
+        return None
+    return text_to_bytes(raw, encoding)
+
+
 def dec_to_bytes(s):
     """'1 65 255' → bytes；每个数须 0..255，逗号或空白分隔；越界/非数 raise ValueError。"""
     out = bytearray()

@@ -33,7 +33,7 @@ from i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
 from fonts import ui_font, mono_font, localize_qss
 from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
-                     SuffixLineEdit)
+                     SuffixLineEdit, find_combo_ancestor, should_block_combo_wheel)
 
 _log = logging.getLogger(__name__)
 
@@ -610,8 +610,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._tooltip_popup = None
         self._sel_chk_popup = None
         self._sel_chk_popup_payload = None
-        if self._manual_resize or self._mac_tooltip:
-            QApplication.instance().installEventFilter(self)
+        # 全平台装 app 级过滤器：主界面 QComboBox 禁滚轮误触；Linux 缩放 / macOS tooltip 复用同一入口。
+        QApplication.instance().installEventFilter(self)
 
         # Multi-session host must exist before proxy attribute assigns.
         self._init_session_host()
@@ -1223,8 +1223,10 @@ class CommTool(SessionHostMixin, QMainWindow):
     def build_receive_card(self):
         return _receive_card.build(self)
 
+    _CTX_CONVERT_MAX = 64 * 1024
+
     def _recv_context_menu(self, global_pos):
-        """数据区右键菜单：复制 / 全选 / 清空 / 保存，文字跟随程序语言。"""
+        """数据区右键菜单：复制 / 转换 / 全选 / 清空 / 保存，文字跟随程序语言。"""
         menu = QMenu(self.txt_recv)
         c = chrome_for(self._theme_id())
         menu.setStyleSheet(f"""
@@ -1249,6 +1251,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         act_save = menu.addAction(self._t("save"))
         act_save.setEnabled(has_text)
         menu.addSeparator()
+        act_to_text = menu.addAction(self._t("ctx_to_text"))
+        act_to_text.setEnabled(has_sel)
+        act_to_hex = menu.addAction(self._t("ctx_to_hex"))
+        act_to_hex.setEnabled(has_sel)
+        menu.addSeparator()
         act_export = menu.addAction(self._t("cfg_export"))
         act_import = menu.addAction(self._t("cfg_import"))
         chosen = menu.exec_(global_pos)
@@ -1260,12 +1267,59 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.import_config()
         elif chosen is act_copy:
             self.txt_recv.copy()
+        elif chosen is act_to_text:
+            self._ctx_convert_selection(to_hex=False)
+        elif chosen is act_to_hex:
+            self._ctx_convert_selection(to_hex=True)
         elif chosen is act_all:
             self.txt_recv.selectAll()
         elif chosen is act_clear:
             self.clear_recv()
         elif chosen is act_save:
             self.save_recv()
+
+    def _ctx_convert_selection(self, to_hex):
+        """选区 → 文本或 HEX，结果写入剪贴板（不改写数据区历史）。"""
+        cur = self.txt_recv.textCursor()
+        if not cur.hasSelection():
+            return
+        raw = cur.selectedText()
+        # 文本→HEX 会走整段 encode：先按字符数卡上限，避免 Ctrl+A 巨选区卡 GUI。
+        raw_norm = convert.normalize_qtext_selection(raw)
+        if len(raw_norm) > self._CTX_CONVERT_MAX:
+            self.toast(self._t("sel_chk_too_big",
+                               n=self._CTX_CONVERT_MAX // 1024), error=True)
+            return
+        extracted = self._selected_hex_bytes(cur, limit=self._CTX_CONVERT_MAX)
+        if extracted is not None and len(extracted) > self._CTX_CONVERT_MAX:
+            self.toast(self._t("sel_chk_too_big",
+                               n=self._CTX_CONVERT_MAX // 1024), error=True)
+            return
+        try:
+            if to_hex:
+                data = convert.selection_bytes_for_hex_convert(
+                    extracted, raw, encoding=self._send_codec())
+                kind = self._t("ctx_to_hex")
+            else:
+                data = convert.selection_bytes_for_text_convert(extracted, raw)
+                kind = self._t("ctx_to_text")
+            if not data:
+                self.toast(self._t("ctx_convert_empty"), error=True)
+                return
+            # 两路统一：编码/提取后的字节数也不得超过上限（再生成 HEX 文本会再膨胀）。
+            if len(data) > self._CTX_CONVERT_MAX:
+                self.toast(self._t("sel_chk_too_big",
+                                   n=self._CTX_CONVERT_MAX // 1024), error=True)
+                return
+            out = (convert.bytes_to_hex(data) if to_hex
+                   else convert.bytes_to_text(data, self._send_codec()))
+        except (ValueError, UnicodeError) as e:
+            self.toast(self._t("ctx_convert_fail", e=e), error=True)
+            return
+        QApplication.clipboard().setText(out)
+        # 弹窗展示完整转换结果，同时已写入剪贴板，方便接着粘贴/核对。
+        self._info_dlg(kind, out)
+        self.toast(self._t("ctx_convert_copied", kind=kind))
 
     # ----- 数据区：滚动锁定 + 单击行高亮 -----
     def eventFilter(self, obj, event):
@@ -1275,6 +1329,12 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 用它当「实例是否可用」的哨兵：没有就直接放行，别处理。
         if not hasattr(self, "_mac_tooltip"):
             return False
+        # 主界面下拉框：未展开时吞滚轮，防止侧栏/发送区悬停滚动误改波特率等。
+        if event.type() == QEvent.Wheel:
+            combo = find_combo_ancestor(obj)
+            if (combo is not None and self.isAncestorOf(combo)
+                    and should_block_combo_wheel(combo)):
+                return True
         # 选区校验结果使用应用内卡片，不交给各平台样式差异很大的原生 QToolTip。
         if obj is getattr(self, "lbl_sel_chk", None):
             et = event.type()

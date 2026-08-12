@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.5.2",
+  "app_version": "1.5.3",
   "name": "Sensor CSV Demo",
   "metadata": {
     "device_type": "sensor",

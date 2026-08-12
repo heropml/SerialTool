@@ -1,47 +1,38 @@
-**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.5.2 正式版**：绘图与仪表盘可视化扩展、Excel/xlsx 导出、PCAP/pcapng 增强、回放驱动真实 TX，以及一轮 High/Medium/Low 稳定性打磨。
+**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.5.3 正式版**：主界面防误触滚轮、数据区选区转文本/HEX，以及阶段 A/B 工程打磨与 CI 加固。
 
-## v1.5.2 正式版
+## v1.5.3 正式版
 
-### 绘图与仪表盘
-- 波形图：视图模式波形 / XY / 直方图；双 Y 轴与光标统计（min/max/mean）；`plot_stats` 有限值过滤与安全柱宽
-- 工程持久化 `plot_view` / `plot_dual_y`
-- 仪表盘控件：Number / Gauge / LED / Progress（`dash_widgets` + `dash_widget` 工程字段）
-- 寄存器来源通道的告警 level 不被文本 `feed` 清掉，避免阈值闪烁
+### 主界面防误触
+- 主窗口内的 `QComboBox`（含其内部编辑框）在弹出列表未打开时**忽略鼠标滚轮**，避免划过参数区时误改波特率 / 类型等
+- 应用级 `eventFilter` 常驻安装；仅拦截「主窗口祖先 + 未弹列表」路径，不影响其它对话框与已展开的下拉
 
-### 导出与抓包互通
-- 序列报告 / 结构化记录支持 **Excel/xlsx**（`openpyxl`）；公式样单元格按文本落盘
-- PCAP：**TCP Client/Server（单客户端）、UDP、UDP 组播** → 经典 `.pcap` + `.pcapng`；通配 `0.0.0.0` 解析为具体主机 IPv4；串口等仍用 `.ctrec`
+### 数据区选区转换
+- 接收区右键新增 **转为文本** / **转为 HEX**：按当前选区做 HEX↔文本互转
+- 结果在信息对话框中展示，并**复制到剪贴板**；成功/失败/空选均有 toast
+- 单次转换上限 **64 KiB**（编码前字符数与编码后字节数），防止超大选区卡 UI
+- 转 HEX 时按文本编码；转文本时对选区做 HEX 清洗解析（空白剥离为有意行为）
 
-### 回放驱动真实 TX
-- `Player(mode=drive_tx)` + UI 危险确认（非默认；默认仍 Virtual 注入 RX）
-- 连续失败暂停、同 tick 立即停发；部分写视为失败；末帧 abort+finished 优先清理占用
-- 与 Modbus / 自动应答互斥；循环/最快需二次确认
-
-### 多会话与示例
-- 切标签时**自动停止多条循环发送**（toast）；脚本/Modbus 等仍硬拦切标签
-- 示例工程扩展：NMEA / 定长帧头 / 传感器 CSV / TCP Client / 关键字高亮 / 仪表盘等
-- 工作区与会话条补充多会话边界说明（`workspace_terminal_tip` / `session_list_tip`）
-
-### 稳定性与防御（审计收尾）
-- High/Medium：结构化回放过滤同步、串口重配竞态、`stop` 短等待、陈旧 RX 按连接身份丢弃、侧信道 warning+节流 toast、TCP Server 广播快照、搜索防抖、CSV 打开失败不静默停录、报告步骤号、keyword mode 白名单、MultiSend 安全 int、`.ctrec` 头扫描、`addr_base` 不静默钳位等
-- Low：日志 toast `{path}`、HEX 搜索与触发器清洗对齐、`sequence_split` 进 CFG、`open_conn` 替换守卫、TCP/UDP 失败路径 `deleteLater`、`pytest` 写入开发依赖
-- `compile_regex` 对所有格量词仍保守拒绝（有意保留）
+### 工程与 CI（阶段 A/B）
+- 文档真源与依赖拆分、split/i18n 契约、session_host 契约单测、静默 `except` 预算门禁
+- macOS CI 烟雾（offscreen 子集）、`ruff` 门禁、覆盖率收集（先不设硬门槛）
+- README 多会话边界说明；路由契约 / ruff 注释与 macOS smoke 依赖精简等收口
 
 ### 产品边界
 - P2（CLI / REST / 插件 dissector）继续暂缓
 - 触发联动发送仍不做；完整 VT100 / BLE·HID·CAN 等不在范围
+- 多条循环发送 per-session、网关 UI 暴露 timeout/unit_map 仍为可选未做
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
 
 ### 测试
-- 基线：**1433 passed / 11 skipped / 295 subtests**
+- 基线：**1464 passed / 11 skipped / 295 subtests**（CI 在既有 1454 上叠加本版相关用例）
 
 ## 下载
 
 | 形式 | 文件 | 说明 |
 |------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.5.2.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.5.2.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.5.2.dmg` | arm64；拖入「应用程序」。资产经门禁校验后才写入更新清单；未公证，首次打开见下方说明 |
+| Windows 安装版 | `CommTool_Setup_v1.5.3.exe` | 推荐，向导安装 + 桌面快捷方式 |
+| Windows 单文件版 | `CommTool_v1.5.3.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
+| macOS（Apple Silicon）| `CommTool_v1.5.3.dmg` | arm64；拖入「应用程序」。资产经门禁校验后才写入更新清单；未公证，首次打开见下方说明 |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 

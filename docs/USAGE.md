@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.3](#whats-new-in-v153)
 - [What's New in v1.5.2](#whats-new-in-v152)
 - [What's New in v1.5.1](#whats-new-in-v151)
 - [What's New in v1.5.0](#whats-new-in-v150)
@@ -38,6 +39,17 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+
+---
+
+## What's New in v1.5.3
+
+UX polish and engineering gates on the v1.5.2 baseline:
+
+- **Combo anti-misclick** — mouse wheel over main-window combo boxes is ignored while the popup is closed (baud / type / etc.).
+- **Selection convert** — Data-area context menu: **Convert to Text** / **Convert to HEX**; result shown in a dialog and copied to the clipboard (64 KiB cap).
+- **Phase A/B** — contract tests, silent-`except` budget, macOS CI smoke, ruff, coverage upload, multi-session boundary notes in README.
+- **Tests** — 1464 passed / 11 skipped / 295 subtests.
 
 ---
 
@@ -664,7 +676,7 @@ RX and TX share one view; arrows indicate direction:
 
 **Save / Clear** — buttons at the bottom of the card; save filename is `save_log_YYYYMMDD_HHMMSS.log`
 
-**Right-click menu** — right-click the data area for a localized context menu (**Copy / Select All / Clear / Save**) that follows the app language
+**Right-click menu** — localized context menu: **Copy / Select All / Clear / Save**, plus **Convert to Text** / **Convert to HEX** for the current selection (result dialog + clipboard; 64 KiB cap)
 
 ### Sending Data
 
@@ -834,7 +846,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.5.0`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.5.3`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

@@ -434,6 +434,30 @@ class CollapsibleSection(QWidget):
         return super().eventFilter(obj, ev)
 
 
+# ============== QComboBox 滚轮误触防护 ==============
+def find_combo_ancestor(obj):
+    """从事件目标向上找到所属 QComboBox（含内部 lineEdit / viewport）。"""
+    w = obj
+    while w is not None:
+        if isinstance(w, QComboBox):
+            return w
+        w = w.parent() if isinstance(w, QWidget) else None
+    return None
+
+
+def should_block_combo_wheel(combo):
+    """下拉列表未展开时吞掉滚轮，避免悬停误改选项；展开后仍可滚列表。"""
+    if combo is None:
+        return False
+    try:
+        view = combo.view()
+        if view is not None and view.isVisible():
+            return False
+    except RuntimeError:
+        return True
+    return True
+
+
 # ============== 标签 ==============
 def make_label(text, size=11, bold=False, color=COLOR_TEXT):
     lbl = QLabel(text)
