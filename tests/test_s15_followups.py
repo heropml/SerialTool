@@ -9,7 +9,7 @@ import csv
 from pathlib import Path
 
 import pytest
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QColor, QTextCharFormat, QTextCursor
 
@@ -17,6 +17,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 _APP = QApplication.instance() or QApplication([])
+_TEST_WINDOWS = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_test_windows():
+    """Destroy each test window before its Qt event loop can leak onward."""
+    yield
+    for window in reversed(_TEST_WINDOWS):
+        window._close_all_sessions()
+        window.deleteLater()
+    _TEST_WINDOWS.clear()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def _quiet(monkeypatch):
@@ -37,6 +49,7 @@ def _window(monkeypatch, tmp_path, profile="feat"):
         staticmethod(lambda profile="": str(ini)))
     w = CommTool(profile)
     w.settings = QSettings(str(ini), QSettings.IniFormat)
+    _TEST_WINDOWS.append(w)
     return w
 
 

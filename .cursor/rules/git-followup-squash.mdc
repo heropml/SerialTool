@@ -1,0 +1,14 @@
+---
+description: Follow-up fixes to a just-pushed commit must squash/amend, not stack new commits
+alwaysApply: true
+---
+
+# Git follow-ups: squash into previous, don't stack
+
+On branch `CommTool` (and when the user asks to merge into the last commit / 合并上一个提交):
+
+- If the change is a **fix/tweak of the immediately previous commit** (CI red-fix, docs typo, release follow-up, “刚才那笔的问题”), **do not** create a new standalone commit on top.
+- Prefer: `git reset --soft HEAD~1` + amend, or `git commit --amend`, then **`git push --force-with-lease`** to **github** and **gitee**.
+- Only use a new commit when the work is a **separate** concern, or the previous commit is an unrelated release the user wants kept distinct.
+- Never force-push `main` / `master` unless the user explicitly names that branch.
+- When the user already said「合并到上一个 / 强制推送」, treat that as explicit amend + force-with-lease authorization for the current branch.

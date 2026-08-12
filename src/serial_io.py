@@ -314,13 +314,22 @@ class PortScannerThread(QThread):
     def run(self):
         while self._running:
             try:
-                self.scan_complete.emit(_scan_ports())
+                ports = _scan_ports()
+                # Skip emit after stop()/teardown — emitting into a dying GUI
+                # thread is a common Windows access-violation source in CI.
+                if self._running:
+                    self.scan_complete.emit(ports)
             except Exception:
                 _log.debug("port scan failed", exc_info=True)
-            self.msleep(self._interval)
+            if self._running:
+                self.msleep(self._interval)
 
     def stop(self):
         self._running = False
+        try:
+            self.scan_complete.disconnect()
+        except (TypeError, RuntimeError):
+            pass
         self.wait(2000)
 
 

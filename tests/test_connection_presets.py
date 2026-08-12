@@ -74,7 +74,7 @@ def test_project_resources_include_connection_presets():
 def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication, QPushButton
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
     from theme import chrome_for
@@ -97,8 +97,8 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     name_dlg = w._build_connection_preset_name_dialog()
     assert name_dlg.windowTitle() == w._t("cpreset_save_title")
     assert name_dlg.textValue() == w._t("cpreset_new_name")
-    assert name_dlg.okButtonText() == "确定"
-    assert name_dlg.cancelButtonText() == "取消"
+    assert name_dlg.findChild(QPushButton, "MsPrimaryBtn").text() == "确定"
+    assert name_dlg.findChild(QPushButton, "MsGhostBtn").text() == "取消"
     assert chrome_for(w._theme_id())["accent"] in name_dlg.styleSheet()
     name_dlg.deleteLater()
     w.cb_proto.setCurrentText("TCP Client")

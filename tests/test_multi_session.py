@@ -14,9 +14,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 
 _APP = QApplication.instance() or QApplication([])
+_TEST_WINDOWS = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_test_windows():
+    """Delete each test window so its Qt timers cannot leak into the next test."""
+    yield
+    for window in reversed(_TEST_WINDOWS):
+        window._close_all_sessions()
+        window.deleteLater()
+    _TEST_WINDOWS.clear()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def _quiet(monkeypatch):
@@ -39,6 +51,7 @@ def _window(monkeypatch, tmp_path, profile="multi-sess"):
     w.settings = QSettings(str(ini), QSettings.IniFormat)
     if hasattr(w, "sw_hexdump"):
         w.sw_hexdump.setChecked(False)
+    _TEST_WINDOWS.append(w)
     return w
 
 

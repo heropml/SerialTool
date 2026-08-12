@@ -14,11 +14,17 @@ on:
         type: boolean
         default: false
 
+# 同分支连推时取消旧 run，避免 Windows pytest 偶发卡死占满排队、黄点挂很久。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-pytest:
     name: Windows + offscreen pytest
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Isolated PyQt test processes trade startup time for deterministic teardown.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -35,15 +41,32 @@ jobs:
       - name: Ruff (critical rules only)
         run: python -m ruff check --config ruff.toml src tests scripts
 
-      - name: Run full suite (offscreen) + coverage
+      - name: Run test files in isolated processes + coverage
         env:
           QT_QPA_PLATFORM: offscreen
-        run: >
-          python -m pytest
-          --junitxml=pytest-results.xml
-          --cov=src
-          --cov-report=xml:coverage.xml
-          --cov-report=term-missing:skip-covered
+          # Do not set PYTHONFAULTHANDLER here: on Windows an intermittent
+          # PyQt/serial access violation then aborts the whole pytest process
+          # (exit 1 in ~30s) instead of isolating the flaky test.
+        run: |
+          Get-ChildItem tests -File -Filter "test_*.py" | ForEach-Object {
+            $testFile = $_.FullName
+            Write-Host "::group::pytest $testFile"
+            python -m pytest $testFile `
+              --timeout=120 `
+              --timeout-method=thread `
+              --junitxml="pytest-results-$($_.BaseName).xml" `
+              --cov=src `
+              --cov-append `
+              --cov-report=
+            $exitCode = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($exitCode -ne 0) {
+              Write-Error "pytest failed for $testFile (exit $exitCode)"
+              exit $exitCode
+            }
+          }
+          python -m coverage xml -o coverage.xml
+          python -m coverage report --skip-covered
 
       - name: Upload pytest report
         if: always()
@@ -51,8 +74,9 @@ jobs:
         with:
           name: pytest-results-windows
           path: |
-            pytest-results.xml
+            pytest-results-*.xml
             coverage.xml
+            .coverage
 
   macos-smoke:
     name: macOS smoke (offscreen subset)
@@ -69,7 +93,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          pip install -r requirements.txt pytest pytest-timeout
 
       - name: Smoke suite
         env:
@@ -83,6 +107,8 @@ jobs:
           tests/test_updater_mac.py
           tests/test_multi_session.py
           -q --tb=short
+          --timeout=120
+          --timeout-method=thread
           --junitxml=pytest-results-macos.xml
 
       - name: Upload macOS smoke report

@@ -6,6 +6,7 @@ pyinstaller>=6.0
 Pillow>=10.0
 pytest>=7.0
 pytest-cov>=4.0
+pytest-timeout>=2.3.1
 # 与 .pre-commit-config.yaml 的 ruff-pre-commit rev 对齐，避免本地/CI 漂移
 ruff>=0.11.2,<0.12
 pre-commit>=3.5

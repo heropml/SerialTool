@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 from PyQt5.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -47,6 +47,7 @@ def _dispose(*windows):
             continue
         window._shutdown()
         window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     _APP.processEvents()
 
 

@@ -8,13 +8,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from PyQt5.QtCore import QSettings  # noqa: E402
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
-from main_window import (CommTool, ANSI_FG_PROP, ANSI_BG_PROP, ROLE_PROP, PROTO_SERIAL,
-                         PROTO_TCP_SERVER, PROTO_UDP, SEND_NO_TARGET)  # noqa: E402
+from main_window import (CommTool, PortScannerThread, ANSI_FG_PROP, ANSI_BG_PROP, ROLE_PROP,
+                         PROTO_SERIAL, PROTO_TCP_SERVER, PROTO_UDP, SEND_NO_TARGET)  # noqa: E402
 from theme import THEMES  # noqa: E402
 import triggers  # noqa: E402
 import ansi as ansi_mod  # noqa: E402
@@ -23,11 +23,26 @@ import json  # noqa: E402
 _WIN = None
 
 
+def _new_window():
+    """ANSI tests do not need real serial enumeration or its worker thread."""
+    with mock.patch.object(PortScannerThread, "start", lambda self: None):
+        return CommTool()
+
+
 def _win():
     global _WIN
     if _WIN is None:
-        _WIN = CommTool()
+        _WIN = _new_window()
     return _WIN
+
+
+def tearDownModule():
+    global _WIN
+    if _WIN is not None:
+        _WIN._close_all_sessions()
+        _WIN.deleteLater()
+        _WIN = None
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def _fmt_at(w, sub, prop=ANSI_FG_PROP):
@@ -651,7 +666,7 @@ class EventFilterLifetimeTests(unittest.TestCase):
         那时 Python 侧属性已清 —— 不加守卫会 AttributeError 崩在半个对象上
         （同进程反复开关窗口时必现，写测试或多窗口场景会踩到）。"""
         for _ in range(3):
-            w = CommTool()
+            w = _new_window()
             w.show()
             _APP.processEvents()
             # 跳过「最小化/退出」模态提示：offscreen 下 dlg.exec_() 无人点击会永久阻塞
