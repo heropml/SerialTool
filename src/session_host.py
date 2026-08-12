@@ -670,7 +670,7 @@ class SessionHostMixin:
             if getattr(s, "_log_file", None) is not None:
                 try:
                     self._close_log_file(session=s, toast=False)
-                except Exception:
+                except (OSError, RuntimeError, TypeError):
                     _log.debug("close session log failed", exc_info=True)
             s.log_wanted = False
         # Floating receive controls are children of the active QTextEdit. Move
@@ -840,12 +840,12 @@ class SessionHostMixin:
         if hasattr(self, "_reposition_to_bottom_btn"):
             try:
                 self._reposition_to_bottom_btn()
-            except Exception:
+            except (RuntimeError, AttributeError, TypeError):
                 _log.debug("reposition to-bottom button failed", exc_info=True)
         if hasattr(self, "_reposition_search_bar"):
             try:
                 self._reposition_search_bar()
-            except Exception:
+            except (RuntimeError, AttributeError, TypeError):
                 _log.debug("reposition search bar failed", exc_info=True)
 
     def _save_ui_into_session(self, session):
@@ -853,7 +853,7 @@ class SessionHostMixin:
             return
         try:
             session.conn_fields = self._capture_connection_fields()
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, AttributeError):
             _log.debug("capture conn fields failed", exc_info=True)
         if hasattr(self, "txt_send"):
             session.send_draft = self.txt_send.toPlainText()
@@ -1226,7 +1226,7 @@ class SessionHostMixin:
         if hasattr(self, "_update_conn_status"):
             try:
                 self._update_conn_status()
-            except Exception:
+            except (RuntimeError, AttributeError, TypeError, ValueError):
                 _log.debug("update conn status after session sync failed",
                            exc_info=True)
 
@@ -1366,7 +1366,8 @@ class SessionHostMixin:
         self._display_context["proto_hl_on"] = False
         try:
             self._on_data_received_impl(data, source=reply_target)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, UnicodeError,
+                AttributeError):
             self._stat_note_rx_error()
             _log.debug("background session RX failed", exc_info=True)
         finally:
@@ -1612,7 +1613,7 @@ class SessionHostMixin:
             return
         try:
             payload = json.loads(str(raw))
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             _log.debug("sessions_v1 JSON parse failed", exc_info=True)
             return
         if not isinstance(payload, list) or not payload:
@@ -1692,7 +1693,7 @@ class SessionHostMixin:
                 if s._log_file is not None:
                     try:
                         self._close_log_file(session=s, toast=False)
-                    except Exception:
+                    except (OSError, RuntimeError, TypeError):
                         _log.debug("shutdown log close failed", exc_info=True)
                 s.log_wanted = False
             s._user_closing = False

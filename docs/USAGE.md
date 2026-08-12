@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.4](#whats-new-in-v154)
 - [What's New in v1.5.3](#whats-new-in-v153)
 - [What's New in v1.5.2](#whats-new-in-v152)
 - [What's New in v1.5.1](#whats-new-in-v151)
@@ -39,6 +40,17 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+
+---
+
+## What's New in v1.5.4
+
+Polish release on the v1.5.3 baseline:
+
+- **Multi-send cycle per-session** — cycle timers belong to each tab; switching tabs leaves background cycles running; editing/switching the shared group refreshes every running cycle (empty seq stops it).
+- **Gateway UI** — bridge dialog exposes slave timeout and Unit ID map (`timeout` / `unit_map`), persisted under `bridge/gw_*`.
+- **Engineering** — `app_style` / `i18n_ui` thin extracts; B6 except narrowing; updater handles truncated HTTP bodies (`IncompleteRead`) so auto-check cannot hang and partial installers are cleaned up.
+- **Boundary** — P2 still deferred; macOS DMG still added by collaborator via `release_macos.sh`.
 
 ---
 
@@ -847,7 +859,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.5.3`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.5.4`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
