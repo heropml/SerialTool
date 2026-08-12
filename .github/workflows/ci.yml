@@ -33,7 +33,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Ruff (critical rules only)
-        run: python -m ruff check src tests scripts
+        run: python -m ruff check --config ruff.toml src tests scripts
 
       - name: Run full suite (offscreen) + coverage
         env:
@@ -83,6 +83,14 @@ jobs:
           tests/test_updater_mac.py
           tests/test_multi_session.py
           -q --tb=short
+          --junitxml=pytest-results-macos.xml
+
+      - name: Upload macOS smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-macos
+          path: pytest-results-macos.xml
 
   windows-soak-nightly:
     name: Nightly soak / disconnect churn

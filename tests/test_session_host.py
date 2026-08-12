@@ -79,12 +79,16 @@ def _quiet(monkeypatch):
 def _window(monkeypatch, tmp_path, profile="sess-host"):
     _quiet(monkeypatch)
     from main_window import CommTool
-    ini = tmp_path / ("%s.ini" % profile)
+
+    def _settings_file(profile_name=""):
+        # Honor profile so two windows in one test do not share lock/ini.
+        name = profile_name or profile or "default"
+        return str(tmp_path / ("%s.ini" % name))
+
     monkeypatch.setattr(
-        CommTool, "_settings_file",
-        staticmethod(lambda profile="": str(ini)))
+        CommTool, "_settings_file", staticmethod(_settings_file))
     w = CommTool(profile)
-    w.settings = QSettings(str(ini), QSettings.IniFormat)
+    w.settings = QSettings(_settings_file(profile), QSettings.IniFormat)
     return w
 
 
@@ -145,8 +149,9 @@ def test_exclusive_busy_blocks_leave_and_cycle_stops(monkeypatch, tmp_path):
     assert w.active_session().id == s1.id
 
     # Multi-send is leave-safe (excluded from exclusive busy): switch stops it.
+    # Only the timer matters for _release_leave_safe_window_tasks — avoid
+    # hard-coding _ms_cycle_seq tuple shape.
     monkeypatch.setattr(w, "_io_task_busy", lambda exclude=(): False)
-    w._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
     w._ms_cycle_timer.start(60000)
     assert w._ms_cycle_timer.isActive()
     assert w.switch_session(s2.id) is True

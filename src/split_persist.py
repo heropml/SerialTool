@@ -43,6 +43,9 @@ def sync_splitter_group(src, peers, *, get_busy, set_busy, on_sizes=None,
         return None
     if expected_len is not None and len(sizes) != int(expected_len):
         return None
+    # 先回调持久化、再 busy：与抽取前各对话框一致。on_sizes 不得再触发
+    # splitterMoved（否则会在 busy 置位前重入）；peer setSizes 失败时 settings
+    # 可能已写入（guard_runtime 下吞 RuntimeError，同旧行为）。
     if on_sizes is not None:
         on_sizes(sizes)
     set_busy(True)

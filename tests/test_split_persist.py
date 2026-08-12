@@ -89,3 +89,51 @@ def test_sync_splitter_group_guards_runtime_and_busy():
         get_busy=lambda: busy["v"],
         set_busy=lambda v: busy.__setitem__("v", v),
     ) is None
+
+
+def test_load_max_size_inclusive_boundary():
+    s = _FakeSettings({"k": "10,100"})
+    assert load_split_sizes(s, "k", 2, max_size=100) == [10, 100]
+    assert load_split_sizes(s, "k", 2, max_size=99) is None
+
+
+def test_sync_expected_len_mismatch_skips():
+    src = _FakeSplit([1, 2, 3])
+    peer = _FakeSplit([9, 9])
+    out = sync_splitter_group(
+        src, [peer],
+        get_busy=lambda: False,
+        set_busy=lambda _v: None,
+        expected_len=2,
+    )
+    assert out is None
+    assert peer.set_calls == []
+
+
+def test_sync_runtime_error_propagates_without_guard():
+    src = _FakeSplit([1, 2], boom=True)
+    try:
+        sync_splitter_group(
+            src, [],
+            get_busy=lambda: False,
+            set_busy=lambda _v: None,
+            guard_runtime=False,
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_sync_peer_runtime_error_propagates_without_guard():
+    src = _FakeSplit([10, 20])
+    peer = _FakeSplit([1, 1], boom=True)
+    try:
+        sync_splitter_group(
+            src, [peer],
+            get_busy=lambda: False,
+            set_busy=lambda _v: None,
+            guard_runtime=False,
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass

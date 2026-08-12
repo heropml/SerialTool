@@ -62,13 +62,15 @@ def test_silent_except_budget_not_increased():
         "silent except:pass budget exceeded %s; all sites=%s"
         % (over, sites))
 
-    # Exact freeze: fixing a silent requires lowering ALLOWED_SILENT.
+    # Exact freeze: fixing a silent requires lowering ALLOWED_SILENT in this file
+    # (deliberate workflow — see module docstring). Do not weaken to "<=".
     under = {name: (actual.get(name, 0), ALLOWED_SILENT[name])
              for name in ALLOWED_SILENT
              if actual.get(name, 0) != ALLOWED_SILENT[name]}
     assert not under, (
-        "silent budget drift %s (update ALLOWED_SILENT if intentional); "
-        "sites=%s" % (under, sites))
+        "silent budget drift %s — edit ALLOWED_SILENT in "
+        "tests/test_silent_except_budget.py if intentional; sites=%s"
+        % (under, sites))
     assert actual_total == allowed_total
 
 
