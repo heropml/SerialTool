@@ -9,7 +9,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PyQt5.QtGui import QWheelEvent
 from PyQt5.QtWidgets import QApplication, QComboBox, QWidget, QVBoxLayout
 
@@ -79,5 +79,7 @@ def test_main_window_filter_blocks_closed_combo_wheel(monkeypatch, tmp_path):
     orphan.addItems(["x", "y"])
     assert w.eventFilter(orphan, _wheel(orphan)) is not True
     orphan.deleteLater()
-    w._close_all_sessions()
-    w.close()
+    w._shutdown()
+    _APP.processEvents()
+    w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)

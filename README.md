@@ -181,7 +181,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.5.4`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.5.5`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -290,7 +290,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.5.4")
+│   └── version.py          版本号单点真源 (__version__ = "1.5.5")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -467,9 +467,9 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 ### 8.1 多会话标签（v1.5）边界
 
 - 每个标签独立连接、收发缓冲、周期发送与本会话日志；后台标签继续收发
-- **窗口级独占**：脚本 / 序列 / 传输 / 宏 / Modbus / 回放 / DSL / 录制 / 扫描运行时，禁止切走当前会话
+- **序列与从机 bank per-session**：双标签可各跑一套序列、各有独立 Modbus 从机寄存器；脚本 / 传输 / 宏 / Modbus 主机 / 录制 / 发送 DSL / 设备扫描等仍同窗一份并钉会话；**可切标签**；关闭忙标签前需先停任务
 - **多条循环发送**按会话独立：切标签后后台会话循环继续（与定时发送一致）；分组列表仍整窗共享
-- 后台标签 RX 只更新该会话显示与统计，**不喂入**窗口级自动应答 / 脚本 / 序列 / Modbus / 录制引擎
+- 后台标签 RX 更新显示/统计，并喂入本会话序列/AR/钉住的引擎（触发器仍仅活动标签）
 - 两会话不要共用同一展开后的实时日志路径；需要多份工作台时用「帮助 → 新建窗口」+ profile
 
 ---
@@ -627,6 +627,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v54 (v1.5.0)**: **正式版** — **终端多会话标签**（同窗并发串口/TCP/UDP/虚拟；后台继续收发日志与周期发送；具名互斥 toast；标签状态点/重命名；关键字 Regex/HEX；草稿防抖自动保存；Windows offscreen CI）；1329 passed / 11 skipped / 291 subtests。
 - **v55 (v1.5.1)**: **正式版** — **搜索惰性分页与全局导航、可逆一键 I/O Graph、示例工程包、Mac 发版门禁与多会话显示选项矩阵**；修复 macOS 启动时接收视图未就绪导致的 `qFatal` / `SIGABRT`，并使用 Apple Symbols；Modbus CRC/TCP tid 与虚拟注入加固；1359 passed / 11 skipped / 295 subtests。
 - **v56 (v1.5.2)**: **正式版** — **绘图扩展（双 Y / XY / 直方图）、仪表盘四控件、Excel/xlsx、PCAP/pcapng 增强、回放驱动真实 TX**；切标签自动停多条循环；High/Medium/Low 审计收尾；1433 passed / 11 skipped / 295 subtests。
+- **v59 (v1.5.5)**: **正式版** — **多会话引擎收口：软切标签、后台 RX 喂本会话引擎、序列与 Modbus 从机 bank per-session**；脚本/传输/MBM 等仍整窗一份并钉会话，传输有窗口级启动门禁；Mac DMG 仍由协作者补同一 Release。
 - **v58 (v1.5.4)**: **正式版** — **多条循环 per-session、桥接网关 timeout/unit_map、app_style/i18n_ui 薄拆、B6 except 收窄、updater IncompleteRead 修复**；Mac DMG 仍由协作者补同一 Release。
 - **v57 (v1.5.3)**: **正式版** — **主界面下拉防滚轮误触、数据区选区转文本/HEX（弹窗+剪贴板，64 KiB）、会话重命名等主题输入框按钮对齐**；阶段 A/B 工程打磨与 CI（契约、静默预算、macOS 烟雾、ruff、覆盖率）；1465 passed / 11 skipped / 295 subtests。
 

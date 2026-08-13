@@ -39,7 +39,8 @@ def _win():
 def tearDownModule():
     global _WIN
     if _WIN is not None:
-        _WIN._close_all_sessions()
+        _WIN._shutdown()
+        _APP.processEvents()
         _WIN.deleteLater()
         _WIN = None
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -544,7 +545,10 @@ class TriggerIntegrationTests(unittest.TestCase):
     def test_modbus_and_xfer_paths_feed_tx_rules(self):
         """回归：Modbus 主机与文件传输都绕过 _send_text，采集入口必须各自补上。"""
         import inspect
-        for fn in ("_mbm_send_raw", "_xfer_send", "_terminal_send"):
+        # Transfer callbacks route through owner/connection guards first; the
+        # actual wire write and TX capture intentionally live in the shared
+        # ``_xfer_send_owned`` sink used by both guarded entry points.
+        for fn in ("_mbm_send_raw", "_xfer_send_owned", "_terminal_send"):
             src = inspect.getsource(getattr(CommTool, fn))
             self.assertIn("_record_stream_tx", src, fn + " 未接入 TX 采集")
 

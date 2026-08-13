@@ -174,6 +174,9 @@ class RecReplayDialog(QDialog):
         if hasattr(self.app, "_recorder_link_snapshot"):
             link = self.app._recorder_link_snapshot()
         r.start(link=link)
+        bind = getattr(self.app, "bind_recording_owner", None)
+        if callable(bind):
+            bind(True)
         self._link = dict(link) if isinstance(link, dict) else None
         self._wall_t0 = None
         self._log(self.app._t("rr_rec_started"))
@@ -185,6 +188,9 @@ class RecReplayDialog(QDialog):
         if not r.recording:
             return
         r.stop()
+        bind = getattr(self.app, "bind_recording_owner", None)
+        if callable(bind):
+            bind(False)
         self._events = r.events
         self._src_name = self.app._t("rr_src_live")
         self._link = dict(r.link) if isinstance(getattr(r, "link", None), dict) else None

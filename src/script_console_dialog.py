@@ -360,6 +360,9 @@ class ScriptConsoleDialog(QDialog):
         rec = self.app._macro
         if rec.recording:                   # 正在录 → 停止并保存
             rec.stop()
+            bind = getattr(self.app, "bind_macro_owner", None)
+            if callable(bind):
+                bind(False)
             self.app._mbm_tick()            # 录制期间若有人打开了 Modbus 主机，此刻按原开关恢复
             self._set_rec_ui(False)
             self._save_recording(rec)
@@ -379,6 +382,9 @@ class ScriptConsoleDialog(QDialog):
             self.app.toast_io_exclusive_busy(exclude=("macro",))
             return
         rec.start()
+        bind = getattr(self.app, "bind_macro_owner", None)
+        if callable(bind):
+            bind(True)
         self._set_rec_ui(True)
         self.app.toast(self.app._t("sc_rec_started"))
 

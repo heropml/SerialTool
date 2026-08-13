@@ -62,12 +62,22 @@ _SESSION_PROXY_ATTRS = (
     "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
     "_ar_gap_timer",
     "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
-    "_ar_generation",
-    "_modbus_buffers", "_reset_timer",
+    "_ar_generation", "_ar_seq",
+    "_modbus", "_modbus_buffers", "_reset_timer",
     "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
     "_log_file", "_log_file_path", "_log_opened_at",
     "_log_ends_with_nl", "_log_limit",
     "_send_count",
+    "_seq_on", "_seq_gen", "_seq_steps", "_seq_idx", "_seq_attempt",
+    "_seq_buf", "_seq_results", "_seq_summary", "_seq_ctx",
+    "_seq_runtime_step", "_seq_loops", "_seq_loop_i", "_seq_stop_on_fail",
+    "_seq_rounds", "_seq_round_t0", "_seq_t0", "_seq_step_total_t0",
+    "_seq_started_at", "_seq_finished_at",
+    "_seq_dataset", "_seq_dataset_row", "_seq_round_snapshot_taken",
+    "_seq_retry_not_before", "_seq_retry_quiet_until",
+    "_seq_retry_quiet_deadline",
+    "_seq_waiting_mbm", "_seq_wait_mbm_variant", "_seq_wait_mbm_until",
+    "_seq_timer",
 )
 
 
@@ -158,9 +168,19 @@ def _install_session_proxies(cls):
             return getattr(self, "_reconnect_timer_fallback", None)
 
         def _rt_set(self, value):
-            # Allow early __init__ / tests to assign a timer double.
-            self.__dict__["_reconnect_timer_override"] = value
-            self._reconnect_timer_fallback = value
+            # Tests/embedders may temporarily install a timer double.  Assigning
+            # the real context/fallback timer back means "restore dynamic
+            # routing", not "pin this QObject forever": a session reset can
+            # delete that timer and otherwise leave a dangling PyQt wrapper.
+            _ctx = getattr(self, "_session_ctx", None)
+            sess = _ctx() if callable(_ctx) else None
+            native = (getattr(sess, "_reconnect_timer", None)
+                      if sess is not None else None)
+            fallback = getattr(self, "_reconnect_timer_fallback", None)
+            if value is None or value is native or value is fallback:
+                self.__dict__.pop("_reconnect_timer_override", None)
+            else:
+                self.__dict__["_reconnect_timer_override"] = value
 
         cls._reconnect_timer = property(_rt_get, _rt_set)
 
@@ -177,8 +197,15 @@ def _install_session_proxies(cls):
             return getattr(self, "_send_timer_fallback", None)
 
         def _st_set(self, value):
-            self.__dict__["_send_timer_override"] = value
-            self._send_timer_fallback = value
+            _ctx = getattr(self, "_session_ctx", None)
+            sess = _ctx() if callable(_ctx) else None
+            native = (getattr(sess, "_period_timer", None)
+                      if sess is not None else None)
+            fallback = getattr(self, "_send_timer_fallback", None)
+            if value is None or value is native or value is fallback:
+                self.__dict__.pop("_send_timer_override", None)
+            else:
+                self.__dict__["_send_timer_override"] = value
 
         cls.send_timer = property(_st_get, _st_set)
 
@@ -199,8 +226,18 @@ def _install_session_proxies(cls):
             return getattr(self, "_ms_cycle_timer_fallback", None)
 
         def _ms_timer_set(self, value):
-            self.__dict__["_ms_cycle_timer_override"] = value
-            self._ms_cycle_timer_fallback = value
+            _ctx = getattr(self, "_session_ctx", None)
+            sess = _ctx() if callable(_ctx) else None
+            if sess is None:
+                _active = getattr(self, "active_session", None)
+                sess = _active() if callable(_active) else None
+            native = (getattr(sess, "_ms_cycle_timer", None)
+                      if sess is not None else None)
+            fallback = getattr(self, "_ms_cycle_timer_fallback", None)
+            if value is None or value is native or value is fallback:
+                self.__dict__.pop("_ms_cycle_timer_override", None)
+            else:
+                self.__dict__["_ms_cycle_timer_override"] = value
 
         cls._ms_cycle_timer = property(_ms_timer_get, _ms_timer_set)
 
@@ -429,6 +466,9 @@ class SessionHostMixin:
             tip_lines.append(self._session_tab_status_line(s, reconnecting))
             if s.period_on:
                 tip_lines.append(self._t("session_tip_period_on"))
+            busy_owned = getattr(self, "_hard_busy_owned_by", None)
+            if callable(busy_owned) and busy_owned(s):
+                tip_lines.append(self._t("session_tip_engine_busy"))
             if s._log_file is not None:
                 tip_lines.append(self._t("session_tip_log_on"))
             elif s.log_wanted:
@@ -566,11 +606,16 @@ class SessionHostMixin:
             self._on_recv_scroll(value)
 
     def _session_exclusive_busy(self):
-        """Hard leave blockers (script/seq/xfer/modbus/…).
+        """Close-guard: current/context session owns a hard-busy engine.
 
-        Periodic send and multi-send cycle are session-owned and keep running
-        after a tab switch (same leave policy as each other).
+        Tab switch is soft-leave — engines stay pinned to their owner session
+        and keep receiving in the background. Closing that owner tab is still
+        blocked while the engine runs.
         """
+        busy_owned = getattr(self, "_hard_busy_owned_by", None)
+        if callable(busy_owned):
+            return bool(busy_owned(
+                self._session_ctx() or self.active_session()))
         return bool(self._io_task_busy(exclude=("periodic", "multi")))
 
     def _release_leave_safe_window_tasks(self):
@@ -600,8 +645,13 @@ class SessionHostMixin:
         if s is None:
             return False
         closing_index = self._sessions.index(s)
-        # Busy: cannot close/switch away from the busy active session's work
-        if s.id == self._active_session_id and self._session_exclusive_busy():
+        # Busy: cannot close a tab that owns a hard-busy engine.
+        busy_owned = getattr(self, "_hard_busy_owned_by", None)
+        if callable(busy_owned):
+            if busy_owned(s):
+                self.toast_session_busy()
+                return False
+        elif s.id == self._active_session_id and self._session_exclusive_busy():
             self.toast_session_busy()
             return False
         # Always confirm tab close (X); connected sessions warn about disconnect.
@@ -667,6 +717,15 @@ class SessionHostMixin:
                     ms_timer.stop()
                     s._ms_cycle_seq = []
                     s._ms_cycle_idx = 0
+            # Same "stop first" pattern as period/ms — do not rely only on
+            # close_conn → _seq_abort (conn may already be None).
+            seq_timer = getattr(s, "_seq_timer", None)
+            if seq_timer is not None and seq_timer.isActive():
+                seq_timer.stop()
+            if getattr(s, "_seq_on", False):
+                abort = getattr(self, "_seq_abort", None)
+                if callable(abort):
+                    abort("seq_aborted_disc")
             if getattr(s, "_log_file", None) is not None:
                 try:
                     self._close_log_file(session=s, toast=False)
@@ -689,6 +748,12 @@ class SessionHostMixin:
             recv_widget.deleteLater()
             s.txt_recv = None
         self._sessions = [x for x in self._sessions if x is not s]
+        # Per-session auto-reply cooldown maps are runtime-only. Drop the dead
+        # id so repeated tab churn cannot grow every shared rule indefinitely.
+        for rule in getattr(self, "_ar_rules", ()):
+            by_session = rule.get("_last_by_session")
+            if isinstance(by_session, dict):
+                by_session.pop(s.id, None)
         self._dispose_session_timers(s)
         if was_active:
             neighbor_index = min(closing_index, len(self._sessions) - 1)
@@ -716,6 +781,9 @@ class SessionHostMixin:
                 self._search_page_starts = [0]
                 if hasattr(self, "lbl_search_cnt"):
                     self.lbl_search_cnt.setText("")
+            seq_notify = getattr(self, "_seq_notify", None)
+            if callable(seq_notify):
+                seq_notify()
         if hasattr(self, "_schedule_workspace_autosave"):
             self._schedule_workspace_autosave()
         return True
@@ -727,12 +795,7 @@ class SessionHostMixin:
         if target is None:
             return False
         cur = self.active_session()
-        # Block leaving a hard-busy session (script/seq/xfer/modbus/…).
-        if cur is not None and self._session_exclusive_busy():
-            self.toast_session_busy()
-            # Snap tab bar back
-            self._rebuild_session_tabs(select_id=self._active_session_id)
-            return False
+        # Soft leave: pinned engines keep running on the owner session.
         if cur is not None:
             stopped = self._release_leave_safe_window_tasks()
             self._toast_leave_safe_stopped(stopped)
@@ -764,6 +827,9 @@ class SessionHostMixin:
             if callable(plot_changed):
                 plot_changed()
             self._sync_open_button_from_session(target)
+            seq_notify = getattr(self, "_seq_notify", None)
+            if callable(seq_notify):
+                seq_notify()
             if hasattr(self, "_schedule_keyword_rebuild"):
                 self._schedule_keyword_rebuild()
             # Search hits are document-bound; drop them on switch.
@@ -787,7 +853,7 @@ class SessionHostMixin:
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
         for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer",
-                     "_reset_timer", "_ms_cycle_timer"):
+                     "_reset_timer", "_ms_cycle_timer", "_seq_timer"):
             timer = getattr(session, name, None)
             if timer is None:
                 continue
@@ -1180,8 +1246,8 @@ class SessionHostMixin:
         if "Server" in str(session._conn_proto or ""):
             target = session.send_target
         with self._with_session(session):
-            # Window engines are shared; other sessions' period timers must not block.
-            if self._period_tx_blocked():
+            # Only the engine-owning session pauses its own period TX.
+            if self._period_tx_blocked(session):
                 return
             previous_ctx = getattr(self, "_display_context", None)
             if not is_active:
@@ -1194,7 +1260,11 @@ class SessionHostMixin:
                     raw, hex_mode=hex_mode, newline=newline, checksum=checksum,
                     target=target, encoding=opts.get("encoding"),
                     record_macro=False, notify_ui=is_active,
-                    feed_window_engines=is_active)
+                    # Active: triggers/recorder; background: only if this
+                    # session owns stream recording.
+                    feed_window_engines=(
+                        is_active
+                        or self._io_session_owns("recording", session)))
             finally:
                 if not is_active:
                     self._display_context = previous_ctx
@@ -1352,24 +1422,39 @@ class SessionHostMixin:
             if s.id == self._active_session_id:
                 self.on_data_received(data, reply_target)
             else:
-                # Background tabs: update that session's RX view/stats only.
-                # Never feed window-level xfer/script/seq/Modbus/AR/macro/recorder.
+                # Background: view/stats/log + session-pinned engines (AR/MBM/…).
                 self._on_background_session_data(data, reply_target)
 
     def _on_background_session_data(self, data, reply_target=None):
-        """Render with the owning session's options, without feeding tools."""
+        """Render with the owning session's options; feed session-pinned engines."""
         s = self._session_ctx()
         if s is None:
+            return
+        feed_xfer = getattr(self, "_feed_xfer_if_owned", None)
+        if callable(feed_xfer) and feed_xfer(data):
             return
         previous = self._display_context
         self._display_context = self._background_display_opts(s)
         self._display_context["proto_hl_on"] = False
         try:
-            self._on_data_received_impl(data, source=reply_target)
-        except (RuntimeError, ValueError, TypeError, OSError, UnicodeError,
-                AttributeError):
-            self._stat_note_rx_error()
-            _log.debug("background session RX failed", exc_info=True)
+            try:
+                self._on_data_received_impl(data, source=reply_target)
+            except (RuntimeError, ValueError, TypeError, OSError, UnicodeError,
+                    AttributeError):
+                self._stat_note_rx_error()
+                _log.debug("background session RX failed", exc_info=True)
+            # Keep the owning tab's display/codec context while its pinned
+            # engines process RX.  Some engine paths send replies immediately;
+            # restoring the visible tab here would format those replies with
+            # another session's options.
+            feed_engines = getattr(self, "_feed_session_engines", None)
+            if callable(feed_engines):
+                try:
+                    feed_engines(data, reply_target=reply_target)
+                except (RuntimeError, ValueError, TypeError, OSError,
+                        AttributeError):
+                    _log.debug(
+                        "background session engine feed failed", exc_info=True)
         finally:
             self._display_context = previous
 
@@ -1396,6 +1481,11 @@ class SessionHostMixin:
                     s._reconnect_attempts = 0
                     if s._reconnect_timer.isActive():
                         s._reconnect_timer.stop()
+                    # Keep the Modbus master pinned to its owning background
+                    # tab alive after reconnect, without applying active-tab
+                    # UI state changes.
+                    if self._io_session_owns("modbus", s):
+                        self._mbm_restart()
                 elif s.conn is not None:
                     # Background drop: tear down without stealing sidebar
                     self.close_conn(
@@ -1666,6 +1756,9 @@ class SessionHostMixin:
             if te is not None:
                 self.recv_stack.setCurrentWidget(te)
                 self._reparent_recv_overlays(te)
+        reconcile = getattr(self, "_io_reconcile_session_owners", None)
+        if callable(reconcile):
+            reconcile()
 
     def _close_all_sessions(self, update_active_ui=False):
         """Window shutdown: disconnect every session."""
@@ -1685,11 +1778,20 @@ class SessionHostMixin:
                 ms_timer.stop()
             s._ms_cycle_seq = []
             s._ms_cycle_idx = 0
+            seq_timer = getattr(s, "_seq_timer", None)
+            if seq_timer is not None and seq_timer.isActive():
+                seq_timer.stop()
             s.period_on = False
             with self._with_session(s):
                 update_ui = bool(update_active_ui and s.id == active_id)
                 if s.conn is not None or update_ui:
                     self.close_conn(update_ui=update_ui)
+                elif getattr(s, "_seq_on", False):
+                    # No conn / no UI path — still abort so _seq_timer cannot fire
+                    # after the session is torn down.
+                    abort = getattr(self, "_seq_abort", None)
+                    if callable(abort):
+                        abort("seq_aborted_disc")
                 if s._log_file is not None:
                     try:
                         self._close_log_file(session=s, toast=False)

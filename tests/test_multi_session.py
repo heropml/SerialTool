@@ -22,10 +22,11 @@ _TEST_WINDOWS = []
 
 @pytest.fixture(autouse=True)
 def _dispose_test_windows():
-    """Delete each test window so its Qt timers cannot leak into the next test."""
+    """Fully shut down each native window before deferred deletion."""
     yield
     for window in reversed(_TEST_WINDOWS):
-        window._close_all_sessions()
+        window._shutdown()
+        _APP.processEvents()
         window.deleteLater()
     _TEST_WINDOWS.clear()
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -349,14 +350,19 @@ def test_receive_scroll_has_one_session_route(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_busy_blocks_tab_switch(monkeypatch, tmp_path):
+def test_busy_soft_leave_allows_tab_switch(monkeypatch, tmp_path):
+    """Pinned exclusive engines no longer hard-block tab switch."""
     w = _window(monkeypatch, tmp_path, "busy")
     _open_virtual(w)
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
-    monkeypatch.setattr(w, "_io_task_busy", lambda exclude=(): True)
-    assert w.switch_session(s2.id) is False
-    assert w.active_session().id == s1.id
+    w._replay_on = True
+    w._io_bind_owner("replay", s1)
+    assert w.switch_session(s2.id) is True
+    assert w.active_session().id == s2.id
+    assert w.close_session(s1.id, confirm=False) is False
+    w._replay_on = False
+    w._io_clear_owner("replay")
     w._close_all_sessions()
 
 
@@ -567,12 +573,12 @@ def test_background_reconnect_binds_context_session(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_background_rx_skips_window_engines(monkeypatch, tmp_path):
-    """P1: background RX must not feed active-tab script/xfer engines."""
+def test_background_rx_feeds_pinned_script_engine(monkeypatch, tmp_path):
+    """Background RX feeds script only when pinned to that session."""
     w = _window(monkeypatch, tmp_path, "bg-rx")
     _open_virtual(w)
     s1 = w.active_session()
-    s2 = w.add_session(activate=True)
+    w.add_session(activate=True)
     _open_virtual(w)
     fed = {"script": 0}
 
@@ -581,13 +587,21 @@ def test_background_rx_skips_window_engines(monkeypatch, tmp_path):
             fed["script"] += 1
 
     w._script_worker = _Worker()
+    w._io_bind_owner("script", s1)
     monkeypatch.setattr(w, "_script_running", lambda: True)
     monkeypatch.setattr(w, "_seq_running", lambda: False)
 
+    s1.conn.inject(b"YES-SCRIPT")
+    _pump()
+    assert fed["script"] == 1
+    assert s1.rx_bytes >= 10
+
+    fed["script"] = 0
+    w._io_clear_owner("script")
+    w._script_worker = None
     s1.conn.inject(b"NO-SCRIPT")
     _pump()
     assert fed["script"] == 0
-    assert s1.rx_bytes >= 9
     w._close_all_sessions()
 
 
@@ -667,6 +681,45 @@ def test_restore_rewrites_id_reconnect_still_fires(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
+def test_restore_rewrites_id_all_session_timers_still_route(
+        monkeypatch, tmp_path):
+    """Every per-session timer must resolve ``Session.id`` when it fires."""
+    w = _window(monkeypatch, tmp_path, "restore-id-all-timers")
+    session = w.active_session()
+    old_id = session.id
+    session.id = "restored-all"
+    w._active_session_id = session.id
+    hits = []
+
+    for method_name, tag in (
+            ("_ar_flush_for", "ar"),
+            ("_pulse_reset_release_for", "reset"),
+            ("_period_send_for", "period"),
+            ("_ms_cycle_step_for", "multi"),
+            ("_seq_on_timeout_for", "sequence")):
+        monkeypatch.setattr(
+            w, method_name,
+            lambda sid, _tag=tag: hits.append((_tag, sid)))
+
+    for timer in (
+            session._ar_gap_timer, session._reset_timer,
+            session._period_timer, session._ms_cycle_timer,
+            session._seq_timer):
+        timer.start(1)
+    _pump(20, 0.01)
+
+    expected = {
+        ("ar", session.id), ("reset", session.id),
+        ("period", session.id), ("multi", session.id),
+        ("sequence", session.id),
+    }
+    # The period timer is intentionally repeating, so it may fire more than
+    # once while events are pumped; routing identity is the invariant here.
+    assert set(hits) == expected
+    assert all(sid != old_id for _tag, sid in hits)
+    w._close_all_sessions()
+
+
 def test_restore_sessions_is_idempotent(monkeypatch, tmp_path):
     """Repeated settings loads must replace tabs, not append duplicates."""
     w = _window(monkeypatch, tmp_path, "restore-repeat")
@@ -677,6 +730,96 @@ def test_restore_sessions_is_idempotent(monkeypatch, tmp_path):
     assert len(w.sessions()) == 2
     w._restore_sessions_settings()
     assert len(w.sessions()) == 2
+    w._close_all_sessions()
+
+
+def test_restore_sessions_rebinds_persisted_modbus_owner(monkeypatch, tmp_path):
+    """Restoring tab IDs must not leave enabled Modbus pinned to a dead tab."""
+    w = _window(monkeypatch, tmp_path, "restore-mbm-owner")
+    payload = w.active_session().to_persist()
+    payload["id"] = "restored-mbm-owner"
+    w.settings.setValue("sessions_v1", json.dumps([payload]))
+    w._mbm_on = True
+    w._io_bind_owner("modbus")
+    old_owner_id = w._io_owner_sid["modbus"]
+
+    w._restore_sessions_settings()
+
+    assert old_owner_id != w.active_session().id
+    assert w._io_owner_session("modbus") is w.active_session()
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_owner_reconcile_clears_all_stale_nonpersistent_pins(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "restore-stale-owners")
+    stale_id = "deleted-session"
+    for key in w._io_owner_sid:
+        w._io_owner_sid[key] = stale_id
+
+    w._io_reconcile_session_owners()
+
+    assert all(owner is None for owner in w._io_owner_sid.values())
+    w._close_all_sessions()
+
+
+def test_auto_reply_sequence_counter_is_session_owned(monkeypatch, tmp_path):
+    """Concurrent auto-reply sessions must not consume each other's {seq}."""
+    w = _window(monkeypatch, tmp_path, "autoreply-seq-owner")
+    s1 = w.active_session()
+    w._ar_seq = 7
+    s2 = w.add_session(activate=True)
+
+    assert w._ar_seq == 0
+    w._ar_seq = 21
+    with w._with_session(s1):
+        assert w._ar_seq == 7
+        w._ar_seq = 8
+    assert w.active_session() is s2
+    assert w._ar_seq == 21
+    assert s1._ar_seq == 8
+    w._close_all_sessions()
+
+
+def test_auto_reply_cooldown_is_session_owned(monkeypatch, tmp_path):
+    """A hit on one link must not rate-limit the same shared rule on another."""
+    w = _window(monkeypatch, tmp_path, "autoreply-cooldown-owner")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    rule = {
+        "on": True,
+        "match": "AA",
+        "match_hex": True,
+        "mode": 1,
+        "reply": "06",
+        "reply_hex": True,
+        "cooldown": 60_000,
+    }
+    w._ar_rules = [rule]
+    w._ar_on = True
+    w._ar_modbus = {"on": False}
+    w._ar_frame = {"on": False}
+    w._ar_gap = 0
+    monkeypatch.setattr(w, "_is_open", lambda: True)
+    scheduled = []
+    monkeypatch.setattr(
+        w, "_ar_schedule_send",
+        lambda *_a, **_k: scheduled.append(w._session_ctx().id))
+
+    with w._with_session(s1):
+        w._auto_reply(b"\xAA")
+    with w._with_session(s2):
+        w._auto_reply(b"\xAA")
+    with w._with_session(s1):
+        w._auto_reply(b"\xAA")
+
+    assert scheduled == [s1.id, s2.id]
+    assert rule["_hits"] == 3
+    assert set(rule["_last_by_session"]) == {s1.id, s2.id}
+    assert w.close_session(s1.id, confirm=False)
+    assert s1.id not in rule["_last_by_session"]
     w._close_all_sessions()
 
 
@@ -789,20 +932,23 @@ def test_multi_send_cycle_keeps_running_after_session_switch(
         w._close_all_sessions()
 
 
-def test_hard_busy_still_blocks_even_with_multi_send(monkeypatch, tmp_path):
-    """Script/seq/xfer/modbus/… keep hard-blocking; multi alone does not."""
+def test_hard_busy_soft_leave_keeps_multi_send(monkeypatch, tmp_path):
+    """Hard engines pin to owner: soft leave OK; multi-send keeps running."""
     w = _window(monkeypatch, tmp_path, "multi-hard-busy")
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
     s1._ms_cycle_seq = [("AA", False, 0, 0, 1000)]
     s1._ms_cycle_timer.start(60000)
     w._replay_on = True
+    w._io_bind_owner("replay", s1)
     try:
-        assert w.switch_session(s2.id) is False
-        assert w.active_session().id == s1.id
+        assert w.switch_session(s2.id) is True
+        assert w.active_session().id == s2.id
         assert s1._ms_cycle_timer.isActive()
+        assert w.close_session(s1.id, confirm=False) is False
     finally:
         w._replay_on = False
+        w._io_clear_owner("replay")
         s1._ms_cycle_timer.stop()
         w._close_all_sessions()
 
@@ -910,6 +1056,65 @@ def test_background_rx_uses_own_display_options(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
+def test_background_engine_feed_keeps_owner_display_context(
+        monkeypatch, tmp_path):
+    """Immediate engine replies must not inherit the visible tab's options."""
+    w = _window(monkeypatch, tmp_path, "bg-engine-format")
+    owner = w.active_session()
+    w.add_session(activate=True)
+    w.cb_encoding.setCurrentText("UTF-8")
+    w.sw_rx_hex.setChecked(True)
+    owner.display_opts = {"encoding": "gbk", "rx_hex": False}
+    outer = {"sentinel": True}
+    w._display_context = outer
+    seen = []
+    monkeypatch.setattr(
+        w, "_on_data_received_impl", lambda _data, source=None: None)
+    monkeypatch.setattr(
+        w, "_feed_session_engines",
+        lambda _data, reply_target=None: seen.append(dict(w._display_context)))
+
+    with w._with_session(owner):
+        w._on_background_session_data(b"reply")
+
+    assert seen and seen[0]["encoding"] == "gbk"
+    assert seen[0]["rx_hex"] is False
+    assert w._display_context is outer
+    w._display_context = None
+    w._close_all_sessions()
+
+
+def test_background_engines_do_not_mix_window_structured_recording(
+        monkeypatch, tmp_path):
+    """Structured rows have no session ID, so only the visible tab may add them."""
+    import device_resources
+
+    w = _window(monkeypatch, tmp_path, "bg-structured-owner")
+    background = w.active_session()
+    active = w.add_session(activate=True)
+    added = []
+    w._structured_recorder.start(clear=False)
+    monkeypatch.setattr(w, "_structured_add", lambda rows: added.extend(rows))
+    monkeypatch.setattr(
+        device_resources, "decode_modbus_samples",
+        lambda *_a, **_k: [{
+            "timestamp": 1.0, "source": "modbus", "tag": "value",
+            "value": 1, "unit": "", "raw": "00 01",
+        }])
+    info = {"func": 3, "unit": 1, "addr": 0}
+    result = {"regs": [1]}
+
+    with w._with_session(background):
+        w._structured_feed_modbus(info, result)
+    assert added == []
+
+    with w._with_session(active):
+        w._structured_feed_modbus(info, result)
+    assert len(added) == 1
+    w._structured_recorder.stop()
+    w._close_all_sessions()
+
+
 def test_background_rx_missing_options_never_fall_back_to_active_view(
         monkeypatch, tmp_path):
     """Old/incomplete snapshots use stable defaults, not the visible tab UI."""
@@ -991,6 +1196,55 @@ def test_background_open_state_advances_reconnect_state(monkeypatch, tmp_path):
     assert s1._conn_engaged is True
     assert s1._reconnect_attempts == 0
     assert not s1._reconnect_timer.isActive()
+    w._close_all_sessions()
+
+
+def test_background_open_state_restarts_its_modbus_master(monkeypatch, tmp_path):
+    """A background Modbus-owner reconnect must resume its own poll schedule."""
+    w = _window(monkeypatch, tmp_path, "bg-open-modbus")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    w._mbm_on = True
+    w._io_bind_owner("modbus", s1)
+    restarted = []
+    monkeypatch.setattr(
+        w, "_mbm_restart", lambda: restarted.append(w._session_ctx().id))
+
+    w._route_session_state(s1.id, True)
+
+    assert restarted == [s1.id]
+    assert w.active_session() is s2
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_drive_tx_replay_only_suppresses_its_owner_modbus_slave(monkeypatch, tmp_path):
+    """Replay in tab A must not block Modbus-slave replies from tab B."""
+    w = _window(monkeypatch, tmp_path, "replay-modbus-owner")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    sent = []
+    old_ar_on, old_drive = w._ar_on, w._replay_drive_tx
+    try:
+        w._ar_on = True
+        w._replay_drive_tx = True
+        w._io_bind_owner("replay", s1)
+        monkeypatch.setattr(w, "_is_open", lambda: True)
+        monkeypatch.setattr(
+            w, "_send_text",
+            lambda payload, **kwargs: sent.append((payload, kwargs)) or True)
+
+        w._modbus_send(b"\x01")
+        assert [payload for payload, _kwargs in sent] == ["01"]
+
+        with w._with_session(s1):
+            w._modbus_send(b"\x02")
+        assert [payload for payload, _kwargs in sent] == ["01"]
+        assert w.active_session() is s2
+    finally:
+        w._ar_on, w._replay_drive_tx = old_ar_on, old_drive
+        w._io_clear_owner("replay")
     w._close_all_sessions()
 
 
@@ -1436,6 +1690,110 @@ def test_project_switch_cleans_window_engines_when_only_background_is_open(
     assert background.conn is None
     assert stopped == [True]
     w._commit_project_switch_sessions()
+    w._close_all_sessions()
+
+
+def test_project_switch_refuses_pinned_background_worker(monkeypatch, tmp_path):
+    """Replacing sessions must not orphan an asynchronous window worker."""
+    w = _window(monkeypatch, tmp_path, "project-bg-worker")
+    owner = w.active_session()
+    w.add_session(activate=True)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+    w._script_worker = _Worker()
+    w._io_bind_owner("script", owner)
+    notices = []
+    monkeypatch.setattr(w, "toast_session_busy", lambda: notices.append(True))
+
+    assert w._prepare_project_switch() is False
+    assert owner in w.sessions()
+    assert w._script_worker is not None
+    assert notices == [True]
+
+    w._script_worker = None
+    w._io_clear_owner("script")
+    w._close_all_sessions()
+
+
+def test_profile_switch_refuses_pinned_background_worker(monkeypatch, tmp_path):
+    """Profile replacement uses the same orphan-worker guard as project load."""
+    w = _window(monkeypatch, tmp_path, "profile-bg-worker")
+    owner = w.active_session()
+    w.add_session(activate=True)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+    w._script_worker = _Worker()
+    w._io_bind_owner("script", owner)
+    notices = []
+    confirms = []
+    monkeypatch.setattr(w, "toast_session_busy", lambda: notices.append(True))
+    monkeypatch.setattr(
+        w, "_confirm_project_switch", lambda: confirms.append(True) or True)
+    profile = w._profile
+
+    w._switch_profile("8" if profile != "8" else "7")
+
+    assert w._profile == profile
+    assert owner in w.sessions()
+    assert w._script_worker is not None
+    assert notices == [True]
+    assert confirms == []
+    w._script_worker = None
+    w._io_clear_owner("script")
+    w._close_all_sessions()
+
+
+def test_finished_transfer_remains_busy_until_done_callback(
+        monkeypatch, tmp_path):
+    """Queued transfer completion must keep its captured session alive."""
+    w = _window(monkeypatch, tmp_path, "xfer-done-gap")
+    owner = w.active_session()
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return False
+
+    w._xfer_worker = _Worker()
+    w._io_bind_owner("transfer", owner)
+    assert w._xfer_active() is True
+    assert w._hard_busy_owned_by(owner) is True
+
+    w._xfer_worker = None
+    w._io_clear_owner("transfer")
+    w._close_all_sessions()
+
+
+def test_xfer_start_blocked_on_other_tab_while_transfer_runs(
+        monkeypatch, tmp_path):
+    """Window-singleton worker: Start on another tab must not steal the transfer."""
+    w = _window(monkeypatch, tmp_path, "xfer-start-other-tab")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+    w._xfer_worker = _Worker()
+    w._io_bind_owner("transfer", s1)
+    assert w.active_session() is s2
+    assert w._xfer_start_blocked() is True
+    assert w._io_task_busy(exclude=("transfer",)) is False
+
+    w._xfer_worker = None
+    w._io_clear_owner("transfer")
     w._close_all_sessions()
 
 
@@ -2827,4 +3185,477 @@ def test_display_options_matrix_numview_and_packet_split(monkeypatch, tmp_path):
     # Packet split forces separate appends; at least one numeric rendering present.
     assert any(ch.isdigit() for ch in text), text
     assert "01 02" not in s2.txt_recv.toPlainText()
+    w._close_all_sessions()
+
+def test_modbus_slave_bank_is_per_session(monkeypatch, tmp_path):
+    """Writes to one tab's slave bank must not appear on another tab."""
+    w = _window(monkeypatch, tmp_path, "mb-bank-per-sess")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    w._ar_modbus = w._norm_ar_modbus({
+        "on": True, "addr": 1, "variant": "rtu",
+        "holding": {"0": 0},
+    })
+    w._modbus_rebuild_all_sessions()
+    assert s1._modbus is not s2._modbus
+    s1._modbus.slaves[1].holding[0] = 0xABCD
+    assert s2._modbus.slaves[1].holding.get(0, 0) != 0xABCD
+    w._close_all_sessions()
+
+
+def test_dual_sessions_can_run_sequence_concurrently(monkeypatch, tmp_path):
+    """Two tabs may each start a sequence; busy gate is per-session."""
+    w = _window(monkeypatch, tmp_path, "dual-seq")
+    _open_virtual(w)
+    s1 = w.active_session()
+    steps = [{"on": True, "send": "AA", "hex": True, "expect": "", "timeout": 50}]
+    w._seq_start(steps, loops=1)
+    assert s1._seq_on is True
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    # Other tab's sequence must not block starting one here.
+    assert w._io_task_busy(exclude=("sequence", "modbus")) is False
+    w._seq_start(steps, loops=1)
+    assert s2._seq_on is True
+    assert s1._seq_on is True
+    assert w.switch_session(s1.id) is True
+    assert w._seq_on is True  # proxy → s1
+    w._seq_abort("seq_stopped")
+    assert s1._seq_on is False
+    assert s2._seq_on is True
+    assert w.switch_session(s2.id) is True
+    w._seq_abort("seq_stopped")
+    assert s2._seq_on is False
+    w._close_all_sessions()
+
+
+def test_script_send_keeps_bound_owner_after_switch(monkeypatch, tmp_path):
+    """Queued script TX must use the session that started the worker."""
+    import threading
+
+    w = _window(monkeypatch, tmp_path, "script-owner-tx")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    seen = []
+
+    class _Worker:
+        @staticmethod
+        def stopping():
+            return False
+
+    worker = _Worker()
+    w._script_worker = worker
+    w._script_quiet_until = 0.0
+    w._io_bind_owner("script", s1)
+    monkeypatch.setattr(
+        w, "_send_text",
+        lambda *_a, **_k: seen.append(w._session_ctx().id) or True)
+
+    assert w.switch_session(s2.id)
+    done = threading.Event()
+    result = {"ok": False}
+    w._script_send(worker, b"PING", done, result)
+
+    assert done.is_set() and result["ok"] is True
+    assert seen == [s1.id]
+    w._script_worker = None
+    w._io_clear_owner("script")
+    w._close_all_sessions()
+
+
+def test_transfer_and_replay_tx_keep_bound_owner_after_switch(
+        monkeypatch, tmp_path):
+    """Transfer/replay callbacks must not resolve ``self.conn`` from the new tab."""
+    w = _window(monkeypatch, tmp_path, "xfer-replay-owner-tx")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+
+    class _Conn:
+        is_open = True
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, data, target=None):
+            self.sent.append((bytes(data), target))
+            return len(data)
+
+        def blockSignals(self, *_args):
+            pass
+
+        def close(self):
+            self.is_open = False
+
+        def deleteLater(self):
+            pass
+
+    c1, c2 = _Conn(), _Conn()
+    s1.conn, s2.conn = c1, c2
+    replay_send = w._replay_send_target()
+    assert replay_send is not None
+    monkeypatch.setattr(w, "_record_stream_tx", lambda *_a, **_k: None)
+    assert w.switch_session(s2.id)
+
+    w._io_bind_owner("transfer", s1)
+    w._xfer_target = None
+    w._xfer_send(b"X")
+    w._io_clear_owner("transfer")
+    w._replay_on = True
+    w._io_bind_owner("replay", s1)
+    assert replay_send(b"R") == 1
+
+    assert c1.sent == [(b"X", None), (b"R", None)]
+    assert c2.sent == []
+    w._replay_on = False
+    w._io_clear_owner("replay")
+    s1.conn = s2.conn = None
+    w._close_all_sessions()
+
+
+def test_stale_transfer_callback_cannot_use_new_owner(
+        monkeypatch, tmp_path):
+    """A queued signal from the detached worker must not follow a new owner."""
+    w = _window(monkeypatch, tmp_path, "xfer-stale-owner")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+
+    class _Conn:
+        is_open = True
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, data, target=None):
+            self.sent.append(bytes(data))
+            return len(data)
+
+    old_worker, new_worker = object(), object()
+    s1.conn, s2.conn = _Conn(), _Conn()
+    monkeypatch.setattr(w, "_record_stream_tx", lambda *_a, **_k: None)
+    w._xfer_worker = old_worker
+    w._io_bind_owner("transfer", s1)
+    w._xfer_worker = new_worker
+    w._io_bind_owner("transfer", s2)
+
+    w._xfer_send_for(old_worker, s1.id, b"STALE")
+    w._xfer_send_for(new_worker, s2.id, b"NEW")
+
+    assert s1.conn.sent == []
+    assert s2.conn.sent == [b"NEW"]
+    w._xfer_worker = None
+    w._io_clear_owner("transfer")
+    s1.conn = s2.conn = None
+    w._close_all_sessions()
+
+
+def test_cancelled_transfer_cannot_cross_into_reconnected_link(
+        monkeypatch, tmp_path):
+    """Cancelled transfer cannot TX/RX or suppress engines on a new conn."""
+    from PyQt5.QtCore import QObject, pyqtSignal
+
+    w = _window(monkeypatch, tmp_path, "xfer-reconnect-race")
+
+    class _Conn:
+        is_open = True
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, data, target=None):
+            self.sent.append(bytes(data))
+            return len(data)
+
+        @staticmethod
+        def blockSignals(_on):
+            pass
+
+        def close(self):
+            self.is_open = False
+
+        @staticmethod
+        def deleteLater():
+            pass
+
+    class _Worker(QObject):
+        sig_send = pyqtSignal(bytes)
+        takes_input = True
+
+        @staticmethod
+        def isRunning():
+            return True
+
+        @staticmethod
+        def cancel():
+            pass
+
+        def feed(self, _data):
+            raise AssertionError("replacement-link RX reached stale transfer")
+
+    old_conn, new_conn = _Conn(), _Conn()
+    worker = _Worker()
+    w.conn = old_conn
+    w._xfer_attach(worker)
+    w.conn = new_conn  # models reconnect before queued sig_done is delivered
+    before_rx = w.rx_bytes
+
+    worker.sig_send.emit(b"STALE-TX")
+    w.on_data_received(b"NEW-RX")
+
+    assert old_conn.sent == []
+    assert new_conn.sent == []
+    assert w.rx_bytes == before_rx + len(b"NEW-RX")
+    monkeypatch.setattr(w, "_mbm_connection_ready", lambda: True)
+    monkeypatch.setattr(w, "_is_open", lambda: True)
+    w._mbm_on = True
+    w._mbm_rules = [{"enabled": True}]
+    w._io_bind_owner("modbus", w.active_session())
+    assert w._mbm_active()
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._xfer_detach()
+    w.conn = None
+    w._close_all_sessions()
+
+
+def test_stopping_script_cannot_consume_reconnected_link_rx(
+        monkeypatch, tmp_path):
+    """A still-unwinding script cannot own or suppress a replacement link."""
+    w = _window(monkeypatch, tmp_path, "script-reconnect-race")
+    session = w.active_session()
+    fed = []
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+        def feed(self, data):
+            fed.append(bytes(data))
+
+    class _Conn:
+        is_open = True
+
+        @staticmethod
+        def blockSignals(_on):
+            pass
+
+        def close(self):
+            self.is_open = False
+
+        @staticmethod
+        def deleteLater():
+            pass
+
+    old_conn, new_conn = _Conn(), _Conn()
+    worker = _Worker()
+    w._script_worker = worker
+    w._script_conn = old_conn
+    w._io_bind_owner("script", session)
+    w.conn = new_conn
+    before_rx = w.rx_bytes
+
+    w.on_data_received(b"NEW-RX")
+
+    assert fed == []
+    assert w.rx_bytes == before_rx + len(b"NEW-RX")
+    monkeypatch.setattr(w, "_mbm_connection_ready", lambda: True)
+    monkeypatch.setattr(w, "_is_open", lambda: True)
+    w._mbm_on = True
+    w._mbm_rules = [{"enabled": True}]
+    w._io_bind_owner("modbus", session)
+    assert w._mbm_active()
+    sent = []
+    monkeypatch.setattr(w, "_ar_apply_fault", lambda frame: (frame, None))
+    monkeypatch.setattr(
+        w, "_send_text",
+        lambda *args, **_kwargs: sent.append(args[0]) or True)
+    w._ar_on = True
+    w._ar_schedule_send(["06"], True, 0, [], (0, 0))
+    assert sent == ["06"]
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._script_worker = None
+    w._script_conn = None
+    w._io_clear_owner("script")
+    w.conn = None
+    w._close_all_sessions()
+
+
+def test_transfer_attach_cancels_only_owner_autoreply_and_keeps_other_slots(
+        monkeypatch, tmp_path):
+    """Transfer takeover invalidates owner AR without altering worker observers."""
+    from PyQt5.QtCore import QObject, pyqtSignal
+
+    w = _window(monkeypatch, tmp_path, "xfer-ar-takeover")
+    owner = w.active_session()
+    other = w.add_session(activate=False)
+
+    class _Worker(QObject):
+        sig_send = pyqtSignal(bytes)
+
+        @staticmethod
+        def isRunning():
+            return True
+
+    worker = _Worker()
+    observed = []
+    worker.sig_send.connect(lambda data: observed.append(bytes(data)))
+    owner_gen = owner._ar_generation
+    other_gen = other._ar_generation
+
+    w._xfer_attach(worker)
+    worker.sig_send.emit(b"PING")
+    w._xfer_detach()
+    worker.sig_send.emit(b"AFTER")
+
+    assert owner._ar_generation == owner_gen + 1
+    assert other._ar_generation == other_gen
+    assert observed == [b"PING", b"AFTER"]
+    assert w._xfer_send_bridge is None
+    w._close_all_sessions()
+
+
+def test_dsl_and_mbm_callbacks_keep_bound_owner_after_switch(
+        monkeypatch, tmp_path):
+    """Window timers for DSL/MBM must re-enter their pinned session."""
+    import main_window
+
+    w = _window(monkeypatch, tmp_path, "dsl-mbm-owner-tx")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    seen = []
+
+    w._dsl_ops = [("send", ("AA", True))]
+    w._dsl_idx = 0
+    w._dsl_gen = 7
+    w._io_bind_owner("dsl", s1)
+    monkeypatch.setattr(
+        w, "_send_with_subst",
+        lambda *_a, **_k: seen.append(("dsl", w._session_ctx().id)) or True)
+    w._dsl_step(7)
+    w._dsl_ops = None
+    w._io_clear_owner("dsl")
+
+    w._mbm_on = True
+    w._mbm_inflight = None
+    w._mbm_rules = [{"enabled": True}]
+    w._mbm_due = {}
+    w._io_bind_owner("modbus", s1)
+    monkeypatch.setattr(w, "_mbm_active", lambda: True)
+    monkeypatch.setattr(main_window, "_mbm_sched_pick_next", lambda *_a: (0, 0.0))
+    monkeypatch.setattr(
+        w, "_mbm_poll",
+        lambda _i: seen.append(("mbm", w._session_ctx().id)))
+    w._mbm_tick()
+
+    assert seen == [("dsl", s1.id), ("mbm", s1.id)]
+    assert w.active_session() is s2
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_background_owner_disconnect_stops_its_window_tasks(
+        monkeypatch, tmp_path):
+    """A hidden tab dropping must stop tasks pinned to that connection."""
+    w = _window(monkeypatch, tmp_path, "background-owner-drop")
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    stopped = []
+
+    class _Conn:
+        is_open = True
+
+        def blockSignals(self, *_args):
+            pass
+
+        def close(self):
+            self.is_open = False
+
+        def deleteLater(self):
+            pass
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+        @staticmethod
+        def stop():
+            stopped.append("script")
+
+    s1.conn = _Conn()
+    s1._conn_proto = "Virtual"
+    s1._conn_cfg = ("Virtual",)
+    s1._conn_engaged = True
+    w._script_worker = _Worker()
+    w._io_bind_owner("script", s1)
+    w._macro.start()
+    w._io_bind_owner("macro", s1)
+    w._dsl_ops = [("delay", 1000)]
+    w._io_bind_owner("dsl", s1)
+    monkeypatch.setattr(w, "_schedule_reconnect", lambda: None)
+
+    w._route_session_state(s1.id, False)
+
+    assert stopped == ["script"]
+    assert w._macro.recording is False
+    assert w._io_owner_sid["macro"] is None
+    assert w._dsl_ops is None
+    assert w._io_owner_sid["dsl"] is None
+    w._script_worker = None
+    w._io_clear_owner("script")
+    w._close_all_sessions()
+
+
+def test_script_begin_does_not_cancel_other_session_ar_or_mbm(
+        monkeypatch, tmp_path):
+    """Starting a script on B must leave A's AR/MBM runtime untouched."""
+    w = _window(monkeypatch, tmp_path, "script-peer-scope")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1._ar_generation = 11
+    s2._ar_generation = 22
+    info = {"timeout_ms": 500, "variant": "rtu"}
+    w._mbm_inflight = info
+    w._io_bind_owner("modbus", s1)
+    w._mbm_sched.start(60000)
+    w._mbm_to.start(60000)
+    worker = object()
+
+    w._script_begin(worker)
+
+    assert s1._ar_generation == 11
+    assert s2._ar_generation == 23
+    assert w._mbm_inflight is info
+    assert w._mbm_sched.isActive()
+    assert w._mbm_to.isActive()
+    w._script_worker = None
+    w._io_clear_owner("script")
+    w._mbm_sched.stop()
+    w._mbm_to.stop()
+    w._mbm_inflight = None
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_sequence_dialog_tracks_active_session_only(monkeypatch, tmp_path):
+    """Background sequence updates must not lock or overwrite the active tab UI."""
+    w = _window(monkeypatch, tmp_path, "seq-dialog-owner")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    s1._seq_on = True
+    s1._seq_steps = [{"on": True, "send": "AA"}]
+    s1._seq_results = [{"status": "waiting"}]
+    w.open_sequence()
+    assert w._seq_dlg.btn_run.isEnabled() is False
+
+    assert w.switch_session(s2.id)
+    assert w._seq_dlg.btn_run.isEnabled() is True
+    with w._with_session(s1):
+        w._seq_notify()
+    assert w._seq_dlg.btn_run.isEnabled() is True
+
+    s1._seq_on = False
+    w._seq_dlg.close()
     w._close_all_sessions()

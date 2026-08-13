@@ -10,6 +10,16 @@ import connection_presets as cp
 from project_model import collect_project_resources, merge_project_resources
 
 
+def _dispose_window(app, window):
+    """Stop producers, drain queued callbacks while alive, then delete."""
+    from PyQt5.QtCore import QCoreApplication, QEvent
+
+    window._shutdown()
+    app.processEvents()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def test_normalize_defaults_and_bool_parsing():
     p = cp.normalize({"name": "A", "auto_reconnect": "false", "serial_dtr": "0"})
     assert p["name"] == "A"
@@ -141,22 +151,7 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     w.conn = _Fake()
     assert w.apply_connection_preset(saved["id"]) is False
     w.conn = None
-    # Tear down this CommTool completely. A second live window (its QTimer
-    # pool + port scanner) destabilizes the later GUI tests that share the
-    # QApplication singleton (Qt C++ access violation during processEvents).
-    try:
-        for _attr in ("send_timer", "_reconnect_timer", "_ms_cycle_timer",
-                      "_seq_timer", "_kw_timer", "_ctrl_poll_timer", "_reset_timer"):
-            _t = getattr(w, _attr, None)
-            if _t is not None:
-                _t.stop()
-        if getattr(w, "port_scanner", None) is not None:
-            w.port_scanner.stop()
-    except Exception:
-        pass
-    w.deleteLater()
-    for _ in range(3):
-        app.processEvents()
+    _dispose_window(app, w)
 
 
 def test_sanitize_truncates_over_max_and_reports_delta():
@@ -198,19 +193,7 @@ def test_apply_empty_ser_port_clears_selection(tmp_path, monkeypatch):
     w._on_port_scan_complete([("COM3", "COM3"), ("COM4", "COM4"), ("COM5", "COM5")])
     assert (w.cb_port.currentData() or "") == ""
 
-    try:
-        for _attr in ("send_timer", "_reconnect_timer", "_ms_cycle_timer",
-                      "_seq_timer", "_kw_timer", "_ctrl_poll_timer", "_reset_timer"):
-            _t = getattr(w, _attr, None)
-            if _t is not None:
-                _t.stop()
-        if getattr(w, "port_scanner", None) is not None:
-            w.port_scanner.stop()
-    except Exception:
-        pass
-    w.deleteLater()
-    for _ in range(3):
-        app.processEvents()
+    _dispose_window(app, w)
 
 
 def test_dialog_keeps_selection_after_apply_mru(tmp_path, monkeypatch):
@@ -244,19 +227,4 @@ def test_dialog_keeps_selection_after_apply_mru(tmp_path, monkeypatch):
     assert w._connection_presets[0]["id"] == b["id"]
     assert dlg._items[dlg._cur]["id"] == b["id"]
 
-    try:
-        for _attr in ("send_timer", "_reconnect_timer", "_ms_cycle_timer",
-                      "_seq_timer", "_kw_timer", "_ctrl_poll_timer", "_reset_timer"):
-            _t = getattr(w, _attr, None)
-            if _t is not None:
-                _t.stop()
-        if getattr(w, "port_scanner", None) is not None:
-            w.port_scanner.stop()
-    except Exception:
-        pass
-    w._cpreset_dlg = None
-    dlg.close()
-    dlg.deleteLater()
-    w.deleteLater()
-    for _ in range(3):
-        app.processEvents()
+    _dispose_window(app, w)

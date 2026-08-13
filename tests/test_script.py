@@ -17,7 +17,7 @@ from ui_tips import tip_html
 
 try:
     from PyQt5.QtWidgets import QApplication, QLabel
-    from PyQt5.QtCore import QSettings
+    from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
     from main_window import CommTool
     from i18n import CHECKSUM_KEYS
     _IMPORT_ERR = None
@@ -32,6 +32,26 @@ _APP = None
 _WIN = None
 
 
+def _dispose_win():
+    """Fully stop and delete the shared native window between test runtimes."""
+    global _WIN
+    w, _WIN = _WIN, None
+    if w is None:
+        return
+    w._shutdown()
+    # Drain shutdown callbacks while the Python wrapper and all slots still
+    # exist, then defer-delete the native QObject tree.  In particular this
+    # joins PortScannerThread before interpreter/Qt teardown starts.
+    if _APP is not None:
+        _APP.processEvents()
+    w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def teardown_module(_module):
+    _dispose_win()
+
+
 def _win():
     """共享一个 CommTool 实例；把它的 settings 重定向到临时文件，确保测试不写真实配置。"""
     global _APP, _WIN
@@ -40,6 +60,12 @@ def _win():
         _WIN = CommTool()
         import tempfile
         _WIN.settings = QSettings(tempfile.mktemp(suffix=".ini"), QSettings.IniFormat)
+        # CommTool intentionally finishes theme/project restoration on the
+        # first event-loop turn.  Drain that construction work before a test
+        # starts its own short nested loop; otherwise a slow stylesheet pass
+        # can consume the whole test timeout and make unrelated 0-ms sequence
+        # callbacks look lost even though they run on the next event turn.
+        _APP.processEvents()
     return _WIN
 
 
@@ -1315,6 +1341,20 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         QTimer.singleShot(ms, loop.quit)
         loop.exec_()
 
+    @staticmethod
+    def _seq_wait_until(done, timeout_ms=2000):
+        """Process queued sequence turns until ``done`` or a real deadline.
+
+        A fixed-duration nested QEventLoop is racy under a loaded full suite:
+        if one UI refresh spans its quit deadline, the overdue quit timer can
+        run before the next queued 0-ms sequence turn.  The application's main
+        loop does not quit there, so wait for the observable state instead.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while not done() and time.monotonic() < deadline:
+            _APP.processEvents()
+            time.sleep(0.001)
+
     def test_sequence_run_pass(self):
         """自动化序列：发送→等回包(匹配)→纯发送 全过 → PASS 汇总；发送内容被真发出。"""
         w = _win()
@@ -1417,8 +1457,17 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         w._is_open = lambda: True
         try:
             w._seq_start([{"on": True, "send": "GO", "expect": "", "delay": 0}], loops=3)
-            self._seq_pump(200)
-            self.assertFalse(w._seq_running())
+            self._seq_wait_until(lambda: not w._seq_running())
+            self.assertFalse(
+                w._seq_running(),
+                "sequence stuck: sends=%r loop_i=%r rounds=%r idx=%r sid=%r" % (
+                    sends,
+                    getattr(w, "_seq_loop_i", None),
+                    len(getattr(w, "_seq_rounds", []) or []),
+                    getattr(w, "_seq_idx", None),
+                    w._seq_ctx_id(),
+                ),
+            )
             s = w._seq_summary
             self.assertEqual((s["loops"], s["rounds"], s["rounds_pass"]), (3, 3, 3))
             self.assertEqual((s["ok"], s["total"]), (3, 3))    # 1 纯发送步 × 3 轮
@@ -2522,6 +2571,38 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertEqual(dlg._path, "")
             self.assertEqual(dlg.ed_path.text(), "")
         finally:
+            dlg.close()
+
+    def test_xfer_stale_done_does_not_detach_current_worker(self):
+        """迟到的旧 worker 完成信号不能结束新一轮传输。"""
+        from xfer_dialog import XferDialog
+        w = _win()
+        dlg = XferDialog(w)
+
+        class _Worker:
+            def __init__(self):
+                self.waited = False
+
+            def wait(self, _ms):
+                self.waited = True
+
+        old_worker = _Worker()
+        current_worker = _Worker()
+        detached = []
+        original_detach = w._xfer_detach
+        try:
+            w._xfer_detach = lambda: detached.append(True)
+            dlg._worker = current_worker
+            dlg._set_busy(True)
+            dlg._on_done(old_worker, False, "__cancelled__", None)
+
+            self.assertIs(dlg._worker, current_worker)
+            self.assertEqual(detached, [])
+            self.assertTrue(dlg.btn_cancel.isEnabled())
+            self.assertFalse(old_worker.waited)
+        finally:
+            dlg._worker = None
+            w._xfer_detach = original_detach
             dlg.close()
 
     def test_xfer_refuses_periodic_or_modbus_traffic(self):
@@ -5385,8 +5466,7 @@ class OfflineIntegrationTests(unittest.TestCase):
         # that same native Qt window for another integration block can retain
         # mutated widget/session state and terminate the Windows process without
         # a Python traceback.  This class tests a fresh offline runtime.
-        global _WIN
-        _WIN = None
+        _dispose_win()
 
     def _virtual(self, loopback=False):
         from virtual_io import PROTO_VIRTUAL

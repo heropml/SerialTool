@@ -12,6 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import convert
 
 
+def _dispose_window(app, window):
+    from PyQt5.QtCore import QCoreApplication, QEvent
+
+    window._shutdown()
+    app.processEvents()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def test_selection_bytes_for_text_prefers_extracted_hex():
     data = convert.selection_bytes_for_text_convert(b"T\x00\x00B", "ignored")
     assert data == b"T\x00\x00B"
@@ -70,8 +79,7 @@ def test_ctx_convert_rejects_oversized_text_selection(monkeypatch, tmp_path):
     w._ctx_convert_selection(to_hex=True)
     assert app.clipboard().text() == "sentinel"
     assert toasts and toasts[-1][1] is True
-    w._close_all_sessions()
-    w.close()
+    _dispose_window(app, w)
 
 
 def test_ctx_convert_copies_clipboard(monkeypatch, tmp_path):
@@ -119,5 +127,4 @@ def test_ctx_convert_copies_clipboard(monkeypatch, tmp_path):
     w._ctx_convert_selection(to_hex=True)
     assert app.clipboard().text() == "54 00 00 42"
     assert shown and shown[-1][1] == "54 00 00 42"
-    w._close_all_sessions()
-    w.close()
+    _dispose_window(app, w)
