@@ -2010,16 +2010,33 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
     def _all_steps(self):
         return [self._row_to_step(d) for d in self._rows]
 
+    def _seq_session(self):
+        """Sequence runtime belongs to the visible tab, not the window proxy."""
+        finder = getattr(self.app, "active_session", None)
+        return finder() if callable(finder) else None
+
+    def _seq_runtime(self, name, default=None):
+        session = self._seq_session()
+        if session is not None:
+            return getattr(session, name, default)
+        return getattr(self.app, name, default)
+
+    def _set_seq_runtime(self, name, value):
+        session = self._seq_session()
+        target = session if session is not None else self.app
+        setattr(target, name, value)
+
     # ---------------- 持久化 ----------------
     def _schedule(self):
         if self._loading:
             return
         # 编辑步骤后，上一次运行的结果/汇总不再对应当前步骤 → 清掉，避免「改了却仍显示旧的通过/失败」
         # 或删行后结果按索引错位。运行中允许改字段但绝不能清在跑的实时结果，故仅非运行态清。
-        if not self.app._seq_running() and (getattr(self.app, "_seq_results", None)
-                                            or getattr(self.app, "_seq_summary", None)):
-            self.app._seq_results = []
-            self.app._seq_summary = None
+        if (not self._seq_runtime("_seq_on", False)
+                and (self._seq_runtime("_seq_results")
+                     or self._seq_runtime("_seq_summary"))):
+            self._set_seq_runtime("_seq_results", [])
+            self._set_seq_runtime("_seq_summary", None)
             self.update_results()
         self._save_timer.start(400)
 
@@ -2081,7 +2098,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
     def _refresh_csv_ui(self):
         bound = bool(self._csv_dataset and self._csv_dataset.get("rows"))
-        running = bool(getattr(self.app, "_seq_on", False))
+        running = bool(self._seq_runtime("_seq_on", False))
         self.ed_loops.setEnabled((not bound) and (not running))
         self.lbl_loops.setEnabled((not bound) and (not running))
         if bound:
@@ -2192,10 +2209,16 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         return self.app._t("seq_st_pending"), c["text_sec"]
 
     def update_results(self):
-        """从 app._seq_results / _seq_summary 刷新结果列 + 汇总 + 运行按钮态（运行引擎回调）。"""
+        """刷新结果列 + 汇总。行结果永远跟活动标签；其它标签的运行态只出现在汇总。"""
         c = chrome_for(self.app._theme_id())
-        results = getattr(self.app, "_seq_results", []) or []
-        running = self.app._seq_running()
+        active = self._seq_session()
+        results = (getattr(active, "_seq_results", None) or []) if active is not None else []
+        running = bool(getattr(active, "_seq_on", False)) if active is not None else False
+        steps = (getattr(active, "_seq_steps", None) or []) if active is not None else []
+        seq_idx = getattr(active, "_seq_idx", 0) if active is not None else 0
+        seq_loops = getattr(active, "_seq_loops", 1) if active is not None else 1
+        seq_loop_i = getattr(active, "_seq_loop_i", 0) if active is not None else 0
+        summ = getattr(active, "_seq_summary", None) if active is not None else None
         # 有已跑结果就一直显示（停止/断连后 _seq_summary 可能为空，但 _seq_results 仍在 → 结果不该丢）
         show = running or bool(results)
         for i, d in enumerate(self._rows):
@@ -2205,16 +2228,30 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             d["res"].setText(text)
             set_tooltip(d["res"], text)
             d["res"].setStyleSheet("color: %s; background: transparent;" % color)
-        summ = getattr(self.app, "_seq_summary", None)
+        others = []
+        for session in getattr(self.app, "_sessions", ()) or ():
+            if session is active or not getattr(session, "_seq_on", False):
+                continue
+            n = len(getattr(session, "_seq_steps", []) or []) or 1
+            step_i = min(max(1, getattr(session, "_seq_idx", 0) + 1), n)
+            others.append(self.app._t(
+                "seq_running_other", name=session.title, i=step_i, n=n))
+        other_text = self.app._t("seq_running_others_sep").join(others)
         if running:
-            n = len(getattr(self.app, "_seq_steps", []) or []) or len(results) or 1
-            i = min(max(1, getattr(self.app, "_seq_idx", 0) + 1), n)   # 当前第 i/n 步（随步进实时更新）
-            loops = max(1, getattr(self.app, "_seq_loops", 1))
+            n = len(steps) or len(results) or 1
+            i = min(max(1, seq_idx + 1), n)   # 当前第 i/n 步（随步进实时更新）
+            loops = max(1, seq_loops)
             if loops > 1:                        # 循环运行：显示当前第 R/N 轮
-                r = min(max(1, getattr(self.app, "_seq_loop_i", 0) + 1), loops)
-                self.lbl_summary.setText(self.app._t("seq_running_round", r=r, n_loops=loops, i=i, n=n))
+                r = min(max(1, seq_loop_i + 1), loops)
+                text = self.app._t("seq_running_round", r=r, n_loops=loops, i=i, n=n)
             else:
-                self.lbl_summary.setText(self.app._t("seq_running_at", i=i, n=n))
+                text = self.app._t("seq_running_at", i=i, n=n)
+            if other_text:
+                text = text + self.app._t("seq_running_others_sep") + other_text
+            self.lbl_summary.setText(text)
+            self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;" % c["accent"])
+        elif other_text:
+            self.lbl_summary.setText(other_text)
             self.lbl_summary.setStyleSheet("color: %s; font-weight: 600;" % c["accent"])
         elif summ:
             verdict = self.app._t("seq_pass" if summ.get("pass") else "seq_fail")
@@ -2237,8 +2274,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         self.btn_steps.setEnabled(not running)  # 运行中不导入步骤（结构性变更会与在跑快照错位）
         # 只有正常收尾并产生汇总才是完整报告；用户停止/断连时保留的部分结果
         # 仍可在界面查看，但不应导出成缺少结论的测试报告。
-        self.btn_export.setEnabled(not running and bool(results)
-                                   and bool(getattr(self.app, "_seq_summary", None)))
+        self.btn_export.setEnabled(not running and bool(results) and bool(summ))
         # 运行中把「运行」点亮成绿色作「正在运行」指示（仍禁用防重复启动，故 :disabled 也显绿）；
         # 空闲/结束回落普通灰按钮（清空内联样式 → 回到对话框级 PlotGhostBtn 样式）。
         if running:
@@ -2324,7 +2360,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
     def _report_is_csv(self):
         """True when the last run was CSV-driven (any row count)."""
-        summ = getattr(self.app, "_seq_summary", None) or {}
+        summ = self._seq_runtime("_seq_summary") or {}
         if summ.get("csv_path"):
             return True
         return any(("csv_row" in r) for r in (summ.get("round_list") or []))
@@ -2333,13 +2369,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         # Multi-round OR CSV-driven (incl. single-row) so reports keep csv_row/label.
         if self._report_is_csv():
             return True
-        return int((getattr(self.app, "_seq_summary", None) or {}).get("loops", 1) or 1) > 1
+        return int((self._seq_runtime("_seq_summary") or {}).get("loops", 1) or 1) > 1
 
     def _report_by_round(self):
         """轮次表要有轮次数据才成立；一轮都没跑完时回退到逐步骤表（否则表是空的）。"""
         if not self._report_is_loop():
             return False
-        summ = getattr(self.app, "_seq_summary", None) or {}
+        summ = self._seq_runtime("_seq_summary") or {}
         return bool(summ.get("round_list"))
 
     def _loop_summary_text(self, summ, verdict):
@@ -2352,7 +2388,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                            total=summ.get("total", 0), ms=summ.get("ms", 0), verdict=verdict)
 
     def _report_summary_line(self):
-        summ = getattr(self.app, "_seq_summary", None) or {}
+        summ = self._seq_runtime("_seq_summary") or {}
         if not summ:
             return "", False
         passed = bool(summ.get("pass"))
@@ -2371,9 +2407,9 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         """Extra metadata lines for HTML/CSV/JUnit."""
         from version import __version__ as _ver
         t = self.app._t
-        summ = getattr(self.app, "_seq_summary", None) or {}
-        started = summ.get("started_at") or getattr(self.app, "_seq_started_at", "") or ""
-        finished = summ.get("finished_at") or getattr(self.app, "_seq_finished_at", "") or ""
+        summ = self._seq_runtime("_seq_summary") or {}
+        started = summ.get("started_at") or self._seq_runtime("_seq_started_at", "") or ""
+        finished = summ.get("finished_at") or self._seq_runtime("_seq_finished_at", "") or ""
         ver = summ.get("version") or _ver
         rows = [
             (t("seq_report_time"), started),
@@ -2382,7 +2418,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             (t("seq_report_params"), t(
                 "seq_report_params_val",
                 loops=summ.get("loops", 1),
-                steps=summ.get("step_count", len(getattr(self.app, "_seq_steps", []) or [])),
+                steps=summ.get("step_count", len(self._seq_runtime("_seq_steps") or [])),
                 stop=t("seq_stop_on_fail") if summ.get("stop_on_fail") else "-",
             )),
         ]
@@ -2394,7 +2430,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         """Return (header, body[{cells,cls}]). Loop/CSV uses per-step rows when snapshots exist."""
         t = self.app._t
         if self._report_by_round():
-            summ = getattr(self.app, "_seq_summary", None) or {}
+            summ = self._seq_runtime("_seq_summary") or {}
             rounds = list(summ.get("round_list") or [])
             has_csv = bool(summ.get("csv_path")) or any(("csv_row" in rr) for rr in rounds)
             has_steps = any(rr.get("steps") for rr in rounds)
@@ -2498,16 +2534,16 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
     def _build_report_junit(self, rows):
         """Build JUnit XML from the latest sequence snapshot."""
         from version import __version__ as _ver
-        steps = getattr(self.app, "_seq_steps", []) or []
-        results = getattr(self.app, "_seq_results", []) or []
-        summ = getattr(self.app, "_seq_summary", None) or {}
+        steps = self._seq_runtime("_seq_steps") or []
+        results = self._seq_runtime("_seq_results") or []
+        summ = self._seq_runtime("_seq_summary") or {}
         cases = junit_report.cases_from_snapshot(
             steps, results, summ, detail_resolver=self._result_detail)
         meta = {
             "app": "CommTool",
             "version": summ.get("version") or _ver,
-            "started_at": summ.get("started_at") or getattr(self.app, "_seq_started_at", "") or "",
-            "finished_at": summ.get("finished_at") or getattr(self.app, "_seq_finished_at", "") or "",
+            "started_at": summ.get("started_at") or self._seq_runtime("_seq_started_at", "") or "",
+            "finished_at": summ.get("finished_at") or self._seq_runtime("_seq_finished_at", "") or "",
             "loops": summ.get("loops"),
             "stop_on_fail": summ.get("stop_on_fail"),
             "csv_path": summ.get("csv_path"),
@@ -2519,13 +2555,13 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
     def _on_export(self):
         """导出上一次运行的测试报告（按保存对话框选的扩展名/过滤器出 HTML 或 CSV）。"""
-        steps = getattr(self.app, "_seq_steps", []) or []
-        results = getattr(self.app, "_seq_results", []) or []
-        summary = getattr(self.app, "_seq_summary", None)
+        steps = self._seq_runtime("_seq_steps") or []
+        results = self._seq_runtime("_seq_results") or []
+        summary = self._seq_runtime("_seq_summary")
         if not steps or not results or not summary:
             self.app.toast(self.app._t("seq_export_none"), error=True)
             return
-        ts = (getattr(self.app, "_seq_started_at", "") or "").translate(str.maketrans("", "", "-: "))
+        ts = (self._seq_runtime("_seq_started_at", "") or "").translate(str.maketrans("", "", "-: "))
         # 默认名不预绑定 .html：切换到 CSV 过滤器时，某些平台不会替换已有扩展名。
         # 留给 _report_fmt 根据过滤器补全，用户手动输入的扩展名仍优先。
         default = "CommTool_seq_report_%s" % (ts or "report")
@@ -2591,7 +2627,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
 
     def _import_steps(self):
         import json
-        if self.app._seq_running():                  # 运行中不改步骤（结构性变更会与在跑快照错位）
+        if self._seq_runtime("_seq_on", False):      # 运行中不改步骤（结构性变更会与在跑快照错位）
             return
         path, _sel = QFileDialog.getOpenFileName(self, self.app._t("seq_steps_import"),
                                                  "", "JSON (*.json)")
@@ -2665,8 +2701,8 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
     def _apply_imported_steps(self, steps):
         """覆盖当前步骤并清除已不对应的旧运行结果/汇总。"""
         self.app._seq_rules = [dict(x) for x in steps]
-        self.app._seq_results = []
-        self.app._seq_summary = None
+        self._set_seq_runtime("_seq_results", [])
+        self._set_seq_runtime("_seq_summary", None)
         self.reload_rows()
         self._commit()
 

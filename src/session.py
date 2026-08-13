@@ -14,7 +14,9 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QTextEdit
 
 import io_stats
+import macro_recorder
 import modbus_slave
+import rec_replay
 import seq_context
 from fonts import mono_font
 
@@ -107,6 +109,14 @@ class Session:
         "_seq_retry_quiet_deadline",
         "_seq_waiting_mbm", "_seq_wait_mbm_variant", "_seq_wait_mbm_until",
         "_seq_timer",
+        # Script / MBM / recording / macro / DSL / scan: per-session runtime.
+        "_script_worker", "_script_conn", "_script_quiet_until",
+        "_macro", "_recorder",
+        "_dsl_ops", "_dsl_idx", "_dsl_gen", "_dsl_record",
+        "_mbm_enabled", "_mbm_wanted", "_mbm_inflight", "_mbm_buf", "_mbm_tid",
+        "_mbm_due", "_mbm_results", "_mbm_guard_until",
+        "_mbm_sched", "_mbm_to",
+        "_device_scan_state",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
         "conn_fields", "send_draft", "period_ms", "period_on",
@@ -238,6 +248,33 @@ class Session:
         self._seq_timer.setSingleShot(True)
         self._seq_timer.timeout.connect(
             lambda _s=self: _s.app._seq_on_timeout_for(_s.id))
+
+        self._script_worker = None
+        self._script_conn = None
+        self._script_quiet_until = 0.0
+        self._macro = macro_recorder.MacroRecorder()
+        self._recorder = rec_replay.StreamRecorder()
+        self._dsl_ops = None
+        self._dsl_idx = 0
+        self._dsl_gen = 0
+        self._dsl_record = True
+        self._mbm_enabled = False
+        self._mbm_wanted = False
+        self._mbm_inflight = None
+        self._mbm_buf = b""
+        self._mbm_tid = 0
+        self._mbm_due = {}
+        self._mbm_results = {}
+        self._mbm_guard_until = 0.0
+        self._mbm_sched = QTimer(app)
+        self._mbm_sched.setSingleShot(True)
+        self._mbm_sched.timeout.connect(
+            lambda _s=self: _s.app._mbm_tick_for(_s.id))
+        self._mbm_to = QTimer(app)
+        self._mbm_to.setSingleShot(True)
+        self._mbm_to.timeout.connect(
+            lambda _s=self: _s.app._mbm_on_timeout_for(_s.id))
+        self._device_scan_state = None
 
         self.txt_recv = None
         self._bookmarks = []

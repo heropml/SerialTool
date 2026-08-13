@@ -381,6 +381,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         old_rules, old_open = w._mbm_rules, w._is_open
         old_ui_proto, old_baud = w.cb_proto.currentText(), w.cb_baud.currentText()
         old_flow = w.cb_flow.currentText()
+        session = w.active_session()
+        old_enabled = bool(getattr(session, "_mbm_enabled", False))
         try:
             w.cb_proto.setCurrentText("Serial")
             w.cb_baud.setCurrentText("9600")
@@ -388,6 +390,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._conn_proto = "Serial"
             w._conn_cfg = w._conn_config_signature("Serial")
             w._mbm_on = True
+            session._mbm_enabled = True
             w._mbm_rules = [{"enabled": True}]
             w._is_open = lambda: True
             self.assertTrue(w._mbm_active())
@@ -407,6 +410,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w.cb_baud.setCurrentText(old_baud)
             w.cb_flow.setCurrentText(old_flow)
             w._conn_cfg, w._conn_proto, w._mbm_on = old_cfg, old_proto, old_on
+            session._mbm_enabled = old_enabled
             w._mbm_rules, w._is_open = old_rules, old_open
 
     def test_coil_response_byte_count_must_match_request(self):
@@ -2152,14 +2156,14 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         (改字段不影响在跑快照，且禁用勾选框会丢选中蓝色像被取消)。运行按钮变绿、结束后恢复。"""
         from dialogs import SequenceDialog
         w = _win()
-        o_rules, o_running = w._seq_rules, w._seq_running
+        o_rules, o_on = w._seq_rules, w._seq_on
         dlg = None
         try:
             dlg = SequenceDialog(w)
             dlg.reload_rows()
             dlg._add_row({"on": True, "send": "AT", "expect": "OK"})
             row = dlg._rows[-1]
-            w._seq_running = lambda: True       # 模拟运行态
+            w._seq_on = True
             dlg.update_results()
             self.assertFalse(dlg.btn_add.isEnabled())      # 结构性改动锁住
             self.assertFalse(row["del"].isEnabled())
@@ -2167,7 +2171,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertTrue(row["on"].isEnabled())
             self.assertFalse(dlg.btn_run.isEnabled())      # 运行中：运行按钮禁用
             self.assertIn("background-color", dlg.btn_run.styleSheet())  # 且点亮成绿色作运行指示
-            w._seq_running = lambda: False      # 结束 → 恢复
+            w._seq_on = False
             dlg.update_results()
             self.assertTrue(dlg.btn_add.isEnabled())
             self.assertTrue(row["del"].isEnabled())
@@ -2176,7 +2180,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             if dlg is not None:
                 dlg._save_timer.stop()
                 dlg.deleteLater()
-            w._seq_running = o_running
+            w._seq_on = o_on
             w._seq_rules = o_rules
 
     def test_sequence_send_exception_is_fail_not_hang(self):

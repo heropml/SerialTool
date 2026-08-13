@@ -378,7 +378,7 @@ class TriggersDialog(QDialog):
         t = self.app._t
         eng = self.app._trigger_engine
         if 0 <= self._cur < len(self._items):
-            st = eng.stats.get(self._cur, {})
+            st = eng.stat_for(self._cur)
             hits = st.get("hits", 0)
             wall = st.get("last_wall", "")
             self.lbl_hits.setText(t("trg_hits", n=hits, when=wall) if wall

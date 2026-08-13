@@ -78,6 +78,13 @@ _SESSION_PROXY_ATTRS = (
     "_seq_retry_quiet_deadline",
     "_seq_waiting_mbm", "_seq_wait_mbm_variant", "_seq_wait_mbm_until",
     "_seq_timer",
+    "_script_worker", "_script_conn", "_script_quiet_until",
+    "_macro", "_recorder",
+    "_dsl_ops", "_dsl_idx", "_dsl_gen", "_dsl_record",
+    "_mbm_enabled", "_mbm_inflight", "_mbm_buf", "_mbm_tid",
+    "_mbm_due", "_mbm_results", "_mbm_guard_until",
+    "_mbm_sched", "_mbm_to",
+    "_device_scan_state",
 )
 
 
@@ -811,10 +818,6 @@ class SessionHostMixin:
         try:
             if cur is not None:
                 self._save_ui_into_session(cur)
-            # Trigger decoding is window-owned. A partial character/tail from
-            # the old tab must never become the prefix of the new tab's data.
-            if hasattr(self, "_reset_trigger_decoders"):
-                self._reset_trigger_decoders()
             self._active_session_id = target.id
             self._load_session_into_ui(target)
             if self.recv_stack is not None and target.txt_recv is not None:
@@ -830,6 +833,24 @@ class SessionHostMixin:
             seq_notify = getattr(self, "_seq_notify", None)
             if callable(seq_notify):
                 seq_notify()
+            self._mbm_on = bool(getattr(target, "_mbm_enabled", False))
+            mbm_dlg = getattr(self, "_mbm_dlg", None)
+            if mbm_dlg is not None:
+                if hasattr(mbm_dlg, "cb_enable"):
+                    cb = mbm_dlg.cb_enable
+                    cb.blockSignals(True)
+                    cb.setChecked(bool(getattr(target, "_mbm_enabled", False)))
+                    cb.blockSignals(False)
+                reload_rows = getattr(mbm_dlg, "reload_rows", None)
+                if callable(reload_rows):
+                    try:
+                        reload_rows()
+                    except Exception:
+                        _log.debug("mbm dialog reload on switch failed", exc_info=True)
+            script_dlg = getattr(self, "_script_dlg", None)
+            if script_dlg is not None and hasattr(script_dlg, "_set_running_ui"):
+                script_dlg._set_running_ui(bool(
+                    getattr(self, "_script_running", lambda: False)()))
             if hasattr(self, "_schedule_keyword_rebuild"):
                 self._schedule_keyword_rebuild()
             # Search hits are document-bound; drop them on switch.
@@ -853,7 +874,8 @@ class SessionHostMixin:
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
         for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer",
-                     "_reset_timer", "_ms_cycle_timer", "_seq_timer"):
+                     "_reset_timer", "_ms_cycle_timer", "_seq_timer",
+                     "_mbm_sched", "_mbm_to"):
             timer = getattr(session, name, None)
             if timer is None:
                 continue
@@ -1260,11 +1282,9 @@ class SessionHostMixin:
                     raw, hex_mode=hex_mode, newline=newline, checksum=checksum,
                     target=target, encoding=opts.get("encoding"),
                     record_macro=False, notify_ui=is_active,
-                    # Active: triggers/recorder; background: only if this
-                    # session owns stream recording.
-                    feed_window_engines=(
-                        is_active
-                        or self._io_session_owns("recording", session)))
+                    # Recorder is session-gated inside _record_stream_tx;
+                    # triggers always need the TX bytes (background tabs too).
+                    feed_window_engines=True)
             finally:
                 if not is_active:
                     self._display_context = previous_ctx
@@ -1455,6 +1475,16 @@ class SessionHostMixin:
                         AttributeError):
                     _log.debug(
                         "background session engine feed failed", exc_info=True)
+            trg = getattr(self, "_triggers_feed", None)
+            if callable(trg):
+                try:
+                    self._rx_side(
+                        "triggers.feed",
+                        lambda: trg(data, "rx", source=reply_target))
+                except (RuntimeError, ValueError, TypeError, OSError,
+                        AttributeError):
+                    _log.debug(
+                        "background session trigger feed failed", exc_info=True)
         finally:
             self._display_context = previous
 
@@ -1484,7 +1514,11 @@ class SessionHostMixin:
                     # Keep the Modbus master pinned to its owning background
                     # tab alive after reconnect, without applying active-tab
                     # UI state changes.
-                    if self._io_session_owns("modbus", s):
+                    # Keep this session's Modbus master alive after reconnect.
+                    resume = getattr(self, "_mbm_resume_after_link_up", None)
+                    if callable(resume):
+                        resume()
+                    elif getattr(s, "_mbm_enabled", False):
                         self._mbm_restart()
                 elif s.conn is not None:
                     # Background drop: tear down without stealing sidebar
@@ -1589,7 +1623,12 @@ class SessionHostMixin:
         old_sessions = list(self._sessions)
         old_active_id = self._active_session_id
         old_intents = {
-            session.id: (bool(session.period_on), bool(session.log_wanted))
+            session.id: {
+                "period_on": bool(session.period_on),
+                "log_wanted": bool(session.log_wanted),
+                "mbm_enabled": bool(getattr(session, "_mbm_enabled", False)),
+                "mbm_wanted": bool(getattr(session, "_mbm_wanted", False)),
+            }
             for session in old_sessions
         } if retain_old else {}
         self._close_all_sessions(update_active_ui=True)
@@ -1668,9 +1707,29 @@ class SessionHostMixin:
         self._sessions = list(snapshot["sessions"])
         intents = snapshot.get("intents", {})
         for session in self._sessions:
-            period_on, log_wanted = intents.get(session.id, (False, False))
-            session.period_on = bool(period_on)
-            session.log_wanted = bool(log_wanted)
+            raw = intents.get(session.id, {})
+            if isinstance(raw, dict):
+                period_on = bool(raw.get("period_on", False))
+                log_wanted = bool(raw.get("log_wanted", False))
+                mbm_enabled = bool(raw.get("mbm_enabled", False))
+                mbm_wanted = bool(raw.get("mbm_wanted", mbm_enabled))
+            else:
+                period_on = bool(raw[0]) if raw else False
+                log_wanted = bool(raw[1]) if len(raw) > 1 else False
+                mbm_enabled = bool(raw[2]) if len(raw) > 2 else False
+                mbm_wanted = mbm_enabled
+            session.period_on = period_on
+            session.log_wanted = log_wanted
+            session._mbm_enabled = mbm_enabled
+            session._mbm_wanted = mbm_wanted
+            if mbm_enabled:
+                bind = getattr(self, "_io_bind_owner", None)
+                if callable(bind):
+                    bind("modbus", session)
+                restart = getattr(self, "_mbm_restart", None)
+                if callable(restart):
+                    with self._with_session(session):
+                        restart()
         wanted = snapshot.get("active_id")
         self._active_session_id = (
             wanted if any(s.id == wanted for s in self._sessions)
@@ -1781,6 +1840,12 @@ class SessionHostMixin:
             seq_timer = getattr(s, "_seq_timer", None)
             if seq_timer is not None and seq_timer.isActive():
                 seq_timer.stop()
+            for name in ("_mbm_sched", "_mbm_to"):
+                timer = getattr(s, name, None)
+                if timer is not None and timer.isActive():
+                    timer.stop()
+            s._mbm_enabled = False
+            s._mbm_inflight = None
             s.period_on = False
             with self._with_session(s):
                 update_ui = bool(update_active_ui and s.id == active_id)

@@ -586,7 +586,7 @@ def test_background_rx_feeds_pinned_script_engine(monkeypatch, tmp_path):
         def feed(self, data):
             fed["script"] += 1
 
-    w._script_worker = _Worker()
+    s1._script_worker = _Worker()
     w._io_bind_owner("script", s1)
     monkeypatch.setattr(w, "_script_running", lambda: True)
     monkeypatch.setattr(w, "_seq_running", lambda: False)
@@ -598,7 +598,7 @@ def test_background_rx_feeds_pinned_script_engine(monkeypatch, tmp_path):
 
     fed["script"] = 0
     w._io_clear_owner("script")
-    w._script_worker = None
+    s1._script_worker = None
     s1.conn.inject(b"NO-SCRIPT")
     _pump()
     assert fed["script"] == 0
@@ -1146,18 +1146,17 @@ def test_background_decoder_init_does_not_reset_window_triggers(
     w = _window(monkeypatch, tmp_path, "bg-codec-trigger-isolation")
     _open_virtual(w)
     s1 = w.active_session()
-    w.add_session(activate=True)
+    s2 = w.add_session(activate=True)
+    other_key = (s2.id, "rx", None)
+    w._trg_dec_buf[other_key] = b"keep"
     s1.display_opts = {"encoding": "utf-8"}
     s1._inc_decoder = None
-    resets = []
-    monkeypatch.setattr(
-        w, "_reset_trigger_decoders", lambda: resets.append(True))
 
     s1.conn.inject("中".encode("utf-8"))
     _pump()
 
     assert "中" in s1.txt_recv.toPlainText()
-    assert resets == []
+    assert w._trg_dec_buf.get(other_key) == b"keep"
     w._close_all_sessions()
 
 
@@ -1205,6 +1204,7 @@ def test_background_open_state_restarts_its_modbus_master(monkeypatch, tmp_path)
     s1 = w.active_session()
     s2 = w.add_session(activate=True)
     w._mbm_on = True
+    s1._mbm_enabled = True
     w._io_bind_owner("modbus", s1)
     restarted = []
     monkeypatch.setattr(
@@ -1704,17 +1704,17 @@ def test_project_switch_refuses_pinned_background_worker(monkeypatch, tmp_path):
         def isRunning():
             return True
 
-    w._script_worker = _Worker()
+    owner._script_worker = _Worker()
     w._io_bind_owner("script", owner)
     notices = []
     monkeypatch.setattr(w, "toast_session_busy", lambda: notices.append(True))
 
     assert w._prepare_project_switch() is False
     assert owner in w.sessions()
-    assert w._script_worker is not None
+    assert owner._script_worker is not None
     assert notices == [True]
 
-    w._script_worker = None
+    owner._script_worker = None
     w._io_clear_owner("script")
     w._close_all_sessions()
 
@@ -1730,7 +1730,7 @@ def test_profile_switch_refuses_pinned_background_worker(monkeypatch, tmp_path):
         def isRunning():
             return True
 
-    w._script_worker = _Worker()
+    owner._script_worker = _Worker()
     w._io_bind_owner("script", owner)
     notices = []
     confirms = []
@@ -1743,10 +1743,10 @@ def test_profile_switch_refuses_pinned_background_worker(monkeypatch, tmp_path):
 
     assert w._profile == profile
     assert owner in w.sessions()
-    assert w._script_worker is not None
+    assert owner._script_worker is not None
     assert notices == [True]
     assert confirms == []
-    w._script_worker = None
+    owner._script_worker = None
     w._io_clear_owner("script")
     w._close_all_sessions()
 
@@ -2060,20 +2060,23 @@ def test_ar_gap_timer_flushes_in_owning_session(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_session_switch_clears_window_trigger_stream_state(monkeypatch, tmp_path):
-    w = _window(monkeypatch, tmp_path, "trigger-switch-reset")
+def test_session_switch_keeps_per_session_trigger_stream_state(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "trigger-switch-keep")
+    first = w.active_session()
     second = w.add_session(activate=False)
-    w._trg_dec_buf = {("rx", None): b"partial"}
-    w._trg_dec = {("rx", None): object()}
-    w._trg_ansi_pending = {("rx", None): "escape"}
-    w._trg_tail_bytes = {("rx", None): b"tail"}
-    w._trg_tail_text = {("rx", None): "tail"}
+    key = (first.id, "rx", None)
+    w._trg_dec_buf = {key: b"partial"}
+    w._trg_dec = {key: object()}
+    w._trg_ansi_pending = {key: "escape"}
+    w._trg_tail_bytes = {key: b"tail"}
+    w._trg_tail_text = {key: "tail"}
     assert w.switch_session(second.id)
-    assert w._trg_dec_buf == {}
-    assert w._trg_dec == {}
-    assert w._trg_ansi_pending == {}
-    assert w._trg_tail_bytes == {}
-    assert w._trg_tail_text == {}
+    assert w._trg_dec_buf.get(key) == b"partial"
+    assert key in w._trg_dec
+    assert w._trg_ansi_pending.get(key) == "escape"
+    assert w._trg_tail_bytes.get(key) == b"tail"
+    assert w._trg_tail_text.get(key) == "tail"
     w._close_all_sessions()
 
 
@@ -2513,7 +2516,8 @@ def test_background_period_skips_window_recording_and_triggers(
     w._period_send_for(s1.id)
 
     assert s1.conn.tx_log[-1] == b"BACKGROUND"
-    assert fed == []
+    assert len(fed) == 1
+    assert fed[0][0] == b"BACKGROUND"
     assert w.active_session() is s2
     w._close_all_sessions()
 
@@ -3407,10 +3411,12 @@ def test_cancelled_transfer_cannot_cross_into_reconnected_link(
     monkeypatch.setattr(w, "_mbm_connection_ready", lambda: True)
     monkeypatch.setattr(w, "_is_open", lambda: True)
     w._mbm_on = True
+    w.active_session()._mbm_enabled = True
     w._mbm_rules = [{"enabled": True}]
     w._io_bind_owner("modbus", w.active_session())
     assert w._mbm_active()
     w._mbm_on = False
+    w.active_session()._mbm_enabled = False
     w._io_clear_owner("modbus")
     w._xfer_detach()
     w.conn = None
@@ -3461,6 +3467,7 @@ def test_stopping_script_cannot_consume_reconnected_link_rx(
     monkeypatch.setattr(w, "_mbm_connection_ready", lambda: True)
     monkeypatch.setattr(w, "_is_open", lambda: True)
     w._mbm_on = True
+    session._mbm_enabled = True
     w._mbm_rules = [{"enabled": True}]
     w._io_bind_owner("modbus", session)
     assert w._mbm_active()
@@ -3525,32 +3532,35 @@ def test_dsl_and_mbm_callbacks_keep_bound_owner_after_switch(
     s2 = w.add_session(activate=True)
     seen = []
 
-    w._dsl_ops = [("send", ("AA", True))]
-    w._dsl_idx = 0
-    w._dsl_gen = 7
+    w._dsl_ops = None
+    s1._dsl_ops = [("send", ("AA", True))]
+    s1._dsl_idx = 0
+    s1._dsl_gen = 7
     w._io_bind_owner("dsl", s1)
     monkeypatch.setattr(
         w, "_send_with_subst",
         lambda *_a, **_k: seen.append(("dsl", w._session_ctx().id)) or True)
-    w._dsl_step(7)
-    w._dsl_ops = None
+    w._dsl_step(7, s1.id)
+    s1._dsl_ops = None
     w._io_clear_owner("dsl")
 
     w._mbm_on = True
-    w._mbm_inflight = None
+    s1._mbm_enabled = True
+    s1._mbm_inflight = None
     w._mbm_rules = [{"enabled": True}]
-    w._mbm_due = {}
+    s1._mbm_due = {}
     w._io_bind_owner("modbus", s1)
     monkeypatch.setattr(w, "_mbm_active", lambda: True)
     monkeypatch.setattr(main_window, "_mbm_sched_pick_next", lambda *_a: (0, 0.0))
     monkeypatch.setattr(
         w, "_mbm_poll",
         lambda _i: seen.append(("mbm", w._session_ctx().id)))
-    w._mbm_tick()
+    w._mbm_tick_for(s1.id)
 
     assert seen == [("dsl", s1.id), ("mbm", s1.id)]
     assert w.active_session() is s2
     w._mbm_on = False
+    s1._mbm_enabled = False
     w._io_clear_owner("modbus")
     w._close_all_sessions()
 
@@ -3588,22 +3598,21 @@ def test_background_owner_disconnect_stops_its_window_tasks(
     s1._conn_proto = "Virtual"
     s1._conn_cfg = ("Virtual",)
     s1._conn_engaged = True
-    w._script_worker = _Worker()
+    s1._script_worker = _Worker()
     w._io_bind_owner("script", s1)
-    w._macro.start()
+    s1._macro.start()
     w._io_bind_owner("macro", s1)
-    w._dsl_ops = [("delay", 1000)]
+    s1._dsl_ops = [("delay", 1000)]
     w._io_bind_owner("dsl", s1)
     monkeypatch.setattr(w, "_schedule_reconnect", lambda: None)
 
     w._route_session_state(s1.id, False)
 
     assert stopped == ["script"]
-    assert w._macro.recording is False
-    assert w._io_owner_sid["macro"] is None
-    assert w._dsl_ops is None
-    assert w._io_owner_sid["dsl"] is None
+    assert s1._macro.recording is False
+    assert s1._dsl_ops is None
     w._script_worker = None
+    s1._script_worker = None
     w._io_clear_owner("script")
     w._close_all_sessions()
 
@@ -3617,24 +3626,26 @@ def test_script_begin_does_not_cancel_other_session_ar_or_mbm(
     s1._ar_generation = 11
     s2._ar_generation = 22
     info = {"timeout_ms": 500, "variant": "rtu"}
-    w._mbm_inflight = info
+    s1._mbm_enabled = True
+    s1._mbm_inflight = info
     w._io_bind_owner("modbus", s1)
-    w._mbm_sched.start(60000)
-    w._mbm_to.start(60000)
+    s1._mbm_sched.start(60000)
+    s1._mbm_to.start(60000)
     worker = object()
 
     w._script_begin(worker)
 
     assert s1._ar_generation == 11
     assert s2._ar_generation == 23
-    assert w._mbm_inflight is info
-    assert w._mbm_sched.isActive()
-    assert w._mbm_to.isActive()
-    w._script_worker = None
+    assert s1._mbm_inflight is info
+    assert s1._mbm_sched.isActive()
+    assert s1._mbm_to.isActive()
+    s2._script_worker = None
     w._io_clear_owner("script")
-    w._mbm_sched.stop()
-    w._mbm_to.stop()
-    w._mbm_inflight = None
+    s1._mbm_sched.stop()
+    s1._mbm_to.stop()
+    s1._mbm_inflight = None
+    s1._mbm_enabled = False
     w._io_clear_owner("modbus")
     w._close_all_sessions()
 
@@ -3652,10 +3663,268 @@ def test_sequence_dialog_tracks_active_session_only(monkeypatch, tmp_path):
 
     assert w.switch_session(s2.id)
     assert w._seq_dlg.btn_run.isEnabled() is True
+    assert s1.title in w._seq_dlg.lbl_summary.text()
     with w._with_session(s1):
         w._seq_notify()
     assert w._seq_dlg.btn_run.isEnabled() is True
+    assert s1.title in w._seq_dlg.lbl_summary.text()
 
     s1._seq_on = False
     w._seq_dlg.close()
+    w._close_all_sessions()
+
+
+def test_background_rx_feeds_triggers(monkeypatch, tmp_path):
+    """Inactive-tab RX still matches trigger rules (per-session decoder)."""
+    import triggers
+
+    w = _window(monkeypatch, tmp_path, "bg-trg")
+    _open_virtual(w)
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    _open_virtual(w)
+    fired = []
+    w._triggers = [triggers.normalize({
+        "on": True, "pattern": "ALARM", "mode": "contains",
+        "scope": "rx", "beep": False, "notify": False,
+    })]
+    w._trigger_engine.set_rules(w._triggers)
+    monkeypatch.setattr(w, "_fire_trigger", lambda *a, **k: fired.append(True))
+
+    s1.conn.inject(b"ALARM")
+    _pump()
+    assert fired == [True]
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_each_own_a_script(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "dual-script")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+
+    class _Worker:
+        pass
+
+    s1._script_worker = _Worker()
+    s2._script_worker = _Worker()
+    w._io_bind_owner("script", s1)
+    w._io_bind_owner("script", s2)
+    assert w._script_active(s1) is True
+    assert w._script_active(s2) is True
+    assert w._io_session_owns("script", s1) is True
+    assert w._io_session_owns("script", s2) is True
+    assert w._hard_busy_owned_by(s1) is True
+    assert w._hard_busy_owned_by(s2) is True
+    s1._script_worker = None
+    s2._script_worker = None
+    w._io_clear_owner("script")
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_enable_modbus_independently(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "dual-mbm")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1._mbm_enabled = True
+    s2._mbm_enabled = True
+    w._io_bind_owner("modbus", s1)
+    w._io_bind_owner("modbus", s2)
+    assert w._io_session_owns("modbus", s1) is True
+    assert w._io_session_owns("modbus", s2) is True
+    s1._mbm_enabled = False
+    s2._mbm_enabled = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_script_console_close_ends_background_owner(monkeypatch, tmp_path):
+    """Closing the console must _script_end even if the owner tab is not visible."""
+    from script_console_dialog import ScriptConsoleDialog
+
+    w = _window(monkeypatch, tmp_path, "sc-close-bg")
+    owner = w.active_session()
+    w.add_session(activate=True)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return False
+
+        @staticmethod
+        def stop():
+            return None
+
+        @staticmethod
+        def wait(_ms=0):
+            return True
+
+    worker = _Worker()
+    owner._script_worker = worker
+    w._io_bind_owner("script", owner)
+    dlg = ScriptConsoleDialog(w)
+    dlg._worker = worker
+    dlg.close()
+    assert owner._script_worker is None
+    assert w._hard_busy_owned_by(owner) is False
+    dlg.deleteLater()
+    w._close_all_sessions()
+
+
+def test_script_console_running_follows_visible_tab(monkeypatch, tmp_path):
+    from script_console_dialog import ScriptConsoleDialog
+
+    w = _window(monkeypatch, tmp_path, "sc-follow-tab")
+    owner = w.active_session()
+    dlg = ScriptConsoleDialog(w)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+    worker = _Worker()
+    owner._script_worker = worker
+    dlg._worker = worker
+    w.add_session(activate=True)
+    assert dlg.is_running() is False
+    assert w.switch_session(owner.id)
+    assert dlg.is_running() is True
+    owner._script_worker = None
+    dlg._worker = None
+    dlg.deleteLater()
+    w._close_all_sessions()
+
+
+def test_mbm_dialog_reloads_results_on_session_switch(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-dlg-switch")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    s1._mbm_enabled = True
+    s1._mbm_results = {0: {"status": "ok", "text": "from-s1"}}
+    s2._mbm_results = {0: {"status": "ok", "text": "from-s2"}}
+
+    class _CB:
+        def __init__(self):
+            self.checked = None
+
+        def blockSignals(self, *_a):
+            return None
+
+        def setChecked(self, value):
+            self.checked = bool(value)
+
+    class _Dlg:
+        def __init__(self):
+            self.cb_enable = _CB()
+            self.reloads = []
+
+        def reload_rows(self):
+            self.reloads.append(dict(getattr(w, "_mbm_results", {}) or {}))
+
+    dlg = _Dlg()
+    w._mbm_dlg = dlg
+    assert w.switch_session(s2.id)
+    assert w._mbm_on is False
+    assert dlg.cb_enable.checked is False
+    assert dlg.reloads
+    assert dlg.reloads[-1].get(0, {}).get("text") == "from-s2"
+    w._mbm_dlg = None
+    s1._mbm_enabled = False
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_enable_modbus_via_set_enabled(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-two-masters")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1._mbm_enabled = True
+    s1._mbm_wanted = True
+    notices = []
+    monkeypatch.setattr(w, "toast", lambda msg, error=False: notices.append(msg))
+    w._set_mbm_enabled(True)
+    assert s2._mbm_enabled is True
+    assert s2._mbm_wanted is True
+    assert s1._mbm_enabled is True
+    assert notices == []
+    s1._mbm_enabled = False
+    s1._mbm_wanted = False
+    s2._mbm_enabled = False
+    s2._mbm_wanted = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_disconnect_clears_mbm_runtime_but_keeps_pin(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-disc-flag")
+    _open_virtual(w)
+    s = w.active_session()
+    s._mbm_enabled = True
+    w._io_bind_owner("modbus", s)
+    w.close_conn()
+    assert s._mbm_enabled is False
+    assert w._hard_busy_owned_by(s) is False
+    assert w._io_owner_session("modbus") is s
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_mbm_resume_syncs_on_flag_for_visible_owner(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-resume-on")
+    s = w.active_session()
+    s._mbm_enabled = False
+    w._mbm_on = False
+    w._io_bind_owner("modbus", s)
+    w._mbm_resume_after_link_up()
+    assert s._mbm_enabled is True
+    assert w._mbm_on is True
+    s._mbm_enabled = False
+    w._mbm_on = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_mbm_resume_does_not_flip_on_flag_for_background_owner(
+        monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-resume-bg")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1._mbm_enabled = False
+    w._mbm_on = False
+    w._io_bind_owner("modbus", s1)
+    with w._with_session(s1):
+        w._mbm_resume_after_link_up()
+    assert s1._mbm_enabled is True
+    assert w.active_session() is s2
+    assert w._mbm_on is False
+    s1._mbm_enabled = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_profile_rollback_restores_mbm_enabled(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "mbm-rollback")
+    s = w.active_session()
+    sid = s.id
+    s._mbm_enabled = True
+    snap = w._begin_sessions_runtime_reset()
+    assert s._mbm_enabled is False
+    w._rollback_sessions_runtime_reset(snap)
+    restored = w.find_session(sid)
+    assert restored is not None
+    assert restored._mbm_enabled is True
+    restored._mbm_enabled = False
+    w._io_clear_owner("modbus")
+    w._close_all_sessions()
+
+
+def test_background_sequence_does_not_toast(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "seq-bg-toast")
+    s1 = w.active_session()
+    w.add_session(activate=True)
+    toasts = []
+    monkeypatch.setattr(w, "toast", lambda msg, error=False: toasts.append(msg))
+    with w._with_session(s1):
+        w._toast_if_active_session("bg-seq")
+    w._toast_if_active_session("fg-seq")
+    assert toasts == ["fg-seq"]
     w._close_all_sessions()

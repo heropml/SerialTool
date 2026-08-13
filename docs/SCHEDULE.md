@@ -26,7 +26,7 @@
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
 | `except Exception` | 宽泛约 **199**（B6 二批后）/ 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
-| 多会话 | 序列+从机 bank per-session | 双标签可各跑序列；脚本/MBM 仍钉窗；非目标：树/分屏/拖出 |
+| 多会话 | 脚本/MBM/录制/宏/DSL/扫描/序列 per-session | 后台 RX 喂引擎+AR+触发器；关忙标签仍拦；非目标：树/分屏/拖出 |
 | 功能路线 | P0 / P1 / v1.4 / v1.5 / v1.5.2 / v1.5.3 | **均已收口** |
 
 审查纠偏（避免排错）：
@@ -114,7 +114,7 @@
 
 1. ~~**A1–A6 / B1–B3 / B4c**~~ **DONE**（含 v1.5.3 发版与 Windows CI 隔离加固）  
 2. ~~**v1.5.4 打磨**~~ **DONE**（循环 per-session、网关 UI、QSS/i18n 薄拆、B6、updater）  
-3. ~~**v1.5.5 多会话引擎**~~ **DONE**（软切标签、后台 RX 喂引擎、序列/从机 bank per-session、传输窗口级门禁）  
+3. ~~**v1.5.5 多会话引擎**~~ **DONE**（软切标签、后台 RX 喂引擎/AR/触发器、脚本/MBM/录制/宏/DSL per-session、传输窗口级门禁）
 4. **不上**覆盖率硬门槛（B3 只收集，见 §6）  
 5. 阶段 C / P2 / PyQt6 仅按触发条件启动  
 

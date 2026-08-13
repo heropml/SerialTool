@@ -237,7 +237,7 @@ class EngineTests(unittest.TestCase):
         eng.feed(b"E", "rx", "E", now=1.0, wall="10:00:00")
         eng.feed(b"E", "rx", "E", now=2.0, wall="10:00:01")   # 冷却中
         self.assertEqual(eng.hits(0), 2)
-        self.assertEqual(eng.stats[0]["last_wall"], "10:00:01")
+        self.assertEqual(eng.stats[(None, 0)]["last_wall"], "10:00:01")
 
     def test_regex_compiled_once(self):
         """正则缓存：同一模式反复喂包不重复编译。"""
@@ -257,6 +257,16 @@ class ActionGateTests(unittest.TestCase):
         # hits 1,2 suppressed by min_hits; 3 odd skipped by every_n; 4 fire; 5 skip; 6 fire
         self.assertEqual([bool(x) for x in fired], [False, False, False, True, False, True])
         self.assertEqual(eng.hits(0), 6)
+
+    def test_hits_and_cooldown_are_per_session(self):
+        """Background tabs must not share cooldown or hit counters."""
+        eng = tg.TriggerEngine([rule(pattern="E", cooldown=1000)])
+        self.assertEqual(len(eng.feed(b"E", "rx", "E", now=10.0, sid="a")), 1)
+        self.assertEqual(len(eng.feed(b"E", "rx", "E", now=10.5, sid="b")), 1)
+        self.assertEqual(len(eng.feed(b"E", "rx", "E", now=10.5, sid="a")), 0)
+        self.assertEqual(eng.hits(0, sid="a"), 2)
+        self.assertEqual(eng.hits(0, sid="b"), 1)
+        self.assertEqual(eng.hits(0), 3)
 
     def test_normalize_action_fields(self):
         r = tg.normalize({"webhook": True, "webhook_url": "https://x", "run_cmd_on": 1,

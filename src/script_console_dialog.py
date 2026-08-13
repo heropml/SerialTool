@@ -54,6 +54,7 @@ class ScriptConsoleDialog(QDialog):
         self._scripts = []        # [{"name": str, "code": str}]
         self._active = 0
         self._worker = None
+        self._worker_sid = None   # session that owns self._worker (not the visible tab)
         self._loading = False
         self._warned_code_len = False    # 代码超长提示只弹一次，不随每次按键刷屏
 
@@ -432,7 +433,15 @@ class ScriptConsoleDialog(QDialog):
 
     # ---------------- 运行 / 停止 ----------------
     def is_running(self):
-        return self._worker is not None and self._worker.isRunning()
+        """True if the visible tab's script is running (each tab can run its own)."""
+        running = getattr(self.app, "_script_running", None)
+        if callable(running):
+            return bool(running())
+        worker = getattr(self.app, "_script_worker", None)
+        if worker is None:
+            return False
+        fn = getattr(worker, "isRunning", None)
+        return bool(fn()) if callable(fn) else True
 
     def _on_run(self):
         if self.is_running():
@@ -461,13 +470,21 @@ class ScriptConsoleDialog(QDialog):
         # 才送达，_on_finished 必须能认出发信人是不是当前这个 worker（否则会把新 worker 架空）。
         w.run_finished.connect(lambda ok, s, _w=w: self._on_finished(_w, ok, s))
         self._worker = w
+        finder = getattr(self.app, "active_session", None)
+        session = finder() if callable(finder) else None
+        self._worker_sid = getattr(session, "id", None) if session is not None else None
         self.app._script_begin(w)       # 主窗接管：喂 RX + 暂停自动应答/Modbus
         self._set_running_ui(True)
         w.start()
 
     def _on_stop(self):
-        if self._worker is not None:
-            self._worker.stop()
+        worker = getattr(self.app, "_script_worker", None)
+        if worker is None:
+            worker = self._worker
+        if worker is not None:
+            stop = getattr(worker, "stop", None)
+            if callable(stop):
+                stop()
 
     def _on_finished(self, worker, ok, summary):
         # 日志先从 worker 本身取计数 —— 关窗/换轮场景下 self._worker 可能已经不是它了，
@@ -477,11 +494,13 @@ class ScriptConsoleDialog(QDialog):
                    summary, "sc_done_ok" if ok else "sc_done_fail")
         self._append_out(self.app._t(key, ok=worker.checks_passed,
                                      fail=worker.checks_failed))
-        if worker is not self._worker:
-            return      # 旧 worker 的迟到信号（已换新一轮 或 已关窗收尾），只记日志不动机器
-        self.app._script_end()
-        self._worker = None
-        self._set_running_ui(False)
+        end = getattr(self.app, "_script_end", None)
+        if callable(end):
+            end(worker)
+        if worker is self._worker:
+            self._worker = None
+            self._worker_sid = None
+        self._set_running_ui(self.is_running())
 
     def _set_running_ui(self, running):
         self.btn_run.setVisible(not running)
@@ -638,18 +657,34 @@ class ScriptConsoleDialog(QDialog):
         self.ed_code.setFocus()
 
     def closeEvent(self, e):
-        if self.is_running():
-            self._on_stop()
-            self._worker.wait(1500)
-            if self._worker.isRunning():
-                # 不可中断的脚本（纯计算死循环）：等不到它退出。**必须**把对象转移到主窗常驻
-                # 列表续命——否则 self._worker 这个唯一引用随对话框销毁而消失，正在跑的
-                # QThread 被析构 → Qt std::terminate() 让整个进程 abort。
-                self.app._script_orphans.append(self._worker)
-        # run_finished 是队列信号，关窗/退出时可能来不及投递 → 这里兜底交还收流，
-        # 否则主窗 _script_worker 悬空、RX 一直往已结束的 worker 里灌。
-        if getattr(self.app, "_script_worker", None) is not None:
-            self.app._script_end()
+        workers = []
+        for candidate in (self._worker, getattr(self.app, "_script_worker", None)):
+            if candidate is not None and candidate not in workers:
+                workers.append(candidate)
+        for session in getattr(self.app, "_sessions", ()) or ():
+            candidate = getattr(session, "_script_worker", None)
+            if candidate is not None and candidate not in workers:
+                workers.append(candidate)
+        for target in workers:
+            running = bool(getattr(target, "isRunning", lambda: False)())
+            if running:
+                stop = getattr(target, "stop", None)
+                if callable(stop):
+                    stop()
+                wait = getattr(target, "wait", None)
+                if callable(wait):
+                    wait(1500)
+                if bool(getattr(target, "isRunning", lambda: False)()):
+                    # 不可中断的脚本（纯计算死循环）：等不到它退出。**必须**把对象转移到主窗常驻
+                    # 列表续命——否则 self._worker 这个唯一引用随对话框销毁而消失，正在跑的
+                    # QThread 被析构 → Qt std::terminate() 让整个进程 abort。
+                    self.app._script_orphans.append(target)
+            end = getattr(self.app, "_script_end", None)
+            if callable(end):
+                # Owner may be a background tab; _script_end scans sessions by
+                # worker identity and re-enters with that owner.
+                end(target)
         self._worker = None
+        self._worker_sid = None
         self._save_cfg()
         super().closeEvent(e)

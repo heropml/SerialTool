@@ -179,7 +179,7 @@ def test_soft_leave_allows_switch_busy_blocks_close(monkeypatch, tmp_path):
 
 
 def test_background_rx_feeds_owner_script_not_others(monkeypatch, tmp_path):
-    """后台 RX：仅喂钉在该会话上的脚本引擎。"""
+    """后台 RX：仅喂该会话自己的脚本 worker。"""
     w = _window(monkeypatch, tmp_path, "bg-rx-host")
     _open_virtual(w)
     s1 = w.active_session()
@@ -191,8 +191,7 @@ def test_background_rx_feeds_owner_script_not_others(monkeypatch, tmp_path):
         def feed(self, data):
             fed["script"] += 1
 
-    w._script_worker = _Worker()
-    w._io_bind_owner("script", s1)
+    s1._script_worker = _Worker()
     monkeypatch.setattr(w, "_script_running", lambda: True)
     monkeypatch.setattr(w, "_seq_running", lambda: False)
     s1.conn.inject(b"YES-SCRIPT")
@@ -201,8 +200,7 @@ def test_background_rx_feeds_owner_script_not_others(monkeypatch, tmp_path):
     assert s1.rx_bytes >= 10
 
     fed["script"] = 0
-    w._io_clear_owner("script")  # unbound → only active owns
-    w._script_worker = None
+    s1._script_worker = None
     s1.conn.inject(b"NO-SCRIPT")
     _pump()
     assert fed["script"] == 0

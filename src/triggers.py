@@ -278,7 +278,7 @@ class TriggerEngine:
     def __init__(self, rules=None):
         self._rules = []
         self._regex_cache = {}
-        self.stats = {}          # id(规则序号) → {"hits": n, "last": monotonic, "last_wall": 墙钟串}
+        self.stats = {}          # (sid, 规则序号) → {"hits": n, "last": monotonic, "last_wall": 墙钟串}
         self.set_rules(rules or [])
 
     # ---------------- 规则 ----------------
@@ -320,13 +320,14 @@ class TriggerEngine:
         return self._lookback
 
     def feed(self, data, direction="rx", text="", now=None, wall=None,
-             new_data_at=0, new_text_at=0):
+             new_data_at=0, new_text_at=0, sid=None):
         """喂一包数据，返回本次触发的 [(序号, 规则), ...]（已过冷却窗口）。
 
         冷却只压制「动作」，命中计数**和最后命中时间**照常更新 —— 否则「这条到底命中了
         多少次、最近一次什么时候」都会失真（冷却期的命中同样是命中）。
 
         wall: 墙钟时间串，缺省取当前时刻；显式传入便于测试。
+        sid: 会话 id；命中/冷却按 (sid, 规则序号) 隔离，后台标签互不影响。
         """
         if now is None:
             now = time.monotonic()
@@ -341,7 +342,8 @@ class TriggerEngine:
                 continue
             if wall is None:
                 wall = time.strftime("%H:%M:%S")   # 懒取：绝大多数包无命中，别每包都格式化墙钟
-            st = self.stats.setdefault(i, {"hits": 0, "last": 0.0, "last_wall": ""})
+            key = (sid, i)
+            st = self.stats.setdefault(key, {"hits": 0, "last": 0.0, "last_wall": ""})
             st["hits"] += 1
             st["last"] = now
             st["last_wall"] = wall
@@ -353,14 +355,43 @@ class TriggerEngine:
             if every_n > 1 and (hits % every_n) != 0:
                 continue                     # fire every Nth hit
             cd = rule.get("cooldown", 0)
-            if cd > 0 and now < self._cool_until.get(i, 0.0):
+            if cd > 0 and now < self._cool_until.get(key, 0.0):
                 continue                     # 冷却中：只计数、不再重复告警（防刷屏）
-            self._cool_until[i] = now + cd / 1000.0
+            self._cool_until[key] = now + cd / 1000.0
             fired.append((i, rule))
         return fired
 
-    def hits(self, index):
-        return self.stats.get(index, {}).get("hits", 0)
+    def hits(self, index, sid=None):
+        """Hits for one rule. ``sid=None`` sums every session (dialog total)."""
+        if sid is not None:
+            return int(self.stats.get((sid, index), {}).get("hits", 0) or 0)
+        total = 0
+        for key, st in self.stats.items():
+            if key == (None, index):
+                total += int(st.get("hits", 0) or 0)
+            elif isinstance(key, tuple) and len(key) == 2 and key[1] == index:
+                total += int(st.get("hits", 0) or 0)
+            elif key == index:
+                total += int(st.get("hits", 0) or 0)
+        return total
+
+    def stat_for(self, index, sid=None):
+        """Stats dict for the dialog: one session, or summed hits + latest wall."""
+        if sid is not None:
+            return dict(self.stats.get((sid, index), {}) or {})
+        hits = self.hits(index)
+        best = {}
+        for key, st in self.stats.items():
+            if key == index or (isinstance(key, tuple) and len(key) == 2 and key[1] == index):
+                if float(st.get("last", 0) or 0) >= float(best.get("last", 0) or 0):
+                    best = st
+        if not hits and not best:
+            return {}
+        return {
+            "hits": hits,
+            "last": best.get("last", 0.0),
+            "last_wall": best.get("last_wall", ""),
+        }
 
     def total_hits(self):
         return sum(s.get("hits", 0) for s in self.stats.values())
