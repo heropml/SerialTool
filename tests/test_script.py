@@ -589,7 +589,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         w = _win()
         old_ar, old_mbm = w._ar_on, w._mbm_on
         try:
-            w._ar_on, w._mbm_on = True, False
+            w._set_autoreply_enabled(True)
             w._set_mbm_enabled(True)
             self.assertTrue(w._mbm_on)
             self.assertFalse(w._ar_on)
@@ -1438,6 +1438,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         w._send_text = lambda raw, **k: (sends.append(raw), True)[1]
         w._is_open = lambda: True
         w._ar_on = True
+        w.active_session()._ar_enabled = True
         w._mbm_on = True
         w._mbm_rules = [{"enabled": True}]
         try:
@@ -2605,6 +2606,64 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertTrue(dlg.btn_cancel.isEnabled())
             self.assertFalse(old_worker.waited)
         finally:
+            dlg._worker = None
+            w._xfer_detach = original_detach
+            dlg.close()
+
+    def test_xfer_send_confirms_huge_file(self):
+        """超过内存阈值的发送文件必须先确认，取消则不读入、不启动 worker。"""
+        import os
+        from xfer_dialog import XferDialog, _XFER_WARN_BYTES
+        w = _win()
+        dlg = XferDialog(w)
+        confirmed = []
+        old = (w._is_open, w._xfer_start_blocked, w._confirm_dlg)
+        orig_getsize = os.path.getsize
+        try:
+            w._is_open = lambda: True
+            w._xfer_start_blocked = lambda: False
+            w._confirm_dlg = lambda *a, **k: confirmed.append(True) or False
+            dlg.rb_send.setChecked(True)
+            dlg._path = "huge.bin"
+            os.path.getsize = lambda _p: _XFER_WARN_BYTES + 1
+            dlg._start()
+            self.assertEqual(confirmed, [True])
+            self.assertIsNone(dlg._worker)
+        finally:
+            os.path.getsize = orig_getsize
+            w._is_open, w._xfer_start_blocked, w._confirm_dlg = old
+            dlg.close()
+
+    def test_xfer_done_does_not_block_gui_join(self):
+        """完成回调不得在 GUI 线程 wait(2000)；收尾推迟到下一拍。"""
+        from PyQt5.QtWidgets import QApplication
+        from xfer_dialog import XferDialog
+        w = _win()
+        dlg = XferDialog(w)
+
+        class _Worker:
+            def __init__(self):
+                self.wait_ms = None
+
+            def isRunning(self):
+                return False
+
+            def wait(self, ms):
+                self.wait_ms = ms
+
+        worker = _Worker()
+        session = w.active_session()
+        session._xfer_worker = worker
+        dlg._worker = worker
+        original_detach = w._xfer_detach
+        try:
+            w._xfer_detach = lambda: None
+            dlg._on_done(worker, True, "", None, is_send=True)
+            self.assertIsNone(worker.wait_ms)
+            QApplication.processEvents()
+            self.assertEqual(worker.wait_ms, 1)
+        finally:
+            session._xfer_worker = None
             dlg._worker = None
             w._xfer_detach = original_detach
             dlg.close()
@@ -4433,20 +4492,57 @@ class ScriptConsoleTests(unittest.TestCase):
         w = _win()
         d = ScriptConsoleDialog(w)
         old_reg = getattr(w, "_script_worker", None)
+        orig_end = w._script_end
+        ended = []
         try:
             old, new = ScriptWorker(""), ScriptWorker("")
             d._worker = new
             w._script_worker = new                 # 新一轮已接管收流
+            w._script_end = lambda worker=None: ended.append(worker) or orig_end(worker)
             d._on_finished(old, True, "")          # 旧 worker 的迟到完成信号
+            self.assertEqual(ended, [], "stale worker 不应 _script_end")
             self.assertIs(d._worker, new, "新 worker 被旧信号清掉了")
             self.assertIs(w._script_worker, new, "收流被旧信号误释放")
             # 当前 worker 自己的完成信号才真正收尾
             d._on_finished(new, True, "")
+            self.assertEqual(ended, [new])
             self.assertIsNone(d._worker)
             self.assertIsNone(w._script_worker)
         finally:
             d._worker = None
             w._script_worker = old_reg
+            w._script_end = orig_end
+            d.deleteLater()
+
+    def test_code_over_limit_truncates_editor_and_resets_warning(self):
+        """超上限必须同步截断编辑器；切脚本或回到限制内后允许再次提示。"""
+        import script_console_dialog as scd
+        from script_console_dialog import ScriptConsoleDialog
+        w = _win()
+        d = ScriptConsoleDialog(w)
+        old_max = scd._MAX_CODE_CHARS
+        scd._MAX_CODE_CHARS = 20
+        toasts = []
+        old_toast = w.toast
+        try:
+            w.toast = lambda *a, **k: toasts.append(True)
+            d._scripts = [{"name": "a", "code": "short"}, {"name": "b", "code": "ok"}]
+            d._active = 0
+            d._loading = True
+            d.ed_code.setPlainText("x" * 30)
+            d._loading = False
+            d._warned_code_len = False
+            d._on_code_changed()
+            self.assertEqual(d.ed_code.toPlainText(), "x" * 20)
+            self.assertEqual(d._scripts[0]["code"], "x" * 20)
+            self.assertTrue(d._warned_code_len)
+            self.assertEqual(len(toasts), 1)
+            d._on_script_changed(1)
+            self.assertFalse(d._warned_code_len)
+        finally:
+            scd._MAX_CODE_CHARS = old_max
+            w.toast = old_toast
+            d._worker = None
             d.deleteLater()
 
     def test_finish_counts_come_from_signaling_worker(self):
@@ -4988,6 +5084,7 @@ class MacroRecorderIntegrationTests(unittest.TestCase):
         seen = {}
         try:
             w._ar_on = True
+            w.active_session()._ar_enabled = True
             w._is_open = lambda: True
             # 在 _send_text 内部快照 _ar_in_flight —— 发送那一刻标记必须是 True
             w._send_text = lambda *a, **k: seen.__setitem__("flag", w._ar_in_flight) or True

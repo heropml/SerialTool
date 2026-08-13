@@ -156,6 +156,51 @@ class DeviceCenterDialog(QDialog):
         self._sync_scan_mode()
         return page
 
+    def _visible_session(self):
+        finder = getattr(self.app, "active_session", None)
+        return finder() if callable(finder) else None
+
+    def _scan_owner(self):
+        ctx = getattr(self.app, "_session_ctx", None)
+        session = ctx() if callable(ctx) else None
+        return session or self._visible_session()
+
+    def sync_session(self):
+        """Show the visible tab's scan table; background scans keep their own capture."""
+        session = self._visible_session()
+        cap = getattr(session, "_scan_capture", None) if session is not None else None
+        if not isinstance(cap, dict):
+            cap = {"rows": [], "ok": [], "completed": set(), "cells": []}
+        self._scan_rows = list(cap.get("rows") or [])
+        self._scan_ok = list(cap.get("ok") or [])
+        self._scan_completed = set(cap.get("completed") or ())
+        self._paint_scan_table(cap)
+        running = (session is not None
+                   and getattr(session, "_device_scan_state", None) is not None)
+        self.btn_scan.setEnabled(not running)
+        if cap.get("cancelled") and not running:
+            self.lbl_scan_summary.setText(self.app._t("device_scan_cancelled"))
+        elif self._scan_rows:
+            self._refresh_scan_summary()
+        else:
+            self.lbl_scan_summary.setText("")
+
+    def _paint_scan_table(self, cap):
+        rows = list(cap.get("rows") or [])
+        cells = list(cap.get("cells") or [])
+        mode = cap.get("mode") or self.cb_scan_mode.currentData()
+        self.scan_table.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            target = row["unit"] if mode == "slave" else row.get("addr", row.get("unit"))
+            self.scan_table.setItem(index, 0, self._item(index + 1))
+            self.scan_table.setItem(index, 1, self._item(target))
+            status, text = cells[index] if index < len(cells) else ("waiting", "")
+            self._set_scan_status(index, status or "waiting")
+            self.scan_table.setItem(index, 3, self._item(text))
+        total = len(rows)
+        self.scan_progress.setRange(0, total if total else 1)
+        self.scan_progress.setValue(len(cap.get("completed") or ()))
+
     @staticmethod
     def _item(value=""):
         return QTableWidgetItem(str(value))
@@ -489,39 +534,73 @@ class DeviceCenterDialog(QDialog):
                 rows.append({"enabled": True, "name": "R%d" % address, "unit": slave,
                              "func": func, "addr": address, "qty": 1,
                              "period": 0x7FFFFFFF})
+        cap = {
+            "rows": rows,
+            "ok": [],
+            "completed": set(),
+            "cells": [("waiting", "")] * len(rows),
+            "mode": mode,
+            "cancelled": False,
+            "running": True,
+        }
+        session = self._visible_session()
+        if session is not None:
+            session._scan_capture = cap
         self._scan_rows = rows
         self._scan_ok = []
         self._scan_completed = set()
-        self.scan_table.setRowCount(len(rows))
-        for index, row in enumerate(rows):
-            target = row["unit"] if mode == "slave" else row["addr"]
-            self.scan_table.setItem(index, 0, self._item(index + 1))
-            self.scan_table.setItem(index, 1, self._item(target))
-            self._set_scan_status(index, "waiting")
-            self.scan_table.setItem(index, 3, self._item(""))
-        self.scan_progress.setRange(0, len(rows))
-        self.scan_progress.setValue(0)
+        self._paint_scan_table(cap)
         self._refresh_scan_summary()
         self.btn_scan.setEnabled(False)
         if not self.app._start_device_scan(
                 rows, self.sp_scan_timeout.value(), self._scan_update, self._scan_done):
+            cap["running"] = False
             self.btn_scan.setEnabled(True)
 
     def _stop_scan(self):
         self.app._stop_device_scan(cancelled=True)
 
     def _scan_update(self, index, status, text):
+        session = self._scan_owner()
+        cap = getattr(session, "_scan_capture", None) if session is not None else None
+        if isinstance(cap, dict) and cap.get("rows"):
+            rows = cap["rows"]
+            if not 0 <= index < len(rows):
+                return
+            cells = cap.setdefault("cells", [])
+            while len(cells) < len(rows):
+                cells.append(("waiting", ""))
+            cells[index] = (status, text)
+            ok = cap.setdefault("ok", [])
+            if status == "ok" and index not in ok:
+                ok.append(index)
+            cap.setdefault("completed", set()).add(index)
+            if session is not self._visible_session():
+                return
+            self._scan_rows = rows
+            self._scan_ok = ok
+            self._scan_completed = cap["completed"]
+        elif not 0 <= index < self.scan_table.rowCount():
+            return
+        else:
+            if status == "ok" and index not in self._scan_ok:
+                self._scan_ok.append(index)
+            self._scan_completed.add(index)
         if not 0 <= index < self.scan_table.rowCount():
             return
         self._set_scan_status(index, status)
         self.scan_table.setItem(index, 3, self._item(text))
-        if status == "ok" and index not in self._scan_ok:
-            self._scan_ok.append(index)
-        self._scan_completed.add(index)
         self.scan_progress.setValue(len(self._scan_completed))
         self._refresh_scan_summary()
 
     def _scan_done(self, cancelled=False):
+        session = self._scan_owner()
+        cap = getattr(session, "_scan_capture", None) if session is not None else None
+        if isinstance(cap, dict):
+            cap["running"] = False
+            cap["cancelled"] = bool(cancelled)
+        if session is not None and session is not self._visible_session():
+            return
         self.btn_scan.setEnabled(True)
         if cancelled:
             self.lbl_scan_summary.setText(self.app._t("device_scan_cancelled"))
@@ -638,5 +717,12 @@ class DeviceCenterDialog(QDialog):
 
     def closeEvent(self, event):
         self.commit_pending(notify=False)
-        self.app._stop_device_scan(cancelled=True)
+        stop = getattr(self.app, "_stop_device_scan_for", None)
+        for session in list(getattr(self.app, "_sessions", ()) or ()):
+            if getattr(session, "_device_scan_state", None) is None:
+                continue
+            if callable(stop):
+                stop(session.id, cancelled=True)
+            else:
+                self.app._stop_device_scan(cancelled=True)
         super().closeEvent(event)

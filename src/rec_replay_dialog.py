@@ -156,6 +156,57 @@ class RecReplayDialog(QDialog):
         self.refresh_theme()
         self._refresh_stat()
 
+    def _visible_session(self):
+        finder = getattr(self.app, "active_session", None)
+        return finder() if callable(finder) else None
+
+    def sync_session(self):
+        """Bind Play/Stop/progress and capture events to the visible tab."""
+        session = self._visible_session()
+        self._apply_rr_capture(session)
+        self._player = getattr(session, "_replay_player", None) if session else None
+        playing = self.is_playing()
+        self._set_playing_ui(playing)
+        if playing and self._player is not None:
+            self.bar.setValue(int(self._player.progress * 100))
+        else:
+            self.bar.setValue(0)
+        self._refresh_stat()
+        if self._any_player():
+            if not self._timer.isActive():
+                self._timer.start()
+        elif self._timer.isActive():
+            self._timer.stop()
+
+    def _apply_rr_capture(self, session):
+        cap = getattr(session, "_rr_capture", None) if session is not None else None
+        if not isinstance(cap, dict):
+            self._events = []
+            self._src_name = ""
+            self._link = None
+            self._wall_t0 = None
+            return
+        self._events = cap.get("events") or []
+        self._src_name = cap.get("src_name") or ""
+        link = cap.get("link")
+        self._link = dict(link) if isinstance(link, dict) else link
+        self._wall_t0 = cap.get("wall_t0")
+
+    def _store_rr_capture(self, session=None):
+        session = session or self._visible_session()
+        if session is None:
+            return
+        session._rr_capture = {
+            "events": self._events,
+            "src_name": self._src_name,
+            "link": dict(self._link) if isinstance(self._link, dict) else self._link,
+            "wall_t0": self._wall_t0,
+        }
+
+    def _any_player(self):
+        return any(getattr(s, "_replay_player", None) is not None
+                   for s in getattr(self.app, "_sessions", ()) or ())
+
     # ---------------- 录制 ----------------
     def _on_rec(self):
         r = self.app._recorder
@@ -191,12 +242,27 @@ class RecReplayDialog(QDialog):
         bind = getattr(self.app, "bind_recording_owner", None)
         if callable(bind):
             bind(False)
-        self._events = r.events
-        self._src_name = self.app._t("rr_src_live")
-        self._link = dict(r.link) if isinstance(getattr(r, "link", None), dict) else None
-        self._wall_t0 = getattr(r, "_wall_t0", None)
-        self._log(self.app._t("rr_rec_stopped", n=len(r), sec=round(r.duration, 1)))
-        self._refresh_stat()
+        ctx = getattr(self.app, "_session_ctx", None)
+        session = ctx() if callable(ctx) else None
+        session = session or self._visible_session()
+        events = r.events
+        src_name = self.app._t("rr_src_live")
+        link = dict(r.link) if isinstance(getattr(r, "link", None), dict) else None
+        wall_t0 = getattr(r, "_wall_t0", None)
+        if session is not None:
+            session._rr_capture = {
+                "events": events,
+                "src_name": src_name,
+                "link": link,
+                "wall_t0": wall_t0,
+            }
+        if session is None or session is self._visible_session():
+            self._events = events
+            self._src_name = src_name
+            self._link = link
+            self._wall_t0 = wall_t0
+            self._log(self.app._t("rr_rec_stopped", n=len(r), sec=round(r.duration, 1)))
+            self._refresh_stat()
 
     def _on_save(self):
         if not self._events:
@@ -258,6 +324,7 @@ class RecReplayDialog(QDialog):
         self._src_name = os.path.basename(path)
         self._link = dict(header["link"]) if isinstance(header.get("link"), dict) else None
         self._wall_t0 = header.get("wall_t0")
+        self._store_rr_capture()
         bad = header.get("bad_lines") or 0
         self._log(self.app._t("rr_loaded", name=self._src_name, n=len(events)))
         if bad:
@@ -265,7 +332,8 @@ class RecReplayDialog(QDialog):
         self._refresh_stat()
 
     def is_playing(self):
-        return self._player is not None and not self._player.finished
+        p = self._player
+        return p is not None and not p.finished
 
     def _on_drive_tx_toggled(self, on):
         # Drive-TX ignores Virtual inject-TX; keep the old checkbox for inject mode only.
@@ -343,6 +411,9 @@ class RecReplayDialog(QDialog):
             return
         import time
         self._player.start(time.monotonic())
+        session = self._visible_session()
+        if session is not None:
+            session._replay_player = self._player
         self.app._replay_begin(drive_tx=drive_tx)
         self._set_playing_ui(True)
         self._log(self.app._t("rr_play_started", n=len(self._player),
@@ -352,58 +423,97 @@ class RecReplayDialog(QDialog):
     def _on_stop(self):
         self.stop_replay()
 
-    def stop_replay(self):
-        """停止当前回放；也供主窗在连接断开时同步清理回放占用状态。"""
-        if self._player is None:
-            self._timer.stop()
-            self.app._replay_end()
+    def stop_replay(self, session=None):
+        """停止指定（默认当前上下文）会话的回放；也供主窗在连接断开时同步清理。"""
+        session = session or self.app._session_ctx() or self._visible_session()
+        player = getattr(session, "_replay_player", None) if session is not None else self._player
+        if player is None:
+            if session is not None:
+                with self.app._with_session(session):
+                    self.app._replay_end()
+            else:
+                self.app._replay_end()
+            if not self._any_player():
+                self._timer.stop()
             return
-        self._timer.stop()
-        done = self._player.idx
-        fails = int(getattr(self._player, "send_fail_count", 0) or 0)
-        self._player = None
-        self.app._replay_end()
-        self._set_playing_ui(False)
+        done = player.idx
+        fails = int(getattr(player, "send_fail_count", 0) or 0)
+        if session is not None:
+            session._replay_player = None
+        if self._player is player:
+            self._player = None
+            self._set_playing_ui(False)
+        if not self._any_player():
+            self._timer.stop()
+        if session is not None:
+            with self.app._with_session(session):
+                self.app._replay_end()
+        else:
+            self.app._replay_end()
         self._log(self.app._t("rr_play_stopped", n=done))
         self._toast_drive_tx_fails(fails)
 
-    def _toast_drive_tx_fails(self, fails):
-        if fails > 0:
+    def _toast_drive_tx_fails(self, fails, toast=True):
+        if toast and fails > 0:
             self.app.toast(self.app._t("rr_drive_tx_fails", n=fails), error=True)
 
     def _tick(self):
-        p = self._player
-        if p is None:
-            self._timer.stop()
-            return
         import time
-        p.tick(time.monotonic())
-        self.bar.setValue(int(p.progress * 100))
-        # Finish first: abort on the last frame sets both paused+finished; must
-        # release _replay_on / UI instead of leaving a stuck "paused" occupation.
-        if p.finished:
+        now = time.monotonic()
+        visible = self._visible_session()
+        any_live = False
+        for session in list(getattr(self.app, "_sessions", ()) or ()):
+            p = getattr(session, "_replay_player", None)
+            if p is None:
+                continue
+            # drive-tx 发送失败达到阈值：暂停回放并提示。后台标签不弹 toast，
+            # 但必须收尾清 _replay_on，否则该标签被判定忙且无法关闭。
+            if getattr(p, "send_aborted", False) and p.paused:
+                if session is visible:
+                    self.retranslate()
+                    fails = int(getattr(p, "send_fail_count", 0) or 0)
+                    self._log(self.app._t("rr_drive_tx_paused", n=fails))
+                    self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
+                    p.send_aborted = False
+                    # 该 player 仍处于暂停态，resume 由 _on_pause 重启定时器。
+                else:
+                    self._finish_player(session, p)
+                continue
+            p.tick(now)
+            if session is visible:
+                self.bar.setValue(int(p.progress * 100))
+            if p.finished:
+                self._finish_player(session, p)
+                continue
+            if p.paused:
+                # 暂停的 player 不需要再 tick；resume 时由 _on_pause 重启定时器。
+                continue
+            any_live = True
+        if not any_live:
             self._timer.stop()
-            n = len(p)
-            fails = int(getattr(p, "send_fail_count", 0) or 0)
-            aborted = bool(getattr(p, "send_aborted", False))
+
+    def _finish_player(self, session, p):
+        n = len(p)
+        fails = int(getattr(p, "send_fail_count", 0) or 0)
+        aborted = bool(getattr(p, "send_aborted", False))
+        visible = session is not None and session is self._visible_session()
+        if session is not None:
+            session._replay_player = None
+        if self._player is p:
             self._player = None
-            self.app._replay_end()
             self._set_playing_ui(False)
-            if aborted and fails > 0:
-                self._log(self.app._t("rr_drive_tx_paused", n=fails))
-                self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
-            else:
-                self._log(self.app._t("rr_play_done", n=n))
-                self._toast_drive_tx_fails(fails)
-            return
-        if getattr(p, "send_aborted", False) and p.paused:
-            self._timer.stop()
-            fails = int(getattr(p, "send_fail_count", 0) or 0)
-            self.retranslate()
+        if session is not None:
+            with self.app._with_session(session):
+                self.app._replay_end()
+        else:
+            self.app._replay_end()
+        if aborted and fails > 0:
             self._log(self.app._t("rr_drive_tx_paused", n=fails))
-            self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
-            p.send_aborted = False  # toast once until next abort
-            return
+            if visible:
+                self.app.toast(self.app._t("rr_drive_tx_paused", n=fails), error=True)
+        else:
+            self._log(self.app._t("rr_play_done", n=n))
+            self._toast_drive_tx_fails(fails, toast=visible)
 
     def _on_pause(self):
         import time
@@ -416,7 +526,8 @@ class RecReplayDialog(QDialog):
             self._timer.start()
         else:
             p.pause(now)
-            self._timer.stop()
+            if not self._any_player():
+                self._timer.stop()
         self.retranslate()
 
     def _on_step(self):
@@ -429,14 +540,12 @@ class RecReplayDialog(QDialog):
         # 前推到该事件时刻——那是「跳到下一事件」而不是单步。
         if not p.paused:
             p.pause(now)
-            self._timer.stop()
         p.step(now)
         self.bar.setValue(int(p.progress * 100))
         if p.finished:
-            self._timer.stop()
-            self._player = None
-            self.app._replay_end()
-            self._set_playing_ui(False)
+            self._finish_player(self._visible_session(), p)
+            if not self._any_player():
+                self._timer.stop()
         else:
             self.retranslate()          # 暂停按钮改显「继续」
 
@@ -452,10 +561,9 @@ class RecReplayDialog(QDialog):
         p.seek(t_rel, time.monotonic())
         self.bar.setValue(int(p.progress * 100))
         if p.finished:
-            self._timer.stop()
-            self._player = None
-            self.app._replay_end()
-            self._set_playing_ui(False)
+            self._finish_player(self._visible_session(), p)
+            if not self._any_player():
+                self._timer.stop()
 
     def _set_playing_ui(self, playing):
         self.btn_play.setVisible(not playing)
@@ -630,8 +738,16 @@ class RecReplayDialog(QDialog):
 
     # ---------------- 生命周期 ----------------
     def closeEvent(self, e):
+        # Stop the visible player first, then any remaining per-session players.
+        # After stop_replay(session) the matching self._player is already None.
         if self._player is not None:
             self.stop_replay()
-        if self.app._recorder.recording:
-            self.stop_recording()
+        for session in list(getattr(self.app, "_sessions", ()) or ()):
+            if getattr(session, "_replay_player", None) is not None:
+                self.stop_replay(session)
+        for session in list(getattr(self.app, "_sessions", ()) or ()):
+            rec = getattr(session, "_recorder", None)
+            if rec is not None and rec.recording:
+                with self.app._with_session(session):
+                    self.stop_recording()
         super().closeEvent(e)

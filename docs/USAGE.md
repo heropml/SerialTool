@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.6](#whats-new-in-v156)
 - [What's New in v1.5.5](#whats-new-in-v155)
 - [What's New in v1.5.4](#whats-new-in-v154)
 - [What's New in v1.5.3](#whats-new-in-v153)
@@ -44,14 +45,26 @@
 
 ---
 
+## What's New in v1.5.6
+
+Multi-session engine completion on the v1.5.5 baseline:
+
+- **Remaining engines per-session** — file transfer, replay, device scan, and auto-reply each run on the tab that started them; Start / Stop / Play follow the visible tab; closing the dialog cancels that engine on every session.
+- **Script / Modbus master / sequence** — two tabs can each run their own; Run/Stop follow the visible tab; closing the script console ends all workers.
+- **UI isolation** — script-console logs, device-scan tables, and recording captures stay on the tab that produced them.
+- **Fixes** — stale script-worker I/O pin, code-length truncation warning reset, transfer size confirm (>100 MB), non-blocking transfer reap, background RX except lists, replay closeEvent, session-proxy debug and slot assert.
+- **Boundary** — no session tree / split / undock; P2 still deferred; macOS DMG still added by collaborator via `release_macos.sh`.
+
+---
+
 ## What's New in v1.5.5
 
 Multi-session engine polish on the v1.5.4 baseline:
 
-- **Soft tab leave** — switching tabs is allowed; each tab’s engines keep running; closing a busy tab is still blocked (tooltip `session_tip_engine_busy`).
-- **Background RX** — data on inactive tabs feeds that session’s auto-reply, sequence, script, Modbus master, recording, and triggers. Plot / frame / dashboard stay on the active tab.
-- **Per-session runtime** — sequence / script / Modbus master / recording / macro / send DSL each run per tab; each session has its own Modbus-slave register bank (window-shared slave config). Sequence dialog shows other tabs’ runs in the summary; Run/Stop still apply to the visible tab.
-- **Window-owned tools** — transfer / replay remain one-per-window and pinned. Device scan is still one-at-a-time (temporarily takes over master rules). Transfer Start is gated window-wide so another tab cannot steal a running worker.
+- **Soft tab leave** — exclusive engines stay pinned to the tab that started them; switching tabs is allowed; closing a busy tab is still blocked (tooltip `session_tip_engine_busy`).
+- **Background RX** — data on inactive tabs feeds that session’s auto-reply, sequence, and pinned engines. Plot / frame / dashboard / triggers stay on the active tab.
+- **Per-session runtime** — each tab can run its own sequence; each session has its own Modbus-slave register bank (window-shared slave config).
+- **Window-owned tools** — script / transfer / Modbus master / replay / send DSL / recording / macro / device scan remain one-per-window. Transfer Start is gated window-wide so another tab cannot steal a running worker.
 - **Boundary** — no session tree / split / undock; P2 still deferred; macOS DMG still added by collaborator via `release_macos.sh`.
 
 ---
@@ -112,7 +125,7 @@ Follow-ups on the v1.5.0 multi-session baseline:
 **Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual), similar to Xshell-style tabs:
 
 - **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, **periodic send**, and **multi-send cycle** belong to the tab. Background tabs keep receiving, logging, period-sending, and cycling.
-- **Per-session engines** — sequence / script / Modbus master / recording / macro / send DSL run per tab (two tabs can each run their own). Modbus-slave register banks are per tab. Auto-reply is a window toggle. Transfer / replay remain one-per-window and pinned; device scan is one-at-a-time. **Tab switch is allowed**; stop before closing a busy tab. Periodic send and multi-send **cycle** stay per-session. Triggers match on background tabs too.
+- **Per-session engines** — sequence / script / Modbus master / recording / macro / send DSL / file transfer / replay / device scan / auto-reply run per tab (two tabs can each run their own). Script-console logs are per tab. Modbus-slave register banks are per tab. **Tab switch is allowed**; stop before closing a busy tab. Periodic send and multi-send **cycle** stay per-session. Triggers match on background tabs too.
 - **Multi-send cycle** — the cycle timer is per-session; switching tabs leaves background cycles running (same as periodic send). Group lists remain window-shared.
 - **Tab cues** — green = connected, yellow = reconnect wait, gray = disconnected. Hover the tab for connection / periodic-send / live-log status. Double-click a tab to set an optional custom name (tooltip still shows the real port/address).
 - **Keyword highlight** — each rule can match as plain text, regex (ReDoS-safe), or HEX bytes (same engine as Find).
@@ -872,7 +885,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.5.5`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.5.6`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

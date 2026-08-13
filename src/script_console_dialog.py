@@ -6,6 +6,7 @@
 走与「脚本应答」一致的信任门禁。单实例非模态，复用刷新主题/语言。
 """
 import json
+import logging
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -17,6 +18,8 @@ from theme import chrome_for
 from fonts import localize_qss, mono_font
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from ui_tips import set_tooltip
+
+_log = logging.getLogger("commtool.script")
 
 _MAX_SCRIPTS = 50          # 脚本库条数上限
 _MAX_CODE_CHARS = 200000   # 单脚本字符上限（防坏配置/超大导入）
@@ -156,7 +159,7 @@ class ScriptConsoleDialog(QDialog):
         foot.addWidget(self.lbl_status, 1)
         self.btn_clear = QPushButton()
         self.btn_clear.setObjectName("PlotGhostBtn")
-        self.btn_clear.clicked.connect(self.txt_out.clear)
+        self.btn_clear.clicked.connect(self._clear_out)
         foot.addWidget(self.btn_clear)
         root.addLayout(foot)
 
@@ -177,6 +180,7 @@ class ScriptConsoleDialog(QDialog):
                                  if sc["name"] == name), 0)
             self._rebuild_combo()
             self.ed_code.setPlainText(self._scripts[self._active]["code"])
+            self._warned_code_len = False
         finally:
             self._loading = False
 
@@ -230,6 +234,7 @@ class ScriptConsoleDialog(QDialog):
             self.ed_code.setPlainText(self._scripts[i]["code"])
         finally:
             self._loading = False
+        self._warned_code_len = False
         self._save_cfg()
 
     def _on_code_changed(self):
@@ -237,11 +242,21 @@ class ScriptConsoleDialog(QDialog):
             return
         code = self.ed_code.toPlainText()
         if len(code) > _MAX_CODE_CHARS:
-            # 超上限只存前 N 字符，静默丢尾部会让用户以为存住了 → 明确提示一次
+            # 超上限只存前 N 字符；编辑器必须同步截断，否则界面看起来还在、保存/重启却丢尾。
             if not self._warned_code_len:
                 self._warned_code_len = True
                 self.app.toast(self.app._t("sc_code_too_long", n=_MAX_CODE_CHARS), error=True)
             code = code[:_MAX_CODE_CHARS]
+            self._loading = True
+            try:
+                self.ed_code.setPlainText(code)
+                cursor = self.ed_code.textCursor()
+                cursor.setPosition(len(code))
+                self.ed_code.setTextCursor(cursor)
+            finally:
+                self._loading = False
+        else:
+            self._warned_code_len = False
         self._scripts[self._active]["code"] = code
         self._save_cfg()
 
@@ -267,6 +282,7 @@ class ScriptConsoleDialog(QDialog):
             self.ed_code.setPlainText(_DEFAULT_CODE)
         finally:
             self._loading = False
+        self._warned_code_len = False
         self._save_cfg()
 
     def _on_rename(self):
@@ -299,6 +315,7 @@ class ScriptConsoleDialog(QDialog):
             self.ed_code.setPlainText(self._scripts[self._active]["code"])
         finally:
             self._loading = False
+        self._warned_code_len = False
         self._save_cfg()
 
     def _on_export(self):
@@ -353,6 +370,7 @@ class ScriptConsoleDialog(QDialog):
             self.ed_code.setPlainText(self._scripts[self._active]["code"])
         finally:
             self._loading = False
+        self._warned_code_len = False
         self._save_cfg()
 
     # ---------------- 宏录制 ----------------
@@ -411,6 +429,7 @@ class ScriptConsoleDialog(QDialog):
             self.ed_code.setPlainText(code)
         finally:
             self._loading = False
+        self._warned_code_len = False
         self._save_cfg()
         self.app.toast(self.app._t("sc_rec_done", tx=tx, rx=rx, name=name))
 
@@ -459,20 +478,21 @@ class ScriptConsoleDialog(QDialog):
         if not code.strip():
             self._reject_run("sc_code_empty")
             return
-        self.txt_out.clear()
-        self._append_out(self.app._t("sc_started"))
-        # 不给 parent：QThread 若以对话框为父，对话框销毁时会连带删除它；此时线程还在跑的话
-        # Qt 直接 std::terminate() 让进程 abort。这里靠 self._worker 的 Python 引用保命。
         w = ScriptWorker(code)
         w.send_requested.connect(self.app._script_send)
-        w.log_line.connect(self._append_out)
-        # 把 worker 绑进连接：run_finished 是队列信号，上一轮的完成信号可能在本轮已经开跑之后
-        # 才送达，_on_finished 必须能认出发信人是不是当前这个 worker（否则会把新 worker 架空）。
-        w.run_finished.connect(lambda ok, s, _w=w: self._on_finished(_w, ok, s))
-        self._worker = w
         finder = getattr(self.app, "active_session", None)
         session = finder() if callable(finder) else None
-        self._worker_sid = getattr(session, "id", None) if session is not None else None
+        sid = getattr(session, "id", None) if session is not None else None
+        if session is not None:
+            session._script_log = []
+        self.txt_out.clear()
+        self._append_out(self.app._t("sc_started"), sid=sid)
+        w.log_line.connect(lambda line, _sid=sid: self._append_out(line, sid=_sid))
+        # 把 worker 绑进连接：run_finished 是队列信号，上一轮的完成信号可能在本轮已经开跑之后
+        # 才送达，_on_finished 必须能认出发信人是不是当前这个 worker（否则会把新 worker 架空）。
+        w.run_finished.connect(lambda ok, s, _w=w, _sid=sid: self._on_finished(_w, ok, s, sid=_sid))
+        self._worker = w
+        self._worker_sid = sid
         self.app._script_begin(w)       # 主窗接管：喂 RX + 暂停自动应答/Modbus
         self._set_running_ui(True)
         w.start()
@@ -481,25 +501,39 @@ class ScriptConsoleDialog(QDialog):
         worker = getattr(self.app, "_script_worker", None)
         if worker is None:
             worker = self._worker
+            if worker is not None:
+                # 当前标签没有在跑的脚本，但本对话框最近启动的 worker 仍在后台标签运行：
+                # 提示而不是静默停掉其它标签的脚本。
+                self.app.toast(self.app._t("sc_stop_other_session"), error=True)
         if worker is not None:
             stop = getattr(worker, "stop", None)
             if callable(stop):
                 stop()
 
-    def _on_finished(self, worker, ok, summary):
+    def _on_finished(self, worker, ok, summary, sid=None):
         # 日志先从 worker 本身取计数 —— 关窗/换轮场景下 self._worker 可能已经不是它了，
         # 但 worker 对象仍持有正确的 checks_passed/checks_failed，先记日志再判断是否做状态清理。
         key = {"stopped": "sc_done_stopped", "syntax": "sc_done_error",
                "error": "sc_done_error", "checks": "sc_done_fail"}.get(
                    summary, "sc_done_ok" if ok else "sc_done_fail")
         self._append_out(self.app._t(key, ok=worker.checks_passed,
-                                     fail=worker.checks_failed))
+                                     fail=worker.checks_failed), sid=sid)
         end = getattr(self.app, "_script_end", None)
-        if callable(end):
-            end(worker)
         if worker is self._worker:
+            if callable(end):
+                end(worker)
             self._worker = None
             self._worker_sid = None
+        else:
+            # 迟到的旧 worker：会话已钉上新一轮 → 不清理，避免误释放 I/O。
+            # 后台标签仍钉着这个 worker 时必须 end，否则那一标签的收流永不释放。
+            _log.debug("script finish from non-current worker %r (current=%r)",
+                       worker, self._worker)
+            pinned = any(
+                getattr(session, "_script_worker", None) is worker
+                for session in getattr(self.app, "_sessions", ()) or ())
+            if pinned and callable(end):
+                end(worker)
         self._set_running_ui(self.is_running())
 
     def _set_running_ui(self, running):
@@ -527,10 +561,46 @@ class ScriptConsoleDialog(QDialog):
         self._set_status(msg, error=True)
         self.app._info_dlg(self.app._t("sc_title"), msg, is_error=True)
 
-    def _append_out(self, line):
-        self.txt_out.appendPlainText(line)
+    def _visible_sid(self):
+        finder = getattr(self.app, "active_session", None)
+        session = finder() if callable(finder) else None
+        return getattr(session, "id", None) if session is not None else None
+
+    def _session_by_id(self, sid):
+        if sid is None:
+            return None
+        finder = getattr(self.app, "find_session", None)
+        if callable(finder):
+            return finder(sid)
+        return None
+
+    def _clear_out(self):
+        session = self._session_by_id(self._visible_sid())
+        if session is not None:
+            session._script_log = []
+        self.txt_out.clear()
+
+    def show_session_log(self):
+        """Swap the output pane to the visible tab's buffer."""
+        session = self._session_by_id(self._visible_sid())
+        lines = list(getattr(session, "_script_log", None) or []) if session else []
+        self.txt_out.setPlainText("\n".join(lines))
         sb = self.txt_out.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _append_out(self, line, sid=None):
+        sid = sid if sid is not None else self._worker_sid or self._visible_sid()
+        session = self._session_by_id(sid)
+        if session is not None:
+            lines = list(getattr(session, "_script_log", None) or [])
+            lines.append(line)
+            if len(lines) > _MAX_LOG_BLOCKS:
+                lines = lines[-_MAX_LOG_BLOCKS:]
+            session._script_log = lines
+        if sid == self._visible_sid() or session is None:
+            self.txt_out.appendPlainText(line)
+            sb = self.txt_out.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
     # ---------------- 主题 / 语言 ----------------
     def _show_help_dlg(self):

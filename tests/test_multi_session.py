@@ -361,7 +361,7 @@ def test_busy_soft_leave_allows_tab_switch(monkeypatch, tmp_path):
     assert w.switch_session(s2.id) is True
     assert w.active_session().id == s2.id
     assert w.close_session(s1.id, confirm=False) is False
-    w._replay_on = False
+    s1._replay_on = False
     w._io_clear_owner("replay")
     w._close_all_sessions()
 
@@ -799,6 +799,8 @@ def test_auto_reply_cooldown_is_session_owned(monkeypatch, tmp_path):
     }
     w._ar_rules = [rule]
     w._ar_on = True
+    s1._ar_enabled = True
+    s2._ar_enabled = True
     w._ar_modbus = {"on": False}
     w._ar_frame = {"on": False}
     w._ar_gap = 0
@@ -947,7 +949,7 @@ def test_hard_busy_soft_leave_keeps_multi_send(monkeypatch, tmp_path):
         assert s1._ms_cycle_timer.isActive()
         assert w.close_session(s1.id, confirm=False) is False
     finally:
-        w._replay_on = False
+        s1._replay_on = False
         w._io_clear_owner("replay")
         s1._ms_cycle_timer.stop()
         w._close_all_sessions()
@@ -1225,10 +1227,13 @@ def test_drive_tx_replay_only_suppresses_its_owner_modbus_slave(monkeypatch, tmp
     s1 = w.active_session()
     s2 = w.add_session(activate=True)
     sent = []
-    old_ar_on, old_drive = w._ar_on, w._replay_drive_tx
+    old_ar_on, old_drive = w._ar_on, s1._replay_drive_tx
     try:
         w._ar_on = True
-        w._replay_drive_tx = True
+        s1._ar_enabled = True
+        s2._ar_enabled = True
+        s1._replay_on = True
+        s1._replay_drive_tx = True
         w._io_bind_owner("replay", s1)
         monkeypatch.setattr(w, "_is_open", lambda: True)
         monkeypatch.setattr(
@@ -1243,7 +1248,11 @@ def test_drive_tx_replay_only_suppresses_its_owner_modbus_slave(monkeypatch, tmp
         assert [payload for payload, _kwargs in sent] == ["01"]
         assert w.active_session() is s2
     finally:
-        w._ar_on, w._replay_drive_tx = old_ar_on, old_drive
+        w._ar_on = old_ar_on
+        s1._replay_on = False
+        s1._replay_drive_tx = old_drive
+        s1._ar_enabled = False
+        s2._ar_enabled = False
         w._io_clear_owner("replay")
     w._close_all_sessions()
 
@@ -1774,7 +1783,7 @@ def test_finished_transfer_remains_busy_until_done_callback(
 
 def test_xfer_start_blocked_on_other_tab_while_transfer_runs(
         monkeypatch, tmp_path):
-    """Window-singleton worker: Start on another tab must not steal the transfer."""
+    """A live transfer on another tab must not block Start on this idle tab."""
     w = _window(monkeypatch, tmp_path, "xfer-start-other-tab")
     _open_virtual(w)
     s1 = w.active_session()
@@ -1786,13 +1795,15 @@ def test_xfer_start_blocked_on_other_tab_while_transfer_runs(
         def isRunning():
             return True
 
-    w._xfer_worker = _Worker()
+    s1._xfer_worker = _Worker()
     w._io_bind_owner("transfer", s1)
     assert w.active_session() is s2
-    assert w._xfer_start_blocked() is True
-    assert w._io_task_busy(exclude=("transfer",)) is False
+    assert w._xfer_start_blocked() is False
+    assert w._xfer_active(s1) is True
+    assert w._hard_busy_owned_by(s1) is True
+    assert w._hard_busy_owned_by(s2) is False
 
-    w._xfer_worker = None
+    s1._xfer_worker = None
     w._io_clear_owner("transfer")
     w._close_all_sessions()
 
@@ -2750,6 +2761,7 @@ def test_delayed_auto_reply_keeps_originating_session_after_switch(
     second = w.add_session(activate=False)
     sent_from = []
     w._ar_on = True
+    first._ar_enabled = True
     monkeypatch.setattr(w, "_is_open", lambda: True)
     monkeypatch.setattr(
         w, "_send_text",
@@ -3301,16 +3313,16 @@ def test_transfer_and_replay_tx_keep_bound_owner_after_switch(
     assert w.switch_session(s2.id)
 
     w._io_bind_owner("transfer", s1)
-    w._xfer_target = None
+    s1._xfer_target = None
     w._xfer_send(b"X")
     w._io_clear_owner("transfer")
-    w._replay_on = True
+    s1._replay_on = True
     w._io_bind_owner("replay", s1)
     assert replay_send(b"R") == 1
 
     assert c1.sent == [(b"X", None), (b"R", None)]
     assert c2.sent == []
-    w._replay_on = False
+    s1._replay_on = False
     w._io_clear_owner("replay")
     s1.conn = s2.conn = None
     w._close_all_sessions()
@@ -3336,18 +3348,17 @@ def test_stale_transfer_callback_cannot_use_new_owner(
     old_worker, new_worker = object(), object()
     s1.conn, s2.conn = _Conn(), _Conn()
     monkeypatch.setattr(w, "_record_stream_tx", lambda *_a, **_k: None)
-    w._xfer_worker = old_worker
-    w._io_bind_owner("transfer", s1)
-    w._xfer_worker = new_worker
-    w._io_bind_owner("transfer", s2)
+    s1._xfer_worker = None
+    s2._xfer_worker = new_worker
+    s2._xfer_conn = s2.conn
 
     w._xfer_send_for(old_worker, s1.id, b"STALE")
     w._xfer_send_for(new_worker, s2.id, b"NEW")
 
     assert s1.conn.sent == []
     assert s2.conn.sent == [b"NEW"]
-    w._xfer_worker = None
-    w._io_clear_owner("transfer")
+    s1._xfer_worker = None
+    s2._xfer_worker = None
     s1.conn = s2.conn = None
     w._close_all_sessions()
 
@@ -3477,6 +3488,7 @@ def test_stopping_script_cannot_consume_reconnected_link_rx(
         w, "_send_text",
         lambda *args, **_kwargs: sent.append(args[0]) or True)
     w._ar_on = True
+    session._ar_enabled = True
     w._ar_schedule_send(["06"], True, 0, [], (0, 0))
     assert sent == ["06"]
     w._mbm_on = False
@@ -3721,6 +3733,73 @@ def test_two_sessions_can_each_own_a_script(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
+def test_script_end_does_not_clear_other_session_pin(monkeypatch, tmp_path):
+    """A 标签脚本结束不能清掉 B 标签仍在跑的脚本 I/O 钉。"""
+    from script_console_dialog import ScriptConsoleDialog
+    from script_console import ScriptWorker
+
+    w = _window(monkeypatch, tmp_path, "script-end-pin")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    old_a, old_b = ScriptWorker(""), ScriptWorker("")
+    s1._script_worker = old_a
+    s2._script_worker = old_b
+    w._io_bind_owner("script", s1)
+    w._io_bind_owner("script", s2)
+    dlg = ScriptConsoleDialog(w)
+    dlg._worker = old_b
+    try:
+        dlg._on_finished(old_a, True, "")
+        assert s1._script_worker is None
+        assert s2._script_worker is old_b
+        assert dlg._worker is old_b
+        assert w._io_owner_sid["script"] == s2.id
+    finally:
+        dlg._worker = None
+        s1._script_worker = None
+        s2._script_worker = None
+        w._io_clear_owner("script")
+        dlg.deleteLater()
+        w._close_all_sessions()
+
+
+def test_reconnect_attempts_and_serial_target_are_per_session(
+        monkeypatch, tmp_path):
+    """两个串口同时掉线时，重连次数与目标签名不能互相覆盖。"""
+    w = _window(monkeypatch, tmp_path, "reconnect-budget")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    s1.conn_fields = {"auto_reconnect": True}
+    s2.conn_fields = {"auto_reconnect": True}
+
+    s1._serial_reconnect_cfg = ("Serial", "COM1", 115200)
+    s1._reconnect_attempts = 10
+    s2._serial_reconnect_cfg = ("Serial", "COM2", 115200)
+    s2._reconnect_attempts = 0
+    with w._with_session(s1):
+        w._schedule_reconnect()
+    assert s1._serial_reconnect_cfg is None
+    assert s1._reconnect_attempts == 0
+    assert s2._serial_reconnect_cfg == ("Serial", "COM2", 115200)
+    assert s2._reconnect_attempts == 0
+
+    s1._serial_reconnect_cfg = None
+    s2._serial_reconnect_cfg = None
+    s1._reconnect_attempts = 3
+    s2._reconnect_attempts = 0
+    with w._with_session(s1):
+        w._schedule_reconnect()
+    assert s1._reconnect_attempts == 4
+    assert s2._reconnect_attempts == 0
+    s1._reconnect_timer.stop()
+    with w._with_session(s2):
+        w._schedule_reconnect()
+    assert s2._reconnect_attempts == 1
+    assert s1._reconnect_attempts == 4
+    s2._reconnect_timer.stop()
+    w._close_all_sessions()
+
+
 def test_two_sessions_can_enable_modbus_independently(monkeypatch, tmp_path):
     w = _window(monkeypatch, tmp_path, "dual-mbm")
     s1 = w.active_session()
@@ -3927,4 +4006,174 @@ def test_background_sequence_does_not_toast(monkeypatch, tmp_path):
         w._toast_if_active_session("bg-seq")
     w._toast_if_active_session("fg-seq")
     assert toasts == ["fg-seq"]
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_each_own_a_transfer(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "dual-xfer")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+
+    class _Worker:
+        @staticmethod
+        def isRunning():
+            return True
+
+    s1._xfer_worker = _Worker()
+    s2._xfer_worker = _Worker()
+    assert w._xfer_active(s1) is True
+    assert w._xfer_active(s2) is True
+    assert w._hard_busy_owned_by(s1) is True
+    assert w._hard_busy_owned_by(s2) is True
+    s1._xfer_worker = None
+    s2._xfer_worker = None
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_replay_independently(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "dual-replay")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    s1._replay_on = True
+    s2._replay_on = True
+    assert w._io_session_owns("replay", s1) is True
+    assert w._io_session_owns("replay", s2) is True
+    assert w._hard_busy_owned_by(s1) is True
+    assert w._hard_busy_owned_by(s2) is True
+    s1._replay_on = False
+    s2._replay_on = False
+    w._close_all_sessions()
+
+
+def test_autoreply_switch_is_per_session(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "ar-per-tab")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=False)
+    w._set_autoreply_enabled(True)
+    assert s1._ar_enabled is True
+    assert s2._ar_enabled is False
+    assert w._session_ar_on(s1) is True
+    assert w._session_ar_on(s2) is False
+    w._set_autoreply_enabled(False)
+    w._close_all_sessions()
+
+
+def test_two_sessions_can_scan_without_hijacking_mbm_rules(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path, "dual-scan")
+    _open_virtual(w)
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    _open_virtual(w)
+    old_rules = w._mbm_rules
+    monkeypatch.setattr(w, "_mbm_connection_ready", lambda: True)
+    monkeypatch.setattr(w, "_mbm_restart", lambda: None)
+    rules_a = [{"enabled": True, "unit": 1, "func": 3, "addr": 0, "qty": 1,
+                "period": 0x7FFFFFFF}]
+    rules_b = [{"enabled": True, "unit": 2, "func": 3, "addr": 0, "qty": 1,
+                "period": 0x7FFFFFFF}]
+    with w._with_session(s1):
+        assert w._start_device_scan(rules_a, 200, lambda *_a: None, lambda *_a: None)
+    assert w._mbm_rules is old_rules
+    with w._with_session(s2):
+        assert w._start_device_scan(rules_b, 200, lambda *_a: None, lambda *_a: None)
+    assert s1._device_scan_state is not None
+    assert s2._device_scan_state is not None
+    assert w._mbm_rules is old_rules
+    with w._with_session(s1):
+        w._stop_device_scan(cancelled=True)
+    with w._with_session(s2):
+        w._stop_device_scan(cancelled=True)
+    w._close_all_sessions()
+
+
+def test_device_scan_dialog_keeps_per_session_results(monkeypatch, tmp_path):
+    """A 扫描中切到 B 再扫：A 的回调不能写进 B 的表格。"""
+    from device_center_dialog import DeviceCenterDialog
+
+    w = _window(monkeypatch, tmp_path, "scan-ui-iso")
+    s1 = w.active_session()
+    dlg = DeviceCenterDialog(w)
+    w._device_center_dlg = dlg
+    s1._scan_capture = {
+        "rows": [{"name": "R1", "unit": 1, "func": 3, "addr": 1}],
+        "ok": [],
+        "completed": set(),
+        "cells": [("waiting", "")],
+        "mode": "register",
+        "cancelled": False,
+        "running": True,
+    }
+    s2 = w.add_session(activate=True)
+    s2._scan_capture = {
+        "rows": [{"name": "R9", "unit": 2, "func": 3, "addr": 9}],
+        "ok": [],
+        "completed": set(),
+        "cells": [("waiting", "")],
+        "mode": "register",
+        "cancelled": False,
+        "running": True,
+    }
+    dlg.sync_session()
+    assert dlg._scan_rows[0]["addr"] == 9
+    with w._with_session(s1):
+        dlg._scan_update(0, "ok", "FROM-A")
+    assert s1._scan_capture["cells"][0] == ("ok", "FROM-A")
+    assert s1._scan_capture["ok"] == [0]
+    assert dlg.scan_table.item(0, 3).text() != "FROM-A"
+    assert dlg._scan_rows[0]["addr"] == 9
+    w.switch_session(s1.id)
+    assert dlg._scan_rows[0]["addr"] == 1
+    assert dlg.scan_table.item(0, 3).text() == "FROM-A"
+    w._device_center_dlg = None
+    dlg.deleteLater()
+    w._close_all_sessions()
+
+
+def test_recording_capture_is_per_session(monkeypatch, tmp_path):
+    """A、B 分别录制停止后，切回 A 仍保存/回放 A 的事件。"""
+    from rec_replay_dialog import RecReplayDialog
+
+    w = _window(monkeypatch, tmp_path, "rr-capture-iso")
+    dlg = RecReplayDialog(w)
+    w._rr_dlg = dlg
+    s1 = w.active_session()
+    s1._recorder.clear()
+    s1._recorder.start()
+    s1._recorder.on_rx(b"FROM-A", t=1.0)
+    dlg.stop_recording()
+    assert dlg._events and dlg._events[0][2] == b"FROM-A"
+
+    s2 = w.add_session(activate=True)
+    dlg.sync_session()
+    assert dlg._events == []
+    s2._recorder.clear()
+    s2._recorder.start()
+    s2._recorder.on_rx(b"FROM-B", t=1.0)
+    dlg.stop_recording()
+    assert dlg._events[0][2] == b"FROM-B"
+
+    w.switch_session(s1.id)
+    assert dlg._events[0][2] == b"FROM-A"
+    w._rr_dlg = None
+    dlg.deleteLater()
+    w._close_all_sessions()
+
+
+def test_script_console_logs_are_isolated_per_session(monkeypatch, tmp_path):
+    from script_console_dialog import ScriptConsoleDialog
+
+    w = _window(monkeypatch, tmp_path, "sc-log-iso")
+    s1 = w.active_session()
+    s2 = w.add_session(activate=True)
+    dlg = ScriptConsoleDialog(w)
+    dlg._append_out("from-s1", sid=s1.id)
+    dlg._append_out("from-s2", sid=s2.id)
+    assert "from-s1" in (s1._script_log or [])
+    assert "from-s2" in (s2._script_log or [])
+    assert "from-s1" not in (s2._script_log or [])
+    dlg.show_session_log()
+    text = dlg.txt_out.toPlainText()
+    assert "from-s2" in text
+    assert "from-s1" not in text
+    dlg.deleteLater()
     w._close_all_sessions()

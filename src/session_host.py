@@ -85,7 +85,20 @@ _SESSION_PROXY_ATTRS = (
     "_mbm_due", "_mbm_results", "_mbm_guard_until",
     "_mbm_sched", "_mbm_to",
     "_device_scan_state",
+    "_ar_enabled",
+    "_xfer_worker", "_xfer_conn", "_xfer_target", "_xfer_send_bridge",
+    "_replay_on", "_replay_drive_tx",
 )
+
+
+def _assert_session_proxy_attrs():
+    """Fail fast if a window proxy name is not a Session slot (manual sync drift)."""
+    slots = set(Session.__slots__)
+    missing = [name for name in _SESSION_PROXY_ATTRS if name not in slots]
+    if missing:
+        raise AssertionError(
+            "CommTool session proxies missing from Session.__slots__: %s"
+            % ", ".join(missing))
 
 
 def _install_session_proxies(cls):
@@ -103,6 +116,8 @@ def _install_session_proxies(cls):
                 s = self._session_ctx()
                 if s is not None:
                     setattr(s, _a, value)
+                else:
+                    _log.debug("session proxy dropped write %s (no session context)", _a)
 
             return property(getter, setter)
 
@@ -126,6 +141,8 @@ def _install_session_proxies(cls):
                 s = self._session_ctx()
                 if s is not None:
                     setattr(s, _a, value)
+                else:
+                    _log.debug("session proxy dropped write %s (no session context)", _a)
 
             return property(getter, setter)
 
@@ -275,6 +292,8 @@ def _install_session_proxies(cls):
             return property(getter, setter)
 
         setattr(cls, _ms_attr, _make_ms(_ms_attr))
+
+    _assert_session_proxy_attrs()
 
 
 class SessionHostMixin:
@@ -834,6 +853,10 @@ class SessionHostMixin:
             if callable(seq_notify):
                 seq_notify()
             self._mbm_on = bool(getattr(target, "_mbm_enabled", False))
+            self._ar_on = bool(getattr(target, "_ar_enabled", False))
+            sync_ar = getattr(self, "_sync_autoreply_ui", None)
+            if callable(sync_ar):
+                sync_ar()
             mbm_dlg = getattr(self, "_mbm_dlg", None)
             if mbm_dlg is not None:
                 if hasattr(mbm_dlg, "cb_enable"):
@@ -848,9 +871,37 @@ class SessionHostMixin:
                     except Exception:
                         _log.debug("mbm dialog reload on switch failed", exc_info=True)
             script_dlg = getattr(self, "_script_dlg", None)
-            if script_dlg is not None and hasattr(script_dlg, "_set_running_ui"):
-                script_dlg._set_running_ui(bool(
-                    getattr(self, "_script_running", lambda: False)()))
+            if script_dlg is not None:
+                show_log = getattr(script_dlg, "show_session_log", None)
+                if callable(show_log):
+                    try:
+                        show_log()
+                    except Exception:
+                        _log.debug("script console log switch failed", exc_info=True)
+                if hasattr(script_dlg, "_set_running_ui"):
+                    script_dlg._set_running_ui(bool(
+                        getattr(self, "_script_running", lambda: False)()))
+            xfer_dlg = getattr(self, "_xfer_dlg", None)
+            sync_xfer = getattr(xfer_dlg, "sync_session", None) if xfer_dlg is not None else None
+            if callable(sync_xfer):
+                try:
+                    sync_xfer()
+                except Exception:
+                    _log.debug("xfer dialog switch failed", exc_info=True)
+            rr_dlg = getattr(self, "_rr_dlg", None)
+            sync_rr = getattr(rr_dlg, "sync_session", None) if rr_dlg is not None else None
+            if callable(sync_rr):
+                try:
+                    sync_rr()
+                except Exception:
+                    _log.debug("rec/replay dialog switch failed", exc_info=True)
+            device_dlg = getattr(self, "_device_center_dlg", None)
+            sync_scan = getattr(device_dlg, "sync_session", None) if device_dlg is not None else None
+            if callable(sync_scan):
+                try:
+                    sync_scan()
+                except Exception:
+                    _log.debug("device center scan switch failed", exc_info=True)
             if hasattr(self, "_schedule_keyword_rebuild"):
                 self._schedule_keyword_rebuild()
             # Search hits are document-bound; drop them on switch.
@@ -1459,8 +1510,7 @@ class SessionHostMixin:
         try:
             try:
                 self._on_data_received_impl(data, source=reply_target)
-            except (RuntimeError, ValueError, TypeError, OSError, UnicodeError,
-                    AttributeError):
+            except (RuntimeError, ValueError, TypeError, OSError, UnicodeError):
                 self._stat_note_rx_error()
                 _log.debug("background session RX failed", exc_info=True)
             # Keep the owning tab's display/codec context while its pinned
@@ -1471,8 +1521,7 @@ class SessionHostMixin:
             if callable(feed_engines):
                 try:
                     feed_engines(data, reply_target=reply_target)
-                except (RuntimeError, ValueError, TypeError, OSError,
-                        AttributeError):
+                except (RuntimeError, ValueError, TypeError, OSError):
                     _log.debug(
                         "background session engine feed failed", exc_info=True)
             trg = getattr(self, "_triggers_feed", None)
@@ -1481,8 +1530,7 @@ class SessionHostMixin:
                     self._rx_side(
                         "triggers.feed",
                         lambda: trg(data, "rx", source=reply_target))
-                except (RuntimeError, ValueError, TypeError, OSError,
-                        AttributeError):
+                except (RuntimeError, ValueError, TypeError, OSError):
                     _log.debug(
                         "background session trigger feed failed", exc_info=True)
         finally:
@@ -1628,6 +1676,7 @@ class SessionHostMixin:
                 "log_wanted": bool(session.log_wanted),
                 "mbm_enabled": bool(getattr(session, "_mbm_enabled", False)),
                 "mbm_wanted": bool(getattr(session, "_mbm_wanted", False)),
+                "ar_enabled": bool(getattr(session, "_ar_enabled", False)),
             }
             for session in old_sessions
         } if retain_old else {}
@@ -1713,15 +1762,18 @@ class SessionHostMixin:
                 log_wanted = bool(raw.get("log_wanted", False))
                 mbm_enabled = bool(raw.get("mbm_enabled", False))
                 mbm_wanted = bool(raw.get("mbm_wanted", mbm_enabled))
+                ar_enabled = bool(raw.get("ar_enabled", False))
             else:
                 period_on = bool(raw[0]) if raw else False
                 log_wanted = bool(raw[1]) if len(raw) > 1 else False
                 mbm_enabled = bool(raw[2]) if len(raw) > 2 else False
                 mbm_wanted = mbm_enabled
+                ar_enabled = False
             session.period_on = period_on
             session.log_wanted = log_wanted
             session._mbm_enabled = mbm_enabled
             session._mbm_wanted = mbm_wanted
+            session._ar_enabled = ar_enabled
             if mbm_enabled:
                 bind = getattr(self, "_io_bind_owner", None)
                 if callable(bind):
@@ -1744,6 +1796,11 @@ class SessionHostMixin:
         self._txt_recv_fallback = target.txt_recv
         self._rebuild_session_tabs(select_id=target.id)
         self._load_session_into_ui(target)
+        self._ar_on = bool(getattr(target, "_ar_enabled", False))
+        self._mbm_on = bool(getattr(target, "_mbm_enabled", False))
+        sync_ar = getattr(self, "_sync_autoreply_ui", None)
+        if callable(sync_ar):
+            sync_ar()
         if self.recv_stack is not None and target.txt_recv is not None:
             self.recv_stack.setCurrentWidget(target.txt_recv)
         self._restore_session_network_ui(target)

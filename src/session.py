@@ -95,6 +95,7 @@ class Session:
         "_ar_buf", "_ar_gap_timer",
         "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
         "_ar_generation", "_ar_seq",
+        "_ar_enabled",
         "_modbus", "_modbus_buffers", "_reset_timer",
         "_period_timer",
         "_ms_cycle_timer", "_ms_cycle_seq", "_ms_cycle_idx",
@@ -109,14 +110,18 @@ class Session:
         "_seq_retry_quiet_deadline",
         "_seq_waiting_mbm", "_seq_wait_mbm_variant", "_seq_wait_mbm_until",
         "_seq_timer",
-        # Script / MBM / recording / macro / DSL / scan: per-session runtime.
-        "_script_worker", "_script_conn", "_script_quiet_until",
+        # Script / MBM / recording / macro / DSL / scan / xfer / replay: per-session runtime.
+        "_script_worker", "_script_conn", "_script_quiet_until", "_script_log",
         "_macro", "_recorder",
         "_dsl_ops", "_dsl_idx", "_dsl_gen", "_dsl_record",
         "_mbm_enabled", "_mbm_wanted", "_mbm_inflight", "_mbm_buf", "_mbm_tid",
         "_mbm_due", "_mbm_results", "_mbm_guard_until",
         "_mbm_sched", "_mbm_to",
-        "_device_scan_state",
+        "_device_scan_state", "_scan_capture",
+        "_xfer_worker", "_xfer_conn", "_xfer_target", "_xfer_send_bridge",
+        "_xfer_log",
+        "_replay_on", "_replay_drive_tx", "_replay_player",
+        "_rr_capture",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
         "conn_fields", "send_draft", "period_ms", "period_on",
@@ -179,6 +184,7 @@ class Session:
         self._freeze_view = False
         self._ts_anchor = None
         self._reset_recv_fields()
+        self._ar_enabled = False
         self._ar_buf = b""
         self._ar_gap_timer = QTimer(app)
         self._ar_gap_timer.setSingleShot(True)
@@ -252,6 +258,7 @@ class Session:
         self._script_worker = None
         self._script_conn = None
         self._script_quiet_until = 0.0
+        self._script_log = []
         self._macro = macro_recorder.MacroRecorder()
         self._recorder = rec_replay.StreamRecorder()
         self._dsl_ops = None
@@ -275,6 +282,16 @@ class Session:
         self._mbm_to.timeout.connect(
             lambda _s=self: _s.app._mbm_on_timeout_for(_s.id))
         self._device_scan_state = None
+        self._scan_capture = None
+        self._xfer_worker = None
+        self._xfer_conn = None
+        self._xfer_target = None
+        self._xfer_send_bridge = None
+        self._xfer_log = []
+        self._replay_on = False
+        self._replay_drive_tx = False
+        self._replay_player = None
+        self._rr_capture = None
 
         self.txt_recv = None
         self._bookmarks = []
@@ -444,6 +461,10 @@ class Session:
             "log_wanted": bool(self.log_wanted),
             "log_base_path": self.log_base_path or "",
             "log_seg": int(self.log_seg or 0),
+            # per-session 引擎开关：随标签持久化，重启后各标签状态不丢。
+            "ar_enabled": bool(getattr(self, "_ar_enabled", False)),
+            "mbm_enabled": bool(getattr(self, "_mbm_enabled", False)),
+            "mbm_wanted": bool(getattr(self, "_mbm_wanted", False)),
         }
 
     @classmethod
@@ -521,3 +542,7 @@ class Session:
             self.log_seg = max(0, int(data.get("log_seg", 0) or 0))
         except (TypeError, ValueError):
             self.log_seg = 0
+        # per-session 引擎开关：旧存档缺省为 False（与原行为一致）。
+        self._ar_enabled = _persist_bool(data.get("ar_enabled", False))
+        self._mbm_enabled = _persist_bool(data.get("mbm_enabled", False))
+        self._mbm_wanted = _persist_bool(data.get("mbm_wanted", self._mbm_enabled))

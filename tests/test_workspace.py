@@ -131,6 +131,7 @@ def test_device_scan_temporarily_reuses_and_restores_modbus_engine(tmp_path, mon
         window._mbm_rules = old_rules
         window._mbm_results = {5: {"status": "ok", "text": "before scan"}}
         window._mbm_on = True
+        window.active_session()._mbm_enabled = True
         window.settings.setValue("modbus_master", "persisted-rules")
         window.settings.setValue("modbus_master_on", True)
         window.settings.setValue("modbus_master_variant", "rtu")
@@ -155,19 +156,15 @@ def test_device_scan_temporarily_reuses_and_restores_modbus_engine(tmp_path, mon
             lambda cancelled: done.append(cancelled)) is True
         assert window._device_scan_timeout_ms == 250
         assert window._mbm_on is True
+        assert window._mbm_rules is old_rules
+        assert window._mbm_poll_rules() is not old_rules
         assert busy_calls == [("modbus",)]
         window._mbm_results[5]["text"] = "mutated during scan"
 
-        # 扫描期间配置入口不能顶掉临时规则；即使持久化层被其它未来入口改写，
-        # 扫描收尾也必须恢复启动前的精确快照。
-        scan_rules = window._mbm_rules
+        # Scan no longer hijacks window rules; enable switch still blocked.
         window._set_mbm_enabled(False)
-        assert window._mbm_rules is scan_rules
+        assert window._mbm_rules is old_rules
         assert window._mbm_on is True
-        window.settings.setValue("modbus_master", "corrupted-during-scan")
-        window.settings.setValue("modbus_master_on", False)
-        window.settings.setValue("modbus_master_variant", "tcp")
-        window.settings.setValue("modbus_master_echo", False)
 
         window._device_scan_result(0, "ok", "1")
         window._device_scan_result(1, "timeout", "timeout")
@@ -179,10 +176,6 @@ def test_device_scan_temporarily_reuses_and_restores_modbus_engine(tmp_path, mon
         assert window._mbm_rules is old_rules
         assert window._mbm_on is True
         assert window._mbm_results == {5: {"status": "ok", "text": "before scan"}}
-        assert window.settings.value("modbus_master") == "persisted-rules"
-        assert window.settings.value("modbus_master_on", type=bool) is True
-        assert window.settings.value("modbus_master_variant") == "rtu"
-        assert window.settings.value("modbus_master_echo", type=bool) is True
     finally:
         window.deleteLater()
         _APP.processEvents()
@@ -198,6 +191,7 @@ def test_device_scan_temporarily_disables_autoreply(tmp_path, monkeypatch):
     try:
         _APP.processEvents()
         window._ar_on = True
+        window.active_session()._ar_enabled = True
         window._mbm_on = False
         window.settings.setValue("autoreply_on", True)
         window._mbm_rules = [{"enabled": True, "name": "old", "unit": 1,
@@ -592,6 +586,7 @@ def test_modbus_slave_ascii_sends_text_frame_rtu_sends_hex(tmp_path, monkeypatch
         _APP.processEvents()
         monkeypatch.setattr(window, "_is_open", lambda: True)
         window._ar_on = True
+        window.active_session()._ar_enabled = True
         monkeypatch.setattr(window, "_ar_apply_fault", lambda frame: (frame, None))
         sent = []
         monkeypatch.setattr(window, "_send_text",
@@ -1148,6 +1143,7 @@ def test_rtu_slave_addr_58_sends_binary_not_ascii_mangled(tmp_path, monkeypatch)
         _APP.processEvents()
         monkeypatch.setattr(window, "_is_open", lambda: True)
         window._ar_on = True
+        window.active_session()._ar_enabled = True
         monkeypatch.setattr(window, "_ar_apply_fault", lambda frame: (frame, None))
         sent = []
         monkeypatch.setattr(window, "_send_text",

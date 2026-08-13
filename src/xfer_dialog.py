@@ -9,7 +9,7 @@
 """
 import os
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QDialog, QWidget, QLabel, QLineEdit, QComboBox,
                              QRadioButton, QButtonGroup, QPushButton, QProgressBar, QSpinBox,
                              QTextEdit, QScrollArea, QFileDialog, QHBoxLayout, QVBoxLayout)
@@ -21,6 +21,7 @@ from dialogs import _dialog_list_qss, _set_win_titlebar_dark
 from ui_tips import set_tooltip
 
 MODE_RAW = "raw"            # 原始字节流：无协议、按分块 + 块间延时直接发送（只发不收）
+_XFER_WARN_BYTES = 100 * 1024 * 1024  # 发送前读入内存；超过此大小先确认
 
 # 协议下拉项 → xfer 模式
 _PROTOS = (
@@ -271,8 +272,38 @@ class XferDialog(QDialog):
                 except OSError:
                     pass
 
-    def _log(self, msg):
-        self.log.append(msg)
+    def _visible_session(self):
+        finder = getattr(self.app, "active_session", None)
+        return finder() if callable(finder) else None
+
+    def _owner_of(self, worker):
+        if worker is None:
+            return None
+        for session in getattr(self.app, "_sessions", ()) or ():
+            if getattr(session, "_xfer_worker", None) is worker:
+                return session
+        return None
+
+    def _log(self, msg, session=None):
+        session = session or self._visible_session()
+        if session is not None:
+            lines = list(getattr(session, "_xfer_log", None) or [])
+            lines.append(msg)
+            if len(lines) > 2000:
+                lines = lines[-2000:]
+            session._xfer_log = lines
+        if session is None or session is self._visible_session():
+            self.log.append(msg)
+
+    def sync_session(self):
+        """Refresh Start/Cancel/log/progress for the visible tab."""
+        session = self._visible_session()
+        self._worker = getattr(session, "_xfer_worker", None) if session else None
+        lines = list(getattr(session, "_xfer_log", None) or []) if session else []
+        self.log.setPlainText("\n".join(lines))
+        self._set_busy(self._worker is not None)
+        if self._worker is None:
+            self.bar.reset()   # 清掉上一个标签残留的进度
 
     def _set_busy(self, busy):
         raw = self.cb_proto.currentData() == MODE_RAW
@@ -291,8 +322,6 @@ class XferDialog(QDialog):
             return
         if self.app._xfer_start_blocked():
             if self.app._xfer_active():
-                # Worker is window-global; current tab's occupancy table may
-                # not list it if the transfer is pinned to another session.
                 self.app.toast(self.app._t(
                     "io_exclusive_busy",
                     tasks=self.app._t("io_task_transfer")), error=True)
@@ -302,8 +331,25 @@ class XferDialog(QDialog):
         if not self._path:
             self.app.toast(t("xfer_need_file" if self._is_send() else "xfer_need_save"), error=True)
             return
+        is_send = self._is_send()
+        if is_send:
+            try:
+                size = os.path.getsize(self._path)
+            except OSError as e:
+                self.app.toast(t("xfer_read_err", msg=e), error=True)
+                return
+            if size > _XFER_WARN_BYTES:
+                mb = max(1, (int(size) + 1024 * 1024 - 1) // (1024 * 1024))
+                if not self.app._confirm_dlg(
+                        t("xfer_huge_title"), t("xfer_huge", n=mb), danger=False):
+                    return
+        session = self._visible_session()
+        if session is not None:
+            session._xfer_log = []
+        self.log.clear()
         mode = self.cb_proto.currentData()
-        if self._is_send():
+        save_path = self._path
+        if is_send:
             try:
                 QApplication.setOverrideCursor(Qt.WaitCursor)
                 try:
@@ -319,21 +365,17 @@ class XferDialog(QDialog):
             self.bar.setFormat("%p%")                  # 切回百分比（上次若为接收则可能残留字节格式）
             self.bar.setRange(0, max(1, len(payload)))
             self._log(t("xfer_log_send", name=os.path.basename(self._path), n=len(payload),
-                        proto=self.cb_proto.currentText()))
+                        proto=self.cb_proto.currentText()), session=session)
         else:
             worker = XferWorker("recv", mode)
             self.bar.setRange(0, 0)              # 未知总量 → 忙碌态
-            self._log(t("xfer_log_recv", proto=self.cb_proto.currentText()))
+            self._log(t("xfer_log_recv", proto=self.cb_proto.currentText()), session=session)
 
         def progress_bridge(done, total, _worker=worker):
             self._on_progress(_worker, done, total)
-        self._progress_bridge = progress_bridge
         worker.sig_progress.connect(progress_bridge)
-        # 与脚本 worker 一样捕获发信对象：旧一轮迟到的 queued sig_done
-        # 不能把新一轮传输 detach 掉或覆盖新 worker 的 UI 状态。
-        def done_bridge(ok, msg, result, _worker=worker):
-            self._on_done(_worker, ok, msg, result)
-        self._done_bridge = done_bridge
+        def done_bridge(ok, msg, result, _worker=worker, _path=save_path, _send=is_send):
+            self._on_done(_worker, ok, msg, result, path=_path, is_send=_send)
         worker.sig_done.connect(done_bridge)
         self._worker = worker
         self.app._xfer_attach(worker)           # 主窗接管收流 + 提供发送桥
@@ -341,12 +383,16 @@ class XferDialog(QDialog):
         worker.start()
 
     def _cancel(self):
-        if self._worker is not None and self._worker.isRunning():
-            self._log(self.app._t("xfer_cancelling"))
-            self._worker.cancel()
+        session = self._visible_session()
+        worker = (getattr(session, "_xfer_worker", None) if session is not None
+                  else self._worker)
+        if worker is not None and worker.isRunning():
+            self._log(self.app._t("xfer_cancelling"), session=session)
+            worker.cancel()
 
     def _on_progress(self, worker, done, total):
-        if worker is not self._worker:
+        owner = self._owner_of(worker)
+        if owner is None or owner is not self._visible_session():
             return
         if total > 0:
             if self.bar.maximum() != total:
@@ -355,25 +401,36 @@ class XferDialog(QDialog):
         else:
             self.bar.setFormat("%d B" % done)   # 未知总量：显示已传字节
 
-    def _on_done(self, worker, ok, msg, result):
-        if worker is not self._worker:
+    def _on_done(self, worker, ok, msg, result, path="", is_send=True):
+        owner = self._owner_of(worker)
+        if owner is None:
+            # worker 已被外部 detach/清理：只收尾对话框自身状态，不再触碰会话。
+            # 非当前 worker（迟到完成信号）不影响当前 busy 状态。
+            if self._worker is worker:
+                self._worker = None
+                self._progress_bridge = None
+                self._done_bridge = None
+                self._set_busy(False)
             return
         t = self.app._t
-        self.app._xfer_detach()
-        if self.bar.maximum() == 0:             # 结束忙碌态
+        visible = owner is self._visible_session()
+        with self.app._with_session(owner):
+            self.app._xfer_detach()
+        if visible and self.bar.maximum() == 0:
             self.bar.setRange(0, 1)
-            self.bar.setFormat("%p%")           # 还原百分比格式（接收过程中设了字节格式）
+            self.bar.setFormat("%p%")
         if ok:
-            if self._is_send():
-                self.bar.setValue(self.bar.maximum())
-                self._log(t("xfer_done_send"))
+            if is_send:
+                if visible:
+                    self.bar.setValue(self.bar.maximum())
+                self._log(t("xfer_done_send"), session=owner)
                 self.app.toast(t("xfer_toast_send"))
             else:
                 data, meta = result
-                out = self._path
-                # YMODEM 若带文件名，且用户选的是目录/沿用名，仍写用户选定路径；文件名记进日志
+                out = path or self._path
                 if meta.get("name"):
-                    self._log(t("xfer_log_meta", name=meta.get("name", ""), n=meta.get("size", len(data))))
+                    self._log(t("xfer_log_meta", name=meta.get("name", ""),
+                                n=meta.get("size", len(data))), session=owner)
                 try:
                     QApplication.setOverrideCursor(Qt.WaitCursor)
                     try:
@@ -381,27 +438,42 @@ class XferDialog(QDialog):
                             f.write(data)
                     finally:
                         QApplication.restoreOverrideCursor()
-                    self.bar.setRange(0, max(1, len(data)))
-                    self.bar.setValue(len(data))
-                    self._log(t("xfer_done_recv", path=out, n=len(data)))
+                    if visible:
+                        self.bar.setRange(0, max(1, len(data)))
+                        self.bar.setValue(len(data))
+                    self._log(t("xfer_done_recv", path=out, n=len(data)), session=owner)
                     self.app.toast(t("xfer_toast_recv", n=len(data)))
                 except OSError as e:
-                    self._log(t("xfer_write_err", msg=e))
+                    self._log(t("xfer_write_err", msg=e), session=owner)
                     self.app.toast(t("xfer_write_err", msg=e), error=True)
         elif msg == "__cancelled__":
-            self._log(t("xfer_cancelled"))
+            self._log(t("xfer_cancelled"), session=owner)
             self.app.toast(t("xfer_cancelled"), error=True)
         else:
-            self._log(t("xfer_failed", msg=msg))
+            self._log(t("xfer_failed", msg=msg), session=owner)
             self.app.toast(t("xfer_failed", msg=msg), error=True)
-        if self._worker is not None:
-            self._worker.wait(2000)
-            if self._worker.isRunning():
-                self.app._xfer_orphans.append(self._worker)
-        self._worker = None
-        self._progress_bridge = None
-        self._done_bridge = None
-        self._set_busy(False)
+        if worker is not None:
+            QTimer.singleShot(0, lambda w=worker: self._reap_xfer_worker(w))
+        if self._worker is worker:
+            self._worker = None
+            self._progress_bridge = None
+            self._done_bridge = None
+        if visible:
+            self._set_busy(False)
+
+    def _reap_xfer_worker(self, worker):
+        """Join a finished transfer thread without blocking the GUI in _on_done."""
+        if worker is None:
+            return
+        is_running = getattr(worker, "isRunning", None)
+        if callable(is_running) and is_running():
+            orphans = getattr(self.app, "_xfer_orphans", None)
+            if isinstance(orphans, list):
+                orphans.append(worker)
+            return
+        wait = getattr(worker, "wait", None)
+        if callable(wait):
+            wait(1)
 
     # ---------- 帮助 / 主题 / 语言 ----------
     def _show_help_dlg(self):
@@ -496,33 +568,36 @@ class XferDialog(QDialog):
                 cb.view().window().setStyleSheet("background-color: %s;" % c["combo_dropdown_bg"])
 
     def closeEvent(self, e):
-        # 关窗时若还挂着 worker（运行中、或刚结束 sig_done 尚未处理）：先断桥——putc 的 sig_send 之后落空、
-        # 不再碰连接，也不会在已关闭对话框上触发桥回调；再断开 dialog 侧的回调防 sig_done/progress 在已关闭
-        # 对话框上执行；运行中的再取消并等它退出，避免悬挂线程。
-        w = self._worker
-        if w is not None:
-            self.app._xfer_detach()
+        workers = []
+        if self._worker is not None:
+            workers.append(self._worker)
+        for session in getattr(self.app, "_sessions", ()) or ():
+            candidate = getattr(session, "_xfer_worker", None)
+            if candidate is not None and candidate not in workers:
+                workers.append(candidate)
+        # 先对全部 worker 取消并断桥，再统一短等待，避免多会话时逐个 wait(3000) 冻结 GUI。
+        for w in workers:
+            owner = self._owner_of(w)
+            if owner is not None:
+                with self.app._with_session(owner):
+                    self.app._xfer_detach()
             try:
-                if self._done_bridge is not None:
-                    w.sig_done.disconnect(self._done_bridge)
+                w.sig_done.disconnect()
             except (TypeError, RuntimeError):
                 pass
             try:
-                if self._progress_bridge is not None:
-                    w.sig_progress.disconnect(self._progress_bridge)
+                w.sig_progress.disconnect()
             except (TypeError, RuntimeError):
                 pass
             if w.isRunning():
                 w.cancel()
-                w.wait(3000)
-                if w.isRunning():
-                    # 协议读通常会被 inbox.close() 立即唤醒；若第三方/系统层
-                    # 仍阻塞，保留线程对象直到自然结束，绝不能让运行中的
-                    # QThread 随对话框 Python 引用消失而触发 Qt fatal。
+        for w in workers:
+            if w.isRunning():
+                if not w.wait(500):
                     self.app._xfer_orphans.append(w)
-            self._worker = None
-            self._progress_bridge = None
-            self._done_bridge = None
-            self._set_busy(False)
+        self._worker = None
+        self._progress_bridge = None
+        self._done_bridge = None
+        self._set_busy(False)
         self.app.settings.sync()
         super().closeEvent(e)

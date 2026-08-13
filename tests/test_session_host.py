@@ -19,7 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 
-from session_host import SessionHostMixin, _BACKGROUND_DISPLAY_DEFAULTS
+from session_host import (
+    SessionHostMixin, _BACKGROUND_DISPLAY_DEFAULTS, _SESSION_PROXY_ATTRS,
+    _assert_session_proxy_attrs,
+)
+from session import Session
 
 _APP = QApplication.instance() or QApplication([])
 _TEST_WINDOWS = []
@@ -78,6 +82,12 @@ def test_background_display_defaults_cover_view_mutex_keys():
     opts = SessionHostMixin._background_display_opts(None)
     assert opts["rx_hex"] is False
     assert opts["terminal_on"] is False
+
+
+def test_session_proxy_attrs_are_session_slots():
+    """Window proxies must exist on Session; a missing slot would AttributeError."""
+    _assert_session_proxy_attrs()
+    assert set(_SESSION_PROXY_ATTRS) <= set(Session.__slots__)
 
 
 # ---- Light GUI contracts ------------------------------------------------
@@ -167,7 +177,7 @@ def test_soft_leave_allows_switch_busy_blocks_close(monkeypatch, tmp_path):
     assert w.close_session(s1.id, confirm=False) is False
     assert w.find_session(s1.id) is s1
 
-    w._replay_on = False
+    s1._replay_on = False
     w._io_clear_owner("replay")
     s1._ms_cycle_timer.start(60000)
     assert s1._ms_cycle_timer.isActive()
