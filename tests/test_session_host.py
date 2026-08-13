@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """session_host 契约单测：资源互斥键、后台显示默认、代理与关键多会话不变量。
 
-行为级覆盖（切标签硬拦 / 后台 RX 不喂引擎 / 循环 per-session）仍在
+行为级覆盖（任务钉住 owner / 后台 RX 只喂 owner 引擎 / 循环 per-session）仍在
 ``tests/test_multi_session.py``；本文件钉住可 Qt-free / 轻量复现的契约。
 """
 from __future__ import print_function
@@ -11,15 +11,30 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 
 from session_host import SessionHostMixin, _BACKGROUND_DISPLAY_DEFAULTS
 
 _APP = QApplication.instance() or QApplication([])
+_TEST_WINDOWS = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_test_windows():
+    """Destroy each window after stopping timers, workers, and app hooks."""
+    yield
+    for window in reversed(_TEST_WINDOWS):
+        window._shutdown()
+        _APP.processEvents()
+        window.deleteLater()
+    _TEST_WINDOWS.clear()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 # ---- Qt-free contracts -------------------------------------------------
@@ -89,6 +104,7 @@ def _window(monkeypatch, tmp_path, profile="sess-host"):
         CommTool, "_settings_file", staticmethod(_settings_file))
     w = CommTool(profile)
     w.settings = QSettings(_settings_file(profile), QSettings.IniFormat)
+    _TEST_WINDOWS.append(w)
     return w
 
 
@@ -137,29 +153,33 @@ def test_session_proxies_track_active_session(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_exclusive_busy_blocks_leave_and_cycle_continues(monkeypatch, tmp_path):
-    """窗口独占任务硬拦切标签；多条循环 per-session，切走后仍继续。"""
+def test_soft_leave_allows_switch_busy_blocks_close(monkeypatch, tmp_path):
+    """独占任务钉在启动会话：可切标签；关闭忙会话仍拦截；循环切走后继续。"""
     w = _window(monkeypatch, tmp_path, "busy")
     _open_virtual(w)
     s1 = w.active_session()
     s2 = w.add_session(activate=False)
-    monkeypatch.setattr(w, "_io_task_busy", lambda exclude=(): True)
-    assert w._session_exclusive_busy()
-    assert w.switch_session(s2.id) is False
-    assert w.active_session().id == s1.id
+    w._replay_on = True
+    w._io_bind_owner("replay", s1)
+    assert w._hard_busy_owned_by(s1)
+    assert w.switch_session(s2.id) is True
+    assert w.active_session().id == s2.id
+    assert w.close_session(s1.id, confirm=False) is False
+    assert w.find_session(s1.id) is s1
 
-    # Multi-send is excluded from exclusive busy and keeps running after leave.
-    monkeypatch.setattr(w, "_io_task_busy", lambda exclude=(): False)
+    w._replay_on = False
+    w._io_clear_owner("replay")
     s1._ms_cycle_timer.start(60000)
     assert s1._ms_cycle_timer.isActive()
+    assert w.switch_session(s1.id) is True
     assert w.switch_session(s2.id) is True
     assert w.active_session().id == s2.id
     assert s1._ms_cycle_timer.isActive()
     w._close_all_sessions()
 
 
-def test_background_rx_does_not_feed_window_engines(monkeypatch, tmp_path):
-    """后台会话 RX 更新本会话计数，不喂窗口级脚本引擎。"""
+def test_background_rx_feeds_owner_script_not_others(monkeypatch, tmp_path):
+    """后台 RX：仅喂钉在该会话上的脚本引擎。"""
     w = _window(monkeypatch, tmp_path, "bg-rx-host")
     _open_virtual(w)
     s1 = w.active_session()
@@ -172,12 +192,20 @@ def test_background_rx_does_not_feed_window_engines(monkeypatch, tmp_path):
             fed["script"] += 1
 
     w._script_worker = _Worker()
+    w._io_bind_owner("script", s1)
     monkeypatch.setattr(w, "_script_running", lambda: True)
     monkeypatch.setattr(w, "_seq_running", lambda: False)
+    s1.conn.inject(b"YES-SCRIPT")
+    _pump()
+    assert fed["script"] == 1
+    assert s1.rx_bytes >= 10
+
+    fed["script"] = 0
+    w._io_clear_owner("script")  # unbound → only active owns
+    w._script_worker = None
     s1.conn.inject(b"NO-SCRIPT")
     _pump()
     assert fed["script"] == 0
-    assert s1.rx_bytes >= 9
     w._close_all_sessions()
 
 
@@ -200,8 +228,8 @@ def test_route_background_session_data_skips_on_data_received(monkeypatch, tmp_p
             "bg", calls["bg"] + 1))
 
     w._route_session_data(s1.id, b"HELLO")  # s1 现在是后台会话
-    assert calls["received"] == 0           # 不喂窗口级引擎
-    assert calls["bg"] == 1                 # 走后台渲染路径
+    assert calls["received"] == 0           # 不走 on_data_received
+    assert calls["bg"] == 1                 # 走后台渲染/引擎路径
 
     # 正向路径：活跃会话仍走 on_data_received（与后台分支对称钉死）
     s2 = w.active_session()

@@ -14,6 +14,8 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QTextEdit
 
 import io_stats
+import modbus_slave
+import seq_context
 from fonts import mono_font
 
 MAX_SESSIONS = 8
@@ -90,10 +92,21 @@ class Session:
         "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
         "_ar_buf", "_ar_gap_timer",
         "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
-        "_ar_generation",
-        "_modbus_buffers", "_reset_timer",
+        "_ar_generation", "_ar_seq",
+        "_modbus", "_modbus_buffers", "_reset_timer",
         "_period_timer",
         "_ms_cycle_timer", "_ms_cycle_seq", "_ms_cycle_idx",
+        # Sequence runtime (rules stay on the window; each tab can run its own).
+        "_seq_on", "_seq_gen", "_seq_steps", "_seq_idx", "_seq_attempt",
+        "_seq_buf", "_seq_results", "_seq_summary", "_seq_ctx",
+        "_seq_runtime_step", "_seq_loops", "_seq_loop_i", "_seq_stop_on_fail",
+        "_seq_rounds", "_seq_round_t0", "_seq_t0", "_seq_step_total_t0",
+        "_seq_started_at", "_seq_finished_at",
+        "_seq_dataset", "_seq_dataset_row", "_seq_round_snapshot_taken",
+        "_seq_retry_not_before", "_seq_retry_quiet_until",
+        "_seq_retry_quiet_deadline",
+        "_seq_waiting_mbm", "_seq_wait_mbm_variant", "_seq_wait_mbm_until",
+        "_seq_timer",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
         "conn_fields", "send_draft", "period_ms", "period_on",
@@ -167,6 +180,13 @@ class Session:
         self._ar_sm_queue = deque()
         self._ar_sm_draining = False
         self._ar_generation = 0
+        self._ar_seq = 0
+        # Slave register bank is per-session; config ``_ar_modbus`` stays window-shared.
+        # First session is created before CommTool loads settings — rebuild later.
+        cfg = getattr(app, "_ar_modbus", None)
+        self._modbus = (
+            modbus_slave.slave_bank_from_config(cfg) if cfg is not None
+            else modbus_slave.slave_bank_from_config({}))
         self._modbus_buffers = {}
         self._reset_timer = QTimer(app)
         self._reset_timer.setSingleShot(True)
@@ -184,6 +204,40 @@ class Session:
         self._ms_cycle_timer.setSingleShot(True)
         self._ms_cycle_timer.timeout.connect(
             lambda _s=self: _s.app._ms_cycle_step_for(_s.id))
+
+        # Sequence runtime: each tab can run its own run; rules stay on the window.
+        self._seq_on = False
+        self._seq_ctx = seq_context.RoundContext()
+        self._seq_runtime_step = None
+        self._seq_steps = []
+        self._seq_idx = 0
+        self._seq_attempt = 1
+        self._seq_buf = b""
+        self._seq_results = []
+        self._seq_summary = None
+        self._seq_gen = 0
+        self._seq_started_at = ""
+        self._seq_finished_at = ""
+        self._seq_loops = 1
+        self._seq_dataset = None
+        self._seq_dataset_row = None
+        self._seq_round_snapshot_taken = False
+        self._seq_loop_i = 0
+        self._seq_stop_on_fail = False
+        self._seq_rounds = []
+        self._seq_round_t0 = 0.0
+        self._seq_t0 = 0.0
+        self._seq_step_total_t0 = 0.0
+        self._seq_retry_not_before = 0.0
+        self._seq_retry_quiet_until = 0.0
+        self._seq_retry_quiet_deadline = 0.0
+        self._seq_waiting_mbm = False
+        self._seq_wait_mbm_variant = ""
+        self._seq_wait_mbm_until = 0.0
+        self._seq_timer = QTimer(app)
+        self._seq_timer.setSingleShot(True)
+        self._seq_timer.timeout.connect(
+            lambda _s=self: _s.app._seq_on_timeout_for(_s.id))
 
         self.txt_recv = None
         self._bookmarks = []

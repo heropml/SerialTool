@@ -113,6 +113,8 @@ class XferDialog(QDialog):
         self.setMinimumSize(520, 440)
         self.resize(560, 480)
         self._worker = None
+        self._progress_bridge = None
+        self._done_bridge = None
         self._path = ""            # 发送=源文件；接收=保存路径
 
         root = QVBoxLayout(self)
@@ -288,7 +290,14 @@ class XferDialog(QDialog):
             self.app.toast(t("xfer_need_conn"), error=True)
             return
         if self.app._xfer_start_blocked():
-            self.app.toast_io_exclusive_busy(exclude=("transfer",))
+            if self.app._xfer_active():
+                # Worker is window-global; current tab's occupancy table may
+                # not list it if the transfer is pinned to another session.
+                self.app.toast(self.app._t(
+                    "io_exclusive_busy",
+                    tasks=self.app._t("io_task_transfer")), error=True)
+            else:
+                self.app.toast_io_exclusive_busy(exclude=("transfer",))
             return
         if not self._path:
             self.app.toast(t("xfer_need_file" if self._is_send() else "xfer_need_save"), error=True)
@@ -316,8 +325,16 @@ class XferDialog(QDialog):
             self.bar.setRange(0, 0)              # 未知总量 → 忙碌态
             self._log(t("xfer_log_recv", proto=self.cb_proto.currentText()))
 
-        worker.sig_progress.connect(self._on_progress)
-        worker.sig_done.connect(self._on_done)
+        def progress_bridge(done, total, _worker=worker):
+            self._on_progress(_worker, done, total)
+        self._progress_bridge = progress_bridge
+        worker.sig_progress.connect(progress_bridge)
+        # 与脚本 worker 一样捕获发信对象：旧一轮迟到的 queued sig_done
+        # 不能把新一轮传输 detach 掉或覆盖新 worker 的 UI 状态。
+        def done_bridge(ok, msg, result, _worker=worker):
+            self._on_done(_worker, ok, msg, result)
+        self._done_bridge = done_bridge
+        worker.sig_done.connect(done_bridge)
         self._worker = worker
         self.app._xfer_attach(worker)           # 主窗接管收流 + 提供发送桥
         self._set_busy(True)
@@ -328,7 +345,9 @@ class XferDialog(QDialog):
             self._log(self.app._t("xfer_cancelling"))
             self._worker.cancel()
 
-    def _on_progress(self, done, total):
+    def _on_progress(self, worker, done, total):
+        if worker is not self._worker:
+            return
         if total > 0:
             if self.bar.maximum() != total:
                 self.bar.setRange(0, total)
@@ -336,7 +355,9 @@ class XferDialog(QDialog):
         else:
             self.bar.setFormat("%d B" % done)   # 未知总量：显示已传字节
 
-    def _on_done(self, ok, msg, result):
+    def _on_done(self, worker, ok, msg, result):
+        if worker is not self._worker:
+            return
         t = self.app._t
         self.app._xfer_detach()
         if self.bar.maximum() == 0:             # 结束忙碌态
@@ -375,7 +396,11 @@ class XferDialog(QDialog):
             self.app.toast(t("xfer_failed", msg=msg), error=True)
         if self._worker is not None:
             self._worker.wait(2000)
+            if self._worker.isRunning():
+                self.app._xfer_orphans.append(self._worker)
         self._worker = None
+        self._progress_bridge = None
+        self._done_bridge = None
         self._set_busy(False)
 
     # ---------- 帮助 / 主题 / 语言 ----------
@@ -478,15 +503,26 @@ class XferDialog(QDialog):
         if w is not None:
             self.app._xfer_detach()
             try:
-                w.sig_done.disconnect(self._on_done)
+                if self._done_bridge is not None:
+                    w.sig_done.disconnect(self._done_bridge)
             except (TypeError, RuntimeError):
                 pass
             try:
-                w.sig_progress.disconnect(self._on_progress)
+                if self._progress_bridge is not None:
+                    w.sig_progress.disconnect(self._progress_bridge)
             except (TypeError, RuntimeError):
                 pass
             if w.isRunning():
                 w.cancel()
                 w.wait(3000)
+                if w.isRunning():
+                    # 协议读通常会被 inbox.close() 立即唤醒；若第三方/系统层
+                    # 仍阻塞，保留线程对象直到自然结束，绝不能让运行中的
+                    # QThread 随对话框 Python 引用消失而触发 Qt fatal。
+                    self.app._xfer_orphans.append(w)
+            self._worker = None
+            self._progress_bridge = None
+            self._done_bridge = None
+            self._set_busy(False)
         self.app.settings.sync()
         super().closeEvent(e)

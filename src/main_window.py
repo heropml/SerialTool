@@ -614,6 +614,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._sel_chk_popup_payload = None
         # 全平台装 app 级过滤器：主界面 QComboBox 禁滚轮误触；Linux 缩放 / macOS tooltip 复用同一入口。
         QApplication.instance().installEventFilter(self)
+        self._app_filter_installed = True
 
         # Multi-session host must exist before proxy attribute assigns.
         self._init_session_host()
@@ -676,8 +677,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ar_sm_pending = None  # C8：在途状态转移 token；整条多段应答完成前串行化后续状态帧
         self._ar_sm_queue = deque() # C8：pending 期间收到的完整帧 FIFO（有界，保持收帧顺序）
         self._ar_sm_draining = False # C8：FIFO 同步排空重入保护
-        self._ar_modbus = self._load_ar_modbus()     # B4 Modbus RTU 从机配置（全局；on/addr/寄存器表）
-        self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)  # 运行态从机模型（主机写会改它）
+        self._ar_modbus = self._load_ar_modbus()     # B4 Modbus 从机配置（窗口共享；运行态 bank 每会话一份）
+        self._modbus_rebuild_all_sessions()
         self._modbus_buffers = {}                    # TCP Server 每客户端独立半包，防止并发连接串流
         # Modbus 主机轮询（master/poll）：规则 + 总开关 + 变体；运行态半双工调度
         self._mbm_rules = self._load_mbm_rules()
@@ -694,31 +695,30 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._device_scan_state = None
         self._device_scan_timeout_ms = 300
         self._device_center_dlg = None
-        # 自动化测试序列：顺序执行每步（发送 → 等回包匹配 → 超时按动作走），出「通过/失败」。
-        # 运行态挂在这里，规则(步骤列表)存 settings；运行期抑制自动应答/Modbus（三者共用收流）。
+        # 自动化测试序列：规则(步骤列表)在窗口；运行态在 Session（双标签可各跑一套）。
         self._seq_rules = self._load_seq_rules()
-        self._seq_on = False          # 是否正在运行
-        self._seq_ctx = seq_context.RoundContext()
-        self._seq_runtime_step = None
-        self._seq_steps = []          # 本次运行的步骤快照
-        self._seq_idx = 0             # 当前步
-        self._seq_attempt = 1         # 当前步第几次尝试（含首次；步骤级重试用）
-        self._seq_buf = b""           # 当前步累积的回包字节（跨块匹配）
-        self._seq_results = []        # 每步结果 {status,ms,detail}
-        self._seq_summary = None      # 运行结束汇总 {ok,total,ms,pass,loops,rounds,rounds_pass,round_list}
-        self._seq_gen = 0             # 代际：start/stop 时 +1，作废在途的延时/超时续跑
         self._seq_dlg = None
         self._frame_builder_dlg = None   # 帧构造器对话框（单实例）
         self._toolbox_dlg = None         # 工具箱对话框（进制转换 + 校验计算，单实例）
         self._xfer_dlg = None            # 文件传输对话框（协议收发 / 原始字节流，单实例）
         self._xfer_worker = None         # 传输后台线程；非 None 且运行中时 on_data_received 接管收流
+        self._xfer_send_bridge = None    # 只断开主窗自己挂上的桥，不误删 worker 的其它订阅者
+        self._xfer_orphans = []          # 极端底层阻塞时续命，避免运行中的 QThread 被析构
+        self._xfer_conn = None           # 传输启动时的连接；断线重连后旧 worker 不得碰新连接
         self._xfer_target = None         # 传输起始时捕获的发送目标（网络多端用；串口 None）
         self._bridge_dlg = None          # 桥接转发对话框（两端任意 串口/TCP/UDP 组合，单实例）
         self._dash_dlg = None            # 数值仪表盘对话框（大字号实时值 + 阈值告警，单实例）
         self._script_dlg = None          # 脚本控制台对话框（Python 驱动收发，单实例）
         self._script_worker = None       # 脚本运行中的 worker；非 None 时 on_data_received 把 RX 复制给它
+        self._script_conn = None         # 脚本启动时连接；重连后旧 worker 不得吞新连接 RX
         self._script_orphans = []        # 停不下来的脚本 worker（纯计算死循环）：留引用防 QThread running 时被析构
         self._script_quiet_until = 0.0   # 接管前已有 Modbus 请求的迟到响应隔离截止时间
+        # Script/xfer/MBM/… still one-per-window and pinned; sequence is per-session.
+        self._io_owner_sid = {
+            "script": None, "sequence": None, "transfer": None, "macro": None,
+            "modbus": None, "replay": None, "dsl": None, "recording": None,
+            "device_scan": None,
+        }
         from macro_recorder import MacroRecorder
         self._macro = MacroRecorder()    # 宏录制：把手动收发录成脚本（脚本控制台里启停）
         from rec_replay import StreamRecorder
@@ -738,27 +738,6 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._dsl_gen = 0                  # 代际：中止后让已排队的 QTimer 回调失效
         self._dsl_record = True
         self._ar_in_flight = False       # 正在发自动应答的回复 → 宏录制跳过（不是用户手动发）
-        self._seq_started_at = ""     # 最近一次运行的墙钟起始时间字符串（导出报告用）
-        self._seq_finished_at = ""
-        self._seq_loops = 1           # 循环次数（整条序列跑几轮）
-        self._seq_dataset = None     # CSV dataset dict or None
-        self._seq_dataset_row = None # current CSV row meta for this round
-        self._seq_round_snapshot_taken = False
-        self._seq_loop_i = 0          # 当前第几轮（0 基）
-        self._seq_stop_on_fail = False  # 某轮失败即停止后续循环
-        self._seq_rounds = []         # 每轮汇总 [{round,ok,total,ms,pass}]（供循环汇总/报告）
-        self._seq_round_t0 = 0.0      # 当前轮起始 monotonic
-        self._seq_t0 = 0.0
-        self._seq_step_total_t0 = 0.0  # 当前步骤总起点（含所有失败尝试 + 重试间隔，用于耗时统计）
-        self._seq_retry_not_before = 0.0
-        self._seq_retry_quiet_until = 0.0
-        self._seq_retry_quiet_deadline = 0.0   # 静默窗最迟等到此刻，防对端不停刷数据卡死重试
-        self._seq_waiting_mbm = False  # 启动时先等已有 Modbus 在途请求完成/超时隔离结束
-        self._seq_wait_mbm_variant = ""
-        self._seq_wait_mbm_until = 0.0
-        self._seq_timer = QTimer(self)   # 当前步「等回包」超时（单次）
-        self._seq_timer.setSingleShot(True)
-        self._seq_timer.timeout.connect(self._seq_on_timeout)
         # 终端模式：发送框逐字符即时发送 + 数据区纯字节流显示（轻量串口终端，不解析 ANSI 转义）
         self._terminal_on = self.settings.value("terminal_mode", False, type=bool)
         self._terminal_echo = self.settings.value("terminal_echo", False, type=bool)   # 本地回显
@@ -878,8 +857,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._refresh_session_tab_styles()
         _workspace_ui.refresh_top_bar_icons(self)
         self._capture_field_defaults()   # 记录字段构建默认值（在 _load_settings 覆盖前）供切换配置复位用
+        self._theme_apply_timer = QTimer(self)
+        self._theme_apply_timer.setSingleShot(True)
+        self._theme_apply_timer.timeout.connect(self._on_theme_changed)
         self._load_settings()
         self._restore_sessions_settings()
+        if getattr(self, "_mbm_on", False):
+            self._io_bind_owner("modbus")
         self._autosave_suppress = 0
         self._autosave_resume_pending = False
         self._autosave_ready = False
@@ -902,7 +886,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.port_scanner.scan_complete.connect(self._on_port_scan_complete)
         self.port_scanner.start()
         # UI 和默认配置全部落定后再恢复工程，避免构造中途应用工程设置覆盖尚未创建的控件。
-        QTimer.singleShot(0, self._restore_last_project)
+        self._restore_project_timer = QTimer(self)
+        self._restore_project_timer.setSingleShot(True)
+        self._restore_project_timer.timeout.connect(self._restore_last_project)
+        self._restore_project_timer.start(0)
 
     def _t(self, key, **kwargs) -> str:
         s = self._L.get(key, key)
@@ -1122,9 +1109,15 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(6 * 60 * 60 * 1000)   # 6 小时
         self._update_timer.timeout.connect(self._auto_update_check)
+        self._update_start_timer = QTimer(self)
+        self._update_start_timer.setSingleShot(True)
+        self._update_start_timer.timeout.connect(self._auto_update_check)
         if self.settings.value("auto_update_check", True, type=bool):
             self._update_timer.start()
-            QTimer.singleShot(5000, self._auto_update_check)   # 启动 5s 后静默查（避开启动高峰）
+            # Window-owned so close/deleteLater cancels it. A static
+            # QTimer.singleShot would retain a dead bound method for 5s and
+            # could start an updater after the window had been destroyed.
+            self._update_start_timer.start(5000)
 
         # 同步最大行数
         self._on_max_lines_changed()
@@ -3118,14 +3111,27 @@ class CommTool(SessionHostMixin, QMainWindow):
         _ctx = getattr(self, "_session_ctx", None)
         sess = _ctx() if callable(_ctx) else None
         stopped = False
-        if sess is not None and getattr(sess, "_reconnect_timer", None) is not None:
-            if sess._reconnect_timer.isActive():
-                sess._reconnect_timer.stop()
-                stopped = True
-        fb = getattr(self, "_reconnect_timer_fallback", None)
-        if fb is not None and fb.isActive():
-            fb.stop()
-            stopped = True
+        # The property may currently route to a test/embedder override, the
+        # context session timer, or the early-init fallback.  Cancel every
+        # distinct live candidate so callers never have to know that detail.
+        candidates = [getattr(self, "_reconnect_timer", None)]
+        if sess is not None:
+            candidates.append(getattr(sess, "_reconnect_timer", None))
+        candidates.append(getattr(self, "_reconnect_timer_fallback", None))
+        seen = set()
+        for timer in candidates:
+            if timer is None or id(timer) in seen:
+                continue
+            seen.add(id(timer))
+            try:
+                if timer.isActive():
+                    timer.stop()
+                    stopped = True
+            except RuntimeError:
+                # A deferred session deletion may already have destroyed the
+                # native QTimer.  Cancellation is already satisfied in that
+                # case; shutdown must continue and join background threads.
+                pass
         if stopped:
             refresh_tabs = getattr(self, "_refresh_session_tab_styles", None)
             if callable(refresh_tabs):
@@ -3185,7 +3191,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._cancel_reconnect()
             self._update_conn_status()
             self._update_net_fields()   # TCP Server 连上后显示「目标」行
-            self._mbm_restart()         # 连上 → 若 Modbus 主机轮询开启则启动
+            if self._io_session_owns("modbus"):
+                self._mbm_restart()     # 连上 → 若本会话拥有 Modbus 主机则启动
         elif self.conn is not None:
             self.toast(self._t("net_peer_closed"))
             self.close_conn(
@@ -3325,7 +3332,6 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._last_direction = "rx"
 
     def close_conn(self, update_ui=True, preserve_session_intent=False):
-        # Window-level engines/UI only when tearing down the active/context view.
         session = self._session_ctx()
         if session is not None:
             if not preserve_session_intent:
@@ -3341,20 +3347,72 @@ class CommTool(SessionHostMixin, QMainWindow):
                     _log.debug("close_conn log failed", exc_info=True)
                 if not preserve_session_intent:
                     session.log_wanted = False
-        if update_ui:
-            if self._xfer_worker is not None and self._xfer_worker.isRunning():
-                self._xfer_worker.cancel()
-            rr_dlg = getattr(self, "_rr_dlg", None)
+
+        # Detach first: stopping replay/transfer/script may synchronously resume
+        # a paused Modbus schedule.  With conn already absent, that cleanup can
+        # never emit one last frame on a link being torn down.
+        conn = self.conn
+        self.conn = None
+        owns = {
+            key: self._io_session_owns(key, session)
+            for key in ("transfer", "replay", "macro", "recording",
+                        "device_scan", "script", "dsl", "modbus")
+        }
+
+        if (owns["transfer"] and self._xfer_worker is not None
+                and self._xfer_worker.isRunning()):
+            self._xfer_worker.cancel()
+        rr_dlg = getattr(self, "_rr_dlg", None)
+        if owns["replay"] and getattr(self, "_replay_on", False):
             if rr_dlg is not None:
                 rr_dlg.stop_replay()
-                rr_dlg.stop_recording()
-            elif getattr(self, "_replay_on", False):
+            else:
                 self._replay_end()
+        macro = getattr(self, "_macro", None)
+        if owns["macro"] and macro is not None and macro.recording:
+            script_dlg = getattr(self, "_script_dlg", None)
+            stop_macro = getattr(script_dlg, "_on_record", None)
+            if callable(stop_macro):
+                try:
+                    stop_macro()  # stop + preserve the captured macro in the script library
+                except RuntimeError:
+                    _log.debug("close_conn macro dialog cleanup failed", exc_info=True)
+            if macro.recording:
+                # A deleted/missing dialog must not leave a dead session pinned.
+                macro.stop()
+                self._io_clear_owner("macro")
+        recorder = getattr(self, "_recorder", None)
+        if (owns["recording"] and recorder is not None
+                and recorder.recording):
+            if rr_dlg is not None:
+                rr_dlg.stop_recording()
+            else:
+                recorder.stop()
+                self._io_clear_owner("recording")
+        if (owns["device_scan"]
+                and getattr(self, "_device_scan_state", None) is not None):
+            # The shared Modbus engine belongs to the same scan.  Its restore
+            # path owns the timer/inflight cleanup; do not restart it again
+            # later with the just-closed connection.
+            owns["modbus"] = False
+            self._stop_device_scan(cancelled=True)
+        elif update_ui and getattr(self, "_device_scan_state", None) is None:
+            # Preserve the active-close/project-switch cleanup hook.  The real
+            # implementation is a no-op here; tests/plugins may observe it.
+            self._stop_device_scan(cancelled=True)
+        if owns["script"] and self._script_running():
+            stop_script = getattr(self._script_worker, "stop", None)
+            if callable(stop_script):
+                stop_script()
+        if owns["dsl"]:
+            self._dsl_abort()
+
+        if update_ui:
             if not preserve_session_intent and self.sw_period.isChecked():
                 self.sw_period.blockSignals(True)
                 self.sw_period.setChecked(False)
                 self.sw_period.blockSignals(False)
-            self._ms_stop_cycle(session)
+        self._ms_stop_cycle(session)
         self._flush_pending_cr()
         if (update_ui and not preserve_session_intent
                 and self.sw_log_file.isChecked()):
@@ -3363,14 +3421,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.sw_log_file.blockSignals(False)
             if hasattr(self, "_set_log_path_label"):
                 self._set_log_path_label("")
-        conn = self.conn
-        self.conn = None    # 先置空，避免 close() 触发的 state_changed(False) 回调重入
-        if update_ui:
-            self._stop_device_scan(cancelled=True)
         self._conn_proto = None
         self._conn_cfg = None
-        if update_ui:
-            self._mbm_guard_until = 0.0   # 活动物理连接已断，旧响应不可能进入下一会话
+        if owns["modbus"]:
+            self._mbm_guard_until = 0.0   # 此主机物理连接已断，旧响应不可能进入下一会话
         self._conn_engaged = False
         self._serial_device = None    # 已断开 → 清掉串口掉线检测的目标设备
         self._serial_missing_count = 0
@@ -3384,21 +3438,15 @@ class CommTool(SessionHostMixin, QMainWindow):
                 _log.debug("connection close failed", exc_info=True)
             conn.deleteLater()
 
-        if update_ui:
-            if getattr(self, "_seq_on", False):
-                self._seq_abort("seq_aborted_disc")
-            if self._script_running():
-                self._script_worker.stop()
-            self._dsl_abort()
+        # Sequence is per-session — abort the context session's run on disconnect.
+        if getattr(self, "_seq_on", False):
+            self._seq_abort("seq_aborted_disc")
         self._flush_numview_carries()
         self._reset_recv_state(reset_dashboard=True)  # 新连接不能消费旧会话的半行
-        # AR framing/state are session-owned.  A background disconnect must
-        # clear its own pending reply and client buffers, while leaving the
-        # active session and the window-owned Modbus register bank untouched.
+        # AR framing / Modbus slave bank are session-owned — always reset this session.
         self._ar_reset_buf()
-        is_active_context = self._session_ctx() is self.active_session()
-        self._ar_reset_state(reset_modbus=is_active_context)
-        if is_active_context:
+        self._ar_reset_state(reset_modbus=True)
+        if owns["modbus"]:
             self._mbm_restart()
         if hasattr(self, "_ctrl_poll_timer") and update_ui:
             self._ctrl_poll_timer.stop()
@@ -3427,13 +3475,17 @@ class CommTool(SessionHostMixin, QMainWindow):
         scan = OneShotPortScanner()  # 故意无 parent
         self._oneshot_scan = scan
         scan.scan_complete.connect(self._on_port_scan_complete)
-        scan.finished.connect(lambda: self._clear_oneshot_scan(scan))
+        # QObject-bound receiver: deleting the window auto-disconnects it.
+        # A context-free lambda capturing ``self`` could remain queued after
+        # the window's DeferredDelete and crash on the next event-loop turn.
+        scan.finished.connect(self._clear_oneshot_scan)
         scan.finished.connect(scan.deleteLater)
         scan.start()
 
-    def _clear_oneshot_scan(self, scan):
+    def _clear_oneshot_scan(self, scan=None):
         """deleteLater 之后清掉 Python 属性引用，避免下次 isRunning() 访问已删 C++ 对象。
         `is scan` 守卫：如果期间已经创建了新 scan，不清新的。"""
+        scan = scan or self.sender()
         if getattr(self, "_oneshot_scan", None) is scan:
             self._oneshot_scan = None
 
@@ -3617,8 +3669,27 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _wait_oneshot_scan(self):
         """退出前确保一次性端口扫描线程结束 — 否则可能 QThread: Destroyed while running。"""
         scan = getattr(self, "_oneshot_scan", None)
-        if scan and scan.isRunning():
+        if scan is None:
+            return
+        # Do this before waiting: a result/finished signal may already be
+        # queued in the GUI thread while shutdown is synchronously deleting
+        # the receiver window.
+        for signal, slot in (
+                (scan.scan_complete, self._on_port_scan_complete),
+                (scan.finished, self._clear_oneshot_scan)):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+        if scan.isRunning():
             scan.wait(2000)
+        if not scan.isRunning():
+            try:
+                scan.finished.disconnect(scan.deleteLater)
+            except (TypeError, RuntimeError):
+                pass
+            scan.deleteLater()
+            self._oneshot_scan = None
 
     def set_settings_enabled(self, enabled):
         # 远程框(ed_remote_*)启用由 _update_net_fields 统管(TCP恒开/UDP看开关)；
@@ -3876,11 +3947,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         # inject paths may call this without a live conn.
         # 文件传输进行中：整段接管收流，不进显示区/自动应答/序列/Modbus。
         # 协议传输(XMODEM/YMODEM)喂给引擎当 getc 源；原始字节流(raw)只发不收，收流直接丢弃。
-        w = self._xfer_worker
-        if _rx_dispatch.xfer_owns(
-                xfer_running=(w is not None and w.isRunning())):
-            if getattr(w, "takes_input", True):
-                self._rx_side("xfer.feed", lambda: w.feed(data))
+        if self._feed_xfer_if_owned(data):
             return
         # 顶层异常保护：解码/插入等意外异常不应静默丢数据(传到事件循环只在 stderr 打印)
         try:
@@ -3889,19 +3956,55 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._stat_note_rx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
-        # 波形图（若已打开）：用同一份原始数据自行缓冲/解析/绘曲线，与显示区解耦；
-        # 自带异常兜底，绘图侧的问题不影响数据接收主流程
+        # Active-tab UI dialogs only (plot/frame/dash bind to the visible session).
         dlg = getattr(self, "_plot_dlg", None)
         if dlg is not None and dlg.isVisible():
             self._rx_side("plot.feed", lambda: dlg.feed(data))
         fdlg = getattr(self, "_frame_dlg", None)
         if fdlg is not None and fdlg.isVisible():
             self._rx_side("frame.feed", lambda: fdlg.feed(data))
+        ddlg = getattr(self, "_dash_dlg", None)
+        if ddlg is not None and ddlg.isVisible():
+            self._rx_side("dashboard.feed", lambda: ddlg.feed(data))
+        # Triggers keep a single window decoder — active session only.
+        self._rx_side("triggers.feed",
+                      lambda: self._triggers_feed(data, "rx", source=reply_target))
+        self._feed_session_engines(data, reply_target=reply_target)
+
+    def _feed_xfer_if_owned(self, data):
+        """If transfer owns this context session's RX, feed worker and consume."""
+        w = self._xfer_worker
+        if not _rx_dispatch.xfer_owns(
+                xfer_running=(w is not None and w.isRunning())):
+            return False
+        if not self._io_session_owns("transfer"):
+            return False
+        if (self._xfer_conn is not None
+                and self.conn is not self._xfer_conn):
+            # close_conn cancels asynchronously. A replacement connection may
+            # already be open before sig_done detaches the old worker.
+            return False
+        if getattr(w, "takes_input", True):
+            self._rx_side("xfer.feed", lambda: w.feed(data))
+        return True
+
+    def _feed_session_engines(self, data, reply_target=None):
+        """Feed session-pinned engines (AR/MBM/seq/script/macro/recorder/…).
+
+        Called for both active and background RX under ``_with_session``.
+        Window-wide route mutex still applies (one script/seq driver at a time),
+        but only the owning session's bytes reach that driver.
+        """
         # 宏录制：录回包，供生成 expect(...)（脚本运行期间不录，同 TX 侧）
-        if (self._macro.recording and not self._script_running()
-                and not self._seq_running()):
+        script_here = (self._script_running()
+                       and self._io_session_owns("script")
+                       and (self._script_conn is None
+                            or self.conn is self._script_conn))
+        if (self._macro.recording and not script_here
+                and not self._seq_running()
+                and self._io_session_owns("macro")):
             self._rx_side("macro.on_rx", lambda: self._macro.on_rx(data))
-        if self._recorder.recording:      # 数据录制：录原始 RX 现场
+        if self._recorder.recording and self._io_session_owns("recording"):
             peer = None
             proto = getattr(self, "_conn_proto", None)
             if proto in (PROTO_UDP, PROTO_UDP_MULTICAST) and hasattr(
@@ -3917,23 +4020,16 @@ class CommTool(SessionHostMixin, QMainWindow):
             if _rx_dispatch.structured_feed_ok(
                     mbm_inflight=self._mbm_inflight is not None):
                 self._structured_feed_protocol(data)
-        self._rx_side("structured.feed", _structured_feed)
-        # 触发告警：命中就响铃 / 托盘通知 / 数据区打标（自带兜底，不影响收包主流程）
-        self._rx_side("triggers.feed",
-                      lambda: self._triggers_feed(data, "rx", source=reply_target))
-        # 数值仪表盘（若已打开）：同一份原始数据自行解析成命名数值、更新卡片，自带兜底
-        ddlg = getattr(self, "_dash_dlg", None)
-        if ddlg is not None and ddlg.isVisible():
-            self._rx_side("dashboard.feed", lambda: ddlg.feed(data))
-        # 自动应答：收到数据匹配规则则自动回复（数据处理之后，自带兜底不影响主流程）。
-        # 但 Modbus 主机轮询激活时，收到的都是从机「响应」——绝不能再让自动应答(尤其内置
-        # Modbus 从机)把它当请求回发，否则总线互相干扰。主机激活时整体跳过自动应答。
-        # 自动化序列运行中：响应喂给序列匹配引擎，并临时抑制自动应答/Modbus 主机（三者共用收流，
-        # 序列是主动驱动方；序列结束后自动恢复，不改它们的开关）。
-        # 脚本控制台运行中：脚本是主动驱动方，独占收流（expect 从这里拿数据），
-        # 同样临时抑制自动应答 / Modbus 主机，结束后由 _script_end 恢复。
+        is_active_context = self._session_ctx() is self.active_session()
+        if (is_active_context
+                and (self._io_session_owns("modbus") or not self._mbm_active())):
+            # Avoid structured parse fighting another session's in-flight MBM.
+            if (self._mbm_inflight is None
+                    or self._io_session_owns("modbus")):
+                self._rx_side("structured.feed", _structured_feed)
+        # Route uses THIS session's sequence flag; script only if pinned here.
         route = _rx_dispatch.engine_route(
-            script_running=self._script_running(),
+            script_running=script_here,
             script_quiet_until=getattr(self, "_script_quiet_until", 0.0),
             now=time.monotonic(),
             seq_running=self._seq_running(),
@@ -3950,12 +4046,16 @@ class CommTool(SessionHostMixin, QMainWindow):
         elif route == "seq":
             self._rx_side("seq.feed", lambda: self._seq_feed(data))
         else:
+            # AR: per-session buffers + bank; skip only when THIS session's MBM is active.
+            mbm_here = (self._mbm_active()
+                        and self._io_session_owns("modbus"))
             if _rx_dispatch.should_feed_auto_reply(
-                    route=route, mbm_active=self._mbm_active()):
+                    route=route, mbm_active=mbm_here):
                 self._rx_side(
                     "auto_reply",
                     lambda: self._auto_reply(data, reply_target=reply_target))
-            if _rx_dispatch.should_feed_mbm(route=route):
+            if (_rx_dispatch.should_feed_mbm(route=route)
+                    and self._io_session_owns("modbus")):
                 self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
 
     def _on_data_received_impl(self, data: bytes, source=None):
@@ -4531,8 +4631,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         if "Server" in str(session._conn_proto or ""):
             target = session.send_target
         with self._with_session(session):
-            # Window engines are shared; pause this tick and retry (single-shot).
-            if self._period_tx_blocked():
+            # Only the engine-owning session pauses its own cycle tick.
+            if self._period_tx_blocked(session):
                 session._ms_cycle_timer.start(max(50, delay_ms))
                 return
             opts = None
@@ -4549,7 +4649,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                     target=target,
                     encoding=(opts or {}).get("encoding") if opts else None,
                     record_macro=False, notify_ui=is_active,
-                    feed_window_engines=is_active)
+                    feed_window_engines=(
+                        is_active
+                        or self._io_session_owns("recording", session)))
             finally:
                 if not is_active:
                     self._display_context = previous_ctx
@@ -4677,6 +4779,25 @@ class CommTool(SessionHostMixin, QMainWindow):
         if worker is not self._script_worker or worker.stopping():
             done.set()
             return
+        owner = self._io_owner_session("script")
+        # Legacy/direct bridge callers may install the current worker without
+        # going through _script_begin.  In that unbound case, pin it now; a
+        # stale worker was already rejected above.
+        if owner is None:
+            owner = self._session_ctx() or self.active_session()
+            if owner is not None:
+                self._io_bind_owner("script", owner)
+        if owner is None:
+            done.set()
+            return
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._script_send(worker, payload, done, result)
+            return
+        if (self._script_conn is not None
+                and self.conn is not self._script_conn):
+            done.set()
+            return
         remain = getattr(self, "_script_quiet_until", 0.0) - time.monotonic()
         if remain > 0:
             # 不阻塞 GUI；worker 会在 send() 内等完成，同时可被“停止”打断。
@@ -4698,25 +4819,47 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _script_begin(self, worker):
         """脚本开跑：接管收流 + 暂停自动应答/Modbus 主机（同自动化序列的独占策略）。"""
         self._script_worker = worker
-        self._ar_reset_all_buffers()
-        self._ar_cancel_all_pending()
-        self._mbm_sched.stop()
+        self._script_conn = self.conn
+        self._io_bind_owner("script")
+        # Script owns only this session's wire.  Do not cancel another tab's
+        # delayed auto-replies or its window-pinned Modbus master.
+        self._ar_reset_buf()
+        self._ar_cancel_pending()
+        owns_mbm = self._io_session_owns("modbus")
+        if owns_mbm:
+            self._mbm_sched.stop()
         # 已发出的 Modbus 请求无法撤回。取消其运行态并隔离一个完整响应超时窗；期间脚本
         # send 会等待、RX 会丢弃，避免旧响应污染脚本。结束后 _mbm_tick 按原开关恢复。
-        info = self._mbm_inflight
-        self._mbm_to.stop()
-        self._mbm_inflight = None
-        self._mbm_buf = b""
+        info = self._mbm_inflight if owns_mbm else None
+        if owns_mbm:
+            self._mbm_to.stop()
+            self._mbm_inflight = None
+            self._mbm_buf = b""
         guard_ms = int(info.get("timeout_ms", self._MBM_TIMEOUT_MS)) if info else 0
         self._script_quiet_until = time.monotonic() + max(0, guard_ms) / 1000.0
         if info is not None and info.get("variant") == "rtu":
             self._mbm_guard_until = max(self._mbm_guard_until, self._script_quiet_until)
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _script_end(self):
         """脚本结束：释放收流 + 按原开关恢复 Modbus 主机。"""
+        owner = self._io_owner_session("script")
+        if owner is not None and self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._script_end()
+            return
+        resume_mbm = self._io_session_owns("modbus")
         self._script_worker = None
+        self._script_conn = None
+        self._io_clear_owner("script")
         self._script_quiet_until = 0.0
-        self._mbm_tick()
+        if resume_mbm:
+            self._mbm_tick()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _script_running(self) -> bool:
         w = getattr(self, "_script_worker", None)
@@ -4727,9 +4870,15 @@ class CommTool(SessionHostMixin, QMainWindow):
         return getattr(self, "_script_worker", None) is not None
 
     def _xfer_active(self) -> bool:
-        """文件传输 worker 正在运行时独占收发流。"""
-        w = getattr(self, "_xfer_worker", None)
-        return w is not None and w.isRunning()
+        """A registered transfer owns its session until GUI-side finalization.
+
+        ``QThread.isRunning()`` may become false before its queued ``sig_done``
+        reaches the dialog.  Treating that gap as idle lets project/profile
+        replacement delete the captured owner before ``_on_done`` detaches it.
+        RX routing still checks ``isRunning()`` separately in
+        ``_feed_xfer_if_owned``.
+        """
+        return getattr(self, "_xfer_worker", None) is not None
 
     def _session_period_active(self, session=None) -> bool:
         """True if the given (or context/active) session's period timer is running."""
@@ -4740,39 +4889,148 @@ class CommTool(SessionHostMixin, QMainWindow):
         st = getattr(self, "send_timer", None)
         return bool(st is not None and st.isActive())
 
-    def _period_tx_blocked(self) -> bool:
-        """Window-owned exclusive engines that must pause every session's period TX."""
-        return bool(
-            self._script_active()
-            or self._seq_running()
-            or self._xfer_active()
-            or self._mbm_inflight is not None
-            or self._mbm_active()
-            or getattr(self, "_replay_on", False)
-            or self._dsl_running()
+    def _period_tx_blocked(self, session=None) -> bool:
+        """Pause period/cycle TX only on sessions that own a hard engine."""
+        session = session or self._session_ctx() or self.active_session()
+        if self._seq_running(session):
+            return True
+        hard = (
+            ("script", self._script_active()),
+            ("transfer", self._xfer_active()),
+            ("modbus", bool(
+                self._mbm_inflight is not None
+                or (hasattr(self, "cb_proto") and self._mbm_active()))),
+            ("replay", bool(getattr(self, "_replay_on", False))),
+            ("dsl", self._dsl_running()),
+            ("device_scan", getattr(self, "_device_scan_state", None) is not None),
         )
+        for key, active in hard:
+            if not active:
+                continue
+            if self._io_session_owns(key, session):
+                return True
+        return False
 
     _IO_BUSY_ORDER = (
         "script", "sequence", "transfer", "macro", "periodic", "multi",
         "modbus", "replay", "dsl", "recording", "device_scan",
     )
+    _IO_HARD_OWNER_KEYS = (
+        "script", "sequence", "transfer", "macro", "modbus", "replay",
+        "dsl", "recording", "device_scan",
+    )
 
-    def _io_busy_states(self, exclude=()):
-        """Named exclusive I/O occupancy table (same keys as toast labels)."""
+    def _io_bind_owner(self, key, session=None):
+        """Pin an exclusive engine to the session that started it."""
+        owners = getattr(self, "_io_owner_sid", None)
+        if owners is None:
+            return
+        session = session or self._session_ctx() or self.active_session()
+        owners[key] = session.id if session is not None else None
+
+    def _io_clear_owner(self, key):
+        owners = getattr(self, "_io_owner_sid", None)
+        if owners is not None:
+            owners[key] = None
+
+    def _io_reconcile_session_owners(self):
+        """Drop pins to replaced tabs and rebind enabled persistent engines."""
+        owners = getattr(self, "_io_owner_sid", None)
+        if owners is None:
+            return
+        live_ids = {session.id for session in getattr(self, "_sessions", ())}
+        for key, owner_id in tuple(owners.items()):
+            if owner_id is not None and owner_id not in live_ids:
+                owners[key] = None
+        # Modbus master is the only engine whose enabled state is restored from
+        # settings. Session restoration can replace the temporary tab after
+        # that setting was applied, so pin it to the restored active tab.
+        if getattr(self, "_mbm_on", False) and owners.get("modbus") is None:
+            self._io_bind_owner("modbus")
+
+    def _io_owner_session(self, key):
+        """Return the concrete pinned owner, never the unbound→active fallback."""
+        owners = getattr(self, "_io_owner_sid", None) or {}
+        owner_id = owners.get(key)
+        if owner_id is None:
+            return None
+        finder = getattr(self, "find_session", None)
+        if callable(finder):
+            return finder(owner_id)
+        session = self._session_ctx() or self.active_session()
+        return session if getattr(session, "id", None) == owner_id else None
+
+    def _io_session_owns(self, key, session=None) -> bool:
+        """True if ``session`` owns the pinned engine (or unbound→active only)."""
+        session = session or self._session_ctx() or self.active_session()
+        if session is None:
+            return False
+        owners = getattr(self, "_io_owner_sid", None) or {}
+        owner = owners.get(key)
+        if owner is None:
+            return session.id == getattr(self, "_active_session_id", None)
+        return owner == session.id
+
+    def _hard_busy_owned_by(self, session) -> bool:
+        """True if ``session`` owns any hard-busy engine (close guard / tab tip).
+
+        Avoids ``_mbm_active()`` so tab styling can run before ``cb_proto`` exists.
+        Sequence is session-local; other engines use the pin map.
+        """
+        if session is None:
+            return False
+        if bool(getattr(session, "_seq_on", False)):
+            return True
+        checks = (
+            ("script", self._script_active()),
+            ("transfer", self._xfer_active()),
+            ("macro", bool(getattr(
+                getattr(self, "_macro", None), "recording", False))),
+            ("modbus", bool(
+                self._mbm_inflight is not None
+                or getattr(self, "_mbm_on", False))),
+            ("replay", bool(getattr(self, "_replay_on", False))),
+            ("dsl", bool(getattr(self, "_dsl_ops", None))),
+            ("recording", bool(getattr(
+                getattr(self, "_recorder", None), "recording", False))),
+            ("device_scan", getattr(self, "_device_scan_state", None) is not None),
+        )
+        for key, active in checks:
+            if active and self._io_session_owns(key, session):
+                return True
+        return False
+
+    def _io_busy_states(self, exclude=(), session=None):
+        """Named exclusive I/O occupancy for ``session`` (default: context/active).
+
+        Sequence is per-session. Window-singleton engines only count when pinned
+        to this session (unbound → active session), so another tab's script does
+        not block starting a sequence here.
+        """
         excluded = set(exclude)
+        session = session or self._session_ctx() or self.active_session()
         states = {
-            "script": self._script_active(),
-            "sequence": self._seq_running(),
-            "transfer": self._xfer_active(),
-            "macro": bool(getattr(getattr(self, "_macro", None), "recording", False)),
+            "script": (self._script_active()
+                       and self._io_session_owns("script", session)),
+            "sequence": bool(getattr(session, "_seq_on", False)) if session else False,
+            "transfer": (self._xfer_active()
+                         and self._io_session_owns("transfer", session)),
+            "macro": (bool(getattr(getattr(self, "_macro", None), "recording", False))
+                      and self._io_session_owns("macro", session)),
             # Context/active session only -- other tabs may period/cycle concurrently.
-            "periodic": self._session_period_active(),
-            "multi": self._session_ms_cycle_active(),
-            "modbus": bool(self._mbm_inflight is not None or self._mbm_active()),
-            "replay": bool(getattr(self, "_replay_on", False)),
-            "dsl": bool(getattr(self, "_dsl_ops", None)),
-            "recording": bool(getattr(getattr(self, "_recorder", None), "recording", False)),
-            "device_scan": getattr(self, "_device_scan_state", None) is not None,
+            "periodic": self._session_period_active(session),
+            "multi": self._session_ms_cycle_active(session),
+            "modbus": (bool(self._mbm_inflight is not None
+                            or (hasattr(self, "cb_proto") and self._mbm_active()))
+                       and self._io_session_owns("modbus", session)),
+            "replay": (bool(getattr(self, "_replay_on", False))
+                       and self._io_session_owns("replay", session)),
+            "dsl": (bool(getattr(self, "_dsl_ops", None))
+                    and self._io_session_owns("dsl", session)),
+            "recording": (bool(getattr(getattr(self, "_recorder", None), "recording", False))
+                          and self._io_session_owns("recording", session)),
+            "device_scan": (getattr(self, "_device_scan_state", None) is not None
+                            and self._io_session_owns("device_scan", session)),
         }
         return {name: active for name, active in states.items()
                 if name not in excluded}
@@ -4811,12 +5069,25 @@ class CommTool(SessionHostMixin, QMainWindow):
         tasks = sep.join(self._t("io_task_%s" % name) for name in stopped)
         self.toast(self._t("session_leave_stopped", tasks=tasks))
 
-    def _manual_send_blocked(self, allow_running_dsl=False) -> bool:
-        """Block manual TX while exclusive engines own the RX stream."""
-        return bool(self._script_active() or self._seq_running() or self._xfer_active()
-                    or self._mbm_inflight is not None or self._mbm_active()
-                    or self._replay_on
-                    or (self._dsl_running() and not allow_running_dsl))
+    def _manual_send_blocked(self, allow_running_dsl=False, session=None) -> bool:
+        """Block manual TX on sessions that own an exclusive engine."""
+        session = session or self._session_ctx() or self.active_session()
+        if self._seq_running(session):
+            return True
+        checks = (
+            ("script", self._script_active()),
+            ("transfer", self._xfer_active()),
+            ("modbus", bool(
+                self._mbm_inflight is not None
+                or (hasattr(self, "cb_proto") and self._mbm_active()))),
+            ("replay", bool(getattr(self, "_replay_on", False))),
+            ("dsl", self._dsl_running() and not allow_running_dsl),
+            ("device_scan", getattr(self, "_device_scan_state", None) is not None),
+        )
+        for key, active in checks:
+            if active and self._io_session_owns(key, session):
+                return True
+        return False
 
     def _script_start_blocked(self) -> bool:
         """Script cannot start alongside other exclusive RX/TX tasks; Modbus is paused by _script_begin."""
@@ -4827,8 +5098,35 @@ class CommTool(SessionHostMixin, QMainWindow):
         return self._io_task_busy(exclude=("macro",))
 
     def _xfer_start_blocked(self) -> bool:
-        """File transfer cannot overlap other active TX tasks or in-flight Modbus."""
+        """File transfer is one worker per window; a live transfer blocks every tab.
+
+        Other exclusive tasks still only block the current session (sequence on
+        another tab may keep running).  Occupancy for *starting* transfer must
+        see the window-global worker, or a second Start would detach it.
+        """
+        if self._xfer_active():
+            return True
         return self._io_task_busy(exclude=("transfer",))
+
+    def bind_macro_owner(self, active=True):
+        """Script console calls this when macro record starts/stops."""
+        if active:
+            self._io_bind_owner("macro")
+        else:
+            self._io_clear_owner("macro")
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
+
+    def bind_recording_owner(self, active=True):
+        """Rec/replay dialog calls this when stream recording starts/stops."""
+        if active:
+            self._io_bind_owner("recording")
+        else:
+            self._io_clear_owner("recording")
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _macro_record_tx(self, data):
         """宏录制的 TX 采集判定（唯一入口）：只录「用户手动发」。三类排除——
@@ -4836,16 +5134,24 @@ class CommTool(SessionHostMixin, QMainWindow):
         （也走 _send_text，靠 _ar_in_flight 识别，不是用户动作）；未在录制。
         终端模式在 _terminal_send 成功后也调用本入口。抽成方法是为让测试与生产共用同一判定，
         条件改了测试自动跟着变。"""
-        if (self._macro.recording and not self._script_running()
-                and not self._seq_running() and not self._ar_in_flight):
+        script_here = (self._script_running()
+                       and self._io_session_owns("script")
+                       and (self._script_conn is None
+                            or self.conn is self._script_conn))
+        if (self._macro.recording and not script_here
+                and not self._seq_running() and not self._ar_in_flight
+                and self._io_session_owns("macro")):
             self._macro.on_tx(data)
 
     def _record_stream_tx(self, data, source=None):
         """数据录制的 TX 采集：录线路上真实发出的字节（含自动应答/Modbus 回复，
         因为录的是「线路现场」而非「用户意图」——这点与宏录制相反）。"""
-        if self._recorder.recording:
+        if (self._recorder.recording
+                and self._io_session_owns("recording")):
             self._recorder.on_tx(data, source=source)
-        self._triggers_feed(data, "tx", source=source)  # TCP Server 按发送目标隔离流尾巴
+        # Triggers keep a single window decoder — only active-session TX.
+        if self._session_ctx() is self.active_session():
+            self._triggers_feed(data, "tx", source=source)  # TCP Server 按发送目标隔离流尾巴
 
     # ---------------- 触发告警：命中规则 → 响铃 / 托盘通知 / 数据区打标 ----------------
     def _load_triggers(self):
@@ -5271,6 +5577,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         不走发送框的 HEX/换行/校验和编码，避免二次加工。TCP Server 无单客户端时返回 None。
         回调每次发送时重新取 self.conn，避免确认框期间连接被关掉后仍持有旧引用。
         """
+        session = self._session_ctx() or self.active_session()
         conn = self.conn
         if conn is None or not getattr(conn, "is_open", False):
             return None
@@ -5279,26 +5586,32 @@ class CommTool(SessionHostMixin, QMainWindow):
             if not target or target == "__all__":
                 return None
 
+        owner_id = getattr(session, "id", None)
+
         def _send(data):
-            live = self.conn
-            if live is None or not getattr(live, "is_open", False):
+            owner = self.find_session(owner_id) if owner_id is not None else session
+            if owner is None:
                 raise RuntimeError("connection closed")
-            payload = bytes(data or b"")
-            if not payload:
-                return 0
-            target = None
-            if isinstance(live, TcpServerConn):
-                target = self._send_target()
-                if not target or target == "__all__":
-                    raise RuntimeError("tcp server needs a single client target")
-            n = live.send(payload, target) if target is not None else live.send(payload)
-            if n is None:
-                return 0
-            sent = int(n)
-            # Partial serial/TCP writes must not count as "sent as-is".
-            if sent < len(payload):
-                return 0
-            return sent
+            with self._with_session(owner):
+                live = self.conn
+                if live is None or not getattr(live, "is_open", False):
+                    raise RuntimeError("connection closed")
+                payload = bytes(data or b"")
+                if not payload:
+                    return 0
+                target = None
+                if isinstance(live, TcpServerConn):
+                    target = self._send_target()
+                    if not target or target == "__all__":
+                        raise RuntimeError("tcp server needs a single client target")
+                n = live.send(payload, target) if target is not None else live.send(payload)
+                if n is None:
+                    return 0
+                sent = int(n)
+                # Partial serial/TCP writes must not count as "sent as-is".
+                if sent < len(payload):
+                    return 0
+                return sent
 
         return _send
 
@@ -5418,17 +5731,32 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _replay_begin(self, *, drive_tx=False):
         """Mark replay busy. drive_tx also suppresses Modbus master + auto-reply TX."""
         self._replay_on = True
+        self._io_bind_owner("replay")
         self._replay_drive_tx = bool(drive_tx)
         # Stop any in-flight Modbus poll schedule so it cannot race with replay TX/RX.
-        if hasattr(self, "_mbm_restart"):
+        if (hasattr(self, "_mbm_restart")
+                and self._io_session_owns("modbus")):
             self._mbm_restart()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _replay_end(self):
+        owner = self._io_owner_session("replay")
+        if owner is not None and self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._replay_end()
+            return
+        resume_mbm = self._io_session_owns("modbus")
         self._replay_on = False
+        self._io_clear_owner("replay")
         self._replay_drive_tx = False
         # Resume Modbus schedule if it was still enabled.
-        if hasattr(self, "_mbm_restart"):
+        if hasattr(self, "_mbm_restart") and resume_mbm:
             self._mbm_restart()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def open_rec_replay(self):
         """打开数据录制 / 回放（单实例，复用并刷新主题/语言）。"""
@@ -5925,6 +6253,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         if enabled and self._ar_on:
             self._set_autoreply_enabled(False)
         self._mbm_on = enabled
+        if enabled:
+            self._io_bind_owner("modbus")
         self.settings.setValue("modbus_master_on", enabled)
         self.settings.sync()
         if getattr(self, "_mbm_dlg", None) is not None:
@@ -5933,7 +6263,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             cb.setChecked(enabled)
             cb.blockSignals(False)
         self._mbm_restart()
+        if not enabled:
+            # Keep the owner until restart has cancelled that session's timers
+            # and in-flight request; then make stale callbacks strict no-ops.
+            self._io_clear_owner("modbus")
         self._refresh_workspace_statuses()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _update_autoreply_btn(self):
         """自动应答开启时高亮「自动应答」按钮（动态属性 arActive + 重新 polish 生效）。"""
@@ -5959,21 +6296,43 @@ class CommTool(SessionHostMixin, QMainWindow):
         items = _cfg_parse_json_list(self.settings.value("sequence_rules", ""))
         return items if items is not None else []
 
-    def _seq_running(self):
-        return getattr(self, "_seq_on", False)
+    def _seq_running(self, session=None):
+        if session is not None:
+            return bool(getattr(session, "_seq_on", False))
+        return bool(getattr(self, "_seq_on", False))
+
+    def _seq_ctx_id(self):
+        """Session id for deferred sequence callbacks (survive tab switch)."""
+        session = self._session_ctx() or self.active_session()
+        return session.id if session is not None else None
+
+    def _seq_call_for(self, sid, fn, *args):
+        """Run ``fn(*args)`` under the sequence-owning session context."""
+        if sid is None or not hasattr(self, "find_session"):
+            return
+        session = self.find_session(sid)
+        if session is None:
+            return
+        with self._with_session(session):
+            fn(*args)
 
     def _seq_pause_peer_engines(self):
-        """序列独占收发流前，作废自动应答旧任务并暂停 Modbus 主机调度；不改持久化开关。"""
-        # 已排程的延迟/多段自动应答会在未来直接发送，必须用代际使其永久失效。
-        self._ar_reset_all_buffers()
-        self._ar_cancel_all_pending()
+        """序列独占本会话收发流前，作废本会话自动应答旧任务；若本会话钉住 MBM 则暂停主机。"""
+        # Only this session — other tabs may keep their own AR / sequence.
+        self._ar_reset_buf()
+        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+        self._ar_sm_pending = None
+        if hasattr(self, "_ar_sm_queue"):
+            self._ar_sm_queue.clear()
+        self._ar_sm_draining = False
 
-        # 已经发出的 Modbus 请求无法撤回。若有在途请求，保留 inflight/超时 timer，并在序列第 0 步
-        # 启动前继续把收包交给 Modbus；正常响应后立即释放，RTU 超时则沿用原有迟到响应隔离窗口。
-        info = self._mbm_inflight
+        owns_mbm = self._io_session_owns("modbus")
+        info = self._mbm_inflight if owns_mbm else None
         self._seq_waiting_mbm = info is not None
         self._seq_wait_mbm_variant = (str(info.get("variant", "")) if info is not None else "")
         self._seq_wait_mbm_until = 0.0
+        if not owns_mbm:
+            return
         self._mbm_sched.stop()
         if info is None:
             self._mbm_to.stop()
@@ -6002,9 +6361,19 @@ class CommTool(SessionHostMixin, QMainWindow):
         if action in ("noop", "still_inflight"):
             return
         if action == "wait":
-            QTimer.singleShot(
-                int(plan["delay_ms"]),
-                lambda: self._seq_mbm_release_check(gen))
+            ctx_id = getattr(self, "_seq_ctx_id", None)
+            call_for = getattr(self, "_seq_call_for", None)
+            if callable(ctx_id) and callable(call_for):
+                sid = ctx_id()
+                QTimer.singleShot(
+                    int(plan["delay_ms"]),
+                    lambda: call_for(
+                        sid, self._seq_mbm_release_check, gen))
+            else:
+                # Lightweight direct-call tests/embedders without SessionHost.
+                QTimer.singleShot(
+                    int(plan["delay_ms"]),
+                    lambda: self._seq_mbm_release_check(gen))
             return
         self._seq_waiting_mbm = False
         self._seq_wait_mbm_variant = ""
@@ -6013,8 +6382,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._seq_run_from(0)
 
     def _seq_resume_peer_engines(self):
-        """序列释放收发流后，按原开关/连接状态恢复 Modbus 主机。"""
-        if not self._seq_on:
+        """序列释放本会话收发流后，若本会话钉住 MBM 则按原开关恢复主机。"""
+        if not self._seq_on and self._io_session_owns("modbus"):
             self._mbm_tick()
 
     def open_sequence(self):
@@ -6091,31 +6460,91 @@ class CommTool(SessionHostMixin, QMainWindow):
         if self._xfer_worker is not None:
             self._xfer_detach()                          # 防御：先断掉可能残留的上一个 worker 的发送桥，避免两个 worker 同时发数据
         self._xfer_worker = worker
+        self._io_bind_owner("transfer")
+        self._xfer_conn = self.conn
         self._xfer_target = self._send_target()          # 起始时捕获目标（串口为 None）
-        worker.sig_send.connect(self._xfer_send)
+        owner_id = getattr(self._io_owner_session("transfer"), "id", None)
+        def bridge(data, _worker=worker, _owner_id=owner_id):
+            self._xfer_send_for(_worker, _owner_id, data)
+        self._xfer_send_bridge = bridge
+        worker.sig_send.connect(bridge)
+        # 传输即将独占本会话线路：作废已经排队的延迟自动应答，避免它在
+        # X/YMODEM 握手中途插入普通业务帧。只动当前 owner，不影响其它标签。
+        self._ar_reset_buf()
+        self._ar_cancel_pending()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
         # 暂停 Modbus 定时器：传输期间收流喂协议引擎，Modbus 响应进不来；在途请求的定时器
         # 也会误触发超时——清掉 inflight，待传输结束再恢复。
-        if hasattr(self, "_mbm_to"):
-            self._mbm_to.stop()
-        if hasattr(self, "_mbm_sched"):
-            self._mbm_sched.stop()
-        self._mbm_inflight = None
-        self._mbm_buf = b""
+        if self._io_session_owns("modbus"):
+            if hasattr(self, "_mbm_to"):
+                self._mbm_to.stop()
+            if hasattr(self, "_mbm_sched"):
+                self._mbm_sched.stop()
+            self._mbm_inflight = None
+            self._mbm_buf = b""
 
     def _xfer_detach(self):
         """传输结束：断开发送桥、恢复正常收流、恢复 Modbus 轮询（不清结果，只重启调度）。"""
+        owner = self._io_owner_session("transfer")
+        if owner is not None and self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._xfer_detach()
+            return
+        resume_mbm = self._io_session_owns("modbus")
         w = self._xfer_worker
-        if w is not None:
+        bridge = self._xfer_send_bridge
+        if w is not None and bridge is not None:
             try:
-                w.sig_send.disconnect(self._xfer_send)
+                w.sig_send.disconnect(bridge)
             except (TypeError, RuntimeError):
                 pass
         self._xfer_worker = None
-        if hasattr(self, "_mbm_tick"):
+        self._xfer_send_bridge = None
+        self._xfer_conn = None
+        self._xfer_target = None
+        self._io_clear_owner("transfer")
+        if hasattr(self, "_mbm_tick") and resume_mbm:
             self._mbm_tick()           # 恢复 Modbus 轮询（若已启用）；不调 _mbm_restart 避免清掉已有结果
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
+
+    def _xfer_send_for(self, worker, owner_id, data):
+        """Send one queued chunk only for the worker/owner captured at attach."""
+        if worker is not self._xfer_worker:
+            return
+        owner = self.find_session(owner_id) if owner_id is not None else None
+        if owner is None:
+            return
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._xfer_send_for(worker, owner_id, data)
+            return
+        if (self._xfer_conn is not None
+                and self.conn is not self._xfer_conn):
+            return
+        self._xfer_send_owned(data)
 
     def _xfer_send(self, data):
-        """worker 线程经队列信号回到 GUI 线程发字节（连接可能已断，兜底不崩）。"""
+        """Compatibility entry; attached workers use _xfer_send_for."""
+        owner = self._io_owner_session("transfer")
+        if owner is None:
+            # Compatibility for direct bridge callers/tests that invoke this
+            # without _xfer_attach.  A real active transfer is always bound.
+            if self._xfer_worker is not None:
+                return
+            owner = self._session_ctx() or self.active_session()
+            if owner is None:
+                return
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._xfer_send(data)
+            return
+        self._xfer_send_owned(data)
+
+    def _xfer_send_owned(self, data):
         if self.conn is not None:
             payload = bytes(data)
             try:
@@ -6139,6 +6568,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         自动应答/Modbus 主机（三者共用收流，序列是主动驱动方，结束自动恢复、不改它们开关）。"""
         if self._seq_on:
             return
+        # Busy is per-session: another tab's sequence/script must not block this one
+        # (script/xfer remain one-per-window and only block their owner session).
         if self._io_task_busy(exclude=("sequence", "modbus")):
             self.toast_io_exclusive_busy(exclude=("sequence", "modbus"))
             return
@@ -6153,6 +6584,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._refresh_workspace_statuses()
         self._seq_gen += 1
         self._seq_pause_peer_engines()
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
         self._seq_summary = None
         self._seq_dataset = dataset if (dataset and dataset.get("rows")) else None
         self._seq_dataset_row = None
@@ -6273,6 +6707,14 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._seq_results[i]["extracted"] = dict(extracted)
             self._seq_schedule_next(self._seq_steps[i])
 
+    def _seq_on_timeout_for(self, sid):
+        """Per-session sequence wait timer callback."""
+        session = self.find_session(sid) if hasattr(self, "find_session") else None
+        if session is None:
+            return
+        with self._with_session(session):
+            self._seq_on_timeout()
+
     def _seq_on_timeout(self):
         """当前步等回包超时：按重试策略处理（还有重试则重发，否则判失败按超时动作走）。"""
         if not self._seq_on:
@@ -6304,8 +6746,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._seq_retry_quiet_until = plan["quiet_until"]
             self._seq_retry_quiet_deadline = plan["quiet_deadline"]
             attempt = self._seq_attempt
-            QTimer.singleShot(plan["timer_ms"],
-                              lambda: self._seq_retry(gen, i, attempt))
+            sid = self._seq_ctx_id()
+            QTimer.singleShot(
+                plan["timer_ms"],
+                lambda: self._seq_call_for(
+                    sid, self._seq_retry, gen, i, attempt))
             return
         rx_hex = _seq_engine_clip_rx_hex(getattr(self, "_seq_buf", b"") or b"")
         self._seq_set_result(i, "fail", ms, self._t(detail_key), detail_key, self._seq_attempt,
@@ -6324,7 +6769,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._seq_retry_quiet_deadline)
         if remain > 0:
             delay = _seq_engine_clamp_timer_ms(int(remain * 1000) + 1, minimum=1)
-            QTimer.singleShot(delay, lambda: self._seq_retry(gen, i, attempt))
+            sid = self._seq_ctx_id()
+            QTimer.singleShot(
+                delay,
+                lambda: self._seq_call_for(
+                    sid, self._seq_retry, gen, i, attempt))
             return
         self._seq_do_step(i)
 
@@ -6341,7 +6790,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         delay = _seq_engine_clamp_timer_ms(step.get("delay", 0), minimum=0)
         nxt = self._seq_idx + 1
         gen = self._seq_gen
-        QTimer.singleShot(delay, lambda: self._seq_continue(gen, nxt))
+        sid = self._seq_ctx_id()
+        QTimer.singleShot(
+            delay,
+            lambda: self._seq_call_for(sid, self._seq_continue, gen, nxt))
 
     def _seq_continue(self, gen, nxt):
         if self._seq_on and gen == self._seq_gen:
@@ -6369,7 +6821,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._seq_loop_i, self._seq_loops, self._seq_stop_on_fail, round_ok)
         if more:
             gen = self._seq_gen                          # 轮间让出事件循环再开下一轮（代际作废停止/断连残留）
-            QTimer.singleShot(0, lambda: self._seq_next_round(gen))
+            sid = self._seq_ctx_id()
+            QTimer.singleShot(
+                0,
+                lambda: self._seq_call_for(sid, self._seq_next_round, gen))
         else:
             self._seq_finalize()
 
@@ -6406,6 +6861,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._seq_notify()
         self._seq_resume_peer_engines()
         self.toast(self._t("seq_done_pass" if ok else "seq_done_fail"), error=not ok)
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _seq_stop(self):
         """用户点「停止」：中止运行（保留已跑结果供查看，提示「已停止」）。"""
@@ -6444,6 +6902,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._seq_notify()
         if toast_key:
             self.toast(self._t(toast_key))
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
 
     def _seq_capture_vars(self, step, buf):
@@ -6478,6 +6939,10 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _seq_notify(self):
         """结果变化 → 通知对话框刷新（对话框没开就算了）。"""
+        # The dialog is a window singleton, while runtime/results are per
+        # session.  Background callbacks must not overwrite the visible tab.
+        if self._session_ctx() is not self.active_session():
+            return
         dlg = getattr(self, "_seq_dlg", None)
         if dlg is not None:
             try:
@@ -6576,12 +7041,21 @@ class CommTool(SessionHostMixin, QMainWindow):
         """Normalize Modbus slave bank config."""
         return _ar_core_norm_modbus(cfg)
 
+    def _modbus_rebuild_all_sessions(self):
+        """Rebuild every session's slave register bank from window ``_ar_modbus``."""
+        cfg = getattr(self, "_ar_modbus", None) or {}
+        sessions = self._ar_sessions_snapshot()
+        if not sessions:
+            return
+        for session in sessions:
+            session._modbus = modbus_slave.slave_bank_from_config(cfg)
+
     def _set_ar_modbus(self, cfg):
-        """对话框编辑「Modbus 从机」后回调：更新内存配置 + 重建运行态从机(回初值) + 落盘。
+        """对话框编辑「Modbus 从机」后回调：更新内存配置 + 重建各会话运行态从机(回初值) + 落盘。
         Modbus 开关/配置变 = 改变了分帧语义 → 必须清跨模式共用的 _ar_buf 半包缓冲并停 gap timer
         （与 _set_ar_frame / _set_ar_rules 一致），否则切模式时旧字节会被新框架误解析。"""
         self._ar_modbus = self._norm_ar_modbus(cfg)
-        self._modbus = modbus_slave.slave_bank_from_config(self._ar_modbus)
+        self._modbus_rebuild_all_sessions()
         self._ar_reset_all_buffers()
         self.settings.setValue("autoreply_modbus", json.dumps(self._ar_modbus, ensure_ascii=False))
         self.settings.sync()
@@ -6617,7 +7091,8 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _modbus_send(self, frame: bytes, reply_target=None):
         """发 Modbus 响应。响应同样经 C6 全局故障注入（可压测主机的重传/容错）。"""
         if (not self._ar_on or not self._is_open()
-                or getattr(self, "_replay_drive_tx", False)):
+                or (getattr(self, "_replay_drive_tx", False)
+                    and self._io_session_owns("replay"))):
             return
         # Modbus 从机响应也走 _send_text，同样不是「用户手动发」——置标记让宏录制跳过
         # （与 _ar_schedule_send 一致；这是另一条独立发送路径，各自都要保护）。
@@ -6674,14 +7149,19 @@ class CommTool(SessionHostMixin, QMainWindow):
             with self._with_session(session):
                 self._ar_reset_buf()
 
+    def _ar_cancel_pending(self):
+        """Cancel delayed/state-machine work in the context session only."""
+        self._ar_generation = getattr(self, "_ar_generation", 0) + 1
+        self._ar_sm_pending = None
+        if hasattr(self, "_ar_sm_queue"):
+            self._ar_sm_queue.clear()
+        self._ar_sm_draining = False
+
     def _ar_cancel_all_pending(self):
         """Cancel delayed/state-machine work in every session without changing state."""
         for session in self._ar_sessions_snapshot():
             with self._with_session(session):
-                self._ar_generation = getattr(self, "_ar_generation", 0) + 1
-                self._ar_sm_pending = None
-                self._ar_sm_queue.clear()
-                self._ar_sm_draining = False
+                self._ar_cancel_pending()
 
     def _ar_reset_all_states(self):
         """Reset every session to the current window-level state-machine config."""
@@ -6728,7 +7208,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         B4：Modbus 从机模式开启时整条引擎让位给 Modbus（按功能码自动应答，规则/状态机不参与；
         此时即使没有任何规则也生效）。"""
         # Drive-TX replay owns the wire; do not let AR / Modbus-slave TX race it.
-        if getattr(self, "_replay_drive_tx", False):
+        if (getattr(self, "_replay_drive_tx", False)
+                and self._io_session_owns("replay")):
             return
         mode = _ar_gate.ingress_mode(
             ar_on=self._ar_on,
@@ -6811,11 +7292,22 @@ class CommTool(SessionHostMixin, QMainWindow):
             rule["_hit_time"] = now
             # 冷却（rate-limit）：同一规则在冷却窗口内不再触发。delay 是 turnaround 输出延时，
             # 跟冷却是两回事——delay=200 表示「200ms 后回」、cooldown=200 表示「200ms 内不再触发」。
+            session = self._session_ctx() or self.active_session()
+            sid = getattr(session, "id", None)
+            last_by_session = rule.get("_last_by_session")
+            if not isinstance(last_by_session, dict):
+                last_by_session = {}
+            last = (last_by_session.get(sid, 0.0) if sid is not None
+                    else rule.get("_last", 0.0))
             if _ar_gate.cooldown_blocks(
-                    now, rule.get("_last", 0.0),
+                    now, last,
                     self._ar_to_int(rule.get("cooldown", 0))):
                 return
-            rule["_last"] = now      # 运行态，不持久化
+            if sid is not None:
+                last_by_session[sid] = now
+                rule["_last_by_session"] = last_by_session
+            else:
+                rule["_last"] = now
             # B5：有脚本则跑脚本动态生成应答（脚本拥有整帧、不叠校验段/尾校验）；否则走静态模板
             # （④ 多帧 | 分段、占位符替换、校验段）。两路都经故障注入 + 延时发送、共用 goto 回调。
             path = _ar_gate.reply_path(rule)
@@ -7111,8 +7603,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             if gen != getattr(self, "_ar_generation", 0):
                 finish_batch()
                 return
+            script_here = (self._script_running()
+                           and self._io_session_owns("script")
+                           and (self._script_conn is None
+                                or self.conn is self._script_conn))
+            replay_here = (getattr(self, "_replay_drive_tx", False)
+                           and self._io_session_owns("replay"))
             if (not self._ar_on or not self._is_open() or self._seq_running()
-                    or self._script_running() or idx >= len(parts)):
+                    or script_here or replay_here or idx >= len(parts)):
                 finish_batch()
                 return
             sent_ok = False
@@ -7477,7 +7975,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ar_frame = self._load_ar_frame()
         self._ar_fault = self._load_ar_fault()
         self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
-        self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入（下方 _ar_reset_state 重建运行态）
+        self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入
+        self._modbus_rebuild_all_sessions()
         self._recompute_ar_gap()
         self._ar_reset_all_buffers()
         self._ar_reset_all_states()           # C8：导入新配置=新会话 → 所有会话复位到新初态
@@ -7507,7 +8006,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             # 仍显示启用、与实际关闭不一致）。enabled=False 不会回触发 _set_mbm_enabled。
             self._set_autoreply_enabled(False)
             s.sync()
+        if self._mbm_on:
+            self._io_bind_owner("modbus")
         self._mbm_restart()
+        if not self._mbm_on:
+            self._io_clear_owner("modbus")
         # 多条发送 / 关键字高亮 的内存模型也是 __init__ 读一次的缓存。不重载会让
         # 后续编辑（commit 走旧内存）把加载的值再覆盖回去。重载 + 刷 UI 让它们立刻生效。
         self._ms_groups, _ = self._load_ms_groups()
@@ -7630,16 +8133,27 @@ class CommTool(SessionHostMixin, QMainWindow):
             return False
         sends, delay = send_dsl.describe(ops)
         self._dsl_ops = ops
+        self._io_bind_owner("dsl")
         self._dsl_idx = 0
         self._dsl_record = bool(record_macro)
         self._dsl_gen = getattr(self, "_dsl_gen", 0) + 1
         if sends > 1 or delay:
             self.toast(self._t("dsl_started", n=sends, ms=delay))
         self._dsl_step(self._dsl_gen)
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
         return True
 
     def _dsl_step(self, gen):
         """执行下一条指令。gen 代际用于让 _dsl_abort 之后的排队回调自动失效。"""
+        owner = self._io_owner_session("dsl")
+        if owner is None:
+            return
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._dsl_step(gen)
+            return
         if gen != getattr(self, "_dsl_gen", 0) or not self._dsl_running():
             return
         if self._dsl_idx >= len(self._dsl_ops):
@@ -7665,7 +8179,11 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _dsl_finish(self):
         self._dsl_ops = None
+        self._io_clear_owner("dsl")
         self._dsl_idx = 0
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _dsl_abort(self):
         """中止 DSL（发送失败 / 断连 / 关窗）。代际 +1 让已排队的回调作废。"""
@@ -7673,7 +8191,11 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         self._dsl_gen = getattr(self, "_dsl_gen", 0) + 1
         self._dsl_ops = None
+        self._io_clear_owner("dsl")
         self._dsl_idx = 0
+        refresh = getattr(self, "_refresh_session_tab_styles", None)
+        if callable(refresh):
+            refresh()
 
     def _send_with_subst(self, raw, hex_mode, newline=None, checksum=None,
                          target=None, encoding=None, record_macro=True,
@@ -7881,21 +8403,73 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _mbm_connection_ready(self):
         """当前实际连接与界面配置一致，且属于主机轮询支持的连接类型。"""
-        configured = self.cb_proto.currentText()
-        actual = getattr(self, "_conn_proto", None) or configured
+        session_ctx = getattr(self, "_session_ctx", None)
+        active_session = getattr(self, "active_session", None)
+        session = ((session_ctx() if callable(session_ctx) else None)
+                   or (active_session() if callable(active_session) else None))
+        actual = getattr(self, "_conn_proto", None)
+        active = active_session() if callable(active_session) else None
+        if session is None or session is active:
+            configured = self.cb_proto.currentText()
+            actual = actual or configured
+            signature = getattr(self, "_conn_config_signature", None)
+            expected = (signature(configured) if callable(signature)
+                        else getattr(self, "_conn_cfg", None))
+        else:
+            # Sidebar widgets describe the visible tab, not this background
+            # owner.  Rebuild the desired signature from its saved fields.
+            fields = session.conn_fields or {}
+            configured = str(fields.get("net_proto") or actual or "")
+            if not fields:
+                expected = getattr(session, "_conn_cfg", None)
+            elif configured == PROTO_SERIAL:
+                try:
+                    baud = int(fields.get("ser_baud"))
+                except (TypeError, ValueError):
+                    baud = None
+                expected = _conn_serial_sig(
+                    configured, fields.get("ser_port"), baud,
+                    fields.get("ser_databits"), fields.get("ser_parity"),
+                    fields.get("ser_stopbits"), fields.get("ser_flow"))
+            elif configured == PROTO_TCP_CLIENT:
+                expected = _conn_tcp_sig(
+                    configured, str(fields.get("net_remote_ip") or "").strip(),
+                    self._parse_port(fields.get("net_remote_port")))
+            else:
+                expected = _conn_proto_sig(configured)
         return bool(actual in (PROTO_SERIAL, PROTO_TCP_CLIENT)
                     and configured == actual  # 导入改了协议但旧连接未重连：暂停，禁止发错制式
-                    and getattr(self, "_conn_cfg", None) == self._conn_config_signature(configured))
+                    and getattr(self, "_conn_cfg", None) == expected)
 
     def _mbm_active(self):
         _xw = getattr(self, "_xfer_worker", None)
+        session_ctx = getattr(self, "_session_ctx", None)
+        active_session = getattr(self, "active_session", None)
+        session = ((session_ctx() if callable(session_ctx) else None)
+                   or (active_session() if callable(active_session) else None))
+        owns = getattr(self, "_io_session_owns", None)
+        owns = owns if callable(owns) else (lambda _key, _session=None: True)
+        current_conn = getattr(self, "conn", None)
+        script_conn = getattr(self, "_script_conn", None)
+        script_here = (getattr(self, "_script_worker", None) is not None
+                       and owns("script", session)
+                       and (script_conn is None or current_conn is script_conn))
+        replay_here = (getattr(self, "_replay_on", False)
+                       and owns("replay", session))
+        macro_here = (bool(getattr(getattr(self, "_macro", None), "recording", False))
+                      and owns("macro", session))
+        xfer_conn = getattr(self, "_xfer_conn", None)
+        xfer_here = (_xw is not None and _xw.isRunning()
+                     and owns("transfer", session)
+                     and (xfer_conn is None or current_conn is xfer_conn))
         return bool(self._mbm_connection_ready()
+                    and owns("modbus", session)
                     and self._mbm_on and self._is_open()
                     and not getattr(self, "_seq_on", False)
-                    and not getattr(self, "_replay_on", False)
-                    and getattr(self, "_script_worker", None) is None
-                    and not bool(getattr(getattr(self, "_macro", None), "recording", False))
-                    and not (_xw is not None and _xw.isRunning())
+                    and not replay_here
+                    and not script_here
+                    and not macro_here
+                    and not xfer_here
                     and any(r.get("enabled") for r in self._mbm_rules))
 
     def _mbm_import_enabled(self, requested):
@@ -7904,6 +8478,15 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _mbm_restart(self):
         """开关/连接/规则/变体变化后：复位运行态并按需启动轮询。"""
+        owner = self._io_owner_session("modbus")
+        if owner is None and self._mbm_on:
+            owner = self._session_ctx() or self.active_session()
+            if owner is not None:
+                self._io_bind_owner("modbus", owner)
+        if owner is not None and self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._mbm_restart()
+            return
         old_info = getattr(self, "_mbm_inflight", None)
         if hasattr(self, "_mbm_to"):
             self._mbm_to.stop()
@@ -7963,6 +8546,24 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _mbm_tick(self):
         """Schedule: poll soonest due rule, else arm single-shot timer."""
+        owner_lookup = getattr(self, "_io_owner_session", None)
+        if not callable(owner_lookup):
+            return CommTool._mbm_tick_owned(self)
+        owner = owner_lookup("modbus")
+        if owner is None:
+            if not self._mbm_on:
+                return
+            owner = self._session_ctx() or self.active_session()
+            if owner is None:
+                return
+            self._io_bind_owner("modbus", owner)
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._mbm_tick_owned()
+            return
+        self._mbm_tick_owned()
+
+    def _mbm_tick_owned(self):
         if self._mbm_inflight is not None or not self._mbm_active():
             return
         now = time.monotonic()
@@ -8235,6 +8836,19 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._seq_mbm_release_check()
 
     def _mbm_on_timeout(self):
+        owner_lookup = getattr(self, "_io_owner_session", None)
+        if not callable(owner_lookup):
+            return CommTool._mbm_on_timeout_owned(self)
+        owner = owner_lookup("modbus")
+        if owner is None:
+            return
+        if self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._mbm_on_timeout_owned()
+            return
+        self._mbm_on_timeout_owned()
+
+    def _mbm_on_timeout_owned(self):
         info = self._mbm_inflight
         if info is None:
             return
@@ -8327,6 +8941,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         if self._io_task_busy(exclude=("modbus",)):
             self.toast_io_exclusive_busy(exclude=("modbus",))
             return False
+        session = self._session_ctx() or self.active_session()
+        old_mbm_owner = self._io_owner_session("modbus")
+        if old_mbm_owner is not None and old_mbm_owner is not session:
+            self.toast_io_exclusive_busy(exclude=("modbus",))
+            return False
         normalized = [modbus_master.normalize_poll(rule) for rule in rules]
         if not normalized:
             return False
@@ -8346,6 +8965,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             "on_done": on_done,
             "old_rules": self._mbm_rules,
             "old_on": self._mbm_on,
+            "old_mbm_owner_sid": getattr(old_mbm_owner, "id", None),
             "old_ar_on": self._ar_on,
             "old_variant": self._mbm_variant,
             "old_echo": self._mbm_echo,
@@ -8357,6 +8977,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             "old_dlg_dirty": bool(dlg._dirty) if dlg is not None else None,
             "finishing": False,
         }
+        self._io_bind_owner("device_scan")
+        self._io_bind_owner("modbus")
         # 接管一个已经在轮询的 RTU/ASCII 主机时，旧请求的迟到响应不能误配给扫描首项。
         if old_inflight is not None and self._mbm_variant_eff() in ("rtu", "ascii"):
             guard_ms = max(self._MBM_MIN_GUARD_MS,
@@ -8375,6 +8997,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                 dlg.setEnabled(False)
             self._mbm_restart()
             self._refresh_workspace_statuses()
+            refresh = getattr(self, "_refresh_session_tab_styles", None)
+            if callable(refresh):
+                refresh()
         except Exception:
             # 状态变更中途失败：回滚接管，避免 _device_scan_state 残留/对话框禁用/规则被替换。
             self._stop_device_scan(cancelled=True)
@@ -8395,12 +9020,25 @@ class CommTool(SessionHostMixin, QMainWindow):
             QTimer.singleShot(0, lambda: self._stop_device_scan(cancelled=False))
 
     def _stop_device_scan(self, cancelled=False):
+        owner = self._io_owner_session("device_scan")
+        if owner is not None and self._session_ctx() is not owner:
+            with self._with_session(owner):
+                self._stop_device_scan(cancelled=cancelled)
+            return
         state = self._device_scan_state
         if state is None:
             return
         self._device_scan_state = None
+        self._io_clear_owner("device_scan")
         self._mbm_rules = state["old_rules"]
         self._mbm_on = state["old_on"]
+        if self._mbm_on:
+            old_owner = self.find_session(state.get("old_mbm_owner_sid"))
+            self._io_bind_owner("modbus", old_owner or owner)
+        else:
+            # Preserve the scan owner through restart so its timers/inflight
+            # are cancelled in the right context, then clear below.
+            self._io_bind_owner("modbus", owner)
         self._ar_on = bool(state.get("old_ar_on", False))   # 扫描期间被临时关掉的从机要恢复
         self._mbm_variant = state["old_variant"]
         self._mbm_echo = state["old_echo"]
@@ -8413,6 +9051,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.settings.remove(key)
         self.settings.sync()
         self._mbm_restart()
+        if not self._mbm_on:
+            self._io_clear_owner("modbus")
         # restart 会按设计清空结果（避免规则重排后错位）；扫描结束恢复的是原规则，
         # 因而要在 restart 之后放回快照，并同步已打开的主机窗口。
         self._mbm_results = state["old_results"]
@@ -8449,6 +9089,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         return added
 
     def _structured_feed_modbus(self, info, result):
+        # This window-wide recorder and the plot/dashboard dialogs have no
+        # session column. Background MBM must not mix another tab into them.
+        if self._session_ctx() is not self.active_session():
+            return
         # 设备扫描只是发现性请求，不应污染结构化录制或可见联动视图。
         if getattr(self, "_device_scan_state", None) is not None:
             return
@@ -8493,6 +9137,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             _log.debug("_feed_named_view failed", exc_info=True)
 
     def _structured_feed_protocol(self, data):
+        if self._session_ctx() is not self.active_session():
+            return
         if not self._structured_recorder.recording:
             return
         rules = self._proto_rules()
@@ -10187,8 +10833,10 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.cb_theme.setCurrentIndex(i)
                 break
         self.cb_theme.blockSignals(False)
-        # 推迟到 event loop 启动后再应用 — 此时所有 widget 已 show，setStyleSheet 全部生效
-        QTimer.singleShot(0, self._on_theme_changed)
+        # 推迟到 event loop 启动后再应用 — 此时所有 widget 已 show，setStyleSheet 全部生效。
+        # Window-owned timer is cancelled automatically if a short-lived test/
+        # host deletes the window before its first event-loop turn.
+        self._theme_apply_timer.start(0)
         self.sw_tx_hex.setChecked(to_bool(s.value("tx_hex", False)), animate=False)
         self.sw_append_newline.setChecked(to_bool(s.value("append_newline", False)), animate=False)
         nl_idx = _cfg_try_combo(s.value("append_nl_mode", 0), self.cb_append_nl.count())
@@ -10706,6 +11354,14 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _prepare_project_switch(self):
         """Stop every old-project session before replacing workspace settings."""
+        # Project replacement destroys every Session object.  Window-level
+        # workers/timers are pinned by session id and may finish asynchronously;
+        # removing their owner underneath them would orphan callbacks (and a
+        # running QThread in the transfer/script dialogs).  Use the same hard
+        # busy guard as tab close and require the user to stop the task first.
+        if any(self._hard_busy_owned_by(s) for s in self._sessions):
+            self.toast_session_busy()
+            return False
         if any(s.conn is not None for s in self._sessions):
             if not self._confirm_dlg(
                     self._t("project_disconnect_title"),
@@ -11042,6 +11698,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         profile = str(profile)
         if profile == self._profile:
             return
+        # Switching profiles replaces every Session object.  Do not orphan a
+        # window-level worker/timer that is still pinned to one of them.
+        if any(self._hard_busy_owned_by(s) for s in self._sessions):
+            self.toast_session_busy()
+            return
         # A project is bound to the current profile's QSettings.  Keeping that
         # binding after swapping self.settings would make a later Save overwrite
         # the old .ctproj with the new profile's unrelated workspace.
@@ -11191,6 +11852,8 @@ class CommTool(SessionHostMixin, QMainWindow):
     # ----- 自动检查更新（启动 + 每 6 小时静默查；有新版 → 右下角版本号亮可点徽标）-----
     def _auto_update_check(self):
         """后台静默检查新版本：拿到清单后若有新版就在右下角版本号显示可点徽标；出错不打扰用户。"""
+        if getattr(self, "_user_closing", False):
+            return
         if not self.settings.value("auto_update_check", True, type=bool):
             return
         if self._auto_checker is not None:     # 上一次还在跑就不重复发
@@ -11236,9 +11899,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         if enabled:
             if not self._update_timer.isActive():
                 self._update_timer.start()
-            QTimer.singleShot(0, self._auto_update_check)
+            self._update_start_timer.start(0)
         else:
             self._update_timer.stop()
+            self._update_start_timer.stop()
+            checker = self._auto_checker
+            if checker is not None:
+                checker.abort()
+                self._auto_checker = None
 
     def open_about(self):
         """打开「关于 + 检查更新」对话框（托盘菜单触发）。
@@ -11464,9 +12132,29 @@ class CommTool(SessionHostMixin, QMainWindow):
         """退出前统一清理。closeEvent 的两条退出路径（直接退出 / 选「退出」）共用：
         以前两段逐行复制，加清理步骤极易漏改其中一条导致线程/定时器泄漏，故抽成一处。"""
         self._user_closing = True             # 退出 → 跳过自动重连
+        # This object is installed on QApplication, not merely on its child
+        # widgets. Remove it before deferred deletion can interleave with the
+        # next global event dispatch (notably in multi-window/test hosts).
+        if getattr(self, "_app_filter_installed", False):
+            app = QApplication.instance()
+            if app is not None:
+                try:
+                    app.removeEventFilter(self)
+                except RuntimeError:
+                    pass
+            self._app_filter_installed = False
         self._begin_workspace_autosave_pause()
         self._cancel_reconnect()
         self._ms_stop_all_cycles()       # 先停各会话循环定时器，避免销毁中触发 toast
+        for timer_name in ("_theme_apply_timer", "_restore_project_timer",
+                           "_update_start_timer", "_update_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+        checker = getattr(self, "_auto_checker", None)
+        if checker is not None:
+            checker.abort()
+            self._auto_checker = None
         if hasattr(self, "_rate_timer"):
             self._rate_timer.stop()       # 同停 1Hz 统计采样：避免 accept 后、窗口析构前残余 tick 去 setText 已销毁的标签
         self._ar_stop_script_worker()      # B5：回收常驻脚本子进程
@@ -11476,8 +12164,16 @@ class CommTool(SessionHostMixin, QMainWindow):
         atexit.unregister(self._trg_stop_procs)
         self._save_settings()
         self._close_all_sessions(update_active_ui=True)
-        if self.port_scanner:
-            self.port_scanner.stop()
+        scanner = self.port_scanner
+        if scanner:
+            scanner.stop()
+            # PortScannerThread has no QObject parent. Leaving a stopped
+            # scanner referenced by a deleted window accumulates native QThread
+            # wrappers in multi-window/test hosts; delete only after stop/wait
+            # has positively completed.
+            if not scanner.isRunning():
+                scanner.deleteLater()
+                self.port_scanner = None
         self._wait_oneshot_scan()
         if self._tooltip_popup is not None:   # macOS 自绘 tooltip 是独立顶层窗，主动收掉避免退出瞬间残留屏上
             self._tooltip_popup.hide()

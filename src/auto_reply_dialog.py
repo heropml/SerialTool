@@ -1449,15 +1449,15 @@ class AutoReplyDialog(QDialog):
                 "when": rec["when"].text().strip(),   # C8：仅在此状态(可逗号分隔)才命中；空=任意
                 "goto": rec["goto"].text().strip(),   # C8：应答后跳转到的状态；空=不变
             })
-        # 保留运行态命中统计/冷却：按稳定 id(_rid) 迁移（rules 与 _rows 同序一一对应），
-        # 删中间行/重排后也不会张冠李戴（_last 是冷却时刻，错配会误抑制/误触发应答）。
+        # 保留运行态命中统计/按会话冷却：按稳定 id(_rid) 迁移（rules 与 _rows 同序一一对应），
+        # 删中间行/重排后也不会张冠李戴（冷却错配会误抑制/误触发应答）。
         old_by_rid = {o.get("_rid"): o for o in getattr(self.app, "_ar_rules", [])
                       if o.get("_rid") is not None}
         for r, rec in zip(rules, self._rows):
             r["_rid"] = rec.get("_rid")
             src = old_by_rid.get(rec.get("_rid"))
             if src:
-                for k in ("_hits", "_hit_time", "_last"):
+                for k in ("_hits", "_hit_time", "_last", "_last_by_session"):
                     if k in src:
                         r[k] = src[k]
         self.app._set_ar_rules(rules)
