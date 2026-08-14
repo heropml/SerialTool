@@ -9,10 +9,11 @@ from app_icon import get_app_icon
 from fonts import install_font_substitutions, ui_font
 from i18n import TR
 from main_window import CommTool
+from session import MAX_SESSIONS
 from updater import cleanup_temp_installers, set_translator
 
 
-_VALID_PROFILES = {""} | {str(n) for n in range(2, 9)}   # 合法配置槽位：""=主配置 / "2".."8"
+_VALID_PROFILES = {""} | {str(n) for n in range(2, MAX_SESSIONS + 1)}  # ""=主配置 / "2"..MAX_SESSIONS
 
 
 def _parse_profile_arg(argv):
@@ -41,7 +42,7 @@ def _acquire_profile(settings_path=None, preferred=None):
     就会死等自己持有的锁 → 死锁（表现：新配置窗口构造时卡住只剩进程没界面、关窗保存时卡死）。"""
     if settings_path is None:
         settings_path = CommTool._settings_file
-    order = [""] + [str(n) for n in range(2, 9)]
+    order = [""] + [str(n) for n in range(2, MAX_SESSIONS + 1)]
     if preferred is not None and str(preferred) in order:   # 仅合法槽位可优先；越界 preferred 忽略、走正常扫描
         preferred = str(preferred)
         order = [preferred] + [p for p in order if p != preferred]

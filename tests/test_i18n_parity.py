@@ -39,3 +39,32 @@ def test_tr_values_are_nonempty_strings():
         for key, val in TR[lang].items():
             assert isinstance(val, str), "%s.%s not str" % (lang, key)
             assert val.strip(), "%s.%s empty" % (lang, key)
+
+
+# Help / placeholder strings that document DSL or JSON, not str.format fields.
+_LITERAL_BRACE_KEYS = (
+    "ar_reply_ph",
+    "ar_modbus_slaves_extra_ph",
+    "ar_help",
+    "ar_modbus_help",
+)
+_TEMPLATE_SAMPLES = {
+    "mbm_st_mask": {"addr": 1, "aand": 2, "oor": 3},
+    "plot_cursor_fmt": {"x": 1.25, "y": 2.5, "stats": ""},
+}
+
+
+def test_literal_brace_keys_format_without_kwargs():
+    for lang in _REQUIRED_LANGS:
+        for key in _LITERAL_BRACE_KEYS:
+            val = TR[lang][key]
+            val.format()
+            val.format(unexpected=1)
+            rendered = val.format()
+            assert "{" in rendered, "%s.%s lost braces after format" % (lang, key)
+
+
+def test_template_keys_format_with_samples():
+    for lang in _REQUIRED_LANGS:
+        for key, kwargs in _TEMPLATE_SAMPLES.items():
+            TR[lang][key].format(**kwargs)

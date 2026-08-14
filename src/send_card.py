@@ -152,6 +152,8 @@ def build(app):
     app.btn_send.setMinimumHeight(36)
     app.btn_send.setMinimumWidth(120)
     app.btn_send.setProperty("tr_text", "send_btn")
+    app.btn_send.setProperty("tr_tooltip", "send_btn_tip")
+    set_tooltip(app.btn_send, app._t("send_btn_tip"))
     app.btn_send.clicked.connect(app.do_send)
     btn_row.addWidget(app.btn_send)
 

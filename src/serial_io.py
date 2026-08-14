@@ -6,21 +6,14 @@ import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
+from safe_step import safe_step
+
 _log = logging.getLogger(__name__)
 
 
 def _safe(func, *args):
-    """Run one cleanup/side-effect step; log failures without aborting the caller.
-
-    Same contract as net_io._safe: default debug level stays quiet unless logging is enabled.
-    """
-    try:
-        func(*args)
-        return True
-    except Exception:
-        _log.debug("serial_io step %s failed",
-                   getattr(func, "__name__", func), exc_info=True)
-        return False
+    """Run one cleanup/side-effect step; log failures without aborting the caller."""
+    return safe_step(func, *args, log=_log, kind="serial_io step")
 
 
 # USB-UART 转换芯片 VID/PID → 芯片型号。系统描述常是泛化的 "USB Serial Port"，

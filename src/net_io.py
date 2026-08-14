@@ -23,6 +23,8 @@ from PyQt5.QtNetwork import (
     QNetworkInterface,
 )
 
+from safe_step import safe_step
+
 PROTO_TCP_SERVER = "TCP Server"
 PROTO_TCP_CLIENT = "TCP Client"
 PROTO_UDP = "UDP"
@@ -33,28 +35,31 @@ SEND_NO_TARGET = -1   # send() 软错误：没有可发送的目标（UDP 无对
 
 # TCP Client 连接超时的错误哨兵：emit 它而非硬编码中文，由主窗口按 i18n 翻译成当前语言
 ERR_CONN_TIMEOUT = "__conn_timeout__"
+# 普通发送因写缓冲积压丢弃：非致命，主窗口/桥接面板不得因此断开连接
+ERR_SEND_BACKPRESSURE = "__send_backpressure__"
 
 # TCP Client 连接超时(毫秒)：异步 connectToHost 对不可达地址默认要等 OS ~20s 才报
 # errorOccurred，这里主动设上限，超时即 abort 并提示，避免界面长时间无反馈卡在「连接中」。
 _TCP_CONNECT_TIMEOUT_MS = 10000
-_BRIDGE_MAX_PENDING_BYTES = 4 * 1024 * 1024
+_MAX_PENDING_BYTES = 4 * 1024 * 1024
+_BRIDGE_MAX_PENDING_BYTES = _MAX_PENDING_BYTES
 _UDP_MAX_PAYLOAD = 65507
 
 _log = logging.getLogger(__name__)
 
 
 def _safe(func, *args):
-    """执行一步清理动作。失败只记日志不抛，保证同一段清理里后面的步骤不被跳过。
+    """执行一步清理动作。失败只记日志不抛，保证同一段清理里后面的步骤不被跳过。"""
+    return safe_step(func, *args, log=_log, kind="net_io cleanup step")
 
-    默认 debug 级，不配日志时不产生任何输出；排查连接泄漏时打开即可看到是哪一步失败。
-    """
+
+def _pending_overflow(sock, data, limit=_MAX_PENDING_BYTES):
+    """True if writing data would push Qt's bytesToWrite() past the cap."""
     try:
-        func(*args)
-        return True
-    except Exception:
-        _log.debug("net_io cleanup step %s failed",
-                   getattr(func, "__name__", func), exc_info=True)
+        pending = int(sock.bytesToWrite())
+    except (RuntimeError, TypeError, ValueError, AttributeError):
         return False
+    return pending + len(data) > limit
 
 
 def local_ipv4_list():
@@ -195,6 +200,7 @@ class TcpServerConn(NetConn):
         self._port = port
         self._server = None
         self._clients = []   # [QTcpSocket]
+        self._last_send_client_keys = []
 
     def open(self):
         # 防御性守卫：重复 open() 先关闭旧的，避免泄漏 QTcpServer 和重复连接信号
@@ -253,7 +259,16 @@ class TcpServerConn(NetConn):
         _safe(sock.abort)
         _safe(sock.deleteLater)
 
+    def _note_send_backpressure(self):
+        """Drop this write; keep the socket. error_occurred is edge-triggered."""
+        _log.warning("TCP send dropped: write buffer exceeds %s bytes",
+                     _MAX_PENDING_BYTES)
+        if not getattr(self, "_bp_emitted", False):
+            self._bp_emitted = True
+            self.error_occurred.emit(ERR_SEND_BACKPRESSURE)
+
     def send(self, data, target=None):
+        self._last_send_client_keys = []
         if not self._clients:
             return SEND_NO_TARGET
         if target in (None, "", "__all__"):
@@ -268,16 +283,25 @@ class TcpServerConn(NetConn):
         # 信号清理，不因某个掉线客户端把其它已收到完整帧的客户端也判成发送失败。
         any_ok = False
         poisoned = []
+        overflow = False
         for s in targets:
+            if _pending_overflow(s, data):
+                overflow = True
+                continue
             n = s.write(data)
             if n == len(data):
                 any_ok = True
+                self._last_send_client_keys.append(self._key(s))
             elif 0 < n < len(data):
                 poisoned.append(s)  # 半帧已进入该客户端流，不能继续复用
         for s in poisoned:
             self._drop_client(s)
         if poisoned:
             self._emit_clients()
+        if overflow:
+            self._note_send_backpressure()
+        elif getattr(self, "_bp_emitted", False):
+            self._bp_emitted = False
         return len(data) if any_ok else 0
 
     def send_bridge(self, data, target=None):
@@ -294,7 +318,7 @@ class TcpServerConn(NetConn):
         all_ok = True
         poisoned = []
         for sock in targets:
-            if sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
+            if _pending_overflow(sock, data):
                 all_ok = False
                 continue
             n = sock.write(data)
@@ -313,6 +337,7 @@ class TcpServerConn(NetConn):
             _safe(s.close)
             _safe(s.deleteLater)
         self._clients = []
+        self._last_send_client_keys = []
         was_open = bool(self._server)
         if self._server:
             srv = self._server
@@ -321,6 +346,14 @@ class TcpServerConn(NetConn):
             _safe(srv.deleteLater)
         if was_open:
             self.state_changed.emit(False)
+
+    def client_keys(self):
+        """Connected client keys ('ip:port'), same format as send() target."""
+        return [self._key(s) for s in list(self._clients)]
+
+    def last_send_client_keys(self):
+        """Client keys that accepted the full payload in the latest send()."""
+        return list(self._last_send_client_keys)
 
     @property
     def is_open(self):
@@ -402,14 +435,26 @@ class TcpClientConn(NetConn):
 
     def send(self, data, target=None):
         if self._sock and self._sock.state() == QAbstractSocket.ConnectedState:
+            if _pending_overflow(self._sock, data):
+                self._note_send_backpressure()
+                return 0
+            if getattr(self, "_bp_emitted", False):
+                self._bp_emitted = False
             n = self._sock.write(data)
             return n if n > 0 else 0
         return 0
 
+    def _note_send_backpressure(self):
+        _log.warning("TCP send dropped: write buffer exceeds %s bytes",
+                     _MAX_PENDING_BYTES)
+        if not getattr(self, "_bp_emitted", False):
+            self._bp_emitted = True
+            self.error_occurred.emit(ERR_SEND_BACKPRESSURE)
+
     def send_bridge(self, data, target=None):
         if not self.bridge_ready:
             return SEND_NO_TARGET
-        if self._sock.bytesToWrite() + len(data) > _BRIDGE_MAX_PENDING_BYTES:
+        if _pending_overflow(self._sock, data):
             return 0
         return self.send(data)
 
@@ -451,16 +496,55 @@ class TcpClientConn(NetConn):
 
 
 # ============== UDP ==============
-class UdpConn(NetConn):
+class _UdpBase(NetConn):
+    """Shared datagram read/close; bind and send stay on the subclasses."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._sock = None
+        self._last_peer = None
+        self._last_peer_key = None
+
+    def _on_read(self):
+        while self._sock and self._sock.hasPendingDatagrams():
+            size = self._sock.pendingDatagramSize()
+            data, host, port = self._sock.readDatagram(size)
+            self._last_peer = (host, port)
+            key = (host.toString(), port)
+            if key != self._last_peer_key:   # 对端变化才通知界面，避免每包刷
+                self._last_peer_key = key
+                self.peer_changed.emit(host.toString(), port)
+            if data:
+                self.data_received.emit(bytes(data))
+
+    def _release_udp_extras(self):
+        pass
+
+    def close(self):
+        was_open = bool(self._sock)
+        if self._sock:
+            self._release_udp_extras()
+            _safe(self._sock.close)
+            _safe(self._sock.deleteLater)
+            self._sock = None
+        # 清理对端缓存：否则复用本对象重开后，首次「回复最近对端」会发给上一会话的旧地址
+        self._last_peer = None
+        self._last_peer_key = None
+        if was_open:
+            self.state_changed.emit(False)
+
+    @property
+    def is_open(self):
+        return self._sock is not None
+
+
+class UdpConn(_UdpBase):
     def __init__(self, local_ip, local_port, remote_ip, remote_port, parent=None):
         super().__init__(parent)
         self._local_ip = local_ip
         self._local_port = local_port
         self._remote_ip = remote_ip
         self._remote_port = remote_port
-        self._sock = None
-        self._last_peer = None       # (QHostAddress, port) 最近发来数据的对端(send 回复用)
-        self._last_peer_key = None   # (ip_str, port) 仅用于「对端是否变化」判断
 
     def open(self):
         # 防御性守卫：重复 open() 先关闭旧的
@@ -477,18 +561,6 @@ class UdpConn(NetConn):
         self._sock.readyRead.connect(self._on_read)
         self.state_changed.emit(True)
         return True
-
-    def _on_read(self):
-        while self._sock and self._sock.hasPendingDatagrams():
-            size = self._sock.pendingDatagramSize()
-            data, host, port = self._sock.readDatagram(size)
-            self._last_peer = (host, port)
-            key = (host.toString(), port)
-            if key != self._last_peer_key:   # 对端变化才通知界面，避免每包刷
-                self._last_peer_key = key
-                self.peer_changed.emit(host.toString(), port)
-            if data:
-                self.data_received.emit(bytes(data))
 
     def send(self, data, target=None):
         if not self._sock:
@@ -513,22 +585,6 @@ class UdpConn(NetConn):
                 return total if total else n
             total += n
         return total
-
-    def close(self):
-        was_open = bool(self._sock)
-        if self._sock:
-            _safe(self._sock.close)
-            _safe(self._sock.deleteLater)
-            self._sock = None
-        # 清理对端缓存：否则复用本对象重开后，首次「回复最近对端」会发给上一会话的旧地址
-        self._last_peer = None
-        self._last_peer_key = None
-        if was_open:
-            self.state_changed.emit(False)
-
-    @property
-    def is_open(self):
-        return self._sock is not None
 
     @property
     def bound_port(self):
@@ -583,7 +639,7 @@ class UdpConn(NetConn):
 
 
 # ============== UDP 组播 (multicast) ==============
-class UdpGroupConn(NetConn):
+class UdpGroupConn(_UdpBase):
     """加入组播组收发：bind 端口(ShareAddress) → joinMulticastGroup(组地址)。
     发送直接发往组地址:端口。iface_ip 指定出网卡(空=默认路由)。"""
 
@@ -592,9 +648,6 @@ class UdpGroupConn(NetConn):
         self._iface_ip = iface_ip
         self._group = group_ip
         self._port = port
-        self._sock = None
-        self._last_peer = None       # (QHostAddress, port) last datagram sender
-        self._last_peer_key = None
 
     def open(self):
         # 防御性守卫：重复 open() 先关闭旧的
@@ -630,17 +683,9 @@ class UdpGroupConn(NetConn):
         self.state_changed.emit(True)
         return True
 
-    def _on_read(self):
-        while self._sock and self._sock.hasPendingDatagrams():
-            size = self._sock.pendingDatagramSize()
-            data, host, port = self._sock.readDatagram(size)
-            self._last_peer = (host, port)
-            key = (host.toString(), port)
-            if key != self._last_peer_key:
-                self._last_peer_key = key
-                self.peer_changed.emit(host.toString(), port)
-            if data:
-                self.data_received.emit(bytes(data))
+    def _release_udp_extras(self):
+        # 三步各自兜底：退组失败以前会连带跳过 close/deleteLater，socket 泄漏且没退组
+        _safe(self._sock.leaveMulticastGroup, QHostAddress(self._group))
 
     def peer_endpoint(self):
         """Return the source endpoint of the most recently emitted datagram."""
@@ -658,20 +703,3 @@ class UdpGroupConn(NetConn):
             return 0
         n = self._sock.writeDatagram(data, QHostAddress(self._group), self._port)
         return n if n != -1 else 0
-
-    def close(self):
-        was_open = bool(self._sock)
-        if self._sock:
-            # 三步各自兜底：退组失败以前会连带跳过 close/deleteLater，socket 泄漏且没退组
-            _safe(self._sock.leaveMulticastGroup, QHostAddress(self._group))
-            _safe(self._sock.close)
-            _safe(self._sock.deleteLater)
-            self._sock = None
-        self._last_peer = None
-        self._last_peer_key = None
-        if was_open:
-            self.state_changed.emit(False)
-
-    @property
-    def is_open(self):
-        return self._sock is not None

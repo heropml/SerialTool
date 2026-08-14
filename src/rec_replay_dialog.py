@@ -292,6 +292,16 @@ class RecReplayDialog(QDialog):
         if not pcap_export.can_export_link(link):
             self.app.toast(self.app._t("rr_pcap_unsupported"), error=True)
             return
+        peers = pcap_export.list_export_peers(self._events, link)
+        if (str((link or {}).get("proto") or "") == "TCP Server"
+                and len(peers) > 1):
+            listing = "\n".join("%s:%s" % (ip, port) for ip, port in peers)
+            if not self.app._confirm_dlg(
+                    self.app._t("rr_pcap_peers_title"),
+                    self.app._t("rr_pcap_peers_confirm",
+                                n=len(peers), peers=listing),
+                    danger=False):
+                return
         path, _ = QFileDialog.getSaveFileName(
             self, self.app._t("rr_export_pcap"), "capture.pcap",
             "Wireshark PCAP (*.pcap);;Wireshark PCAPNG (*.pcapng);;All Files (*)")

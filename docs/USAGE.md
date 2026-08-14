@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.5.7](#whats-new-in-v157)
 - [What's New in v1.5.6](#whats-new-in-v156)
 - [What's New in v1.5.5](#whats-new-in-v155)
 - [What's New in v1.5.4](#whats-new-in-v154)
@@ -42,6 +43,19 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+
+---
+
+## What's New in v1.5.7
+
+PCAP, highlighting, and send/log polish on the v1.5.6 baseline:
+
+- **TCP Server multi-client PCAP** — more than one peer (targeted replies and `__all__` broadcast) can export `.pcap` / `.pcapng`; each client gets its own 4-tuple; confirm the peer list when more than one; broadcasts expand to clients present at send time, not clients that appear later; old single-peer `.ctrec` still exports.
+- **Incremental keyword highlight** — dirty range is the accumulated tail, so long sessions with head-trim no longer miss highlights; terminal mode is part of the rule key; `ESC[2J` clears leftover selections.
+- **Search throttle** — 150 ms debounce; skip a full-document scan when the query is unchanged; rebuild the current page when the document grows.
+- **Ctrl+Enter sends** — Enter still inserts a newline; IME composition is committed first; terminal mode is unchanged.
+- **Live log** — flush after each write, coalesced ~1 s `fsync`; a full disk still closes the log; idle-sync errors stay inside the timer slot.
+- **Boundary** — no session tree / split / undock; P2 still deferred; macOS DMG still added by collaborator via `release_macos.sh`.
 
 ---
 
@@ -97,7 +111,7 @@ UX polish and engineering gates on the v1.5.2 baseline:
 Visualization, export, and replay hardening on the v1.5.1 baseline:
 
 - **Plot & dashboard** — waveform / XY / histogram views, dual-Y + cursor stats; dashboard widgets Number / Gauge / LED / Progress; register-fed alert levels no longer blink off on text `feed`.
-- **Excel / PCAP** — sequence + structured-record `.xlsx` export; PCAP/pcapng for TCP Client/Server (single peer), UDP and multicast (serial stays `.ctrec`).
+- **Excel / PCAP** — sequence + structured-record `.xlsx` export; PCAP/pcapng for TCP Client, TCP Server (including multiple clients), UDP and multicast (serial stays `.ctrec`).
 - **Drive real TX replay** — optional `drive_tx` mode with confirmations, consecutive-fail pause, partial-write failure; default remains Virtual RX inject.
 - **Sessions / examples** — multi-send cycles continue per session like periodic send; more example projects; UI tips for window-owned tools.
 - **Audit polish** — High/Medium/Low fixes (replay filter sync, serial reconfig race, stale RX drop, HEX search alignment, `open_conn` replace guard, …).
@@ -179,7 +193,7 @@ This release finishes the remaining P1 polish:
 - **Multi-slave row table** -- the Modbus slave dialog replaces the JSON textarea with Addr / Server ID / Extra JSON rows (add/remove). Duplicate addresses are rejected with a toast; hand-edited project JSON still keeps the first address at runtime.
 - **Jump to session time** -- click the status-bar RX/TX stats to jump to the latest sample wall time; double-click a session-compare row to jump via `.ctrec` `wall_t0` (older recordings without the anchor show a toast). New recordings store `wall_t0`.
 - **Data-area bookmarks** -- `Ctrl+F2` toggles a bookmark on the current line; `F2` / `Shift+F2` move next/prev (wrapping). Clearing the data area or an ANSI full clear (`ESC[2J`) drops bookmarks.
-- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next focus is stability / multi-session polish and cross-platform CI (P2 CLI / API / plugins remain deferred). PCAP export supports TCP Client/Server (single peer), UDP, UDP Multicast as `.pcap` / `.pcapng`.
+- **Docs** -- P1 roadmap items are complete; stale "still TODO" notes cleaned up. Next focus is stability / multi-session polish and cross-platform CI (P2 CLI / API / plugins remain deferred). PCAP export supports TCP Client, TCP Server (including multiple clients), UDP, UDP Multicast as `.pcap` / `.pcapng`.
 - **v1.4 stability follow-up** -- register definitions now cover 64-bit values, bitfields and warning/alarm levels; Modbus Master adds grouped views, FC22 mask writes and FC43/14 device identification; trigger actions add Webhook / external commands with hit thresholds; and the Bridge page includes a real multi-client Modbus TCP↔RTU gateway. External command processes are reaped on shutdown, including POSIX child process groups.
 
 ---
@@ -252,7 +266,7 @@ This release is about seeing more clearly, changing faster, and telling recordin
 This release is about getting work done without hardware on the desk:
 
 - **Virtual connection** — a new `Virtual` entry in the Type dropdown: bring up a connection with no hardware attached, and auto-reply / test sequences / the script console / plot / dashboard / protocol highlighting all keep working as usual. Turn on **Loopback** and whatever you send comes back as if received, so you can write and verify rules and scripts on the road.
-- **Record / replay** — Function → Record / Replay: capture the raw traffic on the link together with its timing into a `.ctrec` file (plain text, readable and diffable), then re-inject it at the original pace with a 0.5x–max speed control and optional looping. Capture once on site and reproduce it later, or send the scene to a colleague. Division of labour with macro recording: the macro records *what you sent* and produces a script, this records *the raw bytes on the wire* and produces data. Replay targets the virtual connection (injecting "received data" into a real serial port isn't physically meaningful). Later releases add **Export PCAP** in the same dialog: TCP Client/Server (single client), UDP (fixed remote), and UDP Multicast can export synthetic `.pcap` / `.pcapng` (not NIC capture); serial etc. still use `.ctrec`.
+- **Record / replay** — Function → Record / Replay: capture the raw traffic on the link together with its timing into a `.ctrec` file (plain text, readable and diffable), then re-inject it at the original pace with a 0.5x–max speed control and optional looping. Capture once on site and reproduce it later, or send the scene to a colleague. Division of labour with macro recording: the macro records *what you sent* and produces a script, this records *the raw bytes on the wire* and produces data. Replay targets the virtual connection (injecting "received data" into a real serial port isn't physically meaningful). Later releases add **Export PCAP** in the same dialog: TCP Client, TCP Server (including multiple clients; confirm the peer list when more than one), UDP (fixed remote), and UDP Multicast can export synthetic `.pcap` / `.pcapng` (not NIC capture); serial etc. still use `.ctrec`.
 - **Command DSL** — write timing directly in the send box: `AT\r\n\!(Delay500)AT+VER\r\n` sends AT, waits 500 ms, then sends the next one; `\!(Repeat3)PING\!(Delay200)` repeats the whole thing three times; also `\!(Wait)` / `\!(Hex)` / `\!(Text)`. Without any directive the text is sent exactly as before, so it's handy for a quick bit of automation without opening the script console.
 - **Task exclusion extended** — recording / replay / DSL now join the shared task table alongside the script console, sequences, file transfer, timed send and the Modbus master, so two of them can never fight over the link. No new dependencies.
 
@@ -733,6 +747,7 @@ RX and TX share one view; arrows indicate direction:
 
   Stray non-hex characters (e.g. `AA ZZ BB`) are rejected with a format error.
 
+- **Ctrl+Enter** — sends the current box (Enter still inserts a newline). Terminal mode is unchanged (Enter is passed through).
 - **Append CRLF** + **mode (CRLF / LF / CR)** — auto-append a newline after every send (handy for AT commands)
 - **Auto Send** + **Period ms** — send the current content periodically; minimum 10 ms; stops automatically if a send fails (not connected, bad format, no target, etc.)
 - **Checksum** (9 algorithms + None) — append a checksum to each transmission
@@ -885,7 +900,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.5.6`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.5.7`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

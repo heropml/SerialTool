@@ -821,7 +821,9 @@ TR = {
             "发送命令历史（↑↓）：\n"
             "  光标在首行按 ↑ 取上一条发过的命令\n"
             "  光标在末行按 ↓ 往后翻 / 回到当前草稿\n"
-            "  也可点「历史」按钮全文搜索后回填"
+            "  也可点「历史」按钮全文搜索后回填\n"
+            "\n"
+            "发送：Ctrl+Enter 发送（Enter 仍换行）"
         ),
         "multi_send": "多条发送",
         "multi_send_title": "多条发送",
@@ -865,6 +867,7 @@ TR = {
         "kw_group_tip": "双击分组名可改名",
         "read_file": "读取文件",
         "send_btn": "发  送",
+        "send_btn_tip": "Ctrl+Enter 发送（Enter 仍换行）",
         "state_closed": "● 未连接",
         "stat_pkt_unit": "包",
         "stat_reset": "重置统计",
@@ -919,7 +922,7 @@ TR = {
         "ar_script_tmpl": "def reply(frame, ctx):\n    # frame: bytes（命中帧）；ctx: state/seq/hits + crc/crc16/sum8/xor8/hexbytes/tohex\n    # 返回 bytes / list[bytes] / str / None\n    return bytes([0x06]) + frame[1:3]\n",
         "ar_script_help": "<b>脚本应答</b>：定义 <code>reply(frame, ctx)</code>，命中时动态生成应答（替代静态回复模板；脚本拥有整帧、<b>不自动叠校验</b>，自己用 ctx 算）。返回 <code>bytes</code>=一帧 / <code>list[bytes]</code>=多帧 / <code>str</code>=文本 / <code>None</code>=不回。<br><b>ctx</b>：<code>.state</code> 当前状态 · <code>.seq</code> 自增序号 · <code>.hits</code> 命中数；<code>.crc(data, width=16, poly=0x1021, init=0, refin=False, refout=False, xorout=0, byteorder='big')</code> 通用可定制 CRC；便捷 <code>.crc16</code>(Modbus) / <code>.crc8</code> / <code>.sum8</code> / <code>.xor8</code>；<code>.hexbytes('AA BB')</code>→bytes · <code>.tohex(b)</code>→'AA BB'。<br>故障注入 + 延时仍生效。⚠ 脚本在本机执行 Python；导入他人配置中的脚本会先征求同意。",
         "ar_mask_help": "<b>匹配语法</b>（HEX 模式）<br>• <code>AB</code> 整字节精确　<code>??</code>/<code>XX</code> 整字节通配<br>• <code>A?</code> / <code>?5</code> 半字节通配（高 / 低 4 位，<code>X</code> 同 <code>?</code>）<br>• <code>b:1xxxxxx1</code> 位掩码（8 位 <code>0/1/x</code>，<code>x</code>=该位不关心）<br>• 混写：<code>AA b:1001xxxx ?5</code><br>• 字段级：<code>?? ?? ?? b:xxxxxxx1</code> + 模式「前缀」= 第 4 字节 bit0 须为 1",
-        "ar_reply_ph": "应答（{r3}=第3字节 {r1+1}=加1 {r1^FF}=异或 {seq}=自增 {ts}=时间戳 | 分多帧）",
+        "ar_reply_ph": "应答（{{r3}}=第3字节 {{r1+1}}=加1 {{r1^FF}}=异或 {{seq}}=自增 {{ts}}=时间戳 | 分多帧）",
         "ar_btn_tip": "单击=打开配置，双击=切换开关",
         "ar_toast_on": "自动应答已开启",
         "ar_toast_off": "自动应答已关闭",
@@ -1004,7 +1007,7 @@ TR = {
         "ar_modbus_slaves_hint": "可选：多从机列表（填写后覆盖单地址表）。Extra 填 maps/dynamics/exception 的 JSON。",
         "ar_modbus_slaves_bad": "多从机配置无效",
         "ar_modbus_slaves_extra": "Extra JSON",
-        "ar_modbus_slaves_extra_ph": "{\"holding\":{\"0\":1}}",
+        "ar_modbus_slaves_extra_ph": "{{\"holding\":{{\"0\":1}}}}",
         "ar_modbus_slaves_add": "添加从机",
         "ar_modbus_space": "空间",
         "ar_modbus_start": "起始地址",
@@ -1015,7 +1018,7 @@ TR = {
         "ar_mb_coil": "线圈 0x",
         "ar_mb_discrete": "离散输入 1x",
         "ar_modbus_help_title": "Modbus 从机 — 说明与例子",
-        "ar_modbus_help": "让程序模拟一个 <b>Modbus RTU 从机</b>设备。开启后，收到的帧按 Modbus RTU 解析，<b>从机地址匹配且 CRC 正确</b>就按功能码自动组装标准响应回发：<br>• 读：<code>01</code> 线圈 / <code>02</code> 离散输入 / <code>03</code> 保持寄存器 / <code>04</code> 输入寄存器<br>• 写：<code>05</code> 单线圈 / <code>06</code> 单寄存器 / <code>0F</code> 多线圈 / <code>10</code> 多寄存器<br>• 诊断 / 标识：<code>08</code> 诊断（子功能 0 回显）/ <code>0B</code> 通信事件计数 / <code>11</code> 报告从机 ID / <code>17</code> 读写多寄存器（这四个写的是<b>十六进制</b>功能码；主机页的功能下拉按十进制显示成 08 / 11 / 17 / 23）<br>• 非法功能码 / 地址 / 数据 自动回<b>异常响应</b>（0x80|功能码 + 异常码）<br><br><b>寄存器表</b>：每行选「空间 + 起始地址 + 值」，值从起始地址起<b>连续填入</b>（逗号分隔）。寄存器值十进制或 <code>0x</code> 十六进制（0~65535）；线圈 / 离散用 <code>0/1</code>。未配置的地址默认 0。主机的写（05/06/0F/10）改<b>运行态</b>寄存器，断开 / 重连 / 关 Modbus 复位回这里的初值。<br><br><b>例</b>：空间「保持寄存器」、起始 <code>0</code>、值 <code>0x1234, 0x5678, 100</code> → 寄存器 0/1/2 = 0x1234 / 0x5678 / 100。主机发「读保持寄存器、起始 0、数量 2」→ 自动回 <code>01 03 04 12 34 56 78 …</code>。<br><b>注意</b>：开启 Modbus 从机后，普通应答规则与状态机不参与（整条引擎作为 Modbus 从机）；RTU 无帧头，本程序按「功能码长度 + CRC」切帧、跨包缓冲、CRC 错自动重同步。TCP 服务器模式会把响应精确发回请求客户端。<br><br><b>多从机</b>：「多从机 JSON 列表」里一个条目就是一个从机，如 <code>[{\"addr\":1,\"holding\":{\"0\":1}},{\"addr\":2}]</code>；条目里没写的项<b>继承上面的单从机设置</b>，但只要这个框非空就以它为准、上面的单地址表不再生效。广播地址 <code>0</code> 只接受写功能码，读和 08 / 0B / 11 / 17 一律不回复。<br><br><b>异常注入与动态寄存器</b>：勾「注入异常」并填「异常码」，从机就一直回异常响应。注入模式（<code>always</code> / <code>once</code> / <code>n</code> 次）、按功能码或起始地址过滤，以及寄存器值自动按 <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> 变化，<b>可在高级对话框里配置，也可写在工程文件里</b>，例如 <code>\"exception\":{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}</code> 与 <code>\"dynamics\":[{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}]</code>（<code>funcs</code> / <code>addrs</code> 留空表示不限）。这些字段本对话框保存时会原样保留。主机写进来的值会盖住动态值，直到断开或关闭 Modbus 才复位。",
+        "ar_modbus_help": "让程序模拟一个 <b>Modbus RTU 从机</b>设备。开启后，收到的帧按 Modbus RTU 解析，<b>从机地址匹配且 CRC 正确</b>就按功能码自动组装标准响应回发：<br>• 读：<code>01</code> 线圈 / <code>02</code> 离散输入 / <code>03</code> 保持寄存器 / <code>04</code> 输入寄存器<br>• 写：<code>05</code> 单线圈 / <code>06</code> 单寄存器 / <code>0F</code> 多线圈 / <code>10</code> 多寄存器<br>• 诊断 / 标识：<code>08</code> 诊断（子功能 0 回显）/ <code>0B</code> 通信事件计数 / <code>11</code> 报告从机 ID / <code>17</code> 读写多寄存器（这四个写的是<b>十六进制</b>功能码；主机页的功能下拉按十进制显示成 08 / 11 / 17 / 23）<br>• 非法功能码 / 地址 / 数据 自动回<b>异常响应</b>（0x80|功能码 + 异常码）<br><br><b>寄存器表</b>：每行选「空间 + 起始地址 + 值」，值从起始地址起<b>连续填入</b>（逗号分隔）。寄存器值十进制或 <code>0x</code> 十六进制（0~65535）；线圈 / 离散用 <code>0/1</code>。未配置的地址默认 0。主机的写（05/06/0F/10）改<b>运行态</b>寄存器，断开 / 重连 / 关 Modbus 复位回这里的初值。<br><br><b>例</b>：空间「保持寄存器」、起始 <code>0</code>、值 <code>0x1234, 0x5678, 100</code> → 寄存器 0/1/2 = 0x1234 / 0x5678 / 100。主机发「读保持寄存器、起始 0、数量 2」→ 自动回 <code>01 03 04 12 34 56 78 …</code>。<br><b>注意</b>：开启 Modbus 从机后，普通应答规则与状态机不参与（整条引擎作为 Modbus 从机）；RTU 无帧头，本程序按「功能码长度 + CRC」切帧、跨包缓冲、CRC 错自动重同步。TCP 服务器模式会把响应精确发回请求客户端。<br><br><b>多从机</b>：「多从机 JSON 列表」里一个条目就是一个从机，如 <code>[{{\"addr\":1,\"holding\":{{\"0\":1}}}},{{\"addr\":2}}]</code>；条目里没写的项<b>继承上面的单从机设置</b>，但只要这个框非空就以它为准、上面的单地址表不再生效。广播地址 <code>0</code> 只接受写功能码，读和 08 / 0B / 11 / 17 一律不回复。<br><br><b>异常注入与动态寄存器</b>：勾「注入异常」并填「异常码」，从机就一直回异常响应。注入模式（<code>always</code> / <code>once</code> / <code>n</code> 次）、按功能码或起始地址过滤，以及寄存器值自动按 <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> 变化，<b>可在高级对话框里配置，也可写在工程文件里</b>，例如 <code>\"exception\":{{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}}</code> 与 <code>\"dynamics\":[{{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}}]</code>（<code>funcs</code> / <code>addrs</code> 留空表示不限）。这些字段本对话框保存时会原样保留。主机写进来的值会盖住动态值，直到断开或关闭 Modbus 才复位。",
         "ar_frame_help_title": "帧头+长度组帧 — 说明与例子",
         "ar_frame_help": "用于<b>有固定帧头 + 长度字段</b>的二进制协议：程序跨包缓冲收到的字节，按帧头定位、读长度字段算出整帧边界来切分，正确处理串口/TCP 的<b>粘包/拆包</b>（比「整包静默超时」更准、不引入延迟）。不勾选时按「每个接收块=一帧」或「静默超时」分帧。<br><br>各项：<br>• <b>帧头</b>：hex，如 <code>AA BB</code>，只认以它开头的帧<br>• <b>长度偏移</b>：长度字段在帧内的字节位置（0 基）<br>• <b>宽</b>：长度字段占几字节（1/2/4）<br>• <b>LE/BE</b>：长度字段的字节序（小端/大端）<br>• <b>整帧=长度+</b>：整帧总长 = 长度字段的值 + 这个固定开销（帧头/长度/校验等没算进长度字段的字节数）<br><br><b>例</b>：协议 <code>AA BB │ 长度(1B) │ 数据… │ 校验(1B)</code>，长度字段 = 数据字节数。<br>设：帧头 <code>AA BB</code>、长度偏移 <code>2</code>、宽 <code>1</code>、<code>LE</code>、整帧=长度+ <code>4</code>（=帧头2 + 长度1 + 校验1）。<br>收到 <code>AA BB 03 11 22 33 7E</code> → 长度=3 → 整帧=3+4=7 字节，正好切一帧；粘了下一帧也能正确切开。",
         "ar_fault_help_title": "故障注入 — 说明与例子",
@@ -1043,21 +1046,21 @@ TR = {
             "<b>用法</b>：收到数据按规则匹配 → 自动发应答。多条规则按顺序，命中第一条即停（一帧最多回一条）。仅在已连接 + 总开关开启时生效。<br>"
             "<b>匹配</b>：HEX/文本 × 包含/相等/<b>前缀</b>。HEX 模式 <code>??</code> 通配单字节（如 <code>54 ?? 03</code>）；更细粒度可用 <b>半字节</b> <code>A?</code>/<code>?5</code>（高/低 4 位）和 <b>位掩码</b> <code>b:1xxxxxx1</code>（8 位 <code>0/1/x</code>，<code>x</code>=该位不关心）。按帧首字节区分类型 <b>请用「前缀」别用「包含」</b>（避免别帧数据里同字节误命中）。<br>"
             "<b>应答占位符</b>（在「回复」框写）："
-            "<code>{rN}</code>=收到帧第 N 字节(0基) &nbsp; "
-            "<code>{rN-M}</code>=第 N..M 字节 &nbsp; "
-            "<code>{rN+K}</code>=加 K(mod256) &nbsp; "
-            "<code>{rN^K}</code>=XOR K &nbsp; "
-            "<code>{seq}</code>=自增 1B &nbsp; "
-            "<code>{ts}</code>=毫秒时间戳 4B BE。"
+            "<code>{{rN}}</code>=收到帧第 N 字节(0基) &nbsp; "
+            "<code>{{rN-M}}</code>=第 N..M 字节 &nbsp; "
+            "<code>{{rN+K}}</code>=加 K(mod256) &nbsp; "
+            "<code>{{rN^K}}</code>=XOR K &nbsp; "
+            "<code>{{seq}}</code>=自增 1B &nbsp; "
+            "<code>{{ts}}</code>=毫秒时间戳 4B BE。"
             "用 <code>|</code> 分多帧（如 <code>06 | 04 03 02 01</code> 先回 06、隔延时再回 04 03 02 01）。<br>"
             "<b>时序</b>：<b>整包超时</b>=静默 N ms 视作整帧再匹配（Modbus 分帧）；<b>延时</b>=匹配后等待 N ms 再回（从机 turnaround）；<b>冷却</b>=同一规则 N ms 内只响一次（防风暴）。<br>"
             "<br><b>例 1（MOBUS 设备，回包带回收到帧字节 + 自动补 CRC）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = 54     HEX ✓  模式=前缀   收校验 = MOBUS\n"
-            "回复 = 03 {r2} {r1} 00   HEX ✓  校验 = MOBUS\n"
+            "回复 = 03 {{r2}} {{r1}} 00   HEX ✓  校验 = MOBUS\n"
             "收: 54 03 01 02 ... CRC  →  回: 03 01 03 00 ... CRC（CRC 自动补）</pre>"
             "<b>例 2（心跳应答带本机序号 + 时间戳）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓  模式=相等\n"
-            "回复 = 55 {ts} {seq}   HEX ✓\n"
+            "回复 = 55 {{ts}} {{seq}}   HEX ✓\n"
             "收: AA  →  回: 55 F4 50 38 17 01（4B 时戳 + 自增序号）</pre>"
             "<b>例 3（HEX 通配 + 多帧 ACK+DATA）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = 54 ?? 03   模式=包含    回复 = 06 | 04 03 02 01    延时 = 10 ms\n"
@@ -1068,15 +1071,15 @@ TR = {
             "收: AT+VER?  →  回: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
             "<b>例 5（多规则按帧类型分流 — 命中即停）：</b>"
             "<pre style='margin:2px 0 2px 16px'>设备协议多种帧类型，每种一条规则按顺序排：\n"
-            "  规则 1: 匹配 = 54   模式=前缀   →   回 03 {r2} {r1} 00   校验=MOBUS\n"
-            "  规则 2: 匹配 = 02   模式=前缀   →   回 03 {r1} 00 00     校验=MOBUS\n"
-            "  规则 3: 匹配 = 04   模式=前缀   →   回 03 {r1} {r2} {r3} 校验=MOBUS\n"
+            "  规则 1: 匹配 = 54   模式=前缀   →   回 03 {{r2}} {{r1}} 00   校验=MOBUS\n"
+            "  规则 2: 匹配 = 02   模式=前缀   →   回 03 {{r1}} 00 00     校验=MOBUS\n"
+            "  规则 3: 匹配 = 04   模式=前缀   →   回 03 {{r1}} {{r2}} {{r3}} 校验=MOBUS\n"
             "首字节决定走哪条；前缀模式按字节对齐，绝不会因别帧数据里含 02 误触发</pre>"
-            "<b>例 6（字节范围 + 算术 + 限流，{r1-4} {r1+1} {r2^FF}）：</b>"
+            "<b>例 6（字节范围 + 算术 + 限流，{{r1-4}} {{r1+1}} {{r2^FF}}）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓   模式=相等   冷却 = 200 ms\n"
-            "回复 = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "回复 = {{r1-4}} {{r1+1}} {{r2^FF}}   HEX ✓\n"
             "收: AA 10 20 30 40 50  →  回: 10 20 30 40 50 11 DF\n"
-            "  ({r1-4}=回填第1..4字节  {r1+1}=10+1=11  {r2^FF}=20 XOR FF = DF)\n"
+            "  ({{r1-4}}=回填第1..4字节  {{r1+1}}=10+1=11  {{r2^FF}}=20 XOR FF = DF)\n"
             "即使设备 10ms 发一帧，每 200ms 才回一次（冷却把中间的吃掉）</pre>"
         ),
         "plot_open": "波形图",
@@ -1239,10 +1242,12 @@ TR = {
         "rr_rec_stop": "■ 停止",
         "rr_save": "保存",
         "rr_export_pcap": "导出 PCAP",
-        "rr_export_pcap_tip": "将当前录制导出为 Wireshark 可打开的 .pcap / .pcapng（TCP Client/Server 单对端、UDP、UDP 组播）",
-        "rr_pcap_unsupported": "当前录制无法导出 PCAP：需 TCP Client/Server（单客户端）、UDP（指定远程）或 UDP 组播",
+        "rr_export_pcap_tip": "将当前录制导出为 Wireshark 可打开的 .pcap / .pcapng（TCP Client、TCP Server 含多客户端、UDP、UDP 组播）",
+        "rr_pcap_unsupported": "当前录制无法导出 PCAP：需 TCP Client/Server、UDP（指定远程）或 UDP 组播",
         "rr_pcap_exported": "已导出 PCAP：{path}（{n} 包）",
         "rr_pcap_failed": "导出 PCAP 失败：{e}",
+        "rr_pcap_peers_title": "确认 PCAP 对端",
+        "rr_pcap_peers_confirm": "将为以下 {n} 个客户端各合成一条 TCP 流：\n{peers}\n是否继续导出？",
         "rr_replay": "回放",
         "rr_load": "载入",
         "rr_speed": "倍速",
@@ -1285,7 +1290,7 @@ TR = {
         "rr_hint": "录制 = 把线路上的原始收发流按时序存成 .ctrec；回放默认注入虚拟连接的 RX。勾「驱动真实 TX」可把录制的 TX 经当前打开连接原样发出（需危险确认，非默认）。TCP/UDP 可另导出 .pcap / .pcapng。",
         "rr_help_btn": "使用说明",
         "rr_help_title": "数据录制 / 回放 · 使用说明",
-        "rr_help": '<b>数据录制 / 回放</b> 把线路上的<b>原始收发流</b>按时序录下来存成 <code>.ctrec</code> 文件，之后可以当成「设备」重新播一遍 —— 用来无硬件复现问题、离线调试，或者把现场直接发给同事。<br><br><b>与「宏录制」的分工</b><br>• 宏录制录的是<b>你发了什么</b>，产出可编辑的脚本（语义化，用来重复操作）<br>• 本功能录的是<b>线路上的原始字节</b>（含设备回的数据），产出数据文件（用来重现现场）<br><br><b>录制</b><br>连上任意连接后点「● 录制」，正常收发，完成后点「■ 停止」，再「保存」成 <code>.ctrec</code>。文件是 JSON Lines 文本格式，可读、可 diff、可手改：每行一个事件，<code>t</code> 是相对开始的秒数、<code>d</code> 是方向、<code>b</code> 是 HEX 字节。<br><br><b>导出 PCAP</b><br>TCP Client/Server（需选定单个客户端）、UDP（指定远程）、UDP 组播，可把当前事件导出为标准 <code>.pcap</code> / <code>.pcapng</code>（合成以太网/IP/传输层头），用 Wireshark 打开。串口、UDP 回复模式不支持。这不是系统网卡抓包，只保留时序与载荷方向。<br><br><b>回放（虚拟注入）</b><br>「载入」→「播放」：默认把录到的 <b>RX</b> 按原时间间隔注入 <code>Virtual</code> 连接（勾「含发送」会把当时 TX 一并注入，易造成自问自答）。注入模式需先连虚拟连接。<br><br><b>驱动真实 TX（非默认）</b><br>勾「驱动真实 TX」后，只重放录制的 <b>TX</b>，经当前打开的连接原样发出（串口/TCP/UDP 均可；TCP Server 须选定单个客户端）。会弹出危险确认；勾循环或「最快」会再确认一次。期间会暂停 Modbus 主机轮询与自动应答，避免总线双重发送。发送失败会计数并可能自动暂停。',
+        "rr_help": '<b>数据录制 / 回放</b> 把线路上的<b>原始收发流</b>按时序录下来存成 <code>.ctrec</code> 文件，之后可以当成「设备」重新播一遍 —— 用来无硬件复现问题、离线调试，或者把现场直接发给同事。<br><br><b>与「宏录制」的分工</b><br>• 宏录制录的是<b>你发了什么</b>，产出可编辑的脚本（语义化，用来重复操作）<br>• 本功能录的是<b>线路上的原始字节</b>（含设备回的数据），产出数据文件（用来重现现场）<br><br><b>录制</b><br>连上任意连接后点「● 录制」，正常收发，完成后点「■ 停止」，再「保存」成 <code>.ctrec</code>。文件是 JSON Lines 文本格式，可读、可 diff、可手改：每行一个事件，<code>t</code> 是相对开始的秒数、<code>d</code> 是方向、<code>b</code> 是 HEX 字节。<br><br><b>导出 PCAP</b><br>TCP Client、TCP Server（含多客户端，多于一个对端时导出前会列出确认）、UDP（指定远程）、UDP 组播，可把当前事件导出为标准 <code>.pcap</code> / <code>.pcapng</code>（合成以太网/IP/传输层头），用 Wireshark 打开。串口、UDP 回复模式不支持。这不是系统网卡抓包，只保留时序与载荷方向。<br><br><b>回放（虚拟注入）</b><br>「载入」→「播放」：默认把录到的 <b>RX</b> 按原时间间隔注入 <code>Virtual</code> 连接（勾「含发送」会把当时 TX 一并注入，易造成自问自答）。注入模式需先连虚拟连接。<br><br><b>驱动真实 TX（非默认）</b><br>勾「驱动真实 TX」后，只重放录制的 <b>TX</b>，经当前打开的连接原样发出（串口/TCP/UDP 均可；TCP Server 须选定单个客户端）。会弹出危险确认；勾循环或「最快」会再确认一次。期间会暂停 Modbus 主机轮询与自动应答，避免总线双重发送。发送失败会计数并可能自动暂停。',
         "sc_title": "脚本控制台",
         "sc_script": "脚本",
         "sc_new": "新建",
@@ -2492,7 +2497,9 @@ TR = {
             "Send history (Up/Down):\n"
             "  Up at first line  -> previous sent command\n"
             "  Down at last line -> next command / back to draft\n"
-            "  Or use the History button to search and refill"
+            "  Or use the History button to search and refill\n"
+            "\n"
+            "Send: Ctrl+Enter sends (Enter still inserts a newline)"
         ),
         "multi_send": "Multi-Send",
         "multi_send_title": "Multi-Send",
@@ -2536,6 +2543,7 @@ TR = {
         "kw_group_tip": "Double-click a group to rename",
         "read_file": "Load File",
         "send_btn": "Send",
+        "send_btn_tip": "Ctrl+Enter to send (Enter still inserts a newline)",
         "state_closed": "● Disconnected",
         "stat_pkt_unit": "pkt",
         "stat_reset": "Reset Statistics",
@@ -2590,7 +2598,7 @@ TR = {
         "ar_script_tmpl": "def reply(frame, ctx):\n    # frame: bytes (matched frame); ctx: state/seq/hits + crc/crc16/sum8/xor8/hexbytes/tohex\n    # return bytes / list[bytes] / str / None\n    return bytes([0x06]) + frame[1:3]\n",
         "ar_script_help": "<b>Scripted reply</b>: define <code>reply(frame, ctx)</code> to build the reply dynamically (replaces the static template; the script owns the whole frame, <b>no checksum is auto-appended</b> — compute it via ctx). Return <code>bytes</code>=one frame / <code>list[bytes]</code>=multi / <code>str</code>=text / <code>None</code>=no reply.<br><b>ctx</b>: <code>.state</code> current state · <code>.seq</code> · <code>.hits</code>; <code>.crc(data, width=16, poly=0x1021, init=0, refin=False, refout=False, xorout=0, byteorder='big')</code> general customizable CRC; shortcuts <code>.crc16</code>(Modbus) / <code>.crc8</code> / <code>.sum8</code> / <code>.xor8</code>; <code>.hexbytes('AA BB')</code>→bytes · <code>.tohex(b)</code>→'AA BB'.<br>Fault injection + delay still apply. ⚠ scripts run Python locally; scripts inside imported configs ask for consent first.",
         "ar_mask_help": "<b>Match syntax</b> (HEX mode)<br>• <code>AB</code> exact byte　<code>??</code>/<code>XX</code> byte wildcard<br>• <code>A?</code> / <code>?5</code> nibble wildcard (high / low 4 bits; <code>X</code> = <code>?</code>)<br>• <code>b:1xxxxxx1</code> bit-mask (8 of <code>0/1/x</code>; <code>x</code> = don't-care)<br>• mix: <code>AA b:1001xxxx ?5</code><br>• field: <code>?? ?? ?? b:xxxxxxx1</code> + 'prefix' mode = byte 4 bit0 must be 1",
-        "ar_reply_ph": "reply ({r3}=byte 3 {r1+1}=add {r1^FF}=xor {seq}=counter {ts}=timestamp; | splits into multiple frames)",
+        "ar_reply_ph": "reply ({{r3}}=byte 3 {{r1+1}}=add {{r1^FF}}=xor {{seq}}=counter {{ts}}=timestamp; | splits into multiple frames)",
         "ar_btn_tip": "Click = open config, double-click = toggle on/off",
         "ar_toast_on": "Auto-reply enabled",
         "ar_toast_off": "Auto-reply disabled",
@@ -2675,7 +2683,7 @@ TR = {
         "ar_modbus_slaves_hint": "Optional multi-slave rows (override single-addr table). Extra = JSON for maps/dynamics/exception.",
         "ar_modbus_slaves_bad": "Invalid multi-slave config",
         "ar_modbus_slaves_extra": "Extra JSON",
-        "ar_modbus_slaves_extra_ph": "{\"holding\":{\"0\":1}}",
+        "ar_modbus_slaves_extra_ph": "{{\"holding\":{{\"0\":1}}}}",
         "ar_modbus_slaves_add": "Add slave",
         "ar_modbus_space": "Space",
         "ar_modbus_start": "Start addr",
@@ -2686,7 +2694,7 @@ TR = {
         "ar_mb_coil": "Coils 0x",
         "ar_mb_discrete": "Discrete 1x",
         "ar_modbus_help_title": "Modbus slave — help & examples",
-        "ar_modbus_help": "Make the app emulate a <b>Modbus RTU slave</b> device. When on, incoming frames are parsed as Modbus RTU; if the <b>slave address matches and CRC is valid</b>, a standard response is auto-built by function code:<br>• Read: <code>01</code> coils / <code>02</code> discrete inputs / <code>03</code> holding regs / <code>04</code> input regs<br>• Write: <code>05</code> single coil / <code>06</code> single reg / <code>0F</code> multiple coils / <code>10</code> multiple regs<br>• Diagnostics / ID: <code>08</code> diagnostics (sub-function 0, echo) / <code>0B</code> comm event counter / <code>11</code> report server ID / <code>17</code> read/write multiple regs (these four are <b>hex</b> codes; the master page's function list shows them in decimal as 08 / 11 / 17 / 23)<br>• Illegal function / address / value auto-returns an <b>exception</b> (0x80|func + code)<br><br><b>Register table</b>: each row picks Space + Start addr + Values, filled <b>consecutively</b> from the start (comma-separated). Register values are decimal or <code>0x</code> hex (0–65535); coils/discrete use <code>0/1</code>. Unlisted addresses default to 0. The master's writes (05/06/0F/10) change the <b>runtime</b> registers; disconnect/reconnect/disabling Modbus resets to the values configured here.<br><br><b>Example</b>: Space Holding, Start <code>0</code>, Values <code>0x1234, 0x5678, 100</code> → regs 0/1/2 = 0x1234 / 0x5678 / 100. Master sends 'read holding, start 0, count 2' → auto-replies <code>01 03 04 12 34 56 78 …</code>.<br><b>Note</b>: with Modbus slave on, normal reply rules and the state machine don't participate (the whole engine acts as the slave); RTU has no header, so frames are split by function-code length + CRC, with cross-packet buffering and auto-resync on CRC error. In TCP server mode, each response is routed precisely to the requesting client.<br><br><b>Multiple slaves</b>: each entry of the multi-slave JSON list is one slave, e.g. <code>[{\"addr\":1,\"holding\":{\"0\":1}},{\"addr\":2}]</code>; keys omitted from an entry <b>inherit the single-slave settings above</b>, but a non-empty box wins and the single address table above stops applying. Broadcast address <code>0</code> accepts write functions only; reads and 08 / 0B / 11 / 17 get no reply.<br><br><b>Exception injection and dynamic registers</b>: tick 'Inject exception' and set 'Exc code' to make the slave answer with an exception. The injection mode (<code>always</code> / <code>once</code> / <code>n</code> times), filtering by function code or start address, and registers that change by themselves via <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> have <b>can be set in the advanced dialog, or written into the project file</b>, e.g. <code>\"exception\":{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}</code> and <code>\"dynamics\":[{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}]</code> (empty <code>funcs</code> / <code>addrs</code> means any). This dialog keeps those fields untouched when saving. A master write overrides the dynamic value until you disconnect or turn Modbus off.",
+        "ar_modbus_help": "Make the app emulate a <b>Modbus RTU slave</b> device. When on, incoming frames are parsed as Modbus RTU; if the <b>slave address matches and CRC is valid</b>, a standard response is auto-built by function code:<br>• Read: <code>01</code> coils / <code>02</code> discrete inputs / <code>03</code> holding regs / <code>04</code> input regs<br>• Write: <code>05</code> single coil / <code>06</code> single reg / <code>0F</code> multiple coils / <code>10</code> multiple regs<br>• Diagnostics / ID: <code>08</code> diagnostics (sub-function 0, echo) / <code>0B</code> comm event counter / <code>11</code> report server ID / <code>17</code> read/write multiple regs (these four are <b>hex</b> codes; the master page's function list shows them in decimal as 08 / 11 / 17 / 23)<br>• Illegal function / address / value auto-returns an <b>exception</b> (0x80|func + code)<br><br><b>Register table</b>: each row picks Space + Start addr + Values, filled <b>consecutively</b> from the start (comma-separated). Register values are decimal or <code>0x</code> hex (0–65535); coils/discrete use <code>0/1</code>. Unlisted addresses default to 0. The master's writes (05/06/0F/10) change the <b>runtime</b> registers; disconnect/reconnect/disabling Modbus resets to the values configured here.<br><br><b>Example</b>: Space Holding, Start <code>0</code>, Values <code>0x1234, 0x5678, 100</code> → regs 0/1/2 = 0x1234 / 0x5678 / 100. Master sends 'read holding, start 0, count 2' → auto-replies <code>01 03 04 12 34 56 78 …</code>.<br><b>Note</b>: with Modbus slave on, normal reply rules and the state machine don't participate (the whole engine acts as the slave); RTU has no header, so frames are split by function-code length + CRC, with cross-packet buffering and auto-resync on CRC error. In TCP server mode, each response is routed precisely to the requesting client.<br><br><b>Multiple slaves</b>: each entry of the multi-slave JSON list is one slave, e.g. <code>[{{\"addr\":1,\"holding\":{{\"0\":1}}}},{{\"addr\":2}}]</code>; keys omitted from an entry <b>inherit the single-slave settings above</b>, but a non-empty box wins and the single address table above stops applying. Broadcast address <code>0</code> accepts write functions only; reads and 08 / 0B / 11 / 17 get no reply.<br><br><b>Exception injection and dynamic registers</b>: tick 'Inject exception' and set 'Exc code' to make the slave answer with an exception. The injection mode (<code>always</code> / <code>once</code> / <code>n</code> times), filtering by function code or start address, and registers that change by themselves via <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> have <b>can be set in the advanced dialog, or written into the project file</b>, e.g. <code>\"exception\":{{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}}</code> and <code>\"dynamics\":[{{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}}]</code> (empty <code>funcs</code> / <code>addrs</code> means any). This dialog keeps those fields untouched when saving. A master write overrides the dynamic value until you disconnect or turn Modbus off.",
         "ar_frame_help_title": "Header + Length framing — help & examples",
         "ar_frame_help": "For binary protocols with a <b>fixed header + length field</b>: bytes are buffered across packets, located by header, and split at the real frame boundary computed from the length field — correctly handling serial/TCP <b>packet join/split</b> (more accurate than idle-timeout, no added delay). When off, framing falls back to per-received-block or idle-timeout.<br><br>Fields:<br>• <b>Header</b>: hex, e.g. <code>AA BB</code>; only frames starting with it<br>• <b>Len offset</b>: byte position of the length field in the frame (0-based)<br>• <b>Width</b>: bytes of the length field (1/2/4)<br>• <b>LE/BE</b>: endianness of the length field<br>• <b>frame = len +</b>: total length = length-field value + this fixed overhead (header/length/checksum bytes not counted by the length field)<br><br><b>Example</b>: protocol <code>AA BB │ len(1B) │ data… │ sum(1B)</code>, length = number of data bytes.<br>Set header <code>AA BB</code>, len offset <code>2</code>, width <code>1</code>, <code>LE</code>, frame=len+ <code>4</code> (= header 2 + len 1 + sum 1).<br>Receive <code>AA BB 03 11 22 33 7E</code> → len=3 → frame = 3+4 = 7 bytes, split as one frame; a following concatenated frame is split correctly too.",
         "ar_fault_help_title": "Fault injection — help & examples",
@@ -2716,21 +2724,21 @@ TR = {
             "<b>How it works</b>: incoming data is matched against rules → auto-sends the reply. Rules checked in order, first match wins (at most one reply per frame). Active only when connected and master switch is on.<br>"
             "<b>Match</b>: HEX/text × contains/equals/<b>prefix</b>. In HEX, <code>??</code> is a single-byte wildcard (e.g. <code>54 ?? 03</code>). For finer granularity use <b>nibble</b> <code>A?</code>/<code>?5</code> (high/low 4 bits) and a <b>bit-mask</b> <code>b:1xxxxxx1</code> (8 of <code>0/1/x</code>, <code>x</code> = don't-care bit). To distinguish frame types by the first byte, <b>use prefix, not contains</b> (else that byte inside other frames' data causes false matches).<br>"
             "<b>Reply placeholders</b> (in the Reply field): "
-            "<code>{rN}</code>=received byte N (0-based) &nbsp; "
-            "<code>{rN-M}</code>=range &nbsp; "
-            "<code>{rN+K}</code>=add K (mod256) &nbsp; "
-            "<code>{rN^K}</code>=XOR K &nbsp; "
-            "<code>{seq}</code>=auto-increment 1B &nbsp; "
-            "<code>{ts}</code>=ms timestamp 4B BE. "
+            "<code>{{rN}}</code>=received byte N (0-based) &nbsp; "
+            "<code>{{rN-M}}</code>=range &nbsp; "
+            "<code>{{rN+K}}</code>=add K (mod256) &nbsp; "
+            "<code>{{rN^K}}</code>=XOR K &nbsp; "
+            "<code>{{seq}}</code>=auto-increment 1B &nbsp; "
+            "<code>{{ts}}</code>=ms timestamp 4B BE. "
             "Use <code>|</code> for multi-frame (e.g. <code>06 | 04 03 02 01</code> sends 06, then 04 03 02 01 after Delay).<br>"
             "<b>Timing</b>: <b>Frame gap</b>=treat bytes as one frame after N ms idle (Modbus-style framing); <b>Delay</b>=wait N ms before replying (slave turnaround); <b>Cooldown</b>=same rule fires at most once per N ms (anti-storm).<br>"
             "<br><b>Example 1 (MOBUS device, echo received bytes + auto CRC):</b>"
             "<pre style='margin:2px 0 2px 16px'>Match = 54     HEX ✓  mode=prefix   RX checksum = MOBUS\n"
-            "Reply = 03 {r2} {r1} 00   HEX ✓  Checksum = MOBUS\n"
+            "Reply = 03 {{r2}} {{r1}} 00   HEX ✓  Checksum = MOBUS\n"
             "RX: 54 03 01 02 ... CRC  →  TX: 03 01 03 00 ... CRC (CRC appended)</pre>"
             "<b>Example 2 (heartbeat reply with counter + timestamp):</b>"
             "<pre style='margin:2px 0 2px 16px'>Match = AA   HEX ✓  mode=equals\n"
-            "Reply = 55 {ts} {seq}   HEX ✓\n"
+            "Reply = 55 {{ts}} {{seq}}   HEX ✓\n"
             "RX: AA  →  TX: 55 F4 50 38 17 01 (4B ts + auto-inc seq)</pre>"
             "<b>Example 3 (HEX wildcard + multi-frame ACK+DATA):</b>"
             "<pre style='margin:2px 0 2px 16px'>Match = 54 ?? 03   mode=contains   Reply = 06 | 04 03 02 01   Delay = 10 ms\n"
@@ -2741,15 +2749,15 @@ TR = {
             "RX: AT+VER?  →  TX: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
             "<b>Example 5 (multi-rule dispatch by frame type — first match wins):</b>"
             "<pre style='margin:2px 0 2px 16px'>Device has multiple frame types; one rule per type, in order:\n"
-            "  Rule 1: Match = 54   mode=prefix   →   Reply 03 {r2} {r1} 00   Checksum=MOBUS\n"
-            "  Rule 2: Match = 02   mode=prefix   →   Reply 03 {r1} 00 00     Checksum=MOBUS\n"
-            "  Rule 3: Match = 04   mode=prefix   →   Reply 03 {r1} {r2} {r3} Checksum=MOBUS\n"
+            "  Rule 1: Match = 54   mode=prefix   →   Reply 03 {{r2}} {{r1}} 00   Checksum=MOBUS\n"
+            "  Rule 2: Match = 02   mode=prefix   →   Reply 03 {{r1}} 00 00     Checksum=MOBUS\n"
+            "  Rule 3: Match = 04   mode=prefix   →   Reply 03 {{r1}} {{r2}} {{r3}} Checksum=MOBUS\n"
             "First byte selects which rule; prefix mode is byte-aligned — no false match from 02 inside other frames' data</pre>"
-            "<b>Example 6 (range echo + arithmetic + rate-limit; {r1-4} {r1+1} {r2^FF}):</b>"
+            "<b>Example 6 (range echo + arithmetic + rate-limit; {{r1-4}} {{r1+1}} {{r2^FF}}):</b>"
             "<pre style='margin:2px 0 2px 16px'>Match = AA   HEX ✓   mode=equals   Cooldown = 200 ms\n"
-            "Reply = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "Reply = {{r1-4}} {{r1+1}} {{r2^FF}}   HEX ✓\n"
             "RX: AA 10 20 30 40 50  →  TX: 10 20 30 40 50 11 DF\n"
-            "  ({r1-4}=bytes 1..4   {r1+1}=10+1=11   {r2^FF}=20 XOR FF = DF)\n"
+            "  ({{r1-4}}=bytes 1..4   {{r1+1}}=10+1=11   {{r2^FF}}=20 XOR FF = DF)\n"
             "Even if device sends every 10 ms, reply only fires every 200 ms (cooldown drops the in-between)</pre>"
         ),
         "plot_open": "Plot",
@@ -2912,10 +2920,12 @@ TR = {
         "rr_rec_stop": "■ Stop",
         "rr_save": "Save",
         "rr_export_pcap": "Export PCAP",
-        "rr_export_pcap_tip": "Export the current capture as Wireshark .pcap / .pcapng (TCP Client/Server single peer, UDP, UDP Multicast)",
-        "rr_pcap_unsupported": "Cannot export PCAP: need TCP Client/Server (single client), UDP with a fixed remote, or UDP Multicast",
+        "rr_export_pcap_tip": "Export the current capture as Wireshark .pcap / .pcapng (TCP Client, TCP Server including multiple clients, UDP, UDP Multicast)",
+        "rr_pcap_unsupported": "Cannot export PCAP: need TCP Client/Server, UDP with a fixed remote, or UDP Multicast",
         "rr_pcap_exported": "PCAP exported: {path} ({n} packets)",
         "rr_pcap_failed": "PCAP export failed: {e}",
+        "rr_pcap_peers_title": "Confirm PCAP peers",
+        "rr_pcap_peers_confirm": "A TCP stream will be synthesized for each of these {n} clients:\n{peers}\nExport anyway?",
         "rr_replay": "Replay",
         "rr_load": "Load",
         "rr_speed": "Speed",
@@ -2958,7 +2968,7 @@ TR = {
         "rr_hint": "Record captures raw traffic into a .ctrec. Replay injects RX into Virtual by default. Tick Drive real TX to send recorded TX on the open link (danger confirm; not default). TCP/UDP can also export .pcap / .pcapng.",
         "rr_help_btn": "Help",
         "rr_help_title": "Record / Replay · Help",
-        "rr_help": '<b>Data record / replay</b> captures the <b>raw traffic</b> on the link with its original timing into a <code>.ctrec</code> file, so you can play it back later as if the device were there — reproduce a problem without hardware, debug offline, or just send the capture to a colleague.<br><br><b>How this differs from macro recording</b><br>• Macro recording captures <b>what you sent</b> and produces an editable script (semantic, for repeating actions)<br>• This captures <b>the raw bytes on the wire</b> including the device\'s replies, and produces a data file (for reproducing a scene)<br><br><b>Recording</b><br>With any connection open, click "● Record", work as usual, click "■ Stop", then "Save" to a <code>.ctrec</code>. The format is JSON Lines: readable, diffable, hand-editable — one event per line with <code>t</code> (seconds from start), <code>d</code> (direction) and <code>b</code> (HEX bytes).<br><br><b>Export PCAP</b><br>TCP Client/Server (single selected client), UDP with a fixed remote, and UDP Multicast can export standard <code>.pcap</code> / <code>.pcapng</code> (synthetic Ethernet/IP/transport headers) for Wireshark. Serial and UDP reply mode are not supported. This is not a NIC capture — only timing and payload direction are kept.<br><br><b>Virtual inject (default)</b><br>Load → Play injects recorded <b>RX</b> into a <code>Virtual</code> connection (tick "include TX" to also inject your past TX; that can self-talk). Requires Virtual.<br><br><b>Drive real TX (not default)</b><br>Tick "Drive real TX" to send recorded <b>TX</b> raw on the open link (serial/TCP/UDP; TCP Server needs a single client). A danger confirm is required; Loop or Max speed asks again. Modbus master polling and auto-reply are paused to avoid double TX. Send failures are counted and may auto-pause.',
+        "rr_help": '<b>Data record / replay</b> captures the <b>raw traffic</b> on the link with its original timing into a <code>.ctrec</code> file, so you can play it back later as if the device were there — reproduce a problem without hardware, debug offline, or just send the capture to a colleague.<br><br><b>How this differs from macro recording</b><br>• Macro recording captures <b>what you sent</b> and produces an editable script (semantic, for repeating actions)<br>• This captures <b>the raw bytes on the wire</b> including the device\'s replies, and produces a data file (for reproducing a scene)<br><br><b>Recording</b><br>With any connection open, click "● Record", work as usual, click "■ Stop", then "Save" to a <code>.ctrec</code>. The format is JSON Lines: readable, diffable, hand-editable — one event per line with <code>t</code> (seconds from start), <code>d</code> (direction) and <code>b</code> (HEX bytes).<br><br><b>Export PCAP</b><br>TCP Client, TCP Server (including multiple clients; confirm the peer list when more than one), UDP with a fixed remote, and UDP Multicast can export standard <code>.pcap</code> / <code>.pcapng</code> (synthetic Ethernet/IP/transport headers) for Wireshark. Serial and UDP reply mode are not supported. This is not a NIC capture — only timing and payload direction are kept.<br><br><b>Virtual inject (default)</b><br>Load → Play injects recorded <b>RX</b> into a <code>Virtual</code> connection (tick "include TX" to also inject your past TX; that can self-talk). Requires Virtual.<br><br><b>Drive real TX (not default)</b><br>Tick "Drive real TX" to send recorded <b>TX</b> raw on the open link (serial/TCP/UDP; TCP Server needs a single client). A danger confirm is required; Loop or Max speed asks again. Modbus master polling and auto-reply are paused to avoid double TX. Send failures are counted and may auto-pause.',
         "sc_title": "Script Console",
         "sc_script": "Script",
         "sc_new": "New",
@@ -4153,7 +4163,9 @@ TR = {
             "發送命令歷史（↑↓）：\n"
             "  游標在首行按 ↑ 取上一條發過的命令\n"
             "  游標在末行按 ↓ 往後翻 / 回到當前草稿\n"
-            "  也可點「歷史」按鈕全文搜尋後回填"
+            "  也可點「歷史」按鈕全文搜尋後回填\n"
+            "\n"
+            "發送：Ctrl+Enter 發送（Enter 仍換行）"
         ),
         "multi_send": "多條發送",
         "multi_send_title": "多條發送",
@@ -4197,6 +4209,7 @@ TR = {
         "kw_group_tip": "雙擊分組名可改名",
         "read_file": "讀取檔案",
         "send_btn": "發  送",
+        "send_btn_tip": "Ctrl+Enter 發送（Enter 仍換行）",
         "state_closed": "● 未連線",
         "stat_pkt_unit": "包",
         "stat_reset": "重置統計",
@@ -4251,7 +4264,7 @@ TR = {
         "ar_script_tmpl": "def reply(frame, ctx):\n    # frame: bytes（命中幀）；ctx: state/seq/hits + crc/crc16/sum8/xor8/hexbytes/tohex\n    # 返回 bytes / list[bytes] / str / None\n    return bytes([0x06]) + frame[1:3]\n",
         "ar_script_help": "<b>腳本應答</b>：定義 <code>reply(frame, ctx)</code>，命中時動態生成應答（替代靜態回覆模板；腳本擁有整幀、<b>不自動疊校驗</b>，自己用 ctx 算）。返回 <code>bytes</code>=一幀 / <code>list[bytes]</code>=多幀 / <code>str</code>=文字 / <code>None</code>=不回。<br><b>ctx</b>：<code>.state</code> 目前狀態 · <code>.seq</code> 自增序號 · <code>.hits</code> 命中數；<code>.crc(data, width=16, poly=0x1021, init=0, refin=False, refout=False, xorout=0, byteorder='big')</code> 通用可定制 CRC；便捷 <code>.crc16</code>(Modbus) / <code>.crc8</code> / <code>.sum8</code> / <code>.xor8</code>；<code>.hexbytes('AA BB')</code>→bytes · <code>.tohex(b)</code>→'AA BB'。<br>故障注入 + 延時仍生效。⚠ 腳本在本機執行 Python；匯入他人設定中的腳本會先徵求同意。",
         "ar_mask_help": "<b>匹配語法</b>（HEX 模式）<br>• <code>AB</code> 整位元組精確　<code>??</code>/<code>XX</code> 整位元組通配<br>• <code>A?</code> / <code>?5</code> 半位元組通配（高 / 低 4 位，<code>X</code> 同 <code>?</code>）<br>• <code>b:1xxxxxx1</code> 位元遮罩（8 位 <code>0/1/x</code>，<code>x</code>=該位不關心）<br>• 混寫：<code>AA b:1001xxxx ?5</code><br>• 欄位級：<code>?? ?? ?? b:xxxxxxx1</code> + 模式「前綴」= 第 4 位元組 bit0 須為 1",
-        "ar_reply_ph": "應答（{r3}=第3位元組 {r1+1}=加1 {r1^FF}=異或 {seq}=自增 {ts}=時間戳 | 分多幀）",
+        "ar_reply_ph": "應答（{{r3}}=第3位元組 {{r1+1}}=加1 {{r1^FF}}=異或 {{seq}}=自增 {{ts}}=時間戳 | 分多幀）",
         "ar_btn_tip": "單擊=開啟配置，雙擊=切換開關",
         "ar_toast_on": "自動應答已開啟",
         "ar_toast_off": "自動應答已關閉",
@@ -4336,7 +4349,7 @@ TR = {
         "ar_modbus_slaves_hint": "可選：多從機列表（填寫後覆蓋單位址表）。Extra 填 maps/dynamics/exception 的 JSON。",
         "ar_modbus_slaves_bad": "多從機設定無效",
         "ar_modbus_slaves_extra": "Extra JSON",
-        "ar_modbus_slaves_extra_ph": "{\"holding\":{\"0\":1}}",
+        "ar_modbus_slaves_extra_ph": "{{\"holding\":{{\"0\":1}}}}",
         "ar_modbus_slaves_add": "新增從機",
         "ar_modbus_space": "空間",
         "ar_modbus_start": "起始位址",
@@ -4347,7 +4360,7 @@ TR = {
         "ar_mb_coil": "線圈 0x",
         "ar_mb_discrete": "離散輸入 1x",
         "ar_modbus_help_title": "Modbus 從機 — 說明與例子",
-        "ar_modbus_help": "讓程式模擬一個 <b>Modbus RTU 從機</b>裝置。開啟後，收到的幀按 Modbus RTU 解析，<b>從機位址匹配且 CRC 正確</b>就按功能碼自動組裝標準回應回發：<br>• 讀：<code>01</code> 線圈 / <code>02</code> 離散輸入 / <code>03</code> 保持暫存器 / <code>04</code> 輸入暫存器<br>• 寫：<code>05</code> 單線圈 / <code>06</code> 單暫存器 / <code>0F</code> 多線圈 / <code>10</code> 多暫存器<br>• 診斷 / 識別：<code>08</code> 診斷（子功能 0 回顯）/ <code>0B</code> 通信事件計數 / <code>11</code> 報告從機 ID / <code>17</code> 讀寫多暫存器（這四個寫的是<b>十六進位</b>功能碼；主機頁的功能下拉按十進位顯示成 08 / 11 / 17 / 23）<br>• 非法功能碼 / 位址 / 資料 自動回<b>例外回應</b>（0x80|功能碼 + 例外碼）<br><br><b>暫存器表</b>：每列選「空間 + 起始位址 + 值」，值從起始位址起<b>連續填入</b>（逗號分隔）。暫存器值十進位或 <code>0x</code> 十六進位（0~65535）；線圈 / 離散用 <code>0/1</code>。未設定的位址預設 0。主機的寫（05/06/0F/10）改<b>執行態</b>暫存器，斷線 / 重連 / 關 Modbus 復位回這裡的初值。<br><br><b>例</b>：空間「保持暫存器」、起始 <code>0</code>、值 <code>0x1234, 0x5678, 100</code> → 暫存器 0/1/2 = 0x1234 / 0x5678 / 100。主機發「讀保持暫存器、起始 0、數量 2」→ 自動回 <code>01 03 04 12 34 56 78 …</code>。<br><b>注意</b>：開啟 Modbus 從機後，普通應答規則與狀態機不參與（整條引擎作為 Modbus 從機）；RTU 無幀頭，本程式按「功能碼長度 + CRC」切幀、跨包緩衝、CRC 錯自動重同步。TCP 伺服器模式會把回應精確發回請求客戶端。<br><br><b>多從機</b>：「多從機 JSON 列表」裡一個項目就是一個從機，如 <code>[{\"addr\":1,\"holding\":{\"0\":1}},{\"addr\":2}]</code>；項目裡沒寫的欄位<b>繼承上面的單從機設定</b>，但只要這個框非空就以它為準、上面的單地址表不再生效。廣播位址 <code>0</code> 只接受寫功能碼，讀和 08 / 0B / 11 / 17 一律不回覆。<br><br><b>例外注入與動態暫存器</b>：勾「注入異常」並填「異常碼」，從機就一直回例外回應。注入模式（<code>always</code> / <code>once</code> / <code>n</code> 次）、按功能碼或起始位址過濾，以及暫存器值自動按 <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> 變化，<b>可在進階對話框裡設定，也可寫在工程檔裡</b>，例如 <code>\"exception\":{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}</code> 與 <code>\"dynamics\":[{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}]</code>（<code>funcs</code> / <code>addrs</code> 留空表示不限）。這些欄位本對話框儲存時會原樣保留。主機寫進來的值會蓋掉動態值，直到斷線或關閉 Modbus 才復位。",
+        "ar_modbus_help": "讓程式模擬一個 <b>Modbus RTU 從機</b>裝置。開啟後，收到的幀按 Modbus RTU 解析，<b>從機位址匹配且 CRC 正確</b>就按功能碼自動組裝標準回應回發：<br>• 讀：<code>01</code> 線圈 / <code>02</code> 離散輸入 / <code>03</code> 保持暫存器 / <code>04</code> 輸入暫存器<br>• 寫：<code>05</code> 單線圈 / <code>06</code> 單暫存器 / <code>0F</code> 多線圈 / <code>10</code> 多暫存器<br>• 診斷 / 識別：<code>08</code> 診斷（子功能 0 回顯）/ <code>0B</code> 通信事件計數 / <code>11</code> 報告從機 ID / <code>17</code> 讀寫多暫存器（這四個寫的是<b>十六進位</b>功能碼；主機頁的功能下拉按十進位顯示成 08 / 11 / 17 / 23）<br>• 非法功能碼 / 位址 / 資料 自動回<b>例外回應</b>（0x80|功能碼 + 例外碼）<br><br><b>暫存器表</b>：每列選「空間 + 起始位址 + 值」，值從起始位址起<b>連續填入</b>（逗號分隔）。暫存器值十進位或 <code>0x</code> 十六進位（0~65535）；線圈 / 離散用 <code>0/1</code>。未設定的位址預設 0。主機的寫（05/06/0F/10）改<b>執行態</b>暫存器，斷線 / 重連 / 關 Modbus 復位回這裡的初值。<br><br><b>例</b>：空間「保持暫存器」、起始 <code>0</code>、值 <code>0x1234, 0x5678, 100</code> → 暫存器 0/1/2 = 0x1234 / 0x5678 / 100。主機發「讀保持暫存器、起始 0、數量 2」→ 自動回 <code>01 03 04 12 34 56 78 …</code>。<br><b>注意</b>：開啟 Modbus 從機後，普通應答規則與狀態機不參與（整條引擎作為 Modbus 從機）；RTU 無幀頭，本程式按「功能碼長度 + CRC」切幀、跨包緩衝、CRC 錯自動重同步。TCP 伺服器模式會把回應精確發回請求客戶端。<br><br><b>多從機</b>：「多從機 JSON 列表」裡一個項目就是一個從機，如 <code>[{{\"addr\":1,\"holding\":{{\"0\":1}}}},{{\"addr\":2}}]</code>；項目裡沒寫的欄位<b>繼承上面的單從機設定</b>，但只要這個框非空就以它為準、上面的單地址表不再生效。廣播位址 <code>0</code> 只接受寫功能碼，讀和 08 / 0B / 11 / 17 一律不回覆。<br><br><b>例外注入與動態暫存器</b>：勾「注入異常」並填「異常碼」，從機就一直回例外回應。注入模式（<code>always</code> / <code>once</code> / <code>n</code> 次）、按功能碼或起始位址過濾，以及暫存器值自動按 <code>inc</code> / <code>dec</code> / <code>random</code> / <code>sine</code> / <code>ramp</code> 變化，<b>可在進階對話框裡設定，也可寫在工程檔裡</b>，例如 <code>\"exception\":{{\"enabled\":true,\"code\":4,\"mode\":\"n\",\"n\":3,\"funcs\":[3,6],\"addrs\":[100]}}</code> 與 <code>\"dynamics\":[{{\"space\":\"holding\",\"addr\":0,\"mode\":\"sine\",\"min\":0,\"max\":100,\"period_ms\":2000}}]</code>（<code>funcs</code> / <code>addrs</code> 留空表示不限）。這些欄位本對話框儲存時會原樣保留。主機寫進來的值會蓋掉動態值，直到斷線或關閉 Modbus 才復位。",
         "ar_frame_help_title": "幀頭+長度組幀 — 說明與例子",
         "ar_frame_help": "用於<b>有固定幀頭 + 長度欄位</b>的二進位協定：程式跨包緩衝收到的位元組，按幀頭定位、讀長度欄位算出整幀邊界來切分，正確處理串口/TCP 的<b>黏包/拆包</b>（比「整包靜默逾時」更準、不引入延遲）。不勾選時按「每個接收區塊=一幀」或「靜默逾時」分幀。<br><br>各項：<br>• <b>幀頭</b>：hex，如 <code>AA BB</code>，只認以它開頭的幀<br>• <b>長度偏移</b>：長度欄位在幀內的位元組位置（0 基）<br>• <b>寬</b>：長度欄位佔幾位元組（1/2/4）<br>• <b>LE/BE</b>：長度欄位的位元組序（小端/大端）<br>• <b>整幀=長度+</b>：整幀總長 = 長度欄位的值 + 這個固定開銷（幀頭/長度/校驗等沒算進長度欄位的位元組數）<br><br><b>例</b>：協定 <code>AA BB │ 長度(1B) │ 資料… │ 校驗(1B)</code>，長度欄位 = 資料位元組數。<br>設：幀頭 <code>AA BB</code>、長度偏移 <code>2</code>、寬 <code>1</code>、<code>LE</code>、整幀=長度+ <code>4</code>（=幀頭2 + 長度1 + 校驗1）。<br>收到 <code>AA BB 03 11 22 33 7E</code> → 長度=3 → 整幀=3+4=7 位元組，正好切一幀；黏了下一幀也能正確切開。",
         "ar_fault_help_title": "故障注入 — 說明與例子",
@@ -4375,21 +4388,21 @@ TR = {
             "<b>用法</b>：收到資料按規則匹配 → 自動發應答。多條規則按順序，命中第一條即停（一幀最多回一條）。僅在已連線 + 總開關開啟時生效。<br>"
             "<b>匹配</b>：HEX/文字 × 包含/相等/<b>前綴</b>。HEX 模式 <code>??</code> 通配單位元組（如 <code>54 ?? 03</code>）；更細粒度可用 <b>半位元組</b> <code>A?</code>/<code>?5</code>（高/低 4 位）和 <b>位元遮罩</b> <code>b:1xxxxxx1</code>（8 位 <code>0/1/x</code>，<code>x</code>=該位不關心）。按幀首位元組區分類型 <b>請用「前綴」別用「包含」</b>。<br>"
             "<b>應答佔位符</b>（在「回覆」框寫）："
-            "<code>{rN}</code>=收到幀第 N 位元組(0基) &nbsp; "
-            "<code>{rN-M}</code>=第 N..M 位元組 &nbsp; "
-            "<code>{rN+K}</code>=加 K(mod256) &nbsp; "
-            "<code>{rN^K}</code>=XOR K &nbsp; "
-            "<code>{seq}</code>=自增 1B &nbsp; "
-            "<code>{ts}</code>=毫秒時間戳 4B BE。"
+            "<code>{{rN}}</code>=收到幀第 N 位元組(0基) &nbsp; "
+            "<code>{{rN-M}}</code>=第 N..M 位元組 &nbsp; "
+            "<code>{{rN+K}}</code>=加 K(mod256) &nbsp; "
+            "<code>{{rN^K}}</code>=XOR K &nbsp; "
+            "<code>{{seq}}</code>=自增 1B &nbsp; "
+            "<code>{{ts}}</code>=毫秒時間戳 4B BE。"
             "用 <code>|</code> 分多幀。<br>"
             "<b>時序</b>：<b>整包逾時</b>=靜默 N ms 視作整幀再匹配；<b>延時</b>=匹配後等待 N ms 再回；<b>冷卻</b>=同一規則 N ms 內只響一次（防風暴）。<br>"
             "<br><b>例 1（MOBUS 裝置）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = 54     HEX ✓  模式=前綴   收校驗 = MOBUS\n"
-            "回覆 = 03 {r2} {r1} 00   HEX ✓  校驗 = MOBUS\n"
+            "回覆 = 03 {{r2}} {{r1}} 00   HEX ✓  校驗 = MOBUS\n"
             "收: 54 03 01 02 ... CRC  →  回: 03 01 03 00 ... CRC（CRC 自動補）</pre>"
             "<b>例 2（心跳應答帶序號 + 時間戳）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓  模式=相等\n"
-            "回覆 = 55 {ts} {seq}   HEX ✓\n"
+            "回覆 = 55 {{ts}} {{seq}}   HEX ✓\n"
             "收: AA  →  回: 55 F4 50 38 17 01</pre>"
             "<b>例 3（HEX 通配 + 多幀 ACK+DATA）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = 54 ?? 03   模式=包含    回覆 = 06 | 04 03 02 01    延時 = 10 ms\n"
@@ -4400,15 +4413,15 @@ TR = {
             "收: AT+VER?  →  回: +VER:1.2.3&lt;CR&gt;&lt;LF&gt;OK&lt;CR&gt;&lt;LF&gt;</pre>"
             "<b>例 5（多規則按幀類型分流 — 命中即停）：</b>"
             "<pre style='margin:2px 0 2px 16px'>裝置協議多種幀類型，每種一條規則按順序排：\n"
-            "  規則 1: 匹配 = 54   模式=前綴   →   回 03 {r2} {r1} 00   校驗=MOBUS\n"
-            "  規則 2: 匹配 = 02   模式=前綴   →   回 03 {r1} 00 00     校驗=MOBUS\n"
-            "  規則 3: 匹配 = 04   模式=前綴   →   回 03 {r1} {r2} {r3} 校驗=MOBUS\n"
+            "  規則 1: 匹配 = 54   模式=前綴   →   回 03 {{r2}} {{r1}} 00   校驗=MOBUS\n"
+            "  規則 2: 匹配 = 02   模式=前綴   →   回 03 {{r1}} 00 00     校驗=MOBUS\n"
+            "  規則 3: 匹配 = 04   模式=前綴   →   回 03 {{r1}} {{r2}} {{r3}} 校驗=MOBUS\n"
             "首位元組決定走哪條；前綴模式按位元組對齊，絕不會因別幀資料裡含 02 誤觸發</pre>"
-            "<b>例 6（位元組範圍 + 算術 + 限流，{r1-4} {r1+1} {r2^FF}）：</b>"
+            "<b>例 6（位元組範圍 + 算術 + 限流，{{r1-4}} {{r1+1}} {{r2^FF}}）：</b>"
             "<pre style='margin:2px 0 2px 16px'>匹配 = AA   HEX ✓   模式=相等   冷卻 = 200 ms\n"
-            "回覆 = {r1-4} {r1+1} {r2^FF}   HEX ✓\n"
+            "回覆 = {{r1-4}} {{r1+1}} {{r2^FF}}   HEX ✓\n"
             "收: AA 10 20 30 40 50  →  回: 10 20 30 40 50 11 DF\n"
-            "  ({r1-4}=回填第1..4位元組  {r1+1}=10+1=11  {r2^FF}=20 XOR FF = DF)\n"
+            "  ({{r1-4}}=回填第1..4位元組  {{r1+1}}=10+1=11  {{r2^FF}}=20 XOR FF = DF)\n"
             "即使裝置 10ms 發一幀，每 200ms 才回一次（冷卻把中間的吃掉）</pre>"
         ),
         "plot_open": "波形圖",
@@ -4571,10 +4584,12 @@ TR = {
         "rr_rec_stop": "■ 停止",
         "rr_save": "儲存",
         "rr_export_pcap": "匯出 PCAP",
-        "rr_export_pcap_tip": "將目前錄製匯出為 Wireshark 可開啟的 .pcap / .pcapng（TCP Client/Server 單對端、UDP、UDP 群播）",
-        "rr_pcap_unsupported": "目前錄製無法匯出 PCAP：需 TCP Client/Server（單客戶端）、UDP（指定遠端）或 UDP 群播",
+        "rr_export_pcap_tip": "將目前錄製匯出為 Wireshark 可開啟的 .pcap / .pcapng（TCP Client、TCP Server 含多用戶端、UDP、UDP 群播）",
+        "rr_pcap_unsupported": "目前錄製無法匯出 PCAP：需 TCP Client/Server、UDP（指定遠端）或 UDP 群播",
         "rr_pcap_exported": "已匯出 PCAP：{path}（{n} 包）",
         "rr_pcap_failed": "匯出 PCAP 失敗：{e}",
+        "rr_pcap_peers_title": "確認 PCAP 對端",
+        "rr_pcap_peers_confirm": "將為以下 {n} 個用戶端各合成一條 TCP 流：\n{peers}\n是否繼續匯出？",
         "rr_replay": "回放",
         "rr_load": "載入",
         "rr_speed": "倍速",
@@ -4617,7 +4632,7 @@ TR = {
         "rr_hint": "錄製 = 把線路上的原始收發流按時序存成 .ctrec；回放預設注入虛擬連線的 RX。勾「驅動真實 TX」可把錄製的 TX 經目前開啟連線原樣送出（需危險確認，非預設）。TCP/UDP 可另匯出 .pcap / .pcapng。",
         "rr_help_btn": "使用說明",
         "rr_help_title": "資料錄製 / 回放 · 使用說明",
-        "rr_help": '<b>資料錄製 / 回放</b> 把線路上的<b>原始收發流</b>按時序錄下來存成 <code>.ctrec</code> 檔，之後可以當成「裝置」重新播一遍 —— 用來無硬體重現問題、離線除錯，或者把現場直接發給同事。<br><br><b>與「巨集錄製」的分工</b><br>• 巨集錄製錄的是<b>你發了什麼</b>，產出可編輯的腳本（語意化，用來重複操作）<br>• 本功能錄的是<b>線路上的原始位元組</b>（含裝置回的資料），產出資料檔（用來重現現場）<br><br><b>錄製</b><br>連上任意連線後點「● 錄製」，正常收發，完成後點「■ 停止」，再「儲存」成 <code>.ctrec</code>。檔案是 JSON Lines 文字格式，可讀、可 diff、可手改。<br><br><b>匯出 PCAP</b><br>TCP Client/Server（需選定單一客戶端）、UDP（指定遠端）、UDP 群播，可把目前事件匯出為標準 <code>.pcap</code> / <code>.pcapng</code>（合成乙太網/IP/傳輸層頭），用 Wireshark 開啟。序列埠、UDP 回覆模式不支援。這不是系統網卡抓包，只保留時序與載荷方向。<br><br><b>回放（虛擬注入）</b><br>「載入」→「播放」：預設把錄到的 <b>RX</b> 按原時間間隔注入 <code>Virtual</code> 連線（勾「含傳送」會把當時 TX 一併注入，易造成自問自答）。注入模式需先連虛擬連線。<br><br><b>驅動真實 TX（非預設）</b><br>勾「驅動真實 TX」後，只重播錄製的 <b>TX</b>，經目前開啟的連線原樣送出（序列埠/TCP/UDP 均可；TCP Server 須選定單一客戶端）。會跳出危險確認；勾循環或「最快」會再確認一次。期間會暫停 Modbus 主機輪詢與自動應答，避免匯流排雙重傳送。傳送失敗會計數並可能自動暫停。',
+        "rr_help": '<b>資料錄製 / 回放</b> 把線路上的<b>原始收發流</b>按時序錄下來存成 <code>.ctrec</code> 檔，之後可以當成「裝置」重新播一遍 —— 用來無硬體重現問題、離線除錯，或者把現場直接發給同事。<br><br><b>與「巨集錄製」的分工</b><br>• 巨集錄製錄的是<b>你發了什麼</b>，產出可編輯的腳本（語意化，用來重複操作）<br>• 本功能錄的是<b>線路上的原始位元組</b>（含裝置回的資料），產出資料檔（用來重現現場）<br><br><b>錄製</b><br>連上任意連線後點「● 錄製」，正常收發，完成後點「■ 停止」，再「儲存」成 <code>.ctrec</code>。檔案是 JSON Lines 文字格式，可讀、可 diff、可手改。<br><br><b>匯出 PCAP</b><br>TCP Client、TCP Server（含多用戶端，多於一個對端時匯出前會列出確認）、UDP（指定遠端）、UDP 群播，可把目前事件匯出為標準 <code>.pcap</code> / <code>.pcapng</code>（合成乙太網/IP/傳輸層頭），用 Wireshark 開啟。序列埠、UDP 回覆模式不支援。這不是系統網卡抓包，只保留時序與載荷方向。<br><br><b>回放（虛擬注入）</b><br>「載入」→「播放」：預設把錄到的 <b>RX</b> 按原時間間隔注入 <code>Virtual</code> 連線（勾「含傳送」會把當時 TX 一併注入，易造成自問自答）。注入模式需先連虛擬連線。<br><br><b>驅動真實 TX（非預設）</b><br>勾「驅動真實 TX」後，只重播錄製的 <b>TX</b>，經目前開啟的連線原樣送出（序列埠/TCP/UDP 均可；TCP Server 須選定單一客戶端）。會跳出危險確認；勾循環或「最快」會再確認一次。期間會暫停 Modbus 主機輪詢與自動應答，避免匯流排雙重傳送。傳送失敗會計數並可能自動暫停。',
         "sc_title": "腳本主控台",
         "sc_script": "腳本",
         "sc_new": "新增",

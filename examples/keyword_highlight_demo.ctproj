@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.5.6",
+  "app_version": "1.5.7",
   "name": "Keyword Highlight Demo",
   "metadata": {
     "device_type": "modem",

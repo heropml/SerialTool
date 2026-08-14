@@ -24,6 +24,10 @@ class PcapExportTests(unittest.TestCase):
     def test_rejects_serial_and_incomplete(self):
         self.assertFalse(pcap_export.can_export_link({"proto": "Serial"}))
         self.assertFalse(pcap_export.can_export_link({"proto": "TCP Server"}))
+        self.assertTrue(pcap_export.can_export_link({
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+        }))
         self.assertFalse(pcap_export.can_export_link({
             "proto": "UDP", "remote_ip": "", "remote_port": 502}))
         with self.assertRaises(pcap_export.PcapExportError):
@@ -324,10 +328,10 @@ class PcapExportTests(unittest.TestCase):
                 "remote_ip": "10.0.0.2", "remote_port": 5000,
             })
 
-    def test_tcp_server_recording_loses_pcap_on_other_client(self):
+    def test_tcp_server_recording_keeps_pcap_on_other_client(self):
         link = {
             "proto": "TCP Server",
-            "local_ip": "0.0.0.0", "local_port": 9000,
+            "local_ip": "10.0.0.1", "local_port": 9000,
             "remote_ip": "192.168.1.50", "remote_port": 50123,
         }
         rec = rec_replay.StreamRecorder()
@@ -335,7 +339,123 @@ class PcapExportTests(unittest.TestCase):
         rec.on_rx(b"ok", t=1.0, source="192.168.1.50:50123")
         self.assertIsNotNone(rec.link)
         rec.on_rx(b"other", t=1.1, source="192.168.1.51:50124")
-        self.assertIsNone(rec.link)
+        self.assertIsNotNone(rec.link)
+        self.assertNotIn("remote_ip", rec.link)
+        self.assertEqual(rec.events.pcap_peers, [
+            ("192.168.1.50", 50123), ("192.168.1.51", 50124)])
+
+    def test_tcp_server_multi_client_export_tuples_and_broadcast(self):
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"A", t=1.0, source="192.168.1.50:50123")
+        rec.on_rx(b"B", t=1.1, source="192.168.1.51:50124")
+        rec.on_tx(b"toB", t=1.2, source="192.168.1.51:50124")
+        rec.on_tx(b"ALL", t=1.3, source="__all__")
+        rec.stop()
+        self.assertTrue(pcap_export.can_export_link(rec.link))
+        self.assertEqual(
+            pcap_export.list_export_peers(rec.events, rec.link),
+            [("192.168.1.50", 50123), ("192.168.1.51", 50124)])
+        frames = self._frames(pcap_export.events_to_pcap(rec.events, rec.link))
+        # RX A, RX B, TX toB, broadcast TX → two frames
+        self.assertEqual(len(frames), 5)
+        ports = [struct.unpack_from("!HH", f, 34) for f in frames]
+        payloads = [f[54:] for f in frames]
+        src_ip = [tuple(f[26:30]) for f in frames]
+        dst_ip = [tuple(f[30:34]) for f in frames]
+        self.assertEqual(ports[0], (50123, 9000))
+        self.assertEqual(payloads[0], b"A")
+        self.assertEqual(src_ip[0], (192, 168, 1, 50))
+        self.assertEqual(dst_ip[0], (10, 0, 0, 1))
+        self.assertEqual(ports[1], (50124, 9000))
+        self.assertEqual(payloads[1], b"B")
+        self.assertEqual(src_ip[1], (192, 168, 1, 51))
+        self.assertEqual(ports[2], (9000, 50124))
+        self.assertEqual(payloads[2], b"toB")
+        self.assertEqual(dst_ip[2], (192, 168, 1, 51))
+        self.assertEqual(ports[3], (9000, 50123))
+        self.assertEqual(payloads[3], b"ALL")
+        self.assertEqual(dst_ip[3], (192, 168, 1, 50))
+        self.assertEqual(ports[4], (9000, 50124))
+        self.assertEqual(payloads[4], b"ALL")
+        self.assertEqual(dst_ip[4], (192, 168, 1, 51))
+        # Independent TCP seq per flow: both broadcast frames start at seq 1000
+        # (client A has only RX so far; client B already sent TX toB).
+        seq_a = struct.unpack_from("!I", frames[3], 38)[0]
+        seq_b = struct.unpack_from("!I", frames[4], 38)[0]
+        self.assertEqual(seq_a, 1000)
+        self.assertEqual(seq_b, 1000 + len(b"toB"))
+
+    def test_tcp_server_broadcast_does_not_include_later_clients(self):
+        """A broadcast before client B exists must not invent a TX to B."""
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"A", t=1.0, source="192.168.1.50:50123")
+        rec.on_tx(b"ALL", t=1.1, source="__all__")
+        rec.on_rx(b"B", t=1.2, source="192.168.1.51:50124")
+        rec.stop()
+        self.assertEqual(rec.events.pcap_peers[1], "__all__")
+        frames = self._frames(pcap_export.events_to_pcap(rec.events, rec.link))
+        self.assertEqual(len(frames), 3)
+        self.assertEqual([f[54:] for f in frames], [b"A", b"ALL", b"B"])
+        self.assertEqual(
+            [struct.unpack_from("!HH", f, 34) for f in frames],
+            [(50123, 9000), (9000, 50123), (50124, 9000)])
+
+    def test_tcp_server_multi_client_roundtrip_ctrec(self):
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+        }
+        rec = rec_replay.StreamRecorder()
+        rec.start(link=link)
+        rec.on_rx(b"A", t=1.0, source="192.168.1.50:50123")
+        rec.on_tx(b"ALL", t=1.1, source="__all__",
+                  peers=["192.168.1.50:50123", "192.168.1.51:50124"])
+        rec.on_rx(b"B", t=1.2, source="192.168.1.51:50124")
+        rec.stop()
+        with tempfile.TemporaryDirectory() as td:
+            record_path = os.path.join(td, "srv.ctrec")
+            pcap_path = os.path.join(td, "srv.pcap")
+            rec.save(record_path)
+            events, header = rec_replay.load(record_path)
+            self.assertNotIn("remote_ip", header.get("link") or {})
+            self.assertEqual(
+                events.pcap_peers[1],
+                [["192.168.1.50", 50123], ["192.168.1.51", 50124]])
+            n = pcap_export.export_pcap_file(
+                pcap_path, events, header["link"])
+            # RX A, broadcast×2, RX B
+            self.assertEqual(n, 4)
+            with open(pcap_path, "rb") as f:
+                frames = self._frames(f.read())
+        self.assertEqual([f[54:] for f in frames], [b"A", b"ALL", b"ALL", b"B"])
+        self.assertEqual(
+            [struct.unpack_from("!HH", f, 34) for f in frames],
+            [(50123, 9000), (9000, 50123), (9000, 50124), (50124, 9000)])
+
+    def test_tcp_server_legacy_single_peer_without_sidecar(self):
+        """Old .ctrec: header remote only, no per-event p — still exports."""
+        link = {
+            "proto": "TCP Server",
+            "local_ip": "10.0.0.1", "local_port": 9000,
+            "remote_ip": "192.168.1.50", "remote_port": 50123,
+        }
+        events = [(0.0, "tx", b"SRV"), (0.1, "rx", b"CLI")]
+        frames = self._frames(pcap_export.events_to_pcap(events, link))
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(struct.unpack_from("!HH", frames[0], 34), (9000, 50123))
+        self.assertEqual(struct.unpack_from("!HH", frames[1], 34), (50123, 9000))
 
     def test_multicast_recording_notes_rx_peer(self):
         link = {
@@ -384,16 +504,17 @@ class PcapExportTests(unittest.TestCase):
         rec.on_rx(b"unknown", t=1.0, source=None)
         self.assertIsNone(rec.link)
 
-    def test_tcp_server_recording_loses_pcap_on_other_tx_target(self):
+    def test_tcp_server_recording_keeps_pcap_on_other_tx_target(self):
         link = {
             "proto": "TCP Server",
-            "local_ip": "0.0.0.0", "local_port": 9000,
+            "local_ip": "10.0.0.1", "local_port": 9000,
             "remote_ip": "192.168.1.50", "remote_port": 50123,
         }
         rec = rec_replay.StreamRecorder()
         rec.start(link=link)
         rec.on_tx(b"other", t=1.0, source="192.168.1.51:50124")
-        self.assertIsNone(rec.link)
+        self.assertIsNotNone(rec.link)
+        self.assertEqual(rec.events.pcap_peers, [("192.168.1.51", 50124)])
 
 
 if __name__ == "__main__":

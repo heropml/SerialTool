@@ -27,6 +27,9 @@ def build_search_bar(app):
     app._search_page_starts = [0]  # 已访问页的扫描起点栈（支持 ▲ 回翻）
     app._search_mode = "plain"   # plain / regex / hex
     app._search_case = False     # 大小写敏感
+    app._search_page_key = None  # query 键（词/模式/大小写/hexdump）
+    app._search_page_rev = None  # 上次建页时的 QTextDocument.revision()
+    app._search_page_chars = None  # 同上时刻的字符数（缩短 → 头部截断，回第一页）
     app._search_bar = QWidget(app.txt_recv)
     row = QHBoxLayout(app._search_bar)
     row.setContentsMargins(8, 6, 8, 6)
@@ -35,7 +38,17 @@ def build_search_bar(app):
     app.ed_search.setProperty("tr_placeholder", "search_ph")
     app.ed_search.setPlaceholderText(app._t("search_ph"))
     app.ed_search.setFixedWidth(180)
-    app.ed_search.textChanged.connect(app._do_search)
+    # 打字防抖：大缓冲区下每敲一键全文扫描会卡界面，停止输入 ~150ms 后才真正搜索
+    # （模式/大小写切换与 ▲▼ 导航仍即时走 _do_search / _load_search_page）。
+    # 文档 revision 变化时 _refresh_extra_selections 会重建当前搜索页，不必靠打字触发。
+    app._search_debounce = QTimer(app)
+    app._search_debounce.setSingleShot(True)
+    app._search_debounce.setInterval(150)
+    app._search_debounce.timeout.connect(app._do_search)
+    # 轻量 UI 测试宿主未实现 _schedule_search_debounce 时回退到直连 _do_search（旧行为）
+    debounce_slot = getattr(app, "_schedule_search_debounce", None)
+    app.ed_search.textChanged.connect(
+        debounce_slot if debounce_slot is not None else app._do_search)
     app.ed_search.returnPressed.connect(app._search_next)
     app.cb_search_mode = QComboBox()
     app.cb_search_mode.setProperty("tr_tooltip", "search_mode")
@@ -185,6 +198,8 @@ def build(app):
     app._kw_timer.setSingleShot(True)
     app._kw_timer.setInterval(150)
     app._kw_timer.timeout.connect(app._refresh_extra_selections)
+    app._kw_scan_blocks = 0
+    app._kw_scan_mode = "full"
     # 选中即算校验和：selectionChanged 在拖选过程中逐字符触发，节流到 ~120ms 一次，
     # 否则每动一格就跑 9 遍纯 Python 校验循环，长选区拖选会明显掉帧
     app._sel_chk_timer = QTimer(app)

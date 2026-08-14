@@ -22,7 +22,7 @@ from bridge import BridgeEngine
 from serial_io import SerialConn, OneShotPortScanner
 from net_io import (
     TcpServerConn, TcpClientConn, UdpConn,
-    ERR_CONN_TIMEOUT, local_ipv4_list, is_valid_ip,
+    ERR_CONN_TIMEOUT, ERR_SEND_BACKPRESSURE, local_ipv4_list, is_valid_ip,
 )
 from modbus_gateway import parse_unit_map, clamp_timeout_s
 from theme import chrome_for
@@ -454,6 +454,8 @@ class _BridgeSidePanel(QWidget):
                 QTimer.singleShot(0, lambda c=conn: self._close_if_current(c))
 
     def _on_conn_error(self, msg):
+        if msg == ERR_SEND_BACKPRESSURE:
+            return
         if msg == ERR_CONN_TIMEOUT:
             msg = self.app._t("err_conn_timeout")
         self.app.toast(f"Side {self._side_label}: {msg}")

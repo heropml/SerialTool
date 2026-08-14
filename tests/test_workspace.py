@@ -34,6 +34,12 @@ def _patch_window_runtime(monkeypatch, settings_path, notices):
             (title, body, is_error)))
 
 
+def _search_text(window, text):
+    """输入搜索词并同步触发搜索（B1 打字防抖在无事件循环的测试里不自动触发）。"""
+    window.ed_search.setText(text)
+    window._search_debounce.timeout.emit()
+
+
 def test_workspace_pages_and_tool_icons_initialize(tmp_path, monkeypatch):
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
@@ -1004,19 +1010,19 @@ def test_search_modes_collect_matches(tmp_path, monkeypatch):
         window.txt_recv.setPlainText("AA BB CC 12 34")
 
         window._search_mode = "plain"
-        window.ed_search.setText("aa")            # textChanged → _do_search 同步触发
+        _search_text(window, "aa")
         assert len(window._search_matches) == 1
 
         window._search_mode = "regex"
-        window.ed_search.setText(r"\d+")
+        _search_text(window, r"\d+")
         assert len(window._search_matches) == 2
 
         window._search_mode = "hex"
-        window.ed_search.setText("AABB")
+        _search_text(window, "AABB")
         assert len(window._search_matches) == 1
 
         window._search_mode = "hex"
-        window.ed_search.setText("GGHH")          # 非法 hex
+        _search_text(window, "GGHH")          # 非法 hex
         assert window._search_matches == []
     finally:
         window.deleteLater()
@@ -1032,7 +1038,7 @@ def test_search_count_marks_capped_matches(tmp_path, monkeypatch):
         _APP.processEvents()
         window._search_mode = "hex"
         window.txt_recv.setPlainText("00 " * (window._KW_MAX_SELECTIONS + 10))
-        window.ed_search.setText("00")
+        _search_text(window, "00")
         assert len(window._search_matches) == window._KW_MAX_SELECTIONS
         assert window._search_match_capped is True
         assert window.lbl_search_cnt.text() == (
@@ -1051,7 +1057,7 @@ def test_search_non_bmp_positions_match_qt_utf16_offsets(tmp_path, monkeypatch):
         _APP.processEvents()
         window.txt_recv.setPlainText("A😀 ERROR")
         window._search_mode = "plain"
-        window.ed_search.setText("ERROR")
+        _search_text(window, "ERROR")
         assert len(window._search_matches) == 1
         cursor = window._search_matches[0]
         assert (cursor.selectionStart(), cursor.selectionEnd()) == (4, 9)
@@ -1405,7 +1411,7 @@ def test_search_lazy_pages_with_next_prev(tmp_path, monkeypatch):
         window._KW_MAX_SELECTIONS = 5
         window._search_mode = "hex"
         window.txt_recv.setPlainText("00 " * 14)  # 14 hits
-        window.ed_search.setText("00")
+        _search_text(window, "00")
         assert len(window._search_matches) == 5
         assert window._search_match_capped is True
         assert window.lbl_search_cnt.text() == "1/5+"

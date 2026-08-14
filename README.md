@@ -32,7 +32,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 | 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环） |
 | 显示与检索 | 文本 / HEX / HEX 转储 / 数值；终端模式；关键字与协议高亮；搜索、书签 |
 | 协议与校验 | Modbus 主从 / 扫描 / TCP↔RTU 网关；CRC 等校验选项；寄存器 / 位域 |
-| 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client/Server（单客户端）**、**UDP（指定远程）**、**UDP 组播** 可导出 `.pcap` / `.pcapng`（合成报文，非网卡抓包；串口等仍用 `.ctrec`） |
+| 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client / TCP Server（含多客户端）**、**UDP（指定远程）**、**UDP 组播** 可导出 `.pcap` / `.pcapng`（合成报文，非网卡抓包；串口等仍用 `.ctrec`） |
 | 自动化 | 定时 / 多条发送、自动应答、触发器、脚本控制台、宏录制、序列测试与 JUnit |
 | 分析与工程 | 波形图 / I/O Graph / 仪表盘、多会话标签、`.ctproj` 工程与示例、桥接与文件传输、三语与在线更新 |
 
@@ -181,7 +181,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.5.6`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.5.7`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -290,7 +290,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.5.6")
+│   └── version.py          版本号单点真源 (__version__ = "1.5.7")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -632,6 +632,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v58 (v1.5.4)**: **正式版** — **多条循环 per-session、桥接网关 timeout/unit_map、app_style/i18n_ui 薄拆、B6 except 收窄、updater IncompleteRead 修复**；Mac DMG 仍由协作者补同一 Release。
 - **v59 (v1.5.5)**: **正式版** — **多会话引擎收口：软切标签、后台 RX 喂引擎/AR/触发器；序列/脚本/MBM/录制/宏/DSL per-session**；传输/回放仍整窗一份并钉会话；扫描同窗一次；Mac DMG 仍由协作者补同一 Release。
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
+- **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。Mac DMG 仍由协作者补同一 Release。
 
 ---
 

@@ -10,10 +10,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PyQt5.QtWidgets import QApplication  # noqa: E402
+from PyQt5.QtNetwork import QAbstractSocket  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
-from net_io import TcpServerConn, TcpClientConn, UdpGroupConn, _safe  # noqa: E402
+from net_io import (  # noqa: E402
+    TcpServerConn, TcpClientConn, UdpGroupConn, _safe,
+    ERR_SEND_BACKPRESSURE, _MAX_PENDING_BYTES,
+)
 
 
 class _FakeAddr:
@@ -24,9 +28,10 @@ class _FakeAddr:
 class FakeSock:
     """假 socket：可指定某一步抛异常，并记录每步是否真的被调用。"""
 
-    def __init__(self, raise_on=(), write_n=None):
+    def __init__(self, raise_on=(), write_n=None, pending=0):
         self.raise_on = set(raise_on)
         self.write_n = write_n
+        self.pending = pending
         self.calls = []
 
     def _step(self, name):
@@ -47,10 +52,14 @@ class FakeSock:
         self._step("leaveMulticastGroup")
 
     def write(self, data):
+        self.calls.append("write")
         return len(data) if self.write_n is None else self.write_n
 
     def bytesToWrite(self):
-        return 0
+        return self.pending if hasattr(self, "pending") else 0
+
+    def state(self):
+        return QAbstractSocket.ConnectedState
 
     def peerAddress(self):
         return _FakeAddr()
@@ -144,3 +153,50 @@ def test_close_after_connected_still_reports_the_disconnect():
     conn._connected = True                          # 已连上过
     conn.close()
     assert states == [False]
+
+
+def test_tcp_server_send_drops_when_client_buffer_full():
+    slow = FakeSock(pending=_MAX_PENDING_BYTES)
+    errors = []
+    conn = TcpServerConn("127.0.0.1", 0)
+    conn.error_occurred.connect(errors.append)
+    conn._clients = [slow]
+    assert conn.send(b"hello") == 0
+    assert "write" not in slow.calls
+    assert errors == [ERR_SEND_BACKPRESSURE]
+    assert conn.send(b"hello") == 0
+    assert errors == [ERR_SEND_BACKPRESSURE]   # edge-triggered
+
+
+def test_tcp_server_send_keeps_fast_client_when_peer_is_slow():
+    fast = FakeSock()
+    slow = FakeSock(pending=_MAX_PENDING_BYTES)
+    conn = TcpServerConn("127.0.0.1", 0)
+    conn._clients = [fast, slow]
+    assert conn.send(b"hello") == 5
+    assert "write" in fast.calls
+    assert "write" not in slow.calls
+    assert conn.last_send_client_keys() == ["127.0.0.1:1234"]
+
+
+def test_tcp_server_last_send_clients_reset_after_failed_send():
+    fast = FakeSock()
+    conn = TcpServerConn("127.0.0.1", 0)
+    conn._clients = [fast]
+    assert conn.send(b"hello") == 5
+    assert conn.last_send_client_keys() == ["127.0.0.1:1234"]
+    fast.pending = _MAX_PENDING_BYTES
+    assert conn.send(b"again") == 0
+    assert conn.last_send_client_keys() == []
+
+
+def test_tcp_client_send_drops_when_buffer_full():
+    sock = FakeSock(pending=_MAX_PENDING_BYTES)
+    errors = []
+    conn = TcpClientConn("127.0.0.1", 1)
+    conn.error_occurred.connect(errors.append)
+    conn._sock = sock
+    conn._connected = True
+    assert conn.send(b"hello") == 0
+    assert "write" not in sock.calls
+    assert errors == [ERR_SEND_BACKPRESSURE]

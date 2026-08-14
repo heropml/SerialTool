@@ -45,7 +45,8 @@ _log = logging.getLogger(__name__)
 _RECV_CHARS_PER_LINE = 256
 from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
-                    PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, local_ipv4_list, is_multicast_ipv4,
+                    PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, ERR_SEND_BACKPRESSURE,
+                    local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip, is_local_ipv4, resolve_export_local_ipv4)
 from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
 import conn_error_tips
@@ -873,7 +874,10 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _t(self, key, **kwargs) -> str:
         s = self._L.get(key, key)
-        return s.format(**kwargs) if kwargs else s
+        try:
+            return s.format(**kwargs)
+        except (KeyError, IndexError, ValueError):
+            return s
 
     def _theme_label(self, theme_id: str) -> str:
         """主题显示名 — 优先用翻译 key (theme_<id>)，缺失就回退到 THEMES['label'] 英文名"""
@@ -1360,18 +1364,31 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._terminal_key(event)
             return True
         # 发送区 ↑↓ 历史导航：仅在 cursor 在首行(↑)/末行(↓)时拦截，否则让 QTextEdit 走默认行内移动
-        if obj is getattr(self, "txt_send", None) and event.type() == QEvent.KeyPress:
+        if obj is getattr(self, "txt_send", None) and event.type() in (
+                QEvent.KeyPress, QEvent.ShortcutOverride):
             key = event.key()
-            if key == Qt.Key_Up:
-                cur = self.txt_send.textCursor()
-                if cur.blockNumber() == 0:
-                    self._send_hist_prev()
-                    return True
-            elif key == Qt.Key_Down:
-                cur = self.txt_send.textCursor()
-                if cur.blockNumber() == self.txt_send.document().blockCount() - 1:
-                    self._send_hist_next()
-                    return True
+            if (key in (Qt.Key_Return, Qt.Key_Enter)
+                    and (event.modifiers() & Qt.ControlModifier)):
+                # Ctrl+Enter（macOS 上 Qt 把 ⌘ 映射为 ControlModifier）发送；
+                # 裸 Enter 仍交给 QTextEdit 换行。终端模式已在上面整键拦截。
+                # ShortcutOverride 先认领，避免 QTextEdit 再插入换行；长按 auto-repeat 不连发。
+                if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+                    # 先提交 IME 组合：中文/日文输入法下 Ctrl+Enter 通常不提交组合，
+                    # 组词未上屏就发送会漏掉正在输入的内容。
+                    self._commit_ime_composition()
+                    self.do_send()
+                return True
+            if event.type() == QEvent.KeyPress:
+                if key == Qt.Key_Up:
+                    cur = self.txt_send.textCursor()
+                    if cur.blockNumber() == 0:
+                        self._send_hist_prev()
+                        return True
+                elif key == Qt.Key_Down:
+                    cur = self.txt_send.textCursor()
+                    if cur.blockNumber() == self.txt_send.document().blockCount() - 1:
+                        self._send_hist_next()
+                        return True
         # macOS：拦截 ToolTip → 自绘不透明 tooltip（原生加样式后背景透明看不清）
         if self._mac_tooltip:
             et0 = event.type()
@@ -1612,6 +1629,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         """输入变化时：交给 _refresh_extra_selections 统一收集匹配 + 刷新高亮/计数，再定位首个。"""
         self._search_term = self.ed_search.text()
         self._search_idx = 0 if self._search_term else -1
+        # 词/模式/大小写变化：清掉旧 query key，下一个 refresh 从第一页重建
+        # （避免被「query 未变」分支当成文档增量、只刷新当前页）。
+        self._search_page_key = None
         self._refresh_extra_selections()   # 搜索段会收集匹配、clamp idx、刷新计数
         if not self._search_term:
             self._search_matches = []
@@ -1619,6 +1639,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._update_search_count()
         if self._search_matches:
             self._goto_match(self._search_idx)
+
+    def _schedule_search_debounce(self):
+        """打字防抖：停止敲击 ~150ms 后真正执行全量搜索，避免大缓冲区下每键一次全文扫描。"""
+        if getattr(self, "_search_debounce", None) is None:
+            return
+        self._search_debounce.start()
 
     def _on_search_mode_changed(self):
         data = self.cb_search_mode.currentData()
@@ -1653,10 +1679,37 @@ class CommTool(SessionHostMixin, QMainWindow):
             hexdump=getattr(self, "_hexdump_on", False),
         )
 
+    def _search_page_key_tuple(self):
+        """搜索 query 键：词/模式/大小写/hexdump。文档 revision 另见 ``_search_page_rev``。"""
+        kw = self._search_find_kwargs()
+        return (self._search_term, kw["mode"], kw["case_sensitive"], kw["hexdump"])
+
+    def _reload_search_page(self, reset=False):
+        """Rebuild the current search page from the live document.
+
+        ``reset=True`` (query changed, or head truncation) starts at page 0.
+        Otherwise keep the current page start so ▼ pagination is not yanked
+        back while new hits arrive at the end.
+        """
+        if reset:
+            self._search_page_starts = [0]
+            self._search_scan_end = 0
+            start = 0
+        else:
+            starts = getattr(self, "_search_page_starts", None) or [0]
+            start = int(starts[-1] if starts else 0)
+            chars = max(0, self.txt_recv.document().characterCount() - 1)
+            if start >= chars:
+                self._search_page_starts = [0]
+                self._search_scan_end = 0
+                start = 0
+        self._load_search_page(start)
+
     def _load_search_page(self, start=0):
         """Load one page of matches from codepoint ``start`` (lazy pagination)."""
         import search_helper
-        doc_text = self.txt_recv.document().toPlainText()
+        doc = self.txt_recv.document()
+        doc_text = doc.toPlainText()
         page = self._KW_MAX_SELECTIONS
         spans = search_helper.find_spans(
             doc_text, self._search_term,
@@ -1669,6 +1722,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         """Install codepoint spans as the current QTextCursor search page."""
         import search_helper
         doc = self.txt_recv.document()
+        self._search_page_rev = doc.revision()
+        self._search_page_chars = max(0, doc.characterCount() - 1)
         self._search_match_capped = capped
         if spans:
             last_start, last_end = spans[-1]
@@ -1778,6 +1833,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._search_match_capped = False
         self._search_scan_end = 0
         self._search_page_starts = [0]
+        self._search_page_key = None
+        self._search_page_rev = None
+        self._search_page_chars = None
         if hasattr(self, "lbl_search_cnt"):
             self.lbl_search_cnt.setText("")
         self._refresh_extra_selections()
@@ -1822,13 +1880,225 @@ class CommTool(SessionHostMixin, QMainWindow):
     _PROTO_PALETTE = ("#4C8DFF", "#34C759", "#FF9F0A", "#FF375F",
                       "#AF52DE", "#5AC8FA", "#FFD60A", "#FF6482")
 
+    def _kw_inc_state(self):
+        """Per-recv-widget incremental keyword state (follows the session tab)."""
+        te = getattr(self, "txt_recv", None)
+        if te is None:
+            return None
+        st = getattr(te, "_kw_inc", None)
+        if not isinstance(st, dict):
+            st = {
+                "sels": [],
+                "rev": None,
+                "key": None,
+                "tail": 0,     # 自上次扫描起追加的字符数（见 _kw_mark_dirty）
+                "blocks": 0,
+                "full": True,
+                "capped": False,
+            }
+            te._kw_inc = st
+        return st
+
+    def _kw_reset_inc(self):
+        te = getattr(self, "txt_recv", None)
+        if te is not None and hasattr(te, "_kw_inc"):
+            delattr(te, "_kw_inc")
+
+    def _kw_mark_full(self):
+        st = self._kw_inc_state()
+        if st is not None:
+            st["full"] = True
+            st["tail"] = 0
+
+    def _kw_mark_dirty(self, added_chars=0):
+        """Register appended characters changed since the last keyword scan.
+
+        Accumulates the length of the *appended tail*, not block numbers or
+        absolute positions: ``maximumBlockCount`` drops head blocks on overflow,
+        which shifts both, while appended text always lands at the end of the
+        document (head trims remove from the front only). At scan time the dirty
+        range is recovered as ``[last_char - tail, last_char]`` — correct under
+        any amount of head truncation (``_kw_scan_incremental``).
+        """
+        st = self._kw_inc_state()
+        if st is None or st["full"]:
+            return
+        try:
+            n = max(0, int(added_chars or 0))
+        except (TypeError, ValueError):
+            n = 0
+        st["tail"] = int(st.get("tail") or 0) + n
+
+    def _kw_rules_key(self, parsed):
+        hex_on = bool(self.sw_rx_hex.isChecked()) if hasattr(self, "sw_rx_hex") else False
+        return (
+            tuple((pat, col.name(), is_bg, scope, match)
+                  for pat, col, is_bg, scope, match in parsed),
+            bool(getattr(self, "_hexdump_on", False)),
+            bool(getattr(self, "_numview_on", False)),
+            hex_on,
+            bool(getattr(self, "_terminal_on", False)),
+        )
+
+    @staticmethod
+    def _kw_sel_block_no(sel):
+        cur = getattr(sel, "cursor", None)
+        if cur is None or cur.isNull():
+            return None
+        if cur.selectionStart() == cur.selectionEnd():
+            return None
+        block = cur.block()
+        if not block.isValid():
+            return None
+        return block.blockNumber()
+
+    def _append_kw_sels_for_block(self, doc, block, parsed, hexdump_view,
+                                  sels, capped):
+        """Scan one block's RX/TX runs into ``sels``. Returns (capped, had_match)."""
+        block_has_match = False
+        if not parsed or capped:
+            return capped, False
+        for role, ftext, base in self._block_body_runs(block):
+            for pat, col, is_bg, scope, match_mode in parsed:
+                if scope == "rx" and role != ROLE_RX:
+                    continue
+                if scope == "tx" and role != ROLE_TX:
+                    continue
+                rule = {"pattern": pat, "match": match_mode}
+                spans = _kw_rule_spans(
+                    ftext, rule, hexdump=hexdump_view,
+                    limit=max(0, self._KW_MAX_SELECTIONS - len(sels)))
+                for a, b in spans:
+                    if a >= b:
+                        continue
+                    block_has_match = True
+                    sel = QTextEdit.ExtraSelection()
+                    if is_bg:
+                        sel.format.setBackground(col)
+                        lum = (0.299 * col.red() + 0.587 * col.green()
+                               + 0.114 * col.blue())
+                        sel.format.setForeground(
+                            QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
+                    else:
+                        sel.format.setForeground(col)
+                    cur = QTextCursor(doc)
+                    cur.setPosition(base + a)
+                    cur.setPosition(base + b, QTextCursor.KeepAnchor)
+                    cur.setKeepPositionOnInsert(True)
+                    sel.cursor = cur
+                    sels.append(sel)
+                    if len(sels) >= self._KW_MAX_SELECTIONS:
+                        return True, True
+        return capped, block_has_match
+
+    def _kw_commit_state(self, st, sels, capped, key, doc):
+        st["sels"] = list(sels)
+        st["capped"] = bool(capped)
+        st["key"] = key
+        st["rev"] = doc.revision()
+        st["blocks"] = doc.blockCount()
+        st["tail"] = 0
+        st["full"] = False
+        return list(sels), bool(capped)
+
+    def _collect_keyword_highlights(self, doc, parsed, filter_on):
+        """Keyword ExtraSelections: incremental tail scan, or full walk.
+
+        Filter mode needs every block's visibility, so it always full-scans.
+        A document revision bump without a registered appended tail (setPlainText,
+        theme recolor, missed edit) also falls back to a full walk.
+        """
+        self._kw_scan_blocks = 0
+        self._kw_scan_mode = "full"
+        st = self._kw_inc_state()
+        key = (self._kw_rules_key(parsed), bool(filter_on))
+        hexdump_view = bool(getattr(self, "_hexdump_on", False))
+        if st is None:
+            return self._kw_scan_full(doc, parsed, filter_on, hexdump_view,
+                                      {"sels": []}, key)
+
+        need_full = (
+            filter_on or st["full"] or st["key"] != key or st["rev"] is None)
+        if not need_full and st["rev"] == doc.revision():
+            self._kw_scan_mode = "skip"
+            return list(st["sels"]), st["capped"], False
+        if not need_full:
+            if doc.blockCount() < int(st.get("blocks") or 0):
+                need_full = True
+            elif not int(st.get("tail") or 0):
+                # Edited, but no writer registered appended chars.
+                need_full = True
+        if need_full:
+            return self._kw_scan_full(doc, parsed, filter_on, hexdump_view, st, key)
+        self._kw_scan_mode = "incr"
+        return self._kw_scan_incremental(doc, parsed, hexdump_view, st, key)
+
+    def _kw_scan_full(self, doc, parsed, filter_on, hexdump_view, st, key):
+        sels = []
+        capped = False
+        dirty = False
+        block = doc.begin()
+        while block.isValid():
+            self._kw_scan_blocks += 1
+            capped, block_has_match = self._append_kw_sels_for_block(
+                doc, block, parsed, hexdump_view, sels, capped)
+            if not filter_on:
+                want_vis = True
+            else:
+                want_vis = block_has_match or not self._block_has_body_role(block)
+            if block.isVisible() != want_vis:
+                block.setVisible(want_vis)
+                dirty = True
+            block = block.next()
+        self._kw_commit_state(st, sels, capped, key, doc)
+        return list(sels), capped, dirty
+
+    def _kw_scan_incremental(self, doc, parsed, hexdump_view, st, key):
+        last_bn = max(0, doc.blockCount() - 1)
+        plain_len = max(0, doc.characterCount() - 1)
+        tail = max(0, int(st.get("tail") or 0))
+        from_pos = max(0, plain_len - tail)
+        from_block = doc.findBlock(from_pos)
+        if not from_block.isValid():
+            # 尾部长度超过当前文档（头部被大量截掉）——增量定位失效，回退全量。
+            self._kw_scan_mode = "full"
+            return self._kw_scan_full(doc, parsed, False, hexdump_view, st, key)
+        from_bn = from_block.blockNumber()
+        to_bn = last_bn   # 正文只追加到文末，脏区间的上界就是当前末块
+        prefix, suffix = [], []
+        for sel in st["sels"]:
+            bn = self._kw_sel_block_no(sel)
+            if bn is None:
+                continue
+            if bn < from_bn:
+                prefix.append(sel)
+            elif bn > to_bn:
+                suffix.append(sel)
+        sels = list(prefix)
+        capped = len(sels) >= self._KW_MAX_SELECTIONS
+        if not capped:
+            block = doc.findBlockByNumber(from_bn)
+            while block.isValid() and block.blockNumber() <= to_bn:
+                self._kw_scan_blocks += 1
+                capped, _had = self._append_kw_sels_for_block(
+                    doc, block, parsed, hexdump_view, sels, capped)
+                if capped:
+                    break
+                block = block.next()
+        if not capped:
+            sels.extend(suffix)
+            if len(sels) > self._KW_MAX_SELECTIONS:
+                sels = sels[:self._KW_MAX_SELECTIONS]
+                capped = True
+        self._kw_commit_state(st, sels, capped, key, doc)
+        return list(sels), capped, False
+
     def _refresh_extra_selections(self, rebuild_search=True):
         """统一构建数据区叠加高亮：关键字着色(背景/文字，分收/发范围) + 单击行高亮(最上层)；
         若开启「只显高亮行」过滤，则隐藏未命中关键字的行(块可见性折叠)。"""
         if not hasattr(self, "txt_recv"):
             return
         doc = self.txt_recv.document()
-        sels = []
         # 1. 关键字高亮（生效分组；区分大小写子串匹配；按规则 scope 限定 收/发/收发）
         rules = [r for r in self._active_rules()
                  if r.get("enabled", True) and r.get("pattern")]
@@ -1838,60 +2108,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                    _kw_normalize_match(r.get("match"))) for r in rules]
         # 过滤仅在有 启用+非空 规则时才生效，避免"开了过滤却没规则 → 全空"
         filter_on = self._filter_active()
-        capped = False
-        dirty = False
-        block = doc.begin()
-        while block.isValid():
-            block_has_match = False
-            if parsed and not capped:
-                hexdump_view = bool(getattr(self, "_hexdump_on", False))
-                for role, ftext, base in self._block_body_runs(block):
-                    for pat, col, is_bg, scope, match_mode in parsed:
-                        if scope == "rx" and role != ROLE_RX:
-                            continue
-                        if scope == "tx" and role != ROLE_TX:
-                            continue
-                        rule = {"pattern": pat, "match": match_mode}
-                        spans = _kw_rule_spans(
-                            ftext, rule, hexdump=hexdump_view,
-                            limit=max(0, self._KW_MAX_SELECTIONS - len(sels)))
-                        for a, b in spans:
-                            if a >= b:
-                                continue
-                            block_has_match = True
-                            sel = QTextEdit.ExtraSelection()
-                            if is_bg:
-                                sel.format.setBackground(col)
-                                lum = (0.299 * col.red() + 0.587 * col.green()
-                                       + 0.114 * col.blue())
-                                sel.format.setForeground(
-                                    QColor("#1C1C1E") if lum > 140 else QColor("#FFFFFF"))
-                            else:
-                                sel.format.setForeground(col)
-                            cur = QTextCursor(doc)
-                            cur.setPosition(base + a)
-                            cur.setPosition(base + b, QTextCursor.KeepAnchor)
-                            cur.setKeepPositionOnInsert(True)
-                            sel.cursor = cur
-                            sels.append(sel)
-                            if len(sels) >= self._KW_MAX_SELECTIONS:
-                                capped = True
-                                break
-                        if capped:
-                            break
-                    if capped:
-                        break
-            # 过滤：开启时只留命中行；关闭时所有行可见（恢复）。纯装饰块（时间戳/箭头行，无 RX/TX 正文，
-            # hexdump+时间戳时独占一块）不参与过滤、始终可见——与 _append_block_data 即时判定一致，
-            # 否则重扫会把时间戳行隐藏（先闪后消失）。
-            if not filter_on:
-                want_vis = True
-            else:
-                want_vis = block_has_match or not self._block_has_body_role(block)
-            if block.isVisible() != want_vis:
-                block.setVisible(want_vis)
-                dirty = True
-            block = block.next()
+        sels, capped, dirty = self._collect_keyword_highlights(doc, parsed, filter_on)
         if dirty:
             doc.markContentsDirty(0, doc.characterCount())
             self.txt_recv.viewport().update()
@@ -1950,11 +2167,26 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 3. 搜索高亮（叠加在最上层）：所有匹配淡黄，当前匹配橙色
         if getattr(self, "_search_term", ""):
             if rebuild_search:
-                # 文档/搜索词变了：重置到第一页。硬上限在 find_spans 内止损；
-                # 更多匹配靠 ▼ 惰性加载下一页（_extend_search_next_page）。
-                self._search_page_starts = [0]
-                self._search_scan_end = 0
-                self._load_search_page(0)
+                new_key = self._search_page_key_tuple()
+                old_key = getattr(self, "_search_page_key", None)
+                rev = doc.revision()
+                old_rev = getattr(self, "_search_page_rev", None)
+                chars = max(0, doc.characterCount() - 1)
+                old_chars = getattr(self, "_search_page_chars", None)
+                if new_key != old_key:
+                    # 词/模式/大小写/hexdump 变了：重置到第一页。硬上限在 find_spans
+                    # 内止损；更多匹配靠 ▼ 惰性加载下一页（_extend_search_next_page）。
+                    self._reload_search_page(reset=True)
+                    self._search_page_key = new_key
+                    self._search_idx = 0 if self._search_matches else -1
+                elif rev != old_rev:
+                    # 词未变、文档变了：重建当前页，让新追加的命中出现在搜索高亮里。
+                    # 头部截断会让页起点码点失真 → 回第一页。词+revision 都未变才
+                    # 跳过 toPlainText+find_spans（关键字/行高亮刷新不必连带全扫搜索）。
+                    truncated = old_chars is not None and chars < old_chars
+                    self._reload_search_page(reset=truncated)
+                    if truncated:
+                        self._search_idx = 0 if self._search_matches else -1
                 if not (0 <= self._search_idx < len(self._search_matches)):
                     self._search_idx = 0 if self._search_matches else -1
             # 用(已缓存或刚重建的)匹配列表着色：当前匹配橙色、其余淡黄
@@ -2034,6 +2266,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _on_filter_hl_toggled(self, _on=None):
         """切换「只显高亮行」：立即重算可见性"""
         self._kw_timer.stop()
+        self._kw_mark_full()
         self._refresh_extra_selections()
 
     def _filter_active(self) -> bool:
@@ -2985,6 +3218,10 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _on_conn_error(self, msg, update_ui=True):
         """连接层致命错误：监听/连接/绑定失败 或 连接过程中出错。"""
+        if msg == ERR_SEND_BACKPRESSURE:
+            # 写缓冲积压：已经丢弃这一帧，连接仍可用，不能走 close_conn。
+            _log.warning("TCP send backpressure: dropped a write, link kept")
+            return
         # 用 _conn_proto(实际打开的协议)而非下拉框当前值：连接中导入配置可能改了下拉框，
         # 不能拿新值解释旧连接(见 __init__ 处 _conn_proto 注释)。在此处一次性取，早于下面
         # close_conn() 把它清空；失败/无连接时回退读下拉框。
@@ -4424,12 +4661,69 @@ class CommTool(SessionHostMixin, QMainWindow):
         else:
             sb.setValue(scroll_before)
 
+        last = self.txt_recv.document().lastBlock()
+        if trimmed:
+            self._kw_mark_full()
+        elif last.isValid():
+            # 尾部锚定：累积本次追加的字符数（用源文本长度——截断会把 cursor/位置一起
+            # 平移，算差值会失真；ANSI 下此值略高，只会向前多扫、不会漏）。maximumBlockCount
+            # 头部截断只删文档前面，已追加内容始终留在文末——扫描时 [末字符-tail, 末字符]
+            # 即脏区间（见 _kw_mark_dirty / _kw_scan_incremental）。
+            self._kw_mark_dirty(len(text))
         if not background:
             self._schedule_keyword_rebuild()    # 节流重扫关键字高亮(着色)
 
         self._write_log_block(text, direction, force_new_block, prefix=prefix)
 
         return body_start_pos    # 正文起始字符位置，供协议高亮做字节→字符映射
+
+    def _flush_log_file(self, session=None, to_disk=False):
+        """Push the live-log Python buffer to the OS; optionally fsync to disk.
+
+        Per-write uses flush only (other editors see new lines; cheap). Close /
+        idle-sync pass ``to_disk=True`` so a crash loses at most ~1s. StringIO
+        test doubles have no fileno — skip fsync there.
+        """
+        session = self._log_session(session)
+        if session is None or not session._log_file:
+            return
+        fp = session._log_file
+        try:
+            fp.flush()
+        except (OSError, ValueError):
+            _log.debug("log flush failed", exc_info=True)
+            raise
+        if not to_disk:
+            self._schedule_log_disk_sync()
+            return
+        fileno = getattr(fp, "fileno", None)
+        if not callable(fileno):
+            return
+        try:
+            os.fsync(fileno())
+        except (OSError, ValueError, AttributeError):
+            _log.debug("log fsync failed", exc_info=True)
+
+    def _schedule_log_disk_sync(self):
+        """Coalesce fsync: high-rate writes share one ~1s disk sync."""
+        timer = getattr(self, "_log_sync_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(1000)
+            timer.timeout.connect(self._sync_open_log_files)
+            self._log_sync_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _sync_open_log_files(self):
+        for session in getattr(self, "_sessions", None) or []:
+            if getattr(session, "_log_file", None) is None:
+                continue
+            try:
+                self._flush_log_file(session=session, to_disk=True)
+            except (OSError, ValueError):
+                _log.debug("idle log fsync failed", exc_info=True)
 
     def _write_log_block(self, text: str, direction: str, force_new_block: bool,
                          prefix=None):
@@ -4451,7 +4745,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 prefix=prefix,
                 show_timestamp=show_ts)
             session._log_file.write("".join(pieces))
-            session._log_file.flush()
+            self._flush_log_file(session=session)
             # _write_log_block already runs in the owning session context.
             # Keep the legacy no-argument call contract used by integrations.
             self._maybe_rotate_log()
@@ -5190,7 +5484,16 @@ class CommTool(SessionHostMixin, QMainWindow):
         因为录的是「线路现场」而非「用户意图」——这点与宏录制相反）。"""
         if (self._recorder.recording
                 and self._io_session_owns("recording")):
-            self._recorder.on_tx(data, source=source)
+            extra = None
+            if (source == "__all__"
+                    and getattr(self, "_conn_proto", None) == PROTO_TCP_SERVER
+                    and self.conn is not None):
+                successful = getattr(self.conn, "last_send_client_keys", None)
+                if callable(successful):
+                    extra = successful()
+                elif hasattr(self.conn, "client_keys"):
+                    extra = self.conn.client_keys()
+            self._recorder.on_tx(data, source=source, peers=extra)
         self._triggers_feed(data, "tx", source=source)  # TCP Server 按发送目标隔离流尾巴
 
     def _triggers_stream_key(self, direction, source=None):
@@ -5724,18 +6027,19 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _recorder_link_snapshot(self):
         """Capture TCP/UDP endpoints for PCAP export.
 
-        Supports TCP Client, TCP Server (single selected client), UDP with a
-        fixed remote, and UDP Multicast (group as remote). Returns None when
-        out of scope (serial, Server __all__, UDP without remote, …).
+        Supports TCP Client, TCP Server (one flow per client, including
+        broadcast), UDP with a fixed remote, and UDP Multicast (group as
+        remote). Returns None when out of scope (serial, UDP without remote, …).
         Wildcard bind addresses (0.0.0.0 / ::) are resolved to a concrete host
         IPv4 via route table / local NIC list; failure refuses export.
         """
-        from pcap_export import can_export_link
+        from pcap_export import can_export_link, as_unicast_peer
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         remote_ip = ""
         remote_port = None
         local_ip = ""
         local_port = None
+        peers = []
 
         if proto == PROTO_TCP_CLIENT:
             remote_ip = (self.ed_remote_ip.text() or "").strip()
@@ -5745,23 +6049,29 @@ class CommTool(SessionHostMixin, QMainWindow):
             if ep:
                 local_ip, local_port = ep
         elif proto == PROTO_TCP_SERVER:
-            target = self._send_target()
-            if not target or target == "__all__":
-                return None
-            # Client keys are "ip:port" from TcpServerConn._key.
-            text = str(target).strip()
-            if ":" not in text:
-                return None
-            host, _, port_s = text.rpartition(":")
-            remote_ip = host.strip().strip("[]")
-            remote_port = self._parse_port(port_s)
             local_ip = (self.cb_local_ip.currentText() or "").strip()
             local_port = self._parse_port(self.ed_local_port.text())
             conn = self.conn
-            if conn is not None and getattr(conn, "bound_port", None):
-                bp = conn.bound_port
-                if bp:
+            if conn is not None:
+                bp = getattr(conn, "bound_port", None)
+                if callable(bp):
+                    bp = bp()
+                if isinstance(bp, int) and bp:
                     local_port = bp
+                keys = conn.client_keys() if hasattr(conn, "client_keys") else ()
+                for key in keys or ():
+                    peer = as_unicast_peer(key)
+                    if peer is not None and peer not in peers:
+                        peers.append(peer)
+            target = self._send_target()
+            if target and target != "__all__":
+                peer = as_unicast_peer(target)
+                if peer is not None:
+                    remote_ip, remote_port = peer
+                    if peer not in peers:
+                        peers.append(peer)
+            elif len(peers) == 1:
+                remote_ip, remote_port = peers[0]
         elif proto == PROTO_UDP:
             # Single-peer only: require "指定远程" with a concrete peer.
             if not self.sw_udp_remote.isChecked():
@@ -5799,6 +6109,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             "remote_ip": remote_ip or None,
             "remote_port": remote_port,
         }
+        if peers:
+            link["peers"] = [[ip, port] for ip, port in peers]
         return link if can_export_link(link) else None
 
     def _replay_begin(self, *, drive_tx=False):
@@ -8323,6 +8635,21 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._send_count = prev_count
         return ok
 
+    def _commit_ime_composition(self):
+        """发送前提交 IME 组合文本。
+
+        中文/日文输入法下 Ctrl+Enter 通常只透传按键、不提交组合；若组词未上屏就
+        发送，组合中的文字会从发送内容里漏掉。先 commit() 让 QTextEdit 收到完整
+        文本，再走 do_send。无活动组合时为空操作；异常只记 debug 不阻塞发送。
+        """
+        try:
+            from PyQt5.QtGui import QGuiApplication
+            im = QGuiApplication.inputMethod()
+            if im is not None:
+                im.commit()
+        except Exception:
+            _log.debug("IME commit failed", exc_info=True)
+
     def do_send(self):
         raw_orig = self.txt_send.toPlainText()
         if not raw_orig:
@@ -9592,6 +9919,12 @@ class CommTool(SessionHostMixin, QMainWindow):
                     timer.stop()
             self._ms_stop_all_cycles()
         self._apply_terminal_ui(on)
+        # 终端模式改变正文块的角色/可匹配性：key 含 terminal_on，开关即触发全量重扫，
+        # 清掉切换时残留在旧 RX 文本上的高亮（终端块无 ROLE_PROP，规则本就不匹配）。
+        if hasattr(self, "_kw_timer"):
+            self._kw_timer.stop()
+            self._kw_mark_full()
+            self._refresh_extra_selections()
         self.toast(self._t("term_on") if on else self._t("term_off"))
 
     def _apply_terminal_ui(self, on):
@@ -9867,6 +10200,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         # Terminal bypasses _append_block_data; apply the same char budget and
         # keep _term_pos valid after a head trim (P1: no-newline growth).
         trimmed = self._trim_recv_overflow()
+        if trimmed:
+            self._kw_mark_full()
         if trimmed and self._term_pos is not None:
             last = self.txt_recv.document().characterCount() - 1
             self._term_pos = _term_vt.term_pos_after_trim(
@@ -9896,6 +10231,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._bookmarks = []
                 self._bookmark_idx = -1
                 self._recv_highlight_line = -1
+                self._kw_reset_inc()
+                self.txt_recv.setExtraSelections([])
                 cur.movePosition(QTextCursor.End)
         elif final == "K":            # 擦除行：0/缺省=光标到行尾
             if params in ("", "0"):
@@ -10074,7 +10411,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             session._log_opened_at = when or datetime.now()
             ts = session._log_opened_at.strftime("%Y-%m-%d %H:%M:%S")
             session._log_file.write(self._t("log_header", time=ts))
-            session._log_file.flush()
+            self._flush_log_file(session=session, to_disk=True)
             session._log_ends_with_nl = True
             session.log_wanted = True
             if session is self.active_session():
@@ -10092,7 +10429,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         try:
             session._log_file.write(self._t(
                 "log_footer", time=when.strftime("%Y-%m-%d %H:%M:%S")))
-            session._log_file.flush()
+            self._flush_log_file(session=session, to_disk=True)
         except (OSError, TypeError, ValueError, KeyError):
             _log.debug("log footer/flush failed", exc_info=True)
         try:
@@ -10277,6 +10614,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._bookmarks = []
         self._bookmark_idx = -1
         self.txt_recv.setExtraSelections([])
+        self._kw_reset_inc()
         self.btn_to_bottom.hide()
         self._reset_stats()
         self._reset_recv_state(reset_dashboard=True)
@@ -12280,7 +12618,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._cancel_reconnect()
         self._ms_stop_all_cycles()       # 先停各会话循环定时器，避免销毁中触发 toast
         for timer_name in ("_theme_apply_timer", "_restore_project_timer",
-                           "_update_start_timer", "_update_timer"):
+                           "_update_start_timer", "_update_timer",
+                           "_log_sync_timer"):
             timer = getattr(self, timer_name, None)
             if timer is not None:
                 timer.stop()

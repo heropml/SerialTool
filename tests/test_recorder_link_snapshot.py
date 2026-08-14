@@ -92,15 +92,22 @@ def test_recorder_link_udp_multicast_resolves_wildcard(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_recorder_link_tcp_server_all_clients_rejected(monkeypatch, tmp_path):
+def test_recorder_link_tcp_server_all_clients_allowed(monkeypatch, tmp_path):
     from main_window import PROTO_TCP_SERVER
     w = _window(monkeypatch, tmp_path, "srv-all")
     w._conn_proto = PROTO_TCP_SERVER
     w.cb_proto.setCurrentText(PROTO_TCP_SERVER)
+    w.cb_local_ip.setCurrentText("0.0.0.0")
+    w.ed_local_port.setText("9000")
     monkeypatch.setattr(w, "_send_target", lambda: "__all__")
-    assert w._recorder_link_snapshot() is None
-    monkeypatch.setattr(w, "_send_target", lambda: None)
-    assert w._recorder_link_snapshot() is None
+    monkeypatch.setattr(
+        "main_window.resolve_export_local_ipv4",
+        lambda configured, remote_ip=None, remote_port=None: "10.0.0.5")
+    link = w._recorder_link_snapshot()
+    assert link is not None
+    assert link["proto"] == PROTO_TCP_SERVER
+    assert link["local_ip"] == "10.0.0.5"
+    assert link["local_port"] == 9000
     w._close_all_sessions()
 
 
@@ -141,5 +148,31 @@ def test_record_stream_tx_tracks_tcp_server_target(monkeypatch, tmp_path):
         "remote_ip": "192.168.1.50", "remote_port": 50123,
     })
     w._record_stream_tx(b"other", source="192.168.1.51:50124")
-    assert w._recorder.link is None
+    assert w._recorder.link is not None
+    assert w._recorder.events.pcap_peers == [("192.168.1.51", 50124)]
+    w._close_all_sessions()
+
+
+def test_record_stream_broadcast_uses_successful_clients(monkeypatch, tmp_path):
+    from main_window import PROTO_TCP_SERVER
+    w = _window(monkeypatch, tmp_path, "srv-tx-broadcast")
+    old_conn = w.conn
+
+    class _Conn:
+        def last_send_client_keys(self):
+            return ["192.168.1.50:50123"]
+
+        def client_keys(self):
+            raise AssertionError("must not record all connected clients")
+
+    w.conn = _Conn()
+    w._conn_proto = PROTO_TCP_SERVER
+    w._recorder.start(link={
+        "proto": PROTO_TCP_SERVER,
+        "local_ip": "10.0.0.1", "local_port": 9000,
+    })
+    w._record_stream_tx(b"broadcast", source="__all__")
+    assert w._recorder.events.pcap_peers == [
+        [("192.168.1.50", 50123)]]
+    w.conn = old_conn
     w._close_all_sessions()

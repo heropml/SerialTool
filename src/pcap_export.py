@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TCP Client / TCP Server (single peer) / UDP / UDP Multicast → libpcap / pcapng.
+"""TCP Client / TCP Server / UDP / UDP Multicast → libpcap / pcapng.
 
 把 CommTool 录到的应用层收发事件封装成合成以太网 + IPv4 + TCP/UDP 帧，
 以便用 Wireshark / tcpdump 打开。不是系统级网卡抓包：没有真实 L2 帧，
@@ -7,10 +7,10 @@ TCP 也无三次握手 / 重传语义，只保时间序与载荷方向。
 
 支持范围：
 - TCP Client
-- TCP Server（须指定唯一客户端对端 remote_ip/remote_port）
+- TCP Server（每个客户端一条流；广播按该事件当时的对端展开，缺省则按此前已出现的客户端）
 - UDP（必须指定唯一远程对端）
 - UDP Multicast（remote = 组播组地址/端口）
-串口 / TCP Server 广播(__all__) / 回复模式多对端 → 拒绝导出。
+串口 / UDP 回复模式多对端 → 拒绝导出。
 
 导出格式：经典 ``.pcap`` 或 ``.pcapng``（由路径扩展名或 format= 选择）。
 """
@@ -45,6 +45,9 @@ _PCAPNG_BOM = 0x1A2B3C4D
 _PCAPNG_IDB = 0x00000001
 _PCAPNG_EPB = 0x00000006
 
+# TCP Server broadcast TX sentinel (matches TcpServerConn send target).
+PCAP_BROADCAST = "__all__"
+
 
 class PcapExportError(ValueError):
     """导出前提不满足或参数非法。"""
@@ -68,12 +71,107 @@ def _port(value) -> int:
     return p
 
 
+def as_unicast_peer(value) -> Optional[Tuple[str, int]]:
+    """Normalize a per-event / header peer to ``(ipv4, port)``, or None.
+
+    Accepts ``(ip, port)``, ``[ip, port]``, or ``"ip:port"``. A 2-tuple is
+    always one peer. Broadcast sentinel ``__all__``, a list of peers, and
+    unparseable values return None.
+    """
+    if value is None or value == PCAP_BROADCAST:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        host, port_value = value[0], value[1]
+    elif isinstance(value, str) and ":" in value.strip():
+        host, _, port_value = value.strip().rpartition(":")
+    else:
+        return None
+    try:
+        ip = str(ipaddress.IPv4Address(str(host).strip().strip("[]")))
+        port = _port(port_value)
+    except (PcapExportError, TypeError, ValueError, ipaddress.AddressValueError):
+        return None
+    return ip, port
+
+
+def _iter_unicast_peers(value):
+    """Yield ``(ipv4, port)`` from a sidecar value.
+
+    A 2-tuple/list of ``(ip, port)`` is one peer. A list of those is many
+    (TCP Server broadcast recipients captured at send time).
+    """
+    one = as_unicast_peer(value)
+    if one is not None:
+        yield one
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            peer = as_unicast_peer(item)
+            if peer is not None:
+                yield peer
+
+
+def is_broadcast_peer(value) -> bool:
+    return value == PCAP_BROADCAST
+
+
+def _header_peers(link: Mapping) -> List[Tuple[str, int]]:
+    out: List[Tuple[str, int]] = []
+    raw = link.get("peers")
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            peer = as_unicast_peer(item)
+            if peer is not None and peer not in out:
+                out.append(peer)
+    return out
+
+
+def collect_tcp_server_peers(
+    events: Optional[Sequence[Event]],
+    link: Mapping,
+) -> List[Tuple[str, int]]:
+    """Ordered unique TCP Server clients from header + per-event sidecar."""
+    seen: List[Tuple[str, int]] = []
+
+    def add(value) -> None:
+        for peer in _iter_unicast_peers(value):
+            if peer not in seen:
+                seen.append(peer)
+
+    for peer in _header_peers(link):
+        add(peer)
+    add((link.get("remote_ip"), link.get("remote_port")))
+    event_peers = getattr(events, "pcap_peers", ()) or ()
+    for item in event_peers:
+        add(item)
+    return seen
+
+
+def list_export_peers(
+    events: Optional[Sequence[Event]],
+    link: Optional[Mapping],
+) -> List[Tuple[str, int]]:
+    """Peers the user will see in a PCAP (for the export confirm dialog)."""
+    try:
+        meta = normalize_link(link)
+    except PcapExportError:
+        return []
+    if meta["proto"] == PROTO_TCP_SERVER:
+        return collect_tcp_server_peers(events, meta)
+    if meta.get("remote_ip") and meta.get("remote_port"):
+        return [(meta["remote_ip"], meta["remote_port"])]
+    return []
+
+
 def normalize_link(link: Optional[Mapping]) -> dict:
     """Validate / normalize a link dict for PCAP export.
 
-    Required keys: proto, remote_ip, remote_port.
+    TCP Client / UDP / UDP Multicast require a single remote_ip/remote_port.
+    TCP Server needs a concrete local_ip/local_port; remote is optional
+    because clients come from per-event peers (and optional header ``peers``).
     local_ip / local_port default to 10.0.0.1 / 40000 when missing
-    (TCP Client often only knows the remote until the socket is up).
+    (TCP Client often only knows the remote until the socket is up),
+    except TCP Server which requires local_port (the listen port).
     """
     if not isinstance(link, Mapping):
         raise PcapExportError("missing link metadata")
@@ -85,14 +183,7 @@ def normalize_link(link: Optional[Mapping]) -> dict:
     else:
         raise PcapExportError(
             "PCAP export only supports TCP Client/Server and "
-            "UDP / UDP Multicast with a single remote peer "
-            "(got %r)" % proto)
-
-    remote_ip = str(link.get("remote_ip") or "").strip()
-    remote_port = link.get("remote_port")
-    if not remote_ip or remote_port in (None, ""):
-        raise PcapExportError(
-            "single remote peer required (remote_ip / remote_port)")
+            "UDP / UDP Multicast (got %r)" % proto)
 
     local_ip = str(link.get("local_ip") or "").strip() or "10.0.0.1"
     # Bind-all is valid for listening, but not as a synthetic PCAP host.
@@ -100,11 +191,22 @@ def normalize_link(link: Optional[Mapping]) -> dict:
         raise PcapExportError(
             "wildcard local_ip is not exportable (need a concrete host IPv4)")
     local_port = link.get("local_port")
-    if local_port in (None, ""):
+    if proto == PROTO_TCP_SERVER:
+        if local_port in (None, ""):
+            raise PcapExportError("TCP Server requires local_port")
+    elif local_port in (None, ""):
         local_port = 40000
 
+    remote_ip = str(link.get("remote_ip") or "").strip()
+    remote_port = link.get("remote_port")
+    has_remote = bool(remote_ip) and remote_port not in (None, "")
+    if proto != PROTO_TCP_SERVER and not has_remote:
+        raise PcapExportError(
+            "single remote peer required (remote_ip / remote_port)")
+
     local_ip_b = _ipv4_bytes(local_ip)
-    remote_ip_b = _ipv4_bytes(remote_ip)
+    remote_ip_b = _ipv4_bytes(remote_ip) if has_remote else None
+    remote_port_n = _port(remote_port) if has_remote else None
     if proto == PROTO_UDP_MULTICAST and not 224 <= remote_ip_b[0] <= 239:
         raise PcapExportError("UDP Multicast remote_ip must be an IPv4 multicast group")
 
@@ -113,12 +215,13 @@ def normalize_link(link: Optional[Mapping]) -> dict:
         "transport": transport,
         "local_ip": local_ip,
         "local_port": _port(local_port),
-        "remote_ip": remote_ip,
-        "remote_port": _port(remote_port),
+        "remote_ip": remote_ip if has_remote else None,
+        "remote_port": remote_port_n,
         "local_ip_b": local_ip_b,
         "remote_ip_b": remote_ip_b,
         "rx_peer_ip_b": None,
         "rx_peer_port": None,
+        "peers": _header_peers(link),
     }
     # Older recordings retain one sender in the header; current recordings
     # carry the sender with each multicast RX event.
@@ -233,6 +336,15 @@ def build_frame(direction: str, payload: bytes, link: Mapping,
     rem_ip = link["remote_ip_b"]
     loc_port = link["local_port"]
     rem_port = link["remote_port"]
+    if link.get("proto") == PROTO_TCP_SERVER and event_peer is not None:
+        peer = as_unicast_peer(event_peer)
+        if peer is None:
+            raise PcapExportError("invalid TCP Server client endpoint")
+        rem_ip = _ipv4_bytes(peer[0])
+        rem_port = peer[1]
+    if rem_ip is None or rem_port is None:
+        raise PcapExportError(
+            "single remote peer required (remote_ip / remote_port)")
 
     if direction == "tx":
         # Unicast: local → remote. Multicast: local → group (remote=group).
@@ -284,6 +396,42 @@ def build_frame(direction: str, payload: bytes, link: Mapping,
     return _ethernet(src_mac, dst_mac, ip)
 
 
+def _tcp_flow_state(states: dict, peer: Tuple[str, int]) -> dict:
+    st = states.get(peer)
+    if st is None:
+        st = {"tx": 1000, "rx": 2000}
+        states[peer] = st
+    return st
+
+
+def _event_chunks(meta: Mapping, data: bytes):
+    if meta["transport"] == "tcp":
+        return [data[off:off + _TCP_MAX_PAYLOAD]
+                for off in range(0, len(data), _TCP_MAX_PAYLOAD)]
+    return [data]
+
+
+def _tcp_server_targets(event_peer, meta: Mapping,
+                        known: Sequence[Tuple[str, int]]):
+    """Resolve one TCP Server event to one or more client endpoints.
+
+    Prefer a recipient list stored on the event. ``__all__`` expands only to
+    clients already seen in this walk (not the whole recording).
+    """
+    explicit = list(_iter_unicast_peers(event_peer))
+    if explicit:
+        return explicit
+    if is_broadcast_peer(event_peer):
+        if not known:
+            raise PcapExportError("TCP Server broadcast has no known clients")
+        return list(known)
+    if meta.get("remote_ip") and meta.get("remote_port"):
+        peer = as_unicast_peer((meta["remote_ip"], meta["remote_port"]))
+        if peer is not None:
+            return [peer]
+    raise PcapExportError("TCP Server event missing client endpoint")
+
+
 def _iter_frames(
     events: Sequence[Event],
     meta: Mapping,
@@ -291,24 +439,40 @@ def _iter_frames(
     wall_t0: Optional[float] = None,
 ) -> List[Tuple[float, bytes]]:
     """Build (timestamp_sec, ethernet_frame) list from recorder events."""
-    tcp_state = {"tx": 1000, "rx": 2000}
+    tcp_states: dict = {}
+    shared_tcp = {"tx": 1000, "rx": 2000}
     base = float(wall_t0) if wall_t0 is not None else 0.0
     frames: List[Tuple[float, bytes]] = []
     event_peers = getattr(events, "pcap_peers", ()) or ()
+    known: List[Tuple[str, int]] = []
+    if meta.get("proto") == PROTO_TCP_SERVER:
+        # Legacy single-peer files may TX before any sidecar RX. Seed only the
+        # header remote, never the full-session ``peers`` list.
+        seed = as_unicast_peer((meta.get("remote_ip"), meta.get("remote_port")))
+        if seed is not None:
+            known.append(seed)
     for i, (t_rel, direction, payload) in enumerate(events):
         if direction not in ("rx", "tx") or not payload:
             continue
         ts = base + max(0.0, float(t_rel))
-        data = bytes(payload)
-        if meta["transport"] == "tcp":
-            chunks = (data[off:off + _TCP_MAX_PAYLOAD]
-                      for off in range(0, len(data), _TCP_MAX_PAYLOAD))
-        else:
-            chunks = (data,)
+        chunks = _event_chunks(meta, bytes(payload))
         event_peer = event_peers[i] if i < len(event_peers) else None
-        for chunk in chunks:
-            frames.append((ts, build_frame(direction, chunk, meta, tcp_state,
-                                           event_peer=event_peer)))
+        if meta.get("proto") == PROTO_TCP_SERVER:
+            targets = _tcp_server_targets(event_peer, meta, known)
+            for peer in targets:
+                state = _tcp_flow_state(tcp_states, peer)
+                for chunk in chunks:
+                    frames.append((
+                        ts, build_frame(direction, chunk, meta, state,
+                                        event_peer=peer)))
+            for peer in targets:
+                if peer not in known:
+                    known.append(peer)
+        else:
+            for chunk in chunks:
+                frames.append((ts, build_frame(
+                    direction, chunk, meta, shared_tcp,
+                    event_peer=event_peer)))
     return frames
 
 

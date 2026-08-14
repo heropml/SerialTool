@@ -65,6 +65,7 @@ class StreamRecorder:
         self._wall_t0 = None
         self.link = None        # optional net endpoint snapshot for PCAP export
         self._mcast_multiple_peers = False
+        self._tcp_server_multiple_peers = False
 
     def start(self, link=None):
         self.events = _RecordedEvents()
@@ -72,7 +73,12 @@ class StreamRecorder:
         self._t0 = None
         self._wall_t0 = None
         self.link = dict(link) if isinstance(link, dict) else None
+        if isinstance(self.link, dict) and isinstance(self.link.get("peers"), list):
+            self.link["peers"] = [
+                list(p) if isinstance(p, (list, tuple)) else p
+                for p in self.link["peers"]]
         self._mcast_multiple_peers = False
+        self._tcp_server_multiple_peers = False
         self.recording = True
 
     def stop(self):
@@ -85,6 +91,7 @@ class StreamRecorder:
         self._wall_t0 = None
         self.link = None
         self._mcast_multiple_peers = False
+        self._tcp_server_multiple_peers = False
 
     def __len__(self):
         return len(self.events)
@@ -182,6 +189,69 @@ class StreamRecorder:
             self.link["rx_peer_ip"], self.link["rx_peer_port"] = peer
         return peer
 
+    @staticmethod
+    def _tcp_server_peer(source):
+        """Parse a TCP Server client key ('ip:port') or broadcast sentinel.
+
+        Returns ``(ip, port)``, ``"__all__"``, or None if unparseable.
+        """
+        if source == "__all__":
+            return "__all__"
+        try:
+            text = str(source or "").strip()
+            if ":" not in text:
+                return None
+            host, _, port_s = text.rpartition(":")
+            port = int(port_s)
+            if not 1 <= port <= 65535:
+                return None
+            ip = str(ipaddress.IPv4Address(host.strip().strip("[]")))
+            return ip, port
+        except (TypeError, ValueError):
+            return None
+
+    def _note_tcp_server_peer(self, peer):
+        """Remember a directed TCP Server client; drop stale single-peer header."""
+        if peer is None or peer == "__all__":
+            return peer
+        if not isinstance(self.link, dict):
+            return peer
+        peers = self.link.setdefault("peers", [])
+        item = [peer[0], int(peer[1])]
+        if not any(
+                isinstance(p, (list, tuple)) and len(p) == 2
+                and str(p[0]) == item[0] and int(p[1]) == item[1]
+                for p in peers):
+            peers.append(item)
+        unique = []
+        for p in peers:
+            parsed = (self._tcp_server_peer("%s:%s" % (p[0], p[1]))
+                      if isinstance(p, (list, tuple)) and len(p) == 2
+                      else None)
+            if parsed not in (None, "__all__") and parsed not in unique:
+                unique.append(parsed)
+        if len(unique) > 1:
+            self._tcp_server_multiple_peers = True
+            self.link.pop("remote_ip", None)
+            self.link.pop("remote_port", None)
+            return peer
+        previous = None
+        try:
+            if (self.link.get("remote_ip")
+                    and self.link.get("remote_port") not in (None, "")):
+                previous = (
+                    str(ipaddress.IPv4Address(str(self.link.get("remote_ip")))),
+                    int(self.link.get("remote_port")))
+        except (TypeError, ValueError):
+            previous = None
+        if previous is None:
+            self.link["remote_ip"], self.link["remote_port"] = peer
+        elif previous != peer:
+            self._tcp_server_multiple_peers = True
+            self.link.pop("remote_ip", None)
+            self.link.pop("remote_port", None)
+        return peer
+
     def on_rx(self, data, t=None, source=None):
         pcap_peer = None
         if self.recording and isinstance(self.link, dict):
@@ -194,10 +264,12 @@ class StreamRecorder:
                 # exported PCAP could falsely attribute RX bytes to the fixed peer.
                 self.link = None
             elif proto == "TCP Server":
-                if not self._same_tcp_server_peer(self.link, source):
-                    # Second client / reconnect after drop: stop attributing to
-                    # the originally selected single client.
+                parsed = self._tcp_server_peer(source)
+                if parsed is None or parsed == "__all__":
+                    # RX without a client key cannot be mapped to a 4-tuple.
                     self.link = None
+                else:
+                    pcap_peer = self._note_tcp_server_peer(parsed)
             elif proto == "UDP Multicast":
                 pcap_peer = self._note_multicast_rx_peer(source)
                 if pcap_peer is None:
@@ -206,14 +278,26 @@ class StreamRecorder:
                     self.link = None
         self._add("rx", data, t, pcap_peer=pcap_peer)
 
-    def on_tx(self, data, t=None, source=None):
+    def on_tx(self, data, t=None, source=None, peers=None):
+        pcap_peer = None
         if self.recording and isinstance(self.link, dict):
-            if (self.link.get("proto") == "TCP Server"
-                    and not self._same_tcp_server_peer(self.link, source)):
-                # The selected client changed (or a broadcast was sent), so this
-                # no longer has a truthful single-peer TCP mapping.
-                self.link = None
-        self._add("tx", data, t)
+            if self.link.get("proto") == "TCP Server":
+                parsed = self._tcp_server_peer(source)
+                if parsed == "__all__":
+                    recipients = []
+                    for key in peers or ():
+                        extra = self._tcp_server_peer(key)
+                        if extra not in (None, "__all__"):
+                            self._note_tcp_server_peer(extra)
+                            if extra not in recipients:
+                                recipients.append(extra)
+                    # Persist who was connected at send time so PCAP export
+                    # does not invent TX frames for clients that appear later.
+                    pcap_peer = recipients if recipients else "__all__"
+                elif parsed is not None:
+                    pcap_peer = self._note_tcp_server_peer(parsed)
+                # source=None keeps header remote (legacy single-peer TX).
+        self._add("tx", data, t, pcap_peer=pcap_peer)
 
     # ---------------- 存盘 / 载入 ----------------
     def save(self, path, note="", link=None):
@@ -227,8 +311,10 @@ class StreamRecorder:
             clean = {}
             for key in ("proto", "local_ip", "local_port",
                         "remote_ip", "remote_port",
-                        "rx_peer_ip", "rx_peer_port"):
+                        "rx_peer_ip", "rx_peer_port", "peers"):
                 if key in link_obj and link_obj[key] not in (None, ""):
+                    if key == "peers" and not link_obj[key]:
+                        continue
                     clean[key] = link_obj[key]
             if clean:
                 header["link"] = clean

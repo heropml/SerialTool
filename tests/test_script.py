@@ -670,15 +670,38 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_tcp_server_broadcast_succeeds_if_any_client_gets_full_frame(self):
         from net_io import TcpServerConn
 
+        class _Addr:
+            def __init__(self, host):
+                self._host = host
+
+            def toString(self):
+                return self._host
+
         class DeadClient:        # write 返回 -1：对端 RST / 缓冲满
             @staticmethod
             def write(_data):
                 return -1
 
+            @staticmethod
+            def peerAddress():
+                return _Addr("10.0.0.1")
+
+            @staticmethod
+            def peerPort():
+                return 1
+
         class GoodClient:
             @staticmethod
             def write(data):
                 return len(data)
+
+            @staticmethod
+            def peerAddress():
+                return _Addr("10.0.0.2")
+
+            @staticmethod
+            def peerPort():
+                return 2
 
         dead, good = DeadClient(), GoodClient()
         conn = TcpServerConn("127.0.0.1", 1)
