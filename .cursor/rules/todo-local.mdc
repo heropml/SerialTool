@@ -1,0 +1,8 @@
+---
+description: docs/TODO.md is local-only; do not commit or edit unless asked
+alwaysApply: true
+---
+
+# Local TODO
+
+`docs/TODO.md` is gitignored and not part of the product or release. Do not treat it as a task list to execute, do not edit it, and do not commit it unless the user explicitly asks.

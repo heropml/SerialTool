@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
 
-[下载最新版](https://github.com/heropml/SerialTool/releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md) · [更新计划](docs/TODO.md)
+[下载最新版](https://github.com/heropml/SerialTool/releases) · [中文使用说明](docs/使用说明.md) · [English Usage](docs/USAGE.md)
 
 ![CommTool](./assets/icon_preview.png)
 

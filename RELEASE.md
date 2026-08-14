@@ -189,7 +189,7 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
 - 提交正文必须详细，按功能分节说明本版本的功能、修复、兼容性、文档和测试；不要删除各项变更的具体描述。
 - 正文末尾保留完整测试结果，例如：`全量测试：739 passed，3 skipped，285 subtests passed。`
 - 发布前确认 `git log -1 --format='%H%n%B'` 能看到标题和完整正文；不要用只有标题的提交覆盖详细提交。
-- `docs/TODO.md` 不属于发布内容；如用户明确要求过滤，应在最终提交前移除，不要把它重新提交进去。
+- `docs/TODO.md` 已 gitignore，不入库；发版脚本仍会 `git reset -- docs/TODO.md` 以防万一。
 
 ### 8.2 GitHub/Gitee Release
 

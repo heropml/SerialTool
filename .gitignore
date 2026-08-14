@@ -51,6 +51,9 @@ Thumbs.db
 desktop.ini
 build_local.log
 
+# 本地规划草稿，不入库
+docs/TODO.md
+
 # 调研文档，不入库
 需求说明.txt
 需求说明.bak-*.txt
