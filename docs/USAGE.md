@@ -33,13 +33,14 @@
 - [Tips](#tips)
 - [Status Bar](#status-bar)
 - [FAQ](#faq)
+- [Install (Windows / macOS / Linux)](#install-windows--macos--linux)
 - [System Requirements](#system-requirements)
 
 ---
 
 ## Quick Start
 
-1. Double-click the **CommTool** icon on your desktop
+1. Install from [Releases](https://github.com/heropml/SerialTool/releases) (see [Install](#install-windows--macos--linux)), then double-click the **CommTool** icon
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
@@ -55,7 +56,7 @@ PCAP, highlighting, and send/log polish on the v1.5.6 baseline:
 - **Search throttle** — 150 ms debounce; skip a full-document scan when the query is unchanged; rebuild the current page when the document grows.
 - **Ctrl+Enter sends** — Enter still inserts a newline; IME composition is committed first; terminal mode is unchanged.
 - **Live log** — flush after each write, coalesced ~1 s `fsync`; a full disk still closes the log; idle-sync errors stay inside the timer slot.
-- **Boundary** — no session tree / split / undock; P2 still deferred; macOS DMG still added by collaborator via `release_macos.sh`.
+- **Boundary** — no session tree / split / undock; P2 still deferred. Windows / macOS / Linux x86_64 packages are on the same Release.
 
 ---
 
@@ -850,10 +851,13 @@ Tray icon:
 Right-click the tray icon and choose **About** to open the **About** dialog. It shows the app icon, name, current version and a short description, plus a **Check for Updates** button.
 
 - **Check for Updates** — fetches the latest version from the update source and compares it with the one you're running:
-  - **A newer version is available** → the dialog shows the new version number, the **release notes**, and a **Download and Update** button. Click it to download (a **progress percentage** is shown). When the download completes, the **regular install wizard** opens — finish the upgrade yourself by clicking **Next / Install** (this is **not** a silent install).
+  - **A newer version is available** → the dialog shows the new version number, the **release notes**, and a **Download and Update** button. Click it to download (a **progress percentage** is shown).
+    - **Windows**: the **install wizard** opens — finish with **Next / Install** (**not** a silent install).
+    - **macOS**: the `.dmg` opens; drag the app into Applications and relaunch (unsigned: see `xattr` under Install).
+    - **Linux**: the `.run` installer starts after the app quits and overwrites `~/.local/opt/CommTool`.
   - **Already up to date** → the dialog simply tells you you're on the latest version.
-- **Update sources** — the **intranet mirror** is tried first and the tool automatically **falls back to the public one** (the CommTool branch on GitHub); each source has an **8-second timeout**, so it never hangs for long even on an external network.
-- **Integrity check** — the downloaded file is verified for integrity before the wizard runs.
+- **Update sources** — the version manifest tries **Gitee first**, then **GitHub**; each source has an **8-second timeout**. Windows Setup is on Gitee; macOS `.dmg` and Linux `.run` are on GitHub (Gitee quota only holds Windows Setup).
+- **Integrity check** — the downloaded file is verified before the installer runs.
 - **Cancel anytime** — closing the dialog while a download is in progress cancels the download automatically.
 
 ### Auto-saved Configuration
@@ -932,11 +936,47 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ---
 
+## Install (Windows / macOS / Linux)
+
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.5.7**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.5.7); Gitee does not host the Mac or Linux packages.
+
+### Windows
+
+- Windows 10 / 11 (64-bit)
+- Recommended: `CommTool_Setup_v1.5.7.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.5.7.exe` — no installer; first launch unpacks for about 1–2 seconds
+
+### macOS
+
+- **Apple Silicon** (arm64) only: `CommTool_v1.5.7.dmg`
+- Open the DMG and drag CommTool into **Applications**
+- If macOS says the app is damaged (not notarized), run once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CommTool.app
+```
+
+### Linux
+
+- **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
+- File: `CommTool_Setup_v1.5.7_linux_x86_64.run`
+
+```bash
+chmod +x CommTool_Setup_v1.5.7_linux_x86_64.run
+./CommTool_Setup_v1.5.7_linux_x86_64.run
+```
+
+- Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon
+- Launch from the menu / desktop icon, or `~/.local/opt/CommTool/CommTool` (`CommTool` if `~/.local/bin` is on `PATH`)
+- Uninstall: `~/.local/opt/CommTool/uninstall.sh`
+- Empty serial-port list: add your user to `dialout` and log in again: `sudo usermod -aG dialout $USER`
+
+---
+
 ## System Requirements
 
-- Windows 10 / 11 (64-bit); macOS packages are also published on Releases
-- ~100 MB disk space
-- Linux: official x86_64 installer `CommTool_Setup_v*_linux_x86_64.run` (glibc ≥ 2.27; no sudo; installs to `~/.local/opt/CommTool`)
+- Windows 10 / 11 (64-bit); macOS Apple Silicon; Linux x86_64 with glibc ≥ 2.27
+- About 100–200 MB disk
 
 ---
 

@@ -23,7 +23,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **数据看得清、留得住**：文本 / HEX / HEX 转储 / 数值视图，可选终端模式；时间分包、关键字与协议高亮、搜索与书签；实时日志与 `.ctrec` 录制回放。
 - **从手工到自动化**：多条命令、定时发送、命令 DSL、自动应答、触发告警、脚本控制台、宏录制、序列测试与 JUnit 报告。
 - **面向设备协议**：多种校验（含 CRC / Modbus 等）、Modbus 主从机 / 扫描 / TCP↔RTU 网关、寄存器与位域、结构化记录、波形图与 I/O Graph。
-- **开箱即用**：Windows 安装包 / 便携版与 macOS `.dmg` 均可直接运行；简体中文、English、繁體中文；支持在线更新。
+- **开箱即用**：Windows 安装包 / 便携版、macOS `.dmg`、Linux x86_64 `.run` 均可直接运行；简体中文、English、繁體中文；支持在线更新。
 
 ## 主要功能
 
@@ -38,7 +38,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 ## 快速开始
 
-1. 打开 [Releases](https://github.com/heropml/SerialTool/releases)，下载 Windows 安装包 / 便携版，或 macOS `.dmg`。
+1. 打开 [Releases](https://github.com/heropml/SerialTool/releases)，下载 Windows 安装包 / 便携版、macOS `.dmg` 或 Linux `.run`。
 2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
 3. 在「类型」选择 **Serial**、目标网络协议或 **Virtual**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
@@ -412,7 +412,7 @@ chmod +x CommTool_Setup_v1.5.7_linux_x86_64.run
 ./CommTool_Setup_v1.5.7_linux_x86_64.run
 ```
 
-默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。
+默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。用户向安装步骤见 [`docs/使用说明.md` §9](docs/使用说明.md#9-安装与系统要求) / [USAGE](docs/USAGE.md#install-windows--macos--linux) / [`docs/使用說明.md` §6](docs/使用說明.md#6-安裝與系統需求)。
 
 从源码打包：
 
@@ -645,7 +645,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v58 (v1.5.4)**: **正式版** — **多条循环 per-session、桥接网关 timeout/unit_map、app_style/i18n_ui 薄拆、B6 except 收窄、updater IncompleteRead 修复**；Mac DMG 仍由协作者补同一 Release。
 - **v59 (v1.5.5)**: **正式版** — **多会话引擎收口：软切标签、后台 RX 喂引擎/AR/触发器；序列/脚本/MBM/录制/宏/DSL per-session**；传输/回放仍整窗一份并钉会话；扫描同窗一次；Mac DMG 仍由协作者补同一 Release。
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
-- **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run` 安装包**（免 sudo，更新走 `url_linux`）。Mac DMG 仍由协作者补同一 Release。
+- **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run`** 与 **macOS DMG** 已挂同一 Release（更新走 `url_linux` / `url_mac`）。
 
 ---
 

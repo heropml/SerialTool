@@ -21,7 +21,7 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.5.7` | Win Setup/onefile；`url_mac` 待 Mac 协作者补门禁 |
+| 发布版 | `comm-v1.5.7` | Win Setup/onefile + Mac DMG + Linux `.run`；`url_mac` / `url_linux` 已写入 |
 | 测试 | **1574 collected / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
@@ -90,7 +90,7 @@
 | 项 | 触发条件 | 说明 |
 |---|---|---|
 | macOS 公证 / 安装体验 | Mac 用户或投诉上升 | 消 `xattr`「已损坏」路径 |
-| Linux 官方包 + Linux CI | **x86_64 .run 已发**（v1.5.7）；CI 矩阵仍缺 | `build.sh` + `release_linux.sh`；glibc 下限 2.27 |
+| Linux 官方包 + Linux CI | **x86_64 .run 已发**（v1.5.7）；CI 烟雾已加 | `build.sh` + `release_linux.sh`；glibc 下限 2.27；全量矩阵仍非硬门槛 |
 | PCAP 多客户端 TCP Server | 多客户端压测成常见场景 | **DONE**：每对端一条流、广播展开、导出前确认对端 |
 | 事件总线迁移触发动作 | Webhook/外部程序动作继续膨胀 | 触发器只产事件（见 TODO 约定） |
 | `pyproject.toml` / 子包化 | 需要可安装包或模块边界失控 | 高成本；非当前瓶颈 |
@@ -115,9 +115,9 @@
 1. ~~**A1–A6 / B1–B3 / B4c**~~ **DONE**（含 v1.5.3 发版与 Windows CI 隔离加固）  
 2. ~~**v1.5.4 打磨**~~ **DONE**（循环 per-session、网关 UI、QSS/i18n 薄拆、B6、updater）  
 3. ~~**v1.5.5 / v1.5.6 多会话引擎**~~ **DONE**（软切标签、后台 RX、传输/回放/扫描/AR per-session）
-4. ~~**v1.5.7**~~ **DONE**（TCP Server 多客户端 PCAP、增量高亮、Ctrl+Enter、日志落盘、Linux x86_64 `.run`）
+4. ~~**v1.5.7**~~ **DONE**（TCP Server 多客户端 PCAP、增量高亮、Ctrl+Enter、日志落盘、Linux `.run`、macOS DMG）
 5. **不上**覆盖率硬门槛（B3 只收集，见 §6）
-6. 阶段 C 剩余项（公证 / Linux CI 矩阵 / 事件总线）与 P2 / PyQt6 仅按触发条件启动  
+6. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加  
 
 ---
 
