@@ -1,10 +1,10 @@
 # CommTool — 串口调试助手 + 网络调试工具
 
-开源 **串口调试助手 / 网络调试工具**，把 UART 串口终端与 TCP/UDP 调试合在同一界面。面向嵌入式开发、设备联调、Modbus / 自定义协议测试与通信日志分析；正式发行包支持 **Windows** 与 **macOS**（Linux 可从源码自行构建，暂无官方安装包）。
+开源 **串口调试助手 / 网络调试工具**，把 UART 串口终端与 TCP/UDP 调试合在同一界面。面向嵌入式开发、设备联调、Modbus / 自定义协议测试与通信日志分析；正式发行包支持 **Windows**、**macOS** 与 **Linux x86_64**。
 
 > Serial / UART terminal and TCP/UDP network debugger in one desktop app — HEX, logging, Modbus, scripting, and automated tests.
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D4?logo=windows&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
@@ -304,7 +304,9 @@ CommTool/
 │   ├── run_debug.bat       调试启动（保留 cmd 看错误）
 │   ├── build.bat           打包文件夹版 exe（py -3 -m PyInstaller）
 │   ├── build_onefile.bat   打包单文件版 exe（文件名带版本号）
-│   ├── build.sh            Linux 打包脚本（venv + 国内镜像）
+│   ├── build.sh            Linux 打包脚本（venv + 国内镜像 + 捆绑 xcb + .run 安装器）
+│   ├── package_linux.sh    把 dist 打成 .run / .tar.gz
+│   ├── release_linux.sh    上传 Linux .run 到已有 GitHub Release 并写 url_linux
 │   ├── build_installer.bat 编译 Inno Setup 安装包（自动从 version.py 取版本号）
 │   ├── release.ps1         一键发版（改版本→改 latest.json→打包→push→建 Release）
 │   └── CommTool.iss      Inno Setup 脚本（多语言 EN/简/繁，路径可选）
@@ -403,11 +405,22 @@ scripts\build_installer.bat
 
 ### 5.4 Linux 版
 
+官方安装包（x86_64，建议在 Ubuntu 18.04 或同级 glibc 上构建，以便 20.04/22.04/麒麟也能跑）：
+
+```bash
+chmod +x CommTool_Setup_v1.5.7_linux_x86_64.run
+./CommTool_Setup_v1.5.7_linux_x86_64.run
+```
+
+默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。
+
+从源码打包：
+
 ```bash
 bash scripts/build.sh
 ```
 
-`build.sh` 用 venv 隔离 + 清华镜像 + 同样的 PyInstaller 参数（list_ports_linux 而非 _windows）。注意 PyInstaller 不支持交叉编译，必须在 Linux 上跑。
+`build.sh` 用 venv 隔离 + 清华镜像 + PyInstaller，并把 xcb/X11 库打进包内；最后输出 `installer/CommTool_Setup_v*_linux_x86_64.run`。发布到已有 tag：`bash scripts/release_linux.sh`。PyInstaller 不支持交叉编译，必须在 Linux 上跑。
 
 ### 5.5 改版本号
 
@@ -632,7 +645,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v58 (v1.5.4)**: **正式版** — **多条循环 per-session、桥接网关 timeout/unit_map、app_style/i18n_ui 薄拆、B6 except 收窄、updater IncompleteRead 修复**；Mac DMG 仍由协作者补同一 Release。
 - **v59 (v1.5.5)**: **正式版** — **多会话引擎收口：软切标签、后台 RX 喂引擎/AR/触发器；序列/脚本/MBM/录制/宏/DSL per-session**；传输/回放仍整窗一份并钉会话；扫描同窗一次；Mac DMG 仍由协作者补同一 Release。
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
-- **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。Mac DMG 仍由协作者补同一 Release。
+- **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run` 安装包**（免 sudo，更新走 `url_linux`）。Mac DMG 仍由协作者补同一 Release。
 
 ---
 

@@ -67,7 +67,10 @@ $DownloadUrl = "https://gitee.com/$Repo/releases/download/$Tag/$SetupName"
 # GitHub 资产后，才会把对应 URL 写回共享清单；同版本重跑 Windows 发布时
 # 保留已由 Mac 门禁写入的精确 GitHub URL。
 $MacUrls     = @()
+$LinuxUrls   = @()
 $VerifiedMacUrl = "https://github.com/heropml/SerialTool/releases/download/$Tag/$MacName"
+$LinuxName   = "CommTool_Setup_v${Version}_linux_x86_64.run"
+$VerifiedLinuxUrl = "https://github.com/heropml/SerialTool/releases/download/$Tag/$LinuxName"
 $ExistingManifest = Join-Path $Root "latest.json"
 if (Test-Path $ExistingManifest) {
     try {
@@ -76,8 +79,12 @@ if (Test-Path $ExistingManifest) {
             @($ExistingLatest.url_mac) -contains $VerifiedMacUrl) {
             $MacUrls = @($VerifiedMacUrl)
         }
+        if ([string]$ExistingLatest.version -eq $Version -and
+            @($ExistingLatest.url_linux) -contains $VerifiedLinuxUrl) {
+            $LinuxUrls = @($VerifiedLinuxUrl)
+        }
     } catch {
-        Write-Warning "latest.json 无法解析，将按无 Mac 资产处理：$($_.Exception.Message)"
+        Write-Warning "latest.json 无法解析，将按无 Mac/Linux 资产处理：$($_.Exception.Message)"
     }
 }
 
@@ -176,6 +183,7 @@ $manifest = [ordered]@{
     version = $Version
     url = $DownloadUrl
     url_mac = $MacUrls
+    url_linux = $LinuxUrls
     notes = $Notes
 }
 $json = $manifest | ConvertTo-Json -Depth 3

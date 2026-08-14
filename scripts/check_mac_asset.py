@@ -63,11 +63,13 @@ def main(argv=None):
     p.add_argument("version", help="App version, e.g. 1.5.0")
     p.add_argument("--repo", default="heropml/SerialTool")
     p.add_argument("--tag-prefix", default="comm-v")
+    p.add_argument("--asset", default="",
+                   help="Exact asset filename; default CommTool_v<ver>.dmg")
     args = p.parse_args(argv)
 
     version = args.version.lstrip("vV")
     tag = "%s%s" % (args.tag_prefix, version)
-    want = "CommTool_v%s.dmg" % version
+    want = args.asset or ("CommTool_v%s.dmg" % version)
 
     try:
         data = _release_data(args.repo, tag)
@@ -76,9 +78,9 @@ def main(argv=None):
     names = [a.get("name") for a in (data.get("assets") or []) if isinstance(a, dict)]
     if want not in names:
         raise SystemExit(
-            "Mac publish gate FAILED: %s missing from GitHub Release %s (assets=%s)"
+            "Publish gate FAILED: %s missing from GitHub Release %s (assets=%s)"
             % (want, tag, names))
-    print("Mac publish gate OK: %s present on %s" % (want, tag))
+    print("Publish gate OK: %s present on %s" % (want, tag))
     return 0
 
 

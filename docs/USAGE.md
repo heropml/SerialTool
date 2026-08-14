@@ -936,7 +936,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 - Windows 10 / 11 (64-bit); macOS packages are also published on Releases
 - ~100 MB disk space
-- Linux: run from source / self-build; no official installer yet
+- Linux: official x86_64 installer `CommTool_Setup_v*_linux_x86_64.run` (glibc ≥ 2.27; no sudo; installs to `~/.local/opt/CommTool`)
 
 ---
 

@@ -26,6 +26,7 @@
 - 本版不做会话树、拖拽分屏、标签拖出成窗
 - P2（CLI / REST / 插件 dissector）继续暂缓
 - macOS DMG 仍由协作者在 Mac 上跑 `release_macos.sh` 补到同一 Release；门禁通过前检查更新不提供 Mac 下载
+- **Linux x86_64**：`CommTool_Setup_v1.5.7_linux_x86_64.run` 免 sudo 安装到 `~/.local/opt/CommTool`；xcb/X11 已打进包。在线更新走 `latest.json` 的 `url_linux`（GitHub）
 
 ### 测试
 - 全量测试：按文件隔离 pytest 全部通过（1574 collected，11 skipped）
@@ -37,6 +38,7 @@
 | Windows 安装版 | `CommTool_Setup_v1.5.7.exe` | 推荐，向导安装 + 桌面快捷方式 |
 | Windows 单文件版 | `CommTool_v1.5.7.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
 | macOS（Apple Silicon）| `CommTool_v1.5.7.dmg` | arm64；拖入「应用程序」。资产经门禁校验后才写入更新清单；未公证，首次打开见下方说明 |
+| Linux（x86_64） | `CommTool_Setup_v1.5.7_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 

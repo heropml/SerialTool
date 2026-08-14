@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import ssl
+import subprocess
 import sys
 import tempfile
 import time
@@ -91,13 +92,12 @@ def is_newer(remote, local):
                 and remote_v > local_v)
 
 
-def mac_download_candidates(raw):
-    """Normalize url_mac into an ordered HTTPS list (GitHub before Gitee).
+def https_download_candidates(raw):
+    """Normalize a manifest URL field into an ordered HTTPS list (GitHub first).
 
-    Gitee Releases do not host the .dmg in the standard publish flow; listing
-    Gitee first causes a guaranteed 404 before the GitHub fallback.  Older
-    manifests may still put Gitee first — reorder at runtime so Mac updates
-    stay reliable even when latest.json is stale.
+    Gitee Releases do not host the .dmg / Linux .run in the standard publish
+    flow; listing Gitee first causes a guaranteed 404 before the GitHub
+    fallback.  Older manifests may still put Gitee first — reorder at runtime.
     """
     if isinstance(raw, str):
         items = [raw]
@@ -129,13 +129,23 @@ def mac_download_candidates(raw):
     return https
 
 
+def mac_download_candidates(raw):
+    """Normalize url_mac into an ordered HTTPS list (GitHub before Gitee)."""
+    return https_download_candidates(raw)
+
+
+def linux_download_candidates(raw):
+    """Normalize url_linux into an ordered HTTPS list (GitHub before Gitee)."""
+    return https_download_candidates(raw)
+
+
 def cleanup_temp_installers():
     """清理上次更新残留在临时目录的 Windows/macOS 安装包。启动时调用一次；
     删不掉（可能仍被占用）就跳过，不影响启动。多窗口下**跳过最近 10 分钟内改动的文件**——
     避免删掉另一个窗口正在下载 / 刚下载完还没启动安装的更新包。"""
     try:
         now = time.time()
-        patterns = ("CommTool_Setup_*.exe", "CommTool_v*.dmg")
+        patterns = ("CommTool_Setup_*.exe", "CommTool_v*.dmg", "CommTool_Setup_*.run")
         for name in patterns:
             pattern = os.path.join(tempfile.gettempdir(), name)
             for f in glob.glob(pattern):
@@ -169,6 +179,10 @@ def _ssl_context():
 def _is_windows():
     """Keep platform checks mockable without mutating process-global sys.platform."""
     return sys.platform == "win32"
+
+
+def _is_linux():
+    return sys.platform.startswith("linux")
 
 
 class _ManifestWorker(QThread):
@@ -210,6 +224,7 @@ class _ManifestWorker(QThread):
                 "version": ver,
                 "url": str(m.get("url", "")),
                 "url_mac": m.get("url_mac", ""),      # macOS 专用下载(dmg)；可为字符串或多源列表
+                "url_linux": m.get("url_linux", ""),  # Linux 专用下载(.run)；可为字符串或多源列表
                 "notes": str(m.get("notes", "")),
                 "newer": is_newer(ver, self._cur),
                 "source": url,
@@ -295,9 +310,9 @@ class _DownloadWorker(QThread):
             self._remove()                        # 中止：删半成品
             self.done.emit("", _translate("updater_cancelled"))
             return
-        # 校验下载到的是不是真正的 Windows 可执行文件（防 404/错误页被当成功）。
-        # 仅 Windows：mac 下的是 .dmg（非 MZ/PE），跳过此校验（错误页会在 HTTP 层 404、不会存下）。
-        if _is_windows():
+        # 校验下载到的是不是真正的安装包（防 404/错误页被当成功）。
+        # Windows：MZ/PE；Linux：shell 安装器以 #! 开头；mac .dmg 跳过（错误页走 HTTP 404）。
+        if _is_windows() or _is_linux():
             try:
                 with open(self._path, "rb") as f:
                     head = f.read(2)
@@ -305,7 +320,8 @@ class _DownloadWorker(QThread):
                 self._remove()
                 self.done.emit("", str(e))
                 return
-            if head != b"MZ":
+            expect = b"MZ" if _is_windows() else b"#!"
+            if head != expect:
                 self._remove()
                 self.done.emit("", _translate("updater_bad_installer"))
                 return
@@ -362,7 +378,6 @@ def run_installer(path):
     if not _is_windows():
         return False
     try:
-        import subprocess
         # 不加 /SILENT —— 弹出正常安装向导，用户手动点「下一步/安装」。
         # CREATE_NEW_PROCESS_GROUP：让安装向导独立成组，不受本 app 退出影响。
         # getattr fallback also keeps this path safely testable on non-Windows
@@ -372,4 +387,23 @@ def run_installer(path):
         return True
     except OSError:
         _log.debug("run_installer failed for %s", path, exc_info=True)
+        return False
+
+
+def run_linux_installer(path):
+    """Launch the downloaded .run after this process can exit (releases PREFIX)."""
+    if not _is_linux():
+        return False
+    try:
+        os.chmod(path, 0o755)
+        subprocess.Popen(
+            ["bash", "-c", 'sleep 1; exec "$1"', "commtool-update", path],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except OSError:
+        _log.debug("run_linux_installer failed for %s", path, exc_info=True)
         return False

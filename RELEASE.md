@@ -1,10 +1,11 @@
 # 发版指南（CommTool）
 
-CommTool 同时发布 **Windows** 和 **macOS** 两个安装包，代码 + Release **双托管**到
+CommTool 同时发布 **Windows**、**macOS** 和 **Linux x86_64** 安装包，代码 + Release **双托管**到
 GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），共用同一份更新清单 `latest.json`。
 
 - Windows 发版脚本：[`scripts/release.ps1`](scripts/release.ps1)（PowerShell，一键：双包打包(folder 安装包 + onefile) + push github/gitee + GitHub/Gitee 双 Release；只有三语用户文档需手动同步）
 - macOS 发版脚本：[`scripts/release_macos.sh`](scripts/release_macos.sh)（Bash）
+- Linux 发版脚本：[`scripts/release_linux.sh`](scripts/release_linux.sh)（Bash；在 Linux 上打包 `.run`，挂到已有 `comm-v*` Release）
 - 版本号单点真源：[`src/version.py`](src/version.py) 的 `__version__`
 - Release tag 统一用 `comm-v<版本>` 前缀（与串口版 `v1.0.x`、网络版 `net-v1.0.x` 区分）
 
@@ -23,6 +24,7 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 
 `latest.json` 的 `url` 字段（Windows）**统一指向 Gitee Release 下载**（Gitee 全球可达）。
 `url_mac` 在 Windows 发版阶段保持空数组；macOS 脚本上传并校验 `.dmg` 后，才写入 GitHub 直链（标准流程不把 `.dmg` 传到 Gitee；运行时 `mac_download_candidates` 仍兼容旧清单并把 GitHub 提前）。
+`url_linux` 同样：Windows 发版保持空（或保留已校验的 GitHub `.run` 直链）；`release_linux.sh` 上传并校验后写入。Gitee 配额只放 Setup.exe，Linux 包只发 GitHub。
 改源顺序/下载地址 = 改 `updater.py` + `latest.json` / `release.ps1`；改 `updater.py` **要重打包**。
 
 > **`$Notes` 摘要建议**：以「串口调试助手 / 网络调试工具：…」开头写入 `latest.json` 的 `notes`（升级弹窗可见，也利于检索）。Release 正文仍用 `docs/RELEASE_NOTES.md` 全文，开头同样保留产品定位句。

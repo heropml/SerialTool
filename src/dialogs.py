@@ -15,7 +15,7 @@ import junit_report
 import seq_report
 from i18n import CHECKSUM_KEYS
 from fonts import ui_font, localize_qss
-from updater import UpdateChecker, UpdateDownloader, run_installer
+from updater import UpdateChecker, UpdateDownloader, run_installer, run_linux_installer
 from ui_tips import set_tooltip
 from split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
 
@@ -329,11 +329,13 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             self._set_status(self._tr("update_latest", ver=info["version"]))
             return
         self._dl_url = info.get("url", "")
-        # 本平台下载候选：mac 用 url_mac(可为字符串或多源列表，逐个试)，其余用 url。
-        # Mac：GitHub 优先（标准发版不把 .dmg 传到 Gitee，避免先撞 404）。
+        # 本平台下载候选：Win=url，mac=url_mac，linux=url_linux（GitHub 优先，避免先撞 Gitee 404）。
         if sys.platform == "darwin":
             from updater import mac_download_candidates
             self._dl_cands = mac_download_candidates(info.get("url_mac", ""))
+        elif sys.platform.startswith("linux"):
+            from updater import linux_download_candidates
+            self._dl_cands = linux_download_candidates(info.get("url_linux", ""))
         else:
             raw = self._dl_url
             raw = [raw] if isinstance(raw, str) else (
@@ -346,6 +348,8 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             txt += "\n" + info["notes"]
         if sys.platform == "darwin" and not self._dl_cands:
             txt += "\n" + self._tr("update_platform_unavailable")
+        elif sys.platform.startswith("linux") and not self._dl_cands:
+            txt += "\n" + self._tr("update_linux_unavailable")
         self._set_status(txt)
         if self._dl_cands:
             self.btn_check.hide()
@@ -405,6 +409,14 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         if sys.platform == "win32":
             self._set_status(self._tr("update_installing"))
             if run_installer(path):
+                if self._on_quit:
+                    QTimer.singleShot(500, self._on_quit)
+            else:
+                self._set_status(self._tr("update_dl_failed", e="installer launch failed"))
+                self.btn_action.setEnabled(True)
+        elif sys.platform.startswith("linux"):
+            self._set_status(self._tr("update_installing"))
+            if run_linux_installer(path):
                 if self._on_quit:
                     QTimer.singleShot(500, self._on_quit)
             else:
