@@ -21,7 +21,7 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.6.0` | 本轮 Windows Setup/onefile；Mac DMG / Linux `.run` 补同一 tag 后写入 `url_mac` / `url_linux` |
+| 发布版 | `comm-v1.6.0` | Windows Setup/onefile + Linux x86_64 `.run`；Mac DMG 补同一 tag 后写入 `url_mac` |
 | 测试 | **1594 passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |

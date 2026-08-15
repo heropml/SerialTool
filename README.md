@@ -646,7 +646,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v59 (v1.5.5)**: **正式版** — **多会话引擎收口：软切标签、后台 RX 喂引擎/AR/触发器；序列/脚本/MBM/录制/宏/DSL per-session**；传输/回放仍整窗一份并钉会话；扫描同窗一次；Mac DMG 仍由协作者补同一 Release。
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
 - **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run`** 与 **macOS DMG** 已挂同一 Release（更新走 `url_linux` / `url_mac`）。
-- **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。本轮先发 Windows；Mac/Linux 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
+- **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。Windows + Linux x86_64 已发；Mac 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
 
 ---
 

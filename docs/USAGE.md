@@ -58,7 +58,7 @@ Protocol-frame analysis on the v1.5.7 baseline (default remains one received chu
 - **Display / recording** — the data view, protocol highlight, and `.ctrec` still use raw chunks.
 - **Live log rotate** — open the next file first; if that fails, keep writing the current file and warn (do not turn logging off).
 - **Linux** — the installer waits until this process has exited before overwriting the install dir; official packages are x86_64 only.
-- **Boundary** — no session tree / split / undock; P2 still deferred. This round ships Windows first; macOS DMG and Linux `.run` land on the same `comm-v1.6.0` tag.
+- **Boundary** — no session tree / split / undock; P2 still deferred. Windows and Linux x86_64 ship now; macOS DMG lands on the same `comm-v1.6.0` tag.
 
 ---
 
