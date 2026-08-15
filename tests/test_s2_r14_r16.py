@@ -72,6 +72,9 @@ def test_conn_token_and_signatures():
     assert ln.conn_token(
         "TCP Client", ("TCP Client", "1.2.3.4", 80), "Serial", "TCP Client") == "1.2.3.4_80"
     assert ln.conn_token("UDP", ("UDP",), "Serial", "TCP Client") == "UDP"
+    assert ln.conn_token(
+        "BLE", ("BLE", "69:1E:38:38:39:0D"), "Serial", "TCP Client") == (
+        "69:1E:38:38:39:0D")
     assert ln.safe_enter_idx("2") == 2
     assert ln.safe_enter_idx("9") == 0
     assert cp.serial_signature("Serial", "COM1", 9600, "8", "None", "1", "None")[1] == "COM1"

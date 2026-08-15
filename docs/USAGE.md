@@ -42,9 +42,9 @@
 ## Quick Start
 
 1. Install from [Releases](https://github.com/heropml/SerialTool/releases) (see [Install](#install-windows--macos--linux)), then double-click the **CommTool** icon
-2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
+2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual / BLE), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
-4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
 
 ---
 
@@ -152,7 +152,7 @@ Follow-ups on the v1.5.0 multi-session baseline:
 
 ## What's New in v1.5.0
 
-**Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual), similar to Xshell-style tabs:
+**Multi-session tabs** — one window can keep several independent connections open at once (serial / TCP / UDP / Virtual / BLE), similar to Xshell-style tabs:
 
 - **Per-session isolation** — connection, RX/TX view, display options that affect that pane, live log path, auto-reconnect, **periodic send**, and **multi-send cycle** belong to the tab. Background tabs keep receiving, logging, period-sending, and cycling.
 - **Per-session engines** — sequence / script / Modbus master / recording / macro / send DSL / file transfer / replay / device scan / auto-reply run per tab (two tabs can each run their own). Script-console logs are per tab. Modbus-slave register banks are per tab. **Tab switch is allowed**; stop before closing a busy tab. Periodic send and multi-send **cycle** stay per-session. Triggers match on background tabs too.
@@ -663,7 +663,7 @@ Merged from the serial-only SerialTool and the network-only NetworkTool — one 
 
 ### Connection
 
-The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with **6** options (**Serial** is the default on a fresh install):
+The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with **7** options (**Serial** is the default on a fresh install):
 
 - **Serial**
 - **UDP**
@@ -671,6 +671,7 @@ The top-left **Connection** card configures the connection. The first row is a *
 - **TCP Server**
 - **TCP Client**
 - **Virtual** — no hardware; optional loopback; also the injection target for `.ctrec` replay
+- **BLE** — Windows BLE central UART-style Notify/Write (classic SPP still uses Serial)
 
 The fields below change to match the selected type:
 
@@ -697,6 +698,12 @@ The fields below change to match the selected type:
 - **Virtual**
   - Start without hardware; optional **Loopback**
   - Used to verify auto-reply / scripts / sequences, and as the sink for session replay
+- **BLE (Windows)**
+  - **Scan** opens a window with name / address / RSSI (deduped by address; unnamed devices still show an address). Search, double-click, or **Use this device** to fill the sidebar
+  - Then pick a **preset** (FFF0 / FFE0 / Nordic UART / Custom) and edit Service / **Write (PC→device)** / **Notify (device→PC)** UUIDs; **Swap** if the direction is reversed
+  - **Connect**; while connecting the status shows Connecting… and the button is Disconnect (cancel). The status bar shows name + address
+  - After connect, the existing TX/RX pipeline applies (text/HEX, log, `.ctrec`, auto-reply, sequences, scripts, stream framing). **No PCAP** (not a NIC capture). macOS / Linux show an unsupported toast
+  - Two sessions cannot open the same device; auto-reconnect uses the saved address + UUIDs (no rescan)
 
 **Action button** — its text depends on the protocol and state:
 
@@ -708,6 +715,7 @@ The fields below change to match the selected type:
 | TCP Server | Listen / Stop |
 | TCP Client | Connect / Disconnect |
 | Virtual | Start Virtual / Stop Virtual |
+| BLE | Connect / Disconnect |
 
 Once connected, the whole card **locks and grays out** — disabled fields are shown greyed until you close / stop / disconnect.
 

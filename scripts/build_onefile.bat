@@ -29,6 +29,7 @@ py -3 -m PyInstaller ^
   --distpath dist_onefile ^
   --workpath build_onefile ^
   --exclude-module PyQt5.QtBluetooth ^
+  --collect-all bleak ^
   --exclude-module PyQt5.QtDBus ^
   --exclude-module PyQt5.QtDesigner ^
   --exclude-module PyQt5.QtHelp ^

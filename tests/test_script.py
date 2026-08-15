@@ -5578,6 +5578,8 @@ class VirtualConnTests(unittest.TestCase):
         from virtual_io import PROTO_VIRTUAL
         from main_window import CONN_TYPES
         self.assertIn(PROTO_VIRTUAL, CONN_TYPES)
+        from conn_ui import PROTO_BLE
+        self.assertIn(PROTO_BLE, CONN_TYPES)
 
 
 @unittest.skipIf(CommTool is None, "GUI deps unavailable: %s" % (_IMPORT_ERR,))

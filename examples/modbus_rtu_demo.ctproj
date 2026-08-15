@@ -43,7 +43,7 @@
     "show_timestamp": true,
     "device_registers": "[{\"name\": \"Voltage\", \"address\": 0, \"type\": \"u16\", \"unit\": \"V\", \"scale\": 0.1, \"slave\": 1, \"function\": 3}, {\"name\": \"Current\", \"address\": 1, \"type\": \"u16\", \"unit\": \"A\", \"scale\": 0.01, \"slave\": 1, \"function\": 3}]",
     "snippets": "[{\"name\": \"Read Holding 0..1\", \"text\": \"01 03 00 00 00 02\", \"hex\": true}, {\"name\": \"Read Input 0\", \"text\": \"01 04 00 00 00 01\", \"hex\": true}]",
-    "connection_presets": "[{\"id\": \"example-modbus-rtu-serial\", \"name\": \"Modbus RTU COM\", \"note\": \"Typical RS-485 Modbus RTU\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"9600\", \"ser_databits\": \"8\", \"ser_parity\": \"Even\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true}, {\"id\": \"example-modbus-tcp\", \"name\": \"Modbus TCP\", \"note\": \"Optional TCP path\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"192.168.1.10\", \"net_remote_port\": \"502\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true}]"
+    "connection_presets": "[{\"id\": \"example-modbus-rtu-serial\", \"name\": \"Modbus RTU COM\", \"note\": \"Typical RS-485 Modbus RTU\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"9600\", \"ser_databits\": \"8\", \"ser_parity\": \"Even\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\"}, {\"id\": \"example-modbus-tcp\", \"name\": \"Modbus TCP\", \"note\": \"Optional TCP path\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"192.168.1.10\", \"net_remote_port\": \"502\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\"}]"
   },
   "resources": {
     "device": {
@@ -108,7 +108,13 @@
           "net_use_remote": false,
           "net_group_addr": "239.0.0.1",
           "vconn_loopback": false,
-          "auto_reconnect": true
+          "auto_reconnect": true,
+          "ble_address": "",
+          "ble_name": "",
+          "ble_profile": "fff0",
+          "ble_service_uuid": "FFF0",
+          "ble_write_uuid": "FFF2",
+          "ble_notify_uuid": "FFF1"
         },
         {
           "id": "example-modbus-tcp",
@@ -131,7 +137,13 @@
           "net_use_remote": false,
           "net_group_addr": "239.0.0.1",
           "vconn_loopback": false,
-          "auto_reconnect": true
+          "auto_reconnect": true,
+          "ble_address": "",
+          "ble_name": "",
+          "ble_profile": "fff0",
+          "ble_service_uuid": "FFF0",
+          "ble_write_uuid": "FFF2",
+          "ble_notify_uuid": "FFF1"
         }
       ]
     },

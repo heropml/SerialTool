@@ -12,6 +12,7 @@ py -3 -m PyInstaller ^
   --name CommTool ^
   --icon assets\icon.ico ^
   --exclude-module PyQt5.QtBluetooth ^
+  --collect-all bleak ^
   --exclude-module PyQt5.QtDBus ^
   --exclude-module PyQt5.QtDesigner ^
   --exclude-module PyQt5.QtHelp ^

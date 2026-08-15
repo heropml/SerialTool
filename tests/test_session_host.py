@@ -50,6 +50,13 @@ def test_resource_key_serial_and_skips():
     assert SessionHostMixin._session_resource_key_from_open("Virtual", {}) is None
     assert SessionHostMixin._session_resource_key_from_open("TCP Client", {
         "local_port": "9000"}) is None
+    ble = SessionHostMixin._session_resource_key_from_open(
+        "BLE", {"address": "69:1e:38:38:39:0d"})
+    assert ble == ("ble", "69:1E:38:38:39:0D")
+    assert SessionHostMixin._session_resource_keys_conflict(
+        ble, ("ble", "69:1E:38:38:39:0D"))
+    assert not SessionHostMixin._session_resource_keys_conflict(
+        ble, ("ble", "AA:BB:CC:DD:EE:FF"))
 
 
 def test_resource_key_net_bind_normalizes_port():

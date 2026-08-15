@@ -18,6 +18,7 @@ RETRANSLATE_DIALOG_ATTRS = (
     "_snip_dlg",
     "_send_hist_dlg",
     "_cpreset_dlg",
+    "_ble_scan_dlg",
     "_triggers_dlg",
     "_frame_dlg",
     "_ar_dlg",

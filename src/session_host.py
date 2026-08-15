@@ -825,6 +825,9 @@ class SessionHostMixin:
         if cur is not None:
             stopped = self._release_leave_safe_window_tasks()
             self._toast_leave_safe_stopped(stopped)
+            stop_ble = getattr(self, "_stop_ble_scan", None)
+            if callable(stop_ble):
+                stop_ble("leave")
         begin_autosave_pause = getattr(
             self, "_begin_workspace_autosave_pause", None)
         end_autosave_pause = getattr(
@@ -1382,6 +1385,10 @@ class SessionHostMixin:
         if proto == "Serial":
             port = fields.get("port")
             return ("serial", str(port).upper()) if port else None
+        if proto == "BLE":
+            addr = str(fields.get("address") or fields.get("ble_address") or "").strip()
+            addr = addr.upper().replace("-", ":")
+            return ("ble", addr) if addr else None
         port = fields.get("local_port")
         if not port:
             return None
@@ -1401,16 +1408,23 @@ class SessionHostMixin:
                          if hasattr(self, "cb_local_ip") else ""),
             "local_port": (self.ed_local_port.text()
                            if hasattr(self, "ed_local_port") else ""),
+            "address": (self.ed_ble_address.text()
+                        if hasattr(self, "ed_ble_address") else ""),
         }
         return self._session_resource_key_from_open(proto, fields)
 
     def _session_resource_key(self, session):
-        if session is None or not session.is_open():
+        if session is None or session.conn is None:
             return None
         proto = session._conn_proto
+        if (not session.is_open()
+                and str(proto or "") != "BLE"):
+            return None
         cfg = session._conn_cfg
         if proto == "Serial" and cfg and len(cfg) > 1:
             return ("serial", str(cfg[1]).upper())
+        if proto == "BLE" and cfg and len(cfg) > 1 and cfg[1]:
+            return ("ble", str(cfg[1]).upper())
         snapshot = getattr(session, "_reconnect_snapshot", None) or {}
         if snapshot:
             key = self._session_resource_key_from_open(
@@ -1422,6 +1436,7 @@ class SessionHostMixin:
             "port": fields.get("ser_port"),
             "local_ip": fields.get("net_local_ip"),
             "local_port": fields.get("net_local_port"),
+            "address": fields.get("ble_address"),
         })
         if key is not None:
             return key

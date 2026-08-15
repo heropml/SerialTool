@@ -51,6 +51,8 @@ _LITERAL_BRACE_KEYS = (
 _TEMPLATE_SAMPLES = {
     "mbm_st_mask": {"addr": 1, "aand": 2, "oor": 3},
     "plot_cursor_fmt": {"x": 1.25, "y": 2.5, "stats": ""},
+    "ble_scan_status_on": {"n": 3},
+    "ble_scan_status_off": {"n": 3},
 }
 
 

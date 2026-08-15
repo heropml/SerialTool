@@ -60,6 +60,15 @@ class _FakeHost(QObject):
     def _on_vconn_loop_toggled(self, *_a):
         pass
 
+    def _on_ble_scan_clicked(self):
+        pass
+
+    def _on_ble_profile_changed(self, *_a):
+        pass
+
+    def _on_ble_swap_clicked(self):
+        pass
+
     def toggle_conn(self):
         pass
 
@@ -100,3 +109,7 @@ def test_build_serial_catalogs_and_conn_types():
     assert "rebuild_preset" in host._calls
     assert host.btn_refresh.text() == "\u27f3"
     assert host._ctrl_dots["cts"].text() == "\u25cf"
+    assert hasattr(host, "btn_ble_scan")
+    assert not hasattr(host, "tbl_ble")
+    assert not hasattr(host, "btn_ble_stop")
+    assert host.cb_ble_profile.count() == 4

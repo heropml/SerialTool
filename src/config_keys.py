@@ -10,6 +10,9 @@ CFG_KEYS = (
     "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
     # 虚拟连接（离线模式）
     "vconn_loopback",
+    # BLE（Windows 主机 UART 管道）
+    "ble_address", "ble_name", "ble_profile",
+    "ble_service_uuid", "ble_write_uuid", "ble_notify_uuid",
     # 串口连接
     "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
     "ser_flow", "serial_dtr", "serial_rts",

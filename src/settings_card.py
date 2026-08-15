@@ -14,6 +14,7 @@ from ui_tips import set_tooltip
 from widgets import Card, IOSSwitch
 from conn_ui import CONN_TYPES
 from net_io import local_ipv4_list
+import ble_uuid
 from serial_params import (
     BAUD_RATES,
     DATABITS_OPTIONS,
@@ -201,6 +202,63 @@ def build(app):
     vl.addStretch(1)
     layout.addWidget(vrow)
     app.row_vconn_loop = vrow
+
+    # ===== BLE (Windows central / UART-style Notify+Write) =====
+    ble_scan_box = QWidget()
+    ble_scan_l = QHBoxLayout(ble_scan_box)
+    ble_scan_l.setContentsMargins(0, 0, 0, 0)
+    ble_scan_l.setSpacing(6)
+    app.btn_ble_scan = QPushButton(app._t("ble_scan"))
+    app.btn_ble_scan.setObjectName("GhostBtnSm")
+    app.btn_ble_scan.setProperty("tr_text", "ble_scan")
+    app.btn_ble_scan.setProperty("tr_tooltip", "ble_scan_tip")
+    set_tooltip(app.btn_ble_scan, app._t("ble_scan_tip"))
+    app.btn_ble_scan.clicked.connect(app._on_ble_scan_clicked)
+    ble_scan_l.addWidget(app.btn_ble_scan)
+    ble_scan_l.addStretch(1)
+    app.row_ble_scan = make_row("ble_scan", ble_scan_box)
+
+    app.ed_ble_name = QLineEdit()
+    app.ed_ble_name.setReadOnly(True)
+    app.row_ble_name = make_row("ble_name", app.ed_ble_name)
+
+    app.ed_ble_address = QLineEdit()
+    app.row_ble_address = make_row("ble_address", app.ed_ble_address)
+
+    app.cb_ble_profile = QComboBox()
+    app.cb_ble_profile.blockSignals(True)
+    for _pid in ble_uuid.PROFILES:
+        app.cb_ble_profile.addItem(ble_uuid.PROFILE_LABELS[_pid], _pid)
+    app.cb_ble_profile.setCurrentIndex(0)
+    app.cb_ble_profile.blockSignals(False)
+    app.cb_ble_profile.currentIndexChanged.connect(app._on_ble_profile_changed)
+    app.row_ble_profile = make_row("ble_profile", app.cb_ble_profile)
+
+    app.ed_ble_service = QLineEdit()
+    app.row_ble_service = make_row("ble_service_uuid", app.ed_ble_service)
+
+    write_box = QWidget()
+    write_l = QHBoxLayout(write_box)
+    write_l.setContentsMargins(0, 0, 0, 0)
+    write_l.setSpacing(6)
+    app.ed_ble_write = QLineEdit()
+    write_l.addWidget(app.ed_ble_write, 1)
+    app.btn_ble_swap = QPushButton(app._t("ble_swap"))
+    app.btn_ble_swap.setObjectName("GhostBtnSm")
+    app.btn_ble_swap.setProperty("tr_text", "ble_swap")
+    app.btn_ble_swap.setProperty("tr_tooltip", "ble_swap_tip")
+    set_tooltip(app.btn_ble_swap, app._t("ble_swap_tip"))
+    app.btn_ble_swap.clicked.connect(app._on_ble_swap_clicked)
+    write_l.addWidget(app.btn_ble_swap)
+    app.row_ble_write = make_row("ble_write_uuid", write_box)
+
+    app.ed_ble_notify = QLineEdit()
+    app.row_ble_notify = make_row("ble_notify_uuid", app.ed_ble_notify)
+
+    _ble_preset = ble_uuid.apply_preset(ble_uuid.PROFILE_FFF0)
+    app.ed_ble_service.setText(ble_uuid.short_uuid(_ble_preset["service_uuid"]))
+    app.ed_ble_write.setText(ble_uuid.short_uuid(_ble_preset["write_uuid"]))
+    app.ed_ble_notify.setText(ble_uuid.short_uuid(_ble_preset["notify_uuid"]))
 
     # 动作按钮（文案随协议/状态变化）
     app.btn_open = QPushButton(app._t("btn_listen"))

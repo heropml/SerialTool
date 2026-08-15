@@ -13,13 +13,13 @@
 
 ![CommTool](./assets/icon_preview.png)
 
-CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。**产品与发行包名：CommTool**；Git 仓库路径仍为 `heropml/SerialTool`（不改仓名，避免更新链接断裂）。
+CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual / BLE**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。**产品与发行包名：CommTool**；Git 仓库路径仍为 `heropml/SerialTool`（不改仓名，避免更新链接断裂）。
 
 **适合：** MCU / USB 转串口调试 · TCP/UDP 服务联调 · Modbus 主从与扫描 · 周期/批量指令 · 会话日志与（有限范围）PCAP 导出 · 无硬件时用 Virtual 回环复现问题
 
 ## 为什么选择 CommTool
 
-- **串口 + 网络 + 虚拟一体**：串口参数、TCP/UDP、组播、多客户端 TCP Server，以及无硬件 Virtual 回环，同一套操作习惯。
+- **串口 + 网络 + 虚拟一体**：串口参数、TCP/UDP、组播、多客户端 TCP Server，以及无硬件 Virtual 回环；Windows 上还可选 BLE 主机 UART 管道。同一套操作习惯。
 - **数据看得清、留得住**：文本 / HEX / HEX 转储 / 数值视图，可选终端模式；时间分包、关键字与协议高亮、搜索与书签；实时日志与 `.ctrec` 录制回放。
 - **从手工到自动化**：多条命令、定时发送、命令 DSL、自动应答、触发告警、脚本控制台、宏录制、序列测试与 JUnit 报告。
 - **面向设备协议**：多种校验（含 CRC / Modbus 等）、Modbus 主从机 / 扫描 / TCP↔RTU 网关、寄存器与位域、结构化记录、波形图与 I/O Graph。
@@ -29,7 +29,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 | 能力 | 说明 |
 |------|------|
-| 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环） |
+| 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环）、BLE（Windows） |
 | 显示与检索 | 文本 / HEX / HEX 转储 / 数值；终端模式；关键字与协议高亮；搜索、书签 |
 | 协议与校验 | Modbus 主从 / 扫描 / TCP↔RTU 网关；CRC 等校验选项；寄存器 / 位域 |
 | 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client / TCP Server（含多客户端）**、**UDP（指定远程）**、**UDP 组播** 可导出 `.pcap` / `.pcapng`（合成报文，非网卡抓包；串口等仍用 `.ctrec`） |
@@ -40,7 +40,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 1. 打开 [Releases](https://github.com/heropml/SerialTool/releases)，下载 Windows 安装包 / 便携版、macOS `.dmg` 或 Linux `.run`。
 2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
-3. 在「类型」选择 **Serial**、目标网络协议或 **Virtual**，填参数后连接。
+3. 在「类型」选择 **Serial**、目标网络协议、**Virtual** 或 **BLE**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
 
 > 没有硬件？选 **Virtual（虚拟连接）** 并开回环，即可先验证发送、解析、脚本和自动化规则；回放 `.ctrec` 也需先连 Virtual。
@@ -93,7 +93,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 ### 1.1 连接设置（串口 / 网络）
 
-- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client / Virtual（虚拟）**（新装默认 Serial）
+- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client / Virtual（虚拟）/ BLE（Windows）**（新装默认 Serial）
 - **串口（Serial）**：端口（下拉本机串口 + ⟳ 刷新）+ 波特率（可编辑，1200~2000000）+ 数据位（5/6/7/8）+ 校验位（None/Even/Odd/Mark/Space）+ 停止位（1/1.5/2）→「打开串口」；后台线程定时扫描串口热插拔
 - 网络类型字段随协议动态显隐：
   - **UDP**：本地IP（下拉本机网卡，0.0.0.0=所有）+ 本地端口 +「指定远程」开关（关=回复最近对端，开=固定发往远程IP/端口）；关闭时收到数据自动把灰显的远程框刷成最近对端地址（显示当前对端，打开开关即预填）
@@ -101,8 +101,9 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - **TCP Server**：本地IP + 本地端口 →「开始监听」；连入后「目标」下拉可选某客户端或「全部」广播
   - **TCP Client**：远程IP + 远程端口 →「连接」
 - **Virtual（虚拟）**：不接硬件即可开连接；可开「回环」；用于无设备验证规则/脚本，以及 `.ctrec` 回放注入
+- **BLE（Windows）**：点「扫描」弹出窗口选择附近低功耗设备，按 UART 风格 Notify/Write 收发（FFF0 / FFE0 / Nordic UART 模板，可对调写入与通知 UUID）。经典蓝牙 SPP 仍走 Serial COM。不支持 macOS/Linux BLE，也无 BLE PCAP
 - 动作按钮随协议/状态：打开/关闭、开始监听/停止监听、连接/断开；连接后整卡片锁定变灰
-- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，Virtual 为进程内注入
+- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，BLE 走 Bleak，Virtual 为进程内注入
 
 ### 1.2 数据区（接收 + 发送日志）
 

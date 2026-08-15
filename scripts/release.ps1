@@ -205,6 +205,7 @@ Write-Host "③ PyInstaller 打包 folder 版（约 1~2 分钟）…"
 $pyargs = @('-3','-m','PyInstaller','--noconfirm','--clean','--windowed',
             '--name','CommTool','--icon','assets/icon.ico')
 foreach ($e in $excludes) { $pyargs += '--exclude-module'; $pyargs += $e }
+$pyargs += '--collect-all'; $pyargs += 'bleak'
 $pyargs += 'src/main.py'
 & py @pyargs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(folder) 打包失败" }
@@ -222,6 +223,7 @@ $onef = @('-3','-m','PyInstaller','--noconfirm','--clean','--onefile','--windowe
           '--name',"CommTool_v$Version",'--icon','assets/icon.ico',
           '--distpath','dist_onefile','--workpath','build_onefile')
 foreach ($e in $excludes) { $onef += '--exclude-module'; $onef += $e }
+$onef += '--collect-all'; $onef += 'bleak'
 $onef += 'src/main.py'
 & py @onef
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(onefile) 打包失败" }

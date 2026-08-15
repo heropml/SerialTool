@@ -72,6 +72,29 @@ def test_validate_open_network():
     assert ur["ok"] and ur["rip"] == "1.2.3.4" and ur["rport"] == 9
 
 
+def test_validate_open_ble():
+    assert _v("BLE", {})["toast"] == "ble_err_no_address"
+    assert _v("BLE", {"address": "COM3", "write_uuid": "fff2",
+                      "notify_uuid": "fff1"})["toast"] == "ble_err_no_address"
+    assert _v("BLE", {"ble_address": "69:1E:38:38:39:0D",
+                      "write_uuid": "zz", "notify_uuid": "fff1"})["toast"] == (
+        "ble_err_bad_uuid")
+    ok = _v("BLE", {
+        "address": "69:1e:38:38:39:0d",
+        "service_uuid": "FFF0",
+        "write_uuid": "FFF2",
+        "notify_uuid": "FFF1",
+    })
+    assert ok["ok"] and ok["address"] == "69:1E:38:38:39:0D"
+    assert ok["write_uuid"].endswith("fff2-0000-1000-8000-00805f9b34fb")
+    fields = cp.open_fields_from_ui("BLE", {
+        "ble_address": "AA:BB:CC:DD:EE:FF",
+        "ble_write_uuid": "fff2",
+        "ble_notify_uuid": "fff1",
+    })
+    assert fields["address"] == "AA:BB:CC:DD:EE:FF"
+
+
 def test_clamp_max_lines():
     assert cio.clamp_max_lines(50) == 100
     assert cio.clamp_max_lines(2_000_000) == 1_000_000

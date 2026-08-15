@@ -67,6 +67,17 @@ def test_summary_and_json_roundtrip():
     assert "commtool-connection-presets" in j
     back = cp.from_json(j)
     assert back[0]["name"] == "Board"
+    ble = cp.make_preset("GEE", {
+        "net_proto": "BLE",
+        "ble_address": "69:1E:38:38:39:0D",
+        "ble_name": "GEE701",
+        "ble_profile": "fff0",
+        "ble_write_uuid": "FFF2",
+        "ble_notify_uuid": "FFF1",
+    })
+    assert "BLE" in cp.summary(ble)
+    assert "GEE701" in cp.summary(ble)
+    assert ble["ble_address"] == "69:1E:38:38:39:0D"
     assert cp.from_json('[{"name":"x"}]')[0]["name"] == "x"
     assert cp.from_json('{"items":[{"name":"y"}]}')[0]["name"] == "y"
 

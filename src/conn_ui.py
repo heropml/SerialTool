@@ -12,12 +12,13 @@ PROTO_TCP_SERVER = "TCP Server"
 PROTO_TCP_CLIENT = "TCP Client"
 PROTO_UDP = "UDP"
 PROTO_UDP_MULTICAST = "UDP Multicast"
+PROTO_BLE = "BLE"
 
-# Order must match historical CONN_TYPES (Serial + net_io.PROTOCOLS + Virtual).
+# Order: Serial + net_io.PROTOCOLS + Virtual + BLE (7th type).
 PROTOCOLS = (
     PROTO_UDP, PROTO_UDP_MULTICAST, PROTO_TCP_SERVER, PROTO_TCP_CLIENT,
 )
-CONN_TYPES = [PROTO_SERIAL] + list(PROTOCOLS) + [PROTO_VIRTUAL]
+CONN_TYPES = [PROTO_SERIAL] + list(PROTOCOLS) + [PROTO_VIRTUAL, PROTO_BLE]
 
 _OPEN_BTN_ENGAGED = {
     PROTO_SERIAL: "btn_serial_close",
@@ -26,6 +27,7 @@ _OPEN_BTN_ENGAGED = {
     PROTO_TCP_CLIENT: "btn_disconnect",
     PROTO_UDP: "btn_udp_close",
     PROTO_UDP_MULTICAST: "btn_udp_close",
+    PROTO_BLE: "btn_disconnect",
 }
 _OPEN_BTN_IDLE = {
     PROTO_SERIAL: "btn_serial_open",
@@ -34,6 +36,7 @@ _OPEN_BTN_IDLE = {
     PROTO_TCP_CLIENT: "btn_connect",
     PROTO_UDP: "btn_udp_open",
     PROTO_UDP_MULTICAST: "btn_udp_open",
+    PROTO_BLE: "btn_connect",
 }
 
 
@@ -48,7 +51,7 @@ def field_visibility(proto, engaged, *, has_targets=False, udp_remote_on=False):
     """Pure visibility / enable map for connection settings rows.
 
     Returns dict keys:
-      ctrl_box, vconn_loop, serial_rows,
+      ctrl_box, vconn_loop, serial_rows, ble_rows,
       local_ip, group, local_port, udp_remote, remote_ip, remote_port, target,
       remote_enabled, open_btn_key
     """
@@ -56,6 +59,7 @@ def field_visibility(proto, engaged, *, has_targets=False, udp_remote_on=False):
     engaged = bool(engaged)
     is_serial = proto == PROTO_SERIAL
     is_virt = proto == PROTO_VIRTUAL
+    is_ble = proto == PROTO_BLE
     is_srv = proto == PROTO_TCP_SERVER
     is_cli = proto == PROTO_TCP_CLIENT
     is_udp = proto == PROTO_UDP
@@ -66,6 +70,24 @@ def field_visibility(proto, engaged, *, has_targets=False, udp_remote_on=False):
             "ctrl_box": is_serial and engaged,
             "vconn_loop": is_virt,
             "serial_rows": is_serial,
+            "ble_rows": False,
+            "local_ip": False,
+            "group": False,
+            "local_port": False,
+            "udp_remote": False,
+            "remote_ip": False,
+            "remote_port": False,
+            "target": False,
+            "remote_enabled": False,
+            "open_btn_key": open_btn_key(proto, engaged),
+        }
+
+    if is_ble:
+        return {
+            "ctrl_box": False,
+            "vconn_loop": False,
+            "serial_rows": False,
+            "ble_rows": True,
             "local_ip": False,
             "group": False,
             "local_port": False,
@@ -81,6 +103,7 @@ def field_visibility(proto, engaged, *, has_targets=False, udp_remote_on=False):
         "ctrl_box": False,
         "vconn_loop": False,
         "serial_rows": False,
+        "ble_rows": False,
         "local_ip": is_srv or is_udp or is_grp,
         "group": is_grp,
         "local_port": is_srv or is_udp or is_grp,

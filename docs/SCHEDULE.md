@@ -100,7 +100,8 @@
 
 ## 6. 明确不排期
 
-- 完整 VT100、BLE/HID/CAN、虚拟串口驱动  
+- 完整 VT100、HID/CAN、虚拟串口驱动  
+- 经典蓝牙 SPP 驱动（继续用 Serial COM）；macOS / Linux BLE
 - 触发联动发送  
 - 会话树 / 拖拽分屏 / 标签拖出成窗  
 - 用户脚本 `exec` 沙箱（本地调试边界；已有导入门禁）  
@@ -117,8 +118,9 @@
 3. ~~**v1.5.5 / v1.5.6 多会话引擎**~~ **DONE**（软切标签、后台 RX、传输/回放/扫描/AR per-session）
 4. ~~**v1.5.7**~~ **DONE**（TCP Server 多客户端 PCAP、增量高亮、Ctrl+Enter、日志落盘、Linux `.run`、macOS DMG）
 5. ~~**v1.6.0**~~ **DONE**（协议流组帧 / 解析诊断；日志轮转失败继续写旧段；Linux 更新等 PID 退出；官方 Linux 仅 x86_64）
-6. **不上**覆盖率硬门槛（B3 只收集，见 §6）
-7. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加  
+6. **v1.7.0** Windows BLE 主机 UART 调试（扫描 / Notify+Write；不发版直到确认）
+7. **不上**覆盖率硬门槛（B3 只收集，见 §6）
+8. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加  
 
 ---
 

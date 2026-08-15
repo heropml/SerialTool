@@ -17,6 +17,8 @@ CONN_FIELD_KEYS = (
     "net_remote_ip", "net_remote_port", "net_use_remote", "net_group_addr",
     "vconn_loopback",
     "auto_reconnect",
+    "ble_address", "ble_name", "ble_profile",
+    "ble_service_uuid", "ble_write_uuid", "ble_notify_uuid",
 )
 
 _DEFAULTS = {
@@ -37,6 +39,12 @@ _DEFAULTS = {
     "net_group_addr": "239.0.0.1",
     "vconn_loopback": False,
     "auto_reconnect": True,
+    "ble_address": "",
+    "ble_name": "",
+    "ble_profile": "fff0",
+    "ble_service_uuid": "FFF0",
+    "ble_write_uuid": "FFF2",
+    "ble_notify_uuid": "FFF1",
 }
 
 
@@ -216,6 +224,8 @@ def summary(preset):
             detail = "%s / %s" % (p.get("net_group_addr") or "?", detail)
     elif proto == "Virtual":
         detail = "loopback" if p.get("vconn_loopback") else "sink"
+    elif proto == "BLE":
+        detail = p.get("ble_name") or p.get("ble_address") or "?"
     else:
         detail = proto
     return "%s | %s" % (proto, detail)
@@ -234,6 +244,7 @@ def match(preset, query):
     blob = " ".join([
         p.get("name", ""), p.get("note", ""), summary(p),
         p.get("ser_port", ""), p.get("net_remote_ip", ""), p.get("net_local_ip", ""),
+        p.get("ble_address", ""), p.get("ble_name", ""),
     ]).lower()
     return q in blob
 
@@ -283,6 +294,18 @@ def tcp_client_signature(proto, ip, port):
     return (proto, ip, port)
 
 
+def ble_signature(proto, address, service_uuid, write_uuid, notify_uuid):
+    """BLE connection config signature tuple."""
+    import ble_uuid
+    return (
+        proto,
+        ble_uuid.normalize_address(address),
+        ble_uuid.normalize_uuid(service_uuid) if service_uuid else "",
+        ble_uuid.normalize_uuid(write_uuid),
+        ble_uuid.normalize_uuid(notify_uuid),
+    )
+
+
 def proto_only_signature(proto):
     """Non-serial / non-tcp-client signature (proto only)."""
     return (proto,)
@@ -319,6 +342,7 @@ def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv
       TCP Client: ip, port
       UDP Multicast: local_ip, group, port
       UDP: local_ip, lport, rip, rport
+      BLE: address, service_uuid, write_uuid, notify_uuid
     """
     fields = fields or {}
     proto = proto or ""
@@ -352,6 +376,30 @@ def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv
         if port is None:
             return _toast_err("err_bad_port")
         return {"ok": True, "ip": ip, "port": port}
+
+    if proto == "BLE":
+        import ble_uuid
+        address = ble_uuid.normalize_address(
+            fields.get("address") or fields.get("ble_address"))
+        if not ble_uuid.is_valid_address(address):
+            return _toast_err("ble_err_no_address")
+        service = str(
+            fields.get("service_uuid") or fields.get("ble_service_uuid") or "").strip()
+        write = str(
+            fields.get("write_uuid") or fields.get("ble_write_uuid") or "").strip()
+        notify = str(
+            fields.get("notify_uuid") or fields.get("ble_notify_uuid") or "").strip()
+        if service and not ble_uuid.is_valid_uuid(service):
+            return _toast_err("ble_err_bad_uuid")
+        if not ble_uuid.is_valid_uuid(write) or not ble_uuid.is_valid_uuid(notify):
+            return _toast_err("ble_err_bad_uuid")
+        return {
+            "ok": True,
+            "address": address,
+            "service_uuid": ble_uuid.normalize_uuid(service) if service else "",
+            "write_uuid": ble_uuid.normalize_uuid(write),
+            "notify_uuid": ble_uuid.normalize_uuid(notify),
+        }
 
     if proto == "UDP Multicast":
         local_ip = str(fields.get("local_ip") or "").strip()
@@ -401,6 +449,13 @@ def open_fields_from_ui(proto, ui):
         }
     if proto == "TCP Server":
         return {"local_ip": u.get("local_ip"), "local_port": u.get("local_port")}
+    if proto == "BLE":
+        return {
+            "address": u.get("ble_address") or u.get("address"),
+            "service_uuid": u.get("ble_service_uuid") or u.get("service_uuid"),
+            "write_uuid": u.get("ble_write_uuid") or u.get("write_uuid"),
+            "notify_uuid": u.get("ble_notify_uuid") or u.get("notify_uuid"),
+        }
     return {
         "local_ip": u.get("local_ip"), "local_port": u.get("local_port"),
         "use_remote": u.get("use_remote"),

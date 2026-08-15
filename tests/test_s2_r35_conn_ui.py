@@ -19,6 +19,7 @@ def test_conn_types_match_historical_order():
     ]
     assert cu.CONN_TYPES == [
         "Serial", "UDP", "UDP Multicast", "TCP Server", "TCP Client", "Virtual",
+        "BLE",
     ]
 
 
@@ -78,3 +79,15 @@ def test_tcp_server_target_and_udp_remote():
     cli = cu.field_visibility(cu.PROTO_TCP_CLIENT, False)
     assert cli["remote_ip"] and cli["remote_port"] and cli["remote_enabled"]
     assert cli["local_ip"] is False
+    assert cli.get("ble_rows") is False
+
+
+def test_ble_rows_and_open_btn():
+    idle = cu.field_visibility(cu.PROTO_BLE, False)
+    assert idle["ble_rows"] is True
+    assert idle["serial_rows"] is False
+    assert idle["local_ip"] is False and idle["remote_ip"] is False
+    assert idle["open_btn_key"] == "btn_connect"
+    live = cu.field_visibility(cu.PROTO_BLE, True)
+    assert live["open_btn_key"] == "btn_disconnect"
+    assert cu.open_btn_key(cu.PROTO_BLE, False) == "btn_connect"

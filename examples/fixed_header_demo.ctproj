@@ -39,7 +39,7 @@
     "vconn_loopback": true,
     "show_timestamp": true,
     "snippets": "[{\"name\": \"AA55 cmd\", \"text\": \"AA 55 01 04 12 34 56 78\", \"hex\": true}, {\"name\": \"AA55 short\", \"text\": \"AA 55 02 02 AB CD\", \"hex\": true}]",
-    "connection_presets": "[{\"id\": \"example-fixed-header-virtual\", \"name\": \"Fixed header loopback\", \"note\": \"Virtual loopback for AA 55 frame practice\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true}]"
+    "connection_presets": "[{\"id\": \"example-fixed-header-virtual\", \"name\": \"Fixed header loopback\", \"note\": \"Virtual loopback for AA 55 frame practice\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\"}]"
   },
   "resources": {
     "device": {
@@ -85,7 +85,13 @@
           "net_use_remote": false,
           "net_group_addr": "239.0.0.1",
           "vconn_loopback": true,
-          "auto_reconnect": true
+          "auto_reconnect": true,
+          "ble_address": "",
+          "ble_name": "",
+          "ble_profile": "fff0",
+          "ble_service_uuid": "FFF0",
+          "ble_write_uuid": "FFF2",
+          "ble_notify_uuid": "FFF1"
         }
       ]
     },

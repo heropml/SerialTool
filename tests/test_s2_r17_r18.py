@@ -51,4 +51,6 @@ def test_cfg_keys_core_members():
     assert "frame_builder_split" in ck.CFG_KEYS
     assert "modbus_master_echo" in ck.CFG_KEYS
     assert "stream_frame" in ck.CFG_KEYS
+    assert "ble_address" in ck.CFG_KEYS
+    assert "ble_write_uuid" in ck.CFG_KEYS
     assert "send_history" not in ck.CFG_KEYS  # intentionally excluded

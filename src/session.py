@@ -373,14 +373,17 @@ class Session:
             return None
         try:
             from virtual_io import PROTO_VIRTUAL
-            from conn_ui import PROTO_SERIAL
+            from conn_ui import PROTO_SERIAL, PROTO_BLE
         except Exception:
             PROTO_VIRTUAL = "Virtual"
             PROTO_SERIAL = "Serial"
+            PROTO_BLE = "BLE"
         if proto == PROTO_SERIAL and len(cfg) > 1 and cfg[1]:
             return ("serial", str(cfg[1]).upper())
         if proto == PROTO_VIRTUAL:
             return None
+        if proto == PROTO_BLE and len(cfg) > 1 and cfg[1]:
+            return ("ble", str(cfg[1]).upper())
         if len(cfg) >= 1:
             return ("net", proto, tuple(cfg))
         return ("net", proto, tuple(cfg) if cfg else ())
@@ -405,6 +408,9 @@ class Session:
             port = self.conn_fields.get("ser_port") or ""
             rip = self.conn_fields.get("net_remote_ip") or ""
             rport = self.conn_fields.get("net_remote_port") or ""
+            ble_addr = self.conn_fields.get("ble_address") or ""
+            if proto == "BLE" and ble_addr:
+                return str(ble_addr)
             if proto and proto != PROTO_SERIAL:
                 if proto == PROTO_TCP_CLIENT and rip and rport:
                     return "%s_%s" % (rip, rport)
