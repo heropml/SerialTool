@@ -2,8 +2,8 @@
 """协议帧解析表 FrameParseDialog（多帧多规则，规则用列表编辑）。
 
 规则区为列表：每条一行 = 帧头(hex,可空=兜底) + 字段定义(binproto: 名称=偏移:类型，
-数值后加 x 显示十六进制，另支持 hexN/strN) + 删除。点「应用」生效。每个接收包视作一帧，
-按帧头前缀匹配**第一条**命中的规则解析。
+数值后加 x 显示十六进制，另支持 hexN/strN) + 删除。点「应用」生效。
+默认每个接收包视作一帧；勾选「协议帧模式」后按帧头+长度组完整帧再解析。
 
 显示：QTabWidget —「全部」标签按时间看混合帧流（时间|规则|字段串|原始帧）；其余每条规则一个
 标签，各自分列（时间+该规则字段+原始帧）。每个表支持 Ctrl+C / 右键 复制·全选、暂停、清空、导出 CSV。
@@ -16,7 +16,7 @@ from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
                              QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
                              QAbstractItemView, QFileDialog, QMenu, QShortcut, QApplication,
-                             QTabWidget, QScrollArea, QFrame, QSplitter, QCheckBox)
+                             QTabWidget, QScrollArea, QFrame, QSplitter, QCheckBox, QComboBox)
 
 import binproto
 from theme import chrome_for
@@ -241,6 +241,56 @@ class FrameParseDialog(QDialog):
         self._rules_scroll.viewport().setAutoFillBackground(False)
         topv.addWidget(self._rules_scroll, 1)
 
+        # 协议帧模式：与自动应答组帧独立；默认关 = 每个收包一帧（旧行为）。
+        self._stream_box = QFrame()
+        self._stream_box.setObjectName("FrameStreamBox")
+        srow = QHBoxLayout(self._stream_box)
+        srow.setContentsMargins(8, 4, 8, 4)
+        srow.setSpacing(6)
+        self._loading_stream = True
+        self.chk_stream = QCheckBox()
+        self.chk_stream.toggled.connect(self._on_stream_edited)
+        srow.addWidget(self.chk_stream)
+        self.ed_shdr = QLineEdit()
+        self.ed_shdr.setMaximumWidth(96)
+        self.ed_shdr.textChanged.connect(self._schedule_stream)
+        srow.addWidget(self.ed_shdr)
+        self.lbl_soff = QLabel()
+        srow.addWidget(self.lbl_soff)
+        self.ed_soff = QLineEdit()
+        self.ed_soff.setMaximumWidth(40)
+        self.ed_soff.textChanged.connect(self._schedule_stream)
+        srow.addWidget(self.ed_soff)
+        self.cb_swidth = QComboBox()
+        self.cb_swidth.addItems(["1", "2", "4"])
+        self.cb_swidth.currentIndexChanged.connect(self._schedule_stream)
+        srow.addWidget(self.cb_swidth)
+        self.cb_sbe = QComboBox()
+        self.cb_sbe.addItems(["LE", "BE"])
+        self.cb_sbe.currentIndexChanged.connect(self._schedule_stream)
+        srow.addWidget(self.cb_sbe)
+        self.lbl_sextra = QLabel()
+        srow.addWidget(self.lbl_sextra)
+        self.ed_sextra = QLineEdit()
+        self.ed_sextra.setMaximumWidth(40)
+        self.ed_sextra.textChanged.connect(self._schedule_stream)
+        srow.addWidget(self.ed_sextra)
+        self.chk_udp_stream = QCheckBox()
+        self.chk_udp_stream.toggled.connect(self._on_stream_edited)
+        srow.addWidget(self.chk_udp_stream)
+        self.btn_copy_ar = QPushButton()
+        self.btn_copy_ar.setObjectName("PlotGhostBtn")
+        self.btn_copy_ar.clicked.connect(self._copy_ar_frame)
+        srow.addWidget(self.btn_copy_ar)
+        srow.addStretch(1)
+        topv.addWidget(self._stream_box)
+        self._stream_timer = QTimer(self)
+        self._stream_timer.setSingleShot(True)
+        self._stream_timer.setInterval(400)
+        self._stream_timer.timeout.connect(self._commit_stream_frame)
+        self._load_stream_widgets()
+        self._loading_stream = False
+
         # ===== 按钮行 =====
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -272,6 +322,19 @@ class FrameParseDialog(QDialog):
         bar.addWidget(self.btn_clear)
         bar.addWidget(self.btn_export)
         topv.addLayout(bar)
+        diag = QHBoxLayout()
+        diag.setSpacing(8)
+        self.lbl_diag = QLabel()
+        self.lbl_diag.setObjectName("FrameDiag")
+        diag.addWidget(self.lbl_diag, 1)
+        self.btn_diag_reset = QPushButton()
+        self.btn_diag_reset.setObjectName("PlotGhostBtn")
+        self.btn_diag_reset.clicked.connect(self._reset_diag)
+        diag.addWidget(self.btn_diag_reset)
+        topv.addLayout(diag)
+        self._diag_timer = QTimer(self)
+        self._diag_timer.setInterval(500)
+        self._diag_timer.timeout.connect(self._refresh_diag)
 
         # ===== 标签页（下半）=====
         self.tabs = QTabWidget()
@@ -385,6 +448,7 @@ class FrameParseDialog(QDialog):
             rec["w"].deleteLater()
         self._rule_rows.clear()
         self._load_cfg()
+        self._load_stream_widgets()
         self._renumber_rules()
         self._apply_rules()
 
@@ -468,18 +532,27 @@ class FrameParseDialog(QDialog):
         if self._paused or not self._rules:
             return
         buf = bytes(data)
-        rule = next((r for r in self._rules if not r["header"] or buf.startswith(r["header"])), None)
+        rule = binproto.first_matching_rule(self._rules, buf)
+        note = getattr(self.app, "_note_parse_diag", None)
         if rule is None:
+            if callable(note):
+                note(matched=False)
             return
-        vals = [binproto.read_field(buf, off, typ) for _n, off, typ in rule["fields"]]
-        if all(v is None for v in vals):
+        pairs, ok, oob = binproto.extract_rule_fields(rule, buf)
+        if callable(note):
+            note(matched=True, field_ok=ok, field_oob=oob)
+        if not pairs:
             return
         ts = time.strftime("%H:%M:%S")
         raw = buf.hex(" ").upper()
-        field_str = " ".join(f"{nm}={_disp(typ, v)}"
-                             for (nm, _o, typ), v in zip(rule["fields"], vals) if v is not None)
+        field_str = " ".join(
+            "%s=%s" % (nm, _disp(typ, v)) for nm, _o, typ, v in pairs)
         self._all_table.append_row([ts, rule["header_str"], field_str, raw])
-        cells = [ts] + [_disp(typ, v) for (_n, _o, typ), v in zip(rule["fields"], vals)] + [raw]
+        by_off = {(off, typ): val for _n, off, typ, val in pairs}
+        cells = [ts]
+        for _n, off, typ in rule["fields"]:
+            cells.append(_disp(typ, by_off.get((off, typ))))
+        cells.append(raw)
         rule["table"].append_row(cells)
 
     # ---------------- 回调 ----------------
@@ -566,6 +639,12 @@ class FrameParseDialog(QDialog):
         QScrollArea#FrameRulesScroll {{
             background: transparent; border: 1px solid {c['separator']}; border-radius: 6px;
         }}
+        QFrame#FrameStreamBox {{
+            background: transparent; border: 1px solid {c['separator']}; border-radius: 6px;
+        }}
+        QLabel#FrameDiag {{
+            color: {c['text_sec']}; font-family: 'Segoe UI'; font-size: 11px;
+        }}
         QScrollArea#FrameRulesScroll > QWidget > QWidget {{ background: transparent; }}
         QWidget#FrameRuleRow {{ background: transparent; }}
         QSplitter#FrameSplit::handle:vertical {{ height: 5px; background: transparent; }}
@@ -604,6 +683,16 @@ class FrameParseDialog(QDialog):
         self.btn_pause.setText(t("plot_resume" if self._paused else "plot_pause"))
         self.btn_clear.setText(t("plot_clear"))
         self.btn_export.setText(t("plot_export"))
+        self.chk_stream.setText(t("frame_stream_on"))
+        set_tooltip(self.chk_stream, t("frame_stream_tip"))
+        self.ed_shdr.setPlaceholderText(t("frame_hdr"))
+        self.lbl_soff.setText(t("ar_frame_off"))
+        self.lbl_sextra.setText(t("ar_frame_extra"))
+        self.chk_udp_stream.setText(t("frame_udp_stream"))
+        set_tooltip(self.chk_udp_stream, t("frame_udp_stream_tip"))
+        self.btn_copy_ar.setText(t("frame_copy_ar"))
+        self.btn_diag_reset.setText(t("frame_diag_reset"))
+        self._refresh_diag()
         for rec in self._rule_rows:        # 行内占位符随语言
             rec["h"].setPlaceholderText(t("frame_hdr"))
             rec["f"].setPlaceholderText(t("frame_fields_ph"))
@@ -621,4 +710,117 @@ class FrameParseDialog(QDialog):
     # ---------------- 生命周期 ----------------
     def closeEvent(self, e):
         self._save_cfg()
+        if self._stream_timer.isActive():
+            self._commit_stream_frame()
+        self._diag_timer.stop()
         super().closeEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._diag_timer.start()
+        self._refresh_diag()
+
+    def hideEvent(self, e):
+        self._diag_timer.stop()
+        super().hideEvent(e)
+
+    def _n(self, edit, default=0):
+        try:
+            return int((edit.text() or "").strip() or default)
+        except ValueError:
+            return default
+
+    def _load_stream_widgets(self):
+        fc = getattr(self.app, "_stream_frame", None) or {}
+        self._loading_stream = True
+        self.chk_stream.setChecked(bool(fc.get("on")))
+        self.ed_shdr.setText(str(fc.get("header", "")))
+        self.ed_soff.setText(str(fc.get("len_off", 0)))
+        self.cb_swidth.setCurrentText(str(fc.get("len_width", 2)))
+        self.cb_sbe.setCurrentIndex(1 if fc.get("len_be") else 0)
+        self.ed_sextra.setText(str(fc.get("len_extra", 0)))
+        self.chk_udp_stream.setChecked(bool(fc.get("udp_stream")))
+        self._loading_stream = False
+
+    def _stream_cfg_from_widgets(self):
+        return {
+            "on": self.chk_stream.isChecked(),
+            "udp_stream": self.chk_udp_stream.isChecked(),
+            "header": self.ed_shdr.text().strip(),
+            "len_off": self._n(self.ed_soff, 0),
+            "len_width": int(self.cb_swidth.currentText() or "2"),
+            "len_be": self.cb_sbe.currentIndex() == 1,
+            "len_extra": self._n(self.ed_sextra, 0),
+        }
+
+    def _schedule_stream(self, *_):
+        if self._loading_stream:
+            return
+        self._stream_timer.start()
+
+    def _on_stream_edited(self, *_):
+        if self._loading_stream:
+            return
+        self._commit_stream_frame()
+
+    def _commit_stream_frame(self):
+        if self._loading_stream:
+            return
+        setter = getattr(self.app, "_set_stream_frame", None)
+        if callable(setter):
+            setter(self._stream_cfg_from_widgets())
+        self._refresh_diag()
+
+    def _copy_ar_frame(self):
+        fc = getattr(self.app, "_ar_frame", {}) or {}
+        self._loading_stream = True
+        self.ed_shdr.setText(str(fc.get("header", "")))
+        self.ed_soff.setText(str(fc.get("len_off", 0)))
+        self.cb_swidth.setCurrentText(str(fc.get("len_width", 2) or 2))
+        self.cb_sbe.setCurrentIndex(1 if fc.get("len_be") else 0)
+        self.ed_sextra.setText(str(fc.get("len_extra", 0)))
+        self.chk_stream.setChecked(True)
+        self._loading_stream = False
+        self._commit_stream_frame()
+
+    def _reset_diag(self):
+        reset = getattr(self.app, "reset_parse_diag", None)
+        if callable(reset):
+            reset()
+        self._refresh_diag()
+
+    def _refresh_diag(self):
+        t = self.app._t
+        snap = {}
+        getter = getattr(self.app, "parse_diag_snapshot", None)
+        if callable(getter):
+            snap = getter() or {}
+        if not snap:
+            self.lbl_diag.setText("")
+            return
+        cfg = getattr(self.app, "_stream_frame", None) or {}
+        if not cfg.get("on"):
+            self.lbl_diag.setText(t("frame_diag_chunk"))
+            return
+        text = t("frame_diag_summary",
+                 chunks=snap.get("chunks", 0),
+                 frames=snap.get("frames", 0),
+                 matched=snap.get("matched", 0),
+                 fields=snap.get("fields", 0))
+        waiting = int(snap.get("waiting", 0) or 0)
+        if waiting:
+            text += "  " + t("frame_diag_wait", waiting=waiting)
+        reason = snap.get("last_reason") or ""
+        sample = snap.get("last_sample") or ""
+        if reason:
+            extra = t("frame_diag_" + reason, sample=sample)
+            if extra and extra != ("frame_diag_" + reason):
+                text += "  " + extra
+        skip = int(snap.get("skip", 0) or 0)
+        bad = int(snap.get("bad_length", 0) or 0)
+        over = int(snap.get("oversize", 0) or 0)
+        oob = int(snap.get("oob", 0) or 0)
+        if skip or bad or over or oob:
+            text += "  " + t("frame_diag_counts",
+                             skip=skip, bad=bad, over=over, oob=oob)
+        self.lbl_diag.setText(text)

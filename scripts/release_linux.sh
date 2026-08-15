@@ -6,6 +6,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|amd64) ;;
+    *)
+        echo "Official Linux releases are x86_64 only (this host is $ARCH)."
+        exit 1
+        ;;
+esac
+
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
     VERSION="$(grep -E '^__version__' src/version.py | head -1 | cut -d'"' -f2)"

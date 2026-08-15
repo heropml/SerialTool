@@ -63,7 +63,7 @@ _SESSION_PROXY_ATTRS = (
     "_ar_gap_timer",
     "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
     "_ar_generation", "_ar_seq",
-    "_modbus", "_modbus_buffers", "_reset_timer",
+    "_modbus", "_modbus_buffers", "_ar_stream_buffers", "_reset_timer",
     "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
     "_log_file", "_log_file_path", "_log_opened_at",
     "_log_ends_with_nl", "_log_limit",
@@ -1513,6 +1513,15 @@ class SessionHostMixin:
             except (RuntimeError, ValueError, TypeError, OSError, UnicodeError):
                 self._stat_note_rx_error()
                 _log.debug("background session RX failed", exc_info=True)
+            units = data
+            analysis = getattr(self, "_analysis_rx_units", None)
+            if callable(analysis):
+                try:
+                    units = analysis(data, source=reply_target)
+                except (RuntimeError, ValueError, TypeError):
+                    _log.debug("background session frame assemble failed",
+                               exc_info=True)
+                    units = [bytes(data)]
             # Keep the owning tab's display/codec context while its pinned
             # engines process RX.  Some engine paths send replies immediately;
             # restoring the visible tab here would format those replies with
@@ -1520,7 +1529,8 @@ class SessionHostMixin:
             feed_engines = getattr(self, "_feed_session_engines", None)
             if callable(feed_engines):
                 try:
-                    feed_engines(data, reply_target=reply_target)
+                    feed_engines(data, reply_target=reply_target,
+                                 analysis_units=units)
                 except (RuntimeError, ValueError, TypeError, OSError):
                     _log.debug(
                         "background session engine feed failed", exc_info=True)
@@ -1605,6 +1615,9 @@ class SessionHostMixin:
                 self._term_streams = {
                     key: value for key, value in self._term_streams.items()
                     if key in active}
+                drop = getattr(self, "_drop_stale_tcp_client_framers", None)
+                if callable(drop):
+                    drop(active)
                 if (self._rx_pending_cr
                         and self._rx_pending_cr_source not in active):
                     self._rx_pending_cr = False

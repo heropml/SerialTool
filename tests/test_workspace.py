@@ -255,6 +255,101 @@ def test_structured_record_collects_modbus_and_protocol_fields(tmp_path, monkeyp
         _APP.processEvents()
 
 
+def test_protocol_frame_mode_splits_sticky_and_split_rx(tmp_path, monkeypatch):
+    notices = []
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
+    window = CommTool("stream-frame-sticky-test")
+    try:
+        _APP.processEvents()
+        window.settings.setValue("frame_rules", "AABB | cmd=3:u8")
+        window._proto_rules_raw = None
+        window._set_stream_frame({
+            "on": True, "header": "AA BB", "len_off": 2, "len_width": 1,
+            "len_extra": 3,
+        })
+        window._structured_recorder.start(clear=True)
+        # extra=3: AA BB | len | cmd ; L=1 → 4-byte frames
+        window.on_data_received(bytes.fromhex("AA BB 01 05 AA BB 01 06"))
+        vals = [row["value"] for row in window._structured_recorder.rows
+                if row.get("source") == "protocol"]
+        assert vals == [5, 6]
+
+        window._structured_recorder.clear()
+        window._structured_recorder.start(clear=True)
+        window._reset_stream_frames_all(reset_diag=True)
+        window.on_data_received(bytes.fromhex("AA BB 01"))
+        assert window._structured_recorder.rows == []
+        window.on_data_received(bytes.fromhex("07"))
+        vals = [row["value"] for row in window._structured_recorder.rows
+                if row.get("source") == "protocol"]
+        assert vals == [7]
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_protocol_frame_mode_isolates_sessions_and_clears_on_close(
+        tmp_path, monkeypatch):
+    notices = []
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
+    window = CommTool("stream-frame-session-test")
+    try:
+        _APP.processEvents()
+        window._set_stream_frame({
+            "on": True, "header": "AA BB", "len_off": 2, "len_width": 1,
+            "len_extra": 3,
+        })
+        first = window.active_session()
+        second = window.add_session(activate=False)
+        half = bytes.fromhex("AA BB 01")
+        full = bytes.fromhex("AA BB 01 05")
+        with window._with_session(first):
+            assert window._analysis_rx_units(half) == []
+        with window._with_session(second):
+            assert window._analysis_rx_units(full) == [full]
+        with window._with_session(first):
+            assert window._analysis_rx_units(bytes.fromhex("05")) == [full]
+            assert window._analysis_rx_units(half) == []
+            window.close_conn(update_ui=False)
+            assert window._analysis_rx_units(bytes.fromhex("05")) == []
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_tcp_server_client_disconnect_drops_half_frame(tmp_path, monkeypatch):
+    notices = []
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
+    window = CommTool("stream-frame-client-drop")
+    try:
+        _APP.processEvents()
+        from conn_ui import PROTO_TCP_SERVER
+        window._set_stream_frame({
+            "on": True, "header": "AA BB", "len_off": 2, "len_width": 1,
+            "len_extra": 3,
+        })
+        window._conn_proto = PROTO_TCP_SERVER
+        peer = ("10.0.0.8", 5000)
+        half = bytes.fromhex("AA BB 01")
+        full = bytes.fromhex("AA BB 01 05")
+        with window._with_session(window.active_session()):
+            assert window._analysis_rx_units(half, source=peer) == []
+            window._on_clients_changed([])
+            assert window._analysis_rx_units(bytes.fromhex("05"), source=peer) == []
+            assert window._analysis_rx_units(full, source=peer) == [full]
+        background = window.add_session(activate=False)
+        with window._with_session(background):
+            window._conn_proto = PROTO_TCP_SERVER
+            assert window._analysis_rx_units(half, source=peer) == []
+        window._route_session_clients(background.id, [])
+        with window._with_session(background):
+            assert window._analysis_rx_units(bytes.fromhex("05"), source=peer) == []
+            assert window._analysis_rx_units(full, source=peer) == [full]
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
 def test_structured_modbus_ignores_device_scan_and_survives_decode_error(
         tmp_path, monkeypatch):
     notices = []

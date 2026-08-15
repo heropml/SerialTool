@@ -82,7 +82,7 @@ def test_run_linux_installer_false_off_linux(monkeypatch, tmp_path):
     assert run_linux_installer(str(tmp_path / "x.run")) is False
 
 
-def test_run_linux_installer_launches_delayed_bash(monkeypatch, tmp_path):
+def test_run_linux_installer_waits_for_pid(monkeypatch, tmp_path):
     setup = tmp_path / "CommTool_Setup_v1.5.7_linux_x86_64.run"
     setup.write_bytes(b"#!/bin/bash\n")
     seen = {}
@@ -96,9 +96,15 @@ def test_run_linux_installer_launches_delayed_bash(monkeypatch, tmp_path):
 
     monkeypatch.setattr("updater._is_linux", lambda: True)
     monkeypatch.setattr("updater.subprocess.Popen", _popen)
-    assert run_linux_installer(str(setup)) is True
-    assert seen["args"][0] == "bash"
-    assert str(setup) in seen["args"]
+    assert run_linux_installer(str(setup), pid=4242, wait_sec=15) is True
+    args = seen["args"]
+    assert args[0] == "bash"
+    assert args[1] == "-c"
+    assert "kill -0" in args[2]
+    assert "sleep 1; exec" not in args[2].replace("\n", " ")
+    assert str(setup) in args
+    assert "4242" in args
+    assert "15" in args
     assert seen["kw"].get("start_new_session") is True
 
 

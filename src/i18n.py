@@ -1506,7 +1506,7 @@ TR = {
             "规则 2: 帧头=02  字段=应答=1:u8\n"
             "规则 3: 帧头=（空） 字段=类型=0:u8x          ← 兜底\n"
             "首字节决定走哪条；54/02 分别有专属解析，其它帧走兜底规则</pre>"
-            "<br><b>⚠️ 按接收块分帧</b>：一个数据块 = 一帧，不做跨块粘包拆分（半帧会缺字段、粘连帧只解析第一帧、帧头不在块首则整帧丢弃）。串口/TCP 请在<b>数据区开启「时间分包」</b>，让每帧单独成块。"
+            "<br><b>⚠️ 分帧</b>：默认一个数据块 = 一帧。串口/TCP 粘包时勾选「协议帧模式」，填帧头与长度字段（可点「用自动应答组帧」拷贝），按完整协议帧解析；UDP 默认一数据报一帧。"
         ),
         "frame_rules_ph": "每行一条：帧头 | 字段。例： 02 | 序号L=1:u8, 序号H=3:u8x",
         "frame_apply": "应用",
@@ -1514,6 +1514,20 @@ TR = {
         "frame_rule_bad": "规则格式错误：{line}",
         "frame_export_title": "导出帧数据",
         "frame_hint": "每行一条规则「帧头 | 字段」，每帧按帧头前缀匹配第一条规则解析（帧头可空=兜底）。改完点「应用」。「全部」标签按时间看混合帧流，其余每规则一个分列表。数值后加 x=十六进制；支持 hexN/strN；原始帧列便于核实。",
+        "frame_stream_on": "协议帧模式",
+        "frame_stream_tip": "按帧头+长度字段跨包组帧后再解析（粘包/拆包/帧头跨包）。默认关：每个收包当一帧，旧工程行为不变。\n显示区、录制、脚本、自动应答仍吃原始收包；本开关只影响帧解析 / 波形 HEX / 仪表盘 HEX / 结构化记录。",
+        "frame_udp_stream": "UDP 也组帧",
+        "frame_udp_stream_tip": "UDP 默认一数据报一帧。只有协议本身把一帧拆进多个数据报时才勾选。",
+        "frame_copy_ar": "用自动应答组帧",
+        "frame_diag_reset": "重置诊断",
+        "frame_diag_summary": "块 {chunks} · 帧 {frames} · 匹配 {matched} · 字段 {fields}",
+        "frame_diag_wait": "等待 {waiting} 字节",
+        "frame_diag_counts": "丢弃 {skip} · 坏长度 {bad} · 超长 {over} · 越界 {oob}",
+        "frame_diag_header_skip": "丢弃垃圾 {sample}",
+        "frame_diag_bad_length": "坏长度 {sample}",
+        "frame_diag_oversize": "超长帧 {sample}",
+        "frame_diag_field_oob": "字段越界",
+        "frame_diag_chunk": "收包模式：每个收包一帧",
         "plot_sep_comma": "逗号 ,",
         "plot_sep_space": "空白",
         "plot_sep_tab": "Tab",
@@ -1562,6 +1576,7 @@ TR = {
         "err_period_bad": "周期错误: {e}",
         "err_min_period": "周期最小 10ms",
         "err_open_log": "打开失败: {e}",
+        "err_log_rotate": "新日志段打开失败，继续写入当前文件: {e}",
         "err_log_write": "写日志失败: {e}",
         "err_log_path_busy": "日志文件已被其他会话使用: {path}",
         "err_rx": "接收处理出错: {e}",
@@ -3185,7 +3200,7 @@ TR = {
             "Rule 2: Header=02  Fields=ack=1:u8\n"
             "Rule 3: Header=(empty)  Fields=type=0:u8x      ← catch-all\n"
             "First byte routes to a rule; 54/02 have dedicated parsing, others go to the catch-all</pre>"
-            "<br><b>⚠️ Per-block framing</b>: one received block = one frame; no cross-block de-framing — a half frame loses fields, concatenated frames parse only the first, and a frame whose header isn't at the block start is dropped. For serial/TCP, enable <b>'Packet Split'</b> in the data area so each frame arrives as its own block."
+            "<br><b>⚠️ Framing</b>: by default one received block = one frame. For serial/TCP sticky packets, enable <b>Protocol frames</b> and fill header + length (or copy from auto-reply). UDP stays one datagram = one frame unless you opt in."
         ),
         "frame_rules_ph": "one rule per line: header | fields. e.g.  02 | seqL=1:u8, seqH=3:u8x",
         "frame_apply": "Apply",
@@ -3193,6 +3208,20 @@ TR = {
         "frame_rule_bad": "Bad rule: {line}",
         "frame_export_title": "Export frames",
         "frame_hint": "One rule per line 'header | fields'; each frame matches the first rule by header prefix (empty header = catch-all). Click Apply after editing. The All tab shows the mixed stream by time; each rule also gets its own columnar tab. Numeric + x = hex; hexN/strN; Raw column for cross-check.",
+        "frame_stream_on": "Protocol frames",
+        "frame_stream_tip": "Reassemble serial/TCP streams by header + length field before parsing (handles join/split and headers that span packets). Off by default: one received chunk = one frame (old projects unchanged).\nThe data view, recording, scripts, and auto-reply still see raw chunks; this only affects Frame Parse / plot HEX / dashboard HEX / structured record.",
+        "frame_udp_stream": "Frame UDP too",
+        "frame_udp_stream_tip": "UDP stays one-datagram-one-frame unless the protocol itself splits a frame across datagrams.",
+        "frame_copy_ar": "Use auto-reply framing",
+        "frame_diag_reset": "Reset stats",
+        "frame_diag_summary": "chunks {chunks} · frames {frames} · matched {matched} · fields {fields}",
+        "frame_diag_wait": "waiting {waiting} B",
+        "frame_diag_counts": "skip {skip} · bad len {bad} · oversize {over} · oob {oob}",
+        "frame_diag_header_skip": "skipped junk {sample}",
+        "frame_diag_bad_length": "bad length {sample}",
+        "frame_diag_oversize": "oversize {sample}",
+        "frame_diag_field_oob": "field out of range",
+        "frame_diag_chunk": "Chunk mode: one received block = one frame",
         "plot_sep_comma": "Comma ,",
         "plot_sep_space": "Whitespace",
         "plot_sep_tab": "Tab",
@@ -3241,6 +3270,7 @@ TR = {
         "err_period_bad": "Period error: {e}",
         "err_min_period": "Min period 10ms",
         "err_open_log": "Open failed: {e}",
+        "err_log_rotate": "Could not open the next log file; still writing the current one: {e}",
         "err_log_write": "Log write failed: {e}",
         "err_log_path_busy": "Log file already used by another session: {path}",
         "err_rx": "RX error: {e}",
@@ -4850,7 +4880,7 @@ TR = {
             "規則 2: 幀頭=02  欄位=應答=1:u8\n"
             "規則 3: 幀頭=（空） 欄位=類型=0:u8x          ← 兜底\n"
             "首位元組決定走哪條；54/02 分別有專屬解析，其它幀走兜底規則</pre>"
-            "<br><b>⚠️ 按接收區塊分幀</b>：一個資料區塊 = 一幀，不做跨區塊黏包拆分（半幀會缺欄位、黏連幀只解析第一幀、幀頭不在塊首則整幀丟棄）。串口/TCP 請在<b>資料區開啟「時間分包」</b>，讓每幀單獨成塊。"
+            "<br><b>⚠️ 分幀</b>：預設一個資料區塊 = 一幀。串口/TCP 黏包時勾選「協議幀模式」，填幀頭與長度欄位（可點「用自動應答組幀」拷貝）；UDP 預設一資料報一幀。"
         ),
         "frame_rules_ph": "每行一條：幀頭 | 欄位。例： 02 | 序號L=1:u8, 序號H=3:u8x",
         "frame_apply": "套用",
@@ -4858,6 +4888,20 @@ TR = {
         "frame_rule_bad": "規則格式錯誤：{line}",
         "frame_export_title": "匯出幀數據",
         "frame_hint": "每行一條規則「幀頭 | 欄位」，每幀按幀頭前綴匹配第一條規則解析（幀頭可空=兜底）。改完點「套用」。「全部」標籤按時間看混合幀流，其餘每規則一個分列表。數值後加 x=十六進制；支援 hexN/strN；原始幀欄便於核實。",
+        "frame_stream_on": "協議幀模式",
+        "frame_stream_tip": "按幀頭+長度欄位跨包組幀後再解析（黏包/拆包/幀頭跨包）。預設關：每個收包當一幀，舊工程行為不變。\n顯示區、錄製、腳本、自動應答仍吃原始收包；本開關只影響幀解析 / 波形 HEX / 儀表板 HEX / 結構化記錄。",
+        "frame_udp_stream": "UDP 也組幀",
+        "frame_udp_stream_tip": "UDP 預設一資料報一幀。只有協議本身把一幀拆進多個資料報時才勾選。",
+        "frame_copy_ar": "用自動應答組幀",
+        "frame_diag_reset": "重設診斷",
+        "frame_diag_summary": "塊 {chunks} · 幀 {frames} · 匹配 {matched} · 欄位 {fields}",
+        "frame_diag_wait": "等待 {waiting} 位元組",
+        "frame_diag_counts": "丟棄 {skip} · 壞長度 {bad} · 超長 {over} · 越界 {oob}",
+        "frame_diag_header_skip": "丟棄垃圾 {sample}",
+        "frame_diag_bad_length": "壞長度 {sample}",
+        "frame_diag_oversize": "超長幀 {sample}",
+        "frame_diag_field_oob": "欄位越界",
+        "frame_diag_chunk": "收包模式：每個收包一幀",
         "plot_sep_comma": "逗號 ,",
         "plot_sep_space": "空白",
         "plot_sep_tab": "Tab",
@@ -4906,6 +4950,7 @@ TR = {
         "err_period_bad": "週期錯誤: {e}",
         "err_min_period": "週期最小 10ms",
         "err_open_log": "開啟失敗: {e}",
+        "err_log_rotate": "新日誌段開啟失敗，繼續寫入目前檔案: {e}",
         "err_log_write": "寫日誌失敗: {e}",
         "err_log_path_busy": "日誌檔已被其他工作階段使用: {path}",
         "err_rx": "接收處理出錯: {e}",

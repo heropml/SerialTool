@@ -1074,7 +1074,8 @@ def test_background_engine_feed_keeps_owner_display_context(
         w, "_on_data_received_impl", lambda _data, source=None: None)
     monkeypatch.setattr(
         w, "_feed_session_engines",
-        lambda _data, reply_target=None: seen.append(dict(w._display_context)))
+        lambda _data, reply_target=None, **_k: seen.append(
+            dict(w._display_context)))
 
     with w._with_session(owner):
         w._on_background_session_data(b"reply")

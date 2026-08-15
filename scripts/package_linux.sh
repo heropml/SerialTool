@@ -18,6 +18,11 @@ fi
 ARCH="$(uname -m)"
 case "$ARCH" in
     x86_64|amd64) ARCH=x86_64 ;;
+    *)
+        echo "Official Linux packages are x86_64 only (this host is $ARCH)."
+        echo "PyInstaller does not cross-compile; build on an x86_64 machine."
+        exit 1
+        ;;
 esac
 
 OUT_DIR="./installer"

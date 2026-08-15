@@ -390,14 +390,50 @@ def run_installer(path):
         return False
 
 
-def run_linux_installer(path):
-    """Launch the downloaded .run after this process can exit (releases PREFIX)."""
+LINUX_INSTALL_WAIT_SEC = 60
+# $1 = .run path, $2 = CommTool pid, $3 = max wait seconds.
+# Do not use sleep-and-hope: wait until the old process is actually gone.
+LINUX_INSTALLER_WAIT_SH = """
+path="$1"
+pid="$2"
+wait_sec="$3"
+i=0
+while kill -0 "$pid" 2>/dev/null; do
+  i=$((i + 1))
+  if [ "$i" -ge "$wait_sec" ]; then
+    msg="CommTool (pid $pid) did not exit within ${wait_sec}s; update aborted."
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send "CommTool" "$msg" || true
+    fi
+    logger -t commtool-update "$msg" 2>/dev/null || true
+    echo "$msg" >&2
+    exit 1
+  fi
+  sleep 1
+done
+exec "$path"
+"""
+
+
+def run_linux_installer(path, pid=None, wait_sec=None):
+    """Launch the downloaded .run after this process has actually exited.
+
+    ``pid`` defaults to the current process. The waiter polls ``kill -0``
+    until that pid is gone (or ``wait_sec`` elapses) before exec'ing the
+    installer, so PREFIX is not overwritten while the old binary is still
+    mapped.
+    """
     if not _is_linux():
         return False
     try:
         os.chmod(path, 0o755)
+        wait_sec = int(LINUX_INSTALL_WAIT_SEC if wait_sec is None else wait_sec)
+        if wait_sec < 1:
+            wait_sec = 1
+        child_pid = int(os.getpid() if pid is None else pid)
         subprocess.Popen(
-            ["bash", "-c", 'sleep 1; exec "$1"', "commtool-update", path],
+            ["bash", "-c", LINUX_INSTALLER_WAIT_SH, "commtool-update",
+             path, str(child_pid), str(wait_sec)],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

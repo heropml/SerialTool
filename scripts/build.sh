@@ -5,6 +5,16 @@
 set -e
 cd "$(dirname "$0")/.."
 
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|amd64) ;;
+    *)
+        echo "Official Linux builds are x86_64 only (this host is $ARCH)."
+        echo "PyInstaller does not cross-compile; build on an x86_64 machine."
+        exit 1
+        ;;
+esac
+
 echo "============================================"
 echo " Building CommTool (Linux) with PyInstaller"
 echo "============================================"

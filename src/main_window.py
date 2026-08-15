@@ -671,6 +671,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ar_on = self.settings.value("autoreply_on", False, type=bool)
         self._ar_buf = b""                           # 整包组装缓冲（静默超时 / 帧头+长度组帧 共用）
         self._ar_frame = self._load_ar_frame()       # 帧头+长度组帧配置（全局；启用时优先于 gap 静默分帧）
+        self._stream_frame = self._load_stream_frame()  # 分析层协议帧模式（独立于自动应答；默认关）
         self._ar_fault = self._load_ar_fault()       # C6 全局故障注入配置（丢包/错CRC/错长度，压测主机）
         self._ar_sm = self._load_ar_sm()             # C8 多步状态机配置（全局；on/init）
         self._ar_state = self._ar_sm.get("init", "")  # 当前状态(运行态，不持久化)；连接/重置时回到 init
@@ -3419,12 +3420,27 @@ class CommTool(SessionHostMixin, QMainWindow):
                 preserve_session_intent=True)
             self._schedule_reconnect()  # 非主动断开 → 走自动重连
 
+    def _drop_stale_tcp_client_framers(self, active):
+        """Drop protocol-frame / AR length buffers for TCP Server clients that left."""
+        active = set(active)
+        ctx = self._session_ctx() or self.active_session()
+        assemblers = getattr(ctx, "_frame_assemblers", None) if ctx is not None else None
+        retain = getattr(assemblers, "retain_sources", None)
+        if callable(retain):
+            retain(active)
+        bufs = getattr(self, "_ar_stream_buffers", None)
+        if isinstance(bufs, dict):
+            for key in list(bufs):
+                if key not in active:
+                    bufs.pop(key, None)
+
     def _on_clients_changed(self, clients):
         """TCP Server 客户端列表变化 → 刷新「目标」下拉（含「全部」）。"""
         active = {key for key, _label in clients}
         self._flush_numview_carries(set(self._numview_carries) - active)
         self._modbus_buffers = {key: buf for key, buf in self._modbus_buffers.items()
                                 if key in active}
+        self._drop_stale_tcp_client_framers(active)
         self._numview_carries = {key: buf for key, buf in self._numview_carries.items()
                                  if key in active}
         self._rx_decode_buffers = {key: buf for key, buf in self._rx_decode_buffers.items()
@@ -3672,6 +3688,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         # AR framing / Modbus slave bank are session-owned — always reset this session.
         self._ar_reset_buf()
         self._ar_reset_state(reset_modbus=True)
+        ctx = self._session_ctx()
+        if ctx is not None:
+            ctx.reset_stream_frames(reset_diag=True)
         if owns["modbus"]:
             if session is not None:
                 session._mbm_enabled = False  # runtime occupancy; pin keeps reconnect intent
@@ -4185,20 +4204,27 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._stat_note_rx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("err_rx", e=e), error=True)
+        # Analysis consumers: complete protocol frames when stream mode is on;
+        # display / engines still see the original chunk.
+        units = self._analysis_rx_units(data, source=reply_target)
         # Active-tab UI dialogs only (plot/frame/dash bind to the visible session).
         dlg = getattr(self, "_plot_dlg", None)
         if dlg is not None and dlg.isVisible():
-            self._rx_side("plot.feed", lambda: dlg.feed(data))
+            for unit in units:
+                self._rx_side("plot.feed", lambda u=unit: dlg.feed(u))
         fdlg = getattr(self, "_frame_dlg", None)
         if fdlg is not None and fdlg.isVisible():
-            self._rx_side("frame.feed", lambda: fdlg.feed(data))
+            for unit in units:
+                self._rx_side("frame.feed", lambda u=unit: fdlg.feed(u))
         ddlg = getattr(self, "_dash_dlg", None)
         if ddlg is not None and ddlg.isVisible():
-            self._rx_side("dashboard.feed", lambda: ddlg.feed(data))
+            for unit in units:
+                self._rx_side("dashboard.feed", lambda u=unit: ddlg.feed(u))
         # Triggers keep per-session decoders so background tabs can match too.
         self._rx_side("triggers.feed",
                       lambda: self._triggers_feed(data, "rx", source=reply_target))
-        self._feed_session_engines(data, reply_target=reply_target)
+        self._feed_session_engines(
+            data, reply_target=reply_target, analysis_units=units)
 
     def _feed_xfer_if_owned(self, data):
         """If transfer owns this context session's RX, feed worker and consume."""
@@ -4217,13 +4243,15 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._rx_side("xfer.feed", lambda: w.feed(data))
         return True
 
-    def _feed_session_engines(self, data, reply_target=None):
+    def _feed_session_engines(self, data, reply_target=None, analysis_units=None):
         """Feed this context session's engines (AR/MBM/seq/script/macro/recorder/…).
 
         Called for both active and background RX under ``_with_session``.
         Script / sequence / MBM / recording / macro / DSL / transfer / replay
-        are per-session.
+        are per-session. ``analysis_units`` is the framed (or chunk) list for
+        structured protocol extract; engines themselves still consume ``data``.
         """
+        units = analysis_units if analysis_units is not None else [bytes(data)]
         # 宏录制：录回包，供生成 expect(...)（脚本运行期间不录，同 TX 侧）
         script_here = (self._script_running()
                        and self._io_session_owns("script")
@@ -4248,7 +4276,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         def _structured_feed():
             if _rx_dispatch.structured_feed_ok(
                     mbm_inflight=self._mbm_inflight is not None):
-                self._structured_feed_protocol(data)
+                for unit in units:
+                    self._structured_feed_protocol(unit)
         is_active_context = self._session_ctx() is self.active_session()
         if (is_active_context
                 and (self._io_session_owns("modbus") or not self._mbm_active())):
@@ -6547,6 +6576,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         dlg.refresh_theme()
         dlg.retranslate()
         dlg.sync_highlight()      # 勾选态跟随主窗当前 _proto_hl_on
+        dlg._load_stream_widgets()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -7389,6 +7419,48 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.settings.setValue("autoreply_frame", json.dumps(save, ensure_ascii=False))
         self.settings.sync()
 
+    def _load_stream_frame(self):
+        """Analysis-layer stream framing (independent of auto-reply). Missing = off."""
+        cfg = _cfg_parse_json_dict(self.settings.value("stream_frame", "")) or {}
+        return binproto.norm_stream_frame(cfg)
+
+    def _set_stream_frame(self, cfg):
+        """Frame-parse dialog: persist protocol-frame mode and drop half-frames."""
+        self._stream_frame = binproto.norm_stream_frame(cfg)
+        save = {k: v for k, v in self._stream_frame.items() if not k.startswith("_")}
+        self.settings.setValue("stream_frame", json.dumps(save, ensure_ascii=False))
+        self.settings.sync()
+        self._reset_stream_frames_all(reset_diag=False)
+
+    def _reset_stream_frames_all(self, reset_diag=False):
+        for session in self._ar_sessions_snapshot():
+            session.reset_stream_frames(reset_diag=reset_diag)
+
+    def _analysis_rx_units(self, data, source=None):
+        """Raw chunk → analysis units (compat: one chunk; protocol mode: frames)."""
+        s = self._session_ctx()
+        if s is None or not hasattr(s, "feed_analysis_frames"):
+            return [bytes(data)]
+        cfg = getattr(self, "_stream_frame", None) or binproto.norm_stream_frame({})
+        proto = getattr(self, "_conn_proto", None)
+        return s.feed_analysis_frames(data, source, cfg, proto)
+
+    def _note_parse_diag(self, matched=False, field_ok=0, field_oob=0):
+        s = self._session_ctx()
+        if s is not None and hasattr(s, "_parse_diag"):
+            s._parse_diag.note_parse(matched, field_ok, field_oob)
+
+    def parse_diag_snapshot(self):
+        s = self._session_ctx() or self.active_session()
+        if s is None or not hasattr(s, "_parse_diag"):
+            return {}
+        return s._parse_diag.snapshot()
+
+    def reset_parse_diag(self):
+        s = self._session_ctx() or self.active_session()
+        if s is not None and hasattr(s, "_parse_diag"):
+            s._parse_diag.reset()
+
     # ----- C6 全局故障注入（autoreply_fault：丢包/错CRC/错长度 概率，压测主机重传/容错）-----
     def _load_ar_fault(self):
         cfg = _cfg_parse_json_dict(self.settings.value("autoreply_fault", "")) or {}
@@ -7535,6 +7607,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         if hasattr(self, "_ar_gap_timer"):
             self._ar_gap_timer.stop()
         self._ar_buf = b""
+        if hasattr(self, "_ar_stream_buffers"):
+            self._ar_stream_buffers.clear()
         if hasattr(self, "_modbus_buffers"):
             self._modbus_buffers.clear()
 
@@ -7637,11 +7711,24 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         if mode == "length_frame":
             fc = self._ar_frame
-            self._ar_buf += bytes(data)
-            frames, self._ar_buf = binproto.iter_length_frames(
-                self._ar_buf, fc["_header"], fc["len_off"], fc["len_width"],
-                fc["len_extra"], fc["len_be"])
-            self._ar_buf, _ = _ar_gate.trim_length_buf(self._ar_buf)
+            key = reply_target
+            bufs = getattr(self, "_ar_stream_buffers", None)
+            if key is None or not isinstance(bufs, dict):
+                self._ar_buf += bytes(data)
+                frames, self._ar_buf = binproto.iter_length_frames(
+                    self._ar_buf, fc["_header"], fc["len_off"], fc["len_width"],
+                    fc["len_extra"], fc["len_be"])
+                self._ar_buf, _ = _ar_gate.trim_length_buf(self._ar_buf)
+            else:
+                buf = bufs.get(key, b"") + bytes(data)
+                frames, rem = binproto.iter_length_frames(
+                    buf, fc["_header"], fc["len_off"], fc["len_width"],
+                    fc["len_extra"], fc["len_be"])
+                rem, _ = _ar_gate.trim_length_buf(rem)
+                if rem:
+                    bufs[key] = rem
+                else:
+                    bufs.pop(key, None)
             for f in frames:
                 self._ar_match(f)
         elif mode == "gap":
@@ -8381,12 +8468,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         # _ar_rules 是 __init__ 里读一次的内存缓存 — 不重载会让匹配走老规则
         self._ar_rules = self._load_ar_rules()
         self._ar_frame = self._load_ar_frame()
+        self._stream_frame = self._load_stream_frame()
         self._ar_fault = self._load_ar_fault()
         self._ar_sm = self._load_ar_sm()      # C8：状态机配置随配置档导入
         self._ar_modbus = self._load_ar_modbus()   # B4：Modbus 从机配置随配置档导入
         self._modbus_rebuild_all_sessions()
         self._recompute_ar_gap()
         self._ar_reset_all_buffers()
+        self._reset_stream_frames_all(reset_diag=True)
         self._ar_reset_all_states()           # C8：导入新配置=新会话 → 所有会话复位到新初态
         # type=bool 让 QSettings 正确把字符串 "true"/"false"/"1"/"0" 解成 bool，
         # 否则手写 JSON 里的 "false" 经 bool() 会变 True（非空字符串）
@@ -9582,23 +9671,21 @@ class CommTool(SessionHostMixin, QMainWindow):
         if not self._structured_recorder.recording:
             return
         rules = self._proto_rules()
-        rule = next((item for item in rules
-                     if not item["header"] or bytes(data).startswith(item["header"])), None)
+        frame = bytes(data)
+        rule = binproto.first_matching_rule(rules, frame)
         if rule is None:
+            self._note_parse_diag(matched=False)
             return
         now = time.time()
         samples = []
-        for name, offset, typ in rule["fields"]:
+        pairs, ok, oob = binproto.extract_rule_fields(rule, frame)
+        self._note_parse_diag(matched=True, field_ok=ok, field_oob=oob)
+        for name, offset, typ, value in pairs:
             size = binproto.field_size(typ)
-            if size <= 0 or offset < 0 or offset + size > len(data):
-                continue
-            value = binproto.read_field(data, offset, typ)
-            if value is None:
-                continue
             samples.append({
                 "timestamp": now, "source": "protocol", "tag": name,
                 "value": value, "unit": "",
-                "raw": bytes(data[offset:offset + size]).hex(" ").upper(),
+                "raw": bytes(frame[offset:offset + size]).hex(" ").upper(),
             })
         self._structured_add(samples)
 
@@ -10353,15 +10440,16 @@ class CommTool(SessionHostMixin, QMainWindow):
             serial_name=PROTO_SERIAL,
             tcp_client_name=PROTO_TCP_CLIENT)
 
-    def _log_segment_path(self, when=None, session=None) -> str:
+    def _log_segment_path(self, when=None, session=None, seg=None) -> str:
         session = self._log_session(session)
         base = (session.log_base_path if session is not None
                 else getattr(self, "_log_base_path", "")) or ""
-        seg = int(session.log_seg if session is not None
-                  else getattr(self, "_log_seg", 0) or 0)
+        if seg is None:
+            seg = int(session.log_seg if session is not None
+                      else getattr(self, "_log_seg", 0) or 0)
         return log_naming.segment_path(
             base, when or datetime.now(),
-            port=self._log_conn_token(session), seg=seg)
+            port=self._log_conn_token(session), seg=int(seg or 0))
 
     def _set_log_path_label(self, path):
         """Update status-bar log path (only while recording)."""
@@ -10439,6 +10527,65 @@ class CommTool(SessionHostMixin, QMainWindow):
         session._log_file = None
         session._log_ends_with_nl = True
 
+    def _toast_log_rotate_failed(self, err):
+        """Throttle: size/date rolls can retry every write if the new path stays bad."""
+        now = time.monotonic()
+        last = float(getattr(self, "_log_rotate_fail_at", 0.0) or 0.0)
+        if now - last < 5.0:
+            return
+        self._log_rotate_fail_at = now
+        self.toast(self._t("err_log_rotate", e=err), error=True)
+
+    def _rotate_log_to(self, path, when, session, next_seg):
+        """Open the new segment first; only then close the old one.
+
+        If the new path cannot be created, the current file stays open and
+        logging continues. Returns True when the switch committed.
+        """
+        old = session._log_file
+        if old is None:
+            session.log_seg = next_seg
+            return self._open_log_segment(path, when=when, session=session)
+        conflict = self._log_path_owned_by_other(path, except_session=session)
+        if conflict is not None:
+            self._toast_log_rotate_failed(self._t("err_log_path_busy", path=path))
+            return False
+        new_f = None
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            new_f = open(path, "a", encoding="utf-8")
+            ts = when.strftime("%Y-%m-%d %H:%M:%S")
+            new_f.write(self._t("log_header", time=ts))
+            new_f.flush()
+        except Exception as e:
+            if new_f is not None:
+                try:
+                    new_f.close()
+                except OSError:
+                    _log.debug("log rotate: close failed new segment", exc_info=True)
+            self._toast_log_rotate_failed(e)
+            return False
+        try:
+            old.write(self._t("log_footer", time=when.strftime("%Y-%m-%d %H:%M:%S")))
+            self._flush_log_file(session=session, to_disk=True)
+        except (OSError, TypeError, ValueError, KeyError):
+            _log.debug("log rotate: old footer/flush failed", exc_info=True)
+        try:
+            old.close()
+        except OSError:
+            _log.debug("log rotate: old close failed", exc_info=True)
+        session._log_file = new_f
+        session._log_file_path = path
+        session._log_opened_at = when
+        session.log_seg = next_seg
+        session._log_ends_with_nl = True
+        session.log_wanted = True
+        if session is self.active_session():
+            self._set_log_path_label(path)
+        return True
+
     def _maybe_rotate_log(self, now=None, session=None):
         session = self._log_session(session)
         if session is None or not session._log_file:
@@ -10446,14 +10593,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         now = now or datetime.now()
         if log_naming.should_roll_date(
                 session._log_opened_at, now, session.log_base_path):
-            self._close_log_segment(now, session=session)
-            session.log_seg = 0
-            if not self._open_log_segment(
-                    self._log_segment_path(now, session=session),
-                    when=now, session=session):
-                session.log_wanted = False
-                if session is self.active_session() and hasattr(self, "sw_log_file"):
-                    self.sw_log_file.setChecked(False)
+            path = self._log_segment_path(now, session=session, seg=0)
+            self._rotate_log_to(path, now, session, next_seg=0)
             return
         try:
             cur = session._log_file.tell()
@@ -10462,14 +10603,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         if not log_naming.should_roll_size(cur, session._log_limit):
             return
-        self._close_log_segment(now, session=session)
-        session.log_seg = int(session.log_seg or 0) + 1
-        if not self._open_log_segment(
-                self._log_segment_path(now, session=session),
-                when=now, session=session):
-            session.log_wanted = False
-            if session is self.active_session() and hasattr(self, "sw_log_file"):
-                self.sw_log_file.setChecked(False)
+        next_seg = int(session.log_seg or 0) + 1
+        path = self._log_segment_path(now, session=session, seg=next_seg)
+        self._rotate_log_to(path, now, session, next_seg=next_seg)
 
     def on_log_file_toggled(self, on):
         session = self._log_session()

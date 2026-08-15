@@ -275,6 +275,16 @@ class StructuredRecordDialog(QDialog):
         self.lbl_status.setText(self.app._t(
             "structured_status", count=len(self.recorder.rows),
             shown=len(self._visible_rows)))
+        getter = getattr(self.app, "parse_diag_snapshot", None)
+        snap = getter() if callable(getter) else None
+        if snap and (snap.get("frames") or snap.get("oob") or snap.get("last_reason")):
+            extra = self.app._t(
+                "frame_diag_summary",
+                chunks=snap.get("chunks", 0),
+                frames=snap.get("frames", 0),
+                matched=snap.get("matched", 0),
+                fields=snap.get("fields", 0))
+            self.lbl_status.setText(self.lbl_status.text() + "  ·  " + extra)
 
     # ---------------- 主题 / 语言 ----------------
     def _show_help_dlg(self):

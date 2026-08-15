@@ -6923,6 +6923,38 @@ class LogRotationTests(unittest.TestCase):
         self.assertNotEqual(self.w._log_file_path, first)
         self.assertEqual(self.w._log_seg, 1)
 
+    def test_size_rotate_keeps_old_file_if_new_open_fails(self):
+        """New segment must not be required to keep logging; old handle stays."""
+        import builtins
+        import os
+        first = self._start("size_fail.log")
+        self.w._log_limit = 200
+        self.w._log_file.write("x" * 300)
+        self.w._log_file.flush()
+        old = self.w._log_file
+        old_path = os.path.abspath(first)
+        real_open = builtins.open
+
+        def guarded(path, mode="r", *args, **kwargs):
+            if "a" in str(mode) and os.path.abspath(str(path)) != old_path:
+                raise OSError("disk full")
+            return real_open(path, mode, *args, **kwargs)
+
+        builtins.open = guarded
+        try:
+            self.w._log_rotate_fail_at = 0.0
+            self.w._maybe_rotate_log(now=self.d1)
+        finally:
+            builtins.open = real_open
+        self.assertIs(self.w._log_file, old)
+        self.assertEqual(os.path.abspath(self.w._log_file_path), old_path)
+        self.assertEqual(self.w._log_seg, 0)
+        self.assertTrue(self.w.active_session().log_wanted)
+        old.write("still-logging\n")
+        old.flush()
+        with real_open(old_path, encoding="utf-8") as fh:
+            self.assertIn("still-logging", fh.read())
+
     def test_date_roll_wins_over_size_index(self):
         self._start("size_%date.log")
         self.w._log_limit = 200

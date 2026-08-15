@@ -7,8 +7,8 @@
         外加 hexN（N 字节按 HEX 串）/ strN（N 字节 ASCII），后两者仅用于帧解析表展示。
 - 帧定位：两种粒度——
     · iter_frames：不带帧长，把上层一个接收块视作一帧，帧头仅作前缀过滤；
-    · iter_length_frames：带「帧头 + 长度字段」，维护跨包字节流按整帧边界切，
-      能处理串口/TCP 的粘包与拆包（自动应答的「帧头+长度组帧」用它）。
+    · iter_length_frames / scan_length_frames：带「帧头 + 长度字段」，
+      维护跨包字节流按整帧边界切（自动应答与分析层协议帧模式共用）。
 """
 import re
 import struct
@@ -220,6 +220,82 @@ def iter_frames(buf, header):
     return [buf] if buf.startswith(header) else []
 
 
+def _hex_sample(buf, n=16):
+    """Short HEX sample for diagnostics; empty if no bytes."""
+    chunk = bytes(buf or b"")[:n]
+    return chunk.hex(" ").upper() if chunk else ""
+
+
+def scan_length_frames(buf, header, len_off, len_width, len_extra,
+                       len_be=False, max_frame=4096):
+    """Same split as iter_length_frames, plus discard / wait counters.
+
+    Returns (frames, remaining, stats) where stats keys are:
+      header_skip, bad_length, oversize, waiting, last_reason, last_sample.
+    Empty header → no frames, remaining is the original buf (caller passthrough).
+    """
+    stats = {
+        "header_skip": 0,
+        "bad_length": 0,
+        "oversize": 0,
+        "waiting": 0,
+        "last_reason": "",
+        "last_sample": "",
+    }
+    buf = bytes(buf or b"")
+    header = bytes(header or b"")
+    if not header:
+        stats["waiting"] = len(buf)
+        return [], buf, stats
+    i, n = 0, len(buf)
+    frames = []
+    while i < n:
+        j = buf.find(header, i)
+        if j < 0:
+            tail = len(header) - 1
+            skip = n - i - tail if tail > 0 else n - i
+            if skip < 0:
+                skip = 0
+            if skip:
+                stats["header_skip"] += skip
+                stats["last_reason"] = "header_skip"
+                stats["last_sample"] = _hex_sample(buf[i:])
+            remaining = buf[n - tail:] if tail > 0 else b""
+            stats["waiting"] = len(remaining)
+            return frames, remaining, stats
+        if j > i:
+            stats["header_skip"] += j - i
+            stats["last_reason"] = "header_skip"
+            stats["last_sample"] = _hex_sample(buf[i:j])
+        i = j
+        need = len_off + len_width
+        if n - i < need:
+            remaining = buf[i:]
+            stats["waiting"] = len(remaining)
+            return frames, remaining, stats
+        L = int.from_bytes(buf[i + len_off:i + need], "big" if len_be else "little")
+        total = L + len_extra
+        if total < need or total > max_frame:
+            stats["last_sample"] = _hex_sample(buf[i:i + need])
+            if total > max_frame:
+                stats["oversize"] += 1
+                stats["last_reason"] = "oversize"
+            else:
+                stats["bad_length"] += 1
+                stats["last_reason"] = "bad_length"
+            i += 1
+            continue
+        if n - i < total:
+            remaining = buf[i:]
+            stats["waiting"] = len(remaining)
+            return frames, remaining, stats
+        frames.append(buf[i:i + total])
+        i += total
+    remaining = buf[i:]
+    stats["waiting"] = len(remaining)
+    return frames, remaining, stats
+
+
 def iter_length_frames(buf, header, len_off, len_width, len_extra,
                        len_be=False, max_frame=4096):
     """按「帧头 + 长度字段」从字节流 buf 中切出完整帧，处理串口/TCP 的粘包与拆包。
@@ -238,30 +314,69 @@ def iter_length_frames(buf, header, len_off, len_width, len_extra,
         frames    依次切出的完整帧
         remaining 不足一帧的尾部（含可能的半个帧头），调用方须作为下次输入的前缀续上
     """
-    frames = []
-    if not header:
-        return frames, buf
-    i, n = 0, len(buf)
-    while i < n:
-        j = buf.find(header, i)
-        if j < 0:
-            # 没找到帧头：丢弃绝大部分垃圾，只留末尾 len(header)-1 字节（可能是半个帧头）
-            tail = len(header) - 1
-            return frames, (buf[n - tail:] if tail > 0 else b"")
-        i = j                                       # 对齐帧头（丢弃 j 之前的垃圾字节）
-        need = len_off + len_width
-        if n - i < need:
-            break                                   # 长度字段还没收齐 → 等下次
-        L = int.from_bytes(buf[i + len_off:i + need], "big" if len_be else "little")
-        total = L + len_extra
-        if total < need or total > max_frame:
-            i += 1                                  # 坏长度：跳过这个帧头，继续找下一个
+    frames, remaining, _stats = scan_length_frames(
+        buf, header, len_off, len_width, len_extra, len_be, max_frame)
+    return frames, remaining
+
+
+def _to_int(v, default=0):
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def norm_stream_frame(cfg):
+    """Normalize analysis-layer stream-framing config (independent of auto-reply).
+
+    Missing / empty cfg → protocol mode off (chunk = one frame). Runtime-only
+    ``_header`` is parsed bytes; bad hex → b'' (treated as disabled).
+    """
+    cfg = cfg or {}
+    w = _to_int(cfg.get("len_width", 2), 2)
+    mf = _to_int(cfg.get("max_frame", 4096), 4096)
+    if mf < 16:
+        mf = 16
+    elif mf > 1024 * 1024:
+        mf = 1024 * 1024
+    out = {
+        "on": bool(cfg.get("on", False)),
+        "udp_stream": bool(cfg.get("udp_stream", False)),
+        "header": str(cfg.get("header", "")),
+        "len_off": max(0, _to_int(cfg.get("len_off", 0))),
+        "len_width": w if w in (1, 2, 4) else 2,
+        "len_be": bool(cfg.get("len_be", False)),
+        "len_extra": max(0, _to_int(cfg.get("len_extra", 0))),
+        "max_frame": mf,
+    }
+    try:
+        out["_header"] = parse_hex_header(out["header"])
+    except ValueError:
+        out["_header"] = b""
+    return out
+
+
+def extract_rule_fields(rule, frame):
+    """Extract named fields from a complete frame.
+
+    Returns (pairs, ok, oob) where pairs is [(name, off, typ, value), ...]
+    for successful reads; oob counts missing/out-of-range fields.
+    """
+    pairs = []
+    ok = oob = 0
+    frame = bytes(frame or b"")
+    for name, off, typ in (rule or {}).get("fields") or ():
+        size = field_size(typ)
+        if size <= 0 or off < 0 or off + size > len(frame):
+            oob += 1
             continue
-        if n - i < total:
-            break                                   # 整帧还没收齐 → 等下次
-        frames.append(buf[i:i + total])
-        i += total
-    return frames, buf[i:]
+        value = read_field(frame, off, typ)
+        if value is None:
+            oob += 1
+            continue
+        ok += 1
+        pairs.append((name, off, typ, value))
+    return pairs, ok, oob
 
 
 # ----- frame_rules (S-2 R11) ------------------------------------------------

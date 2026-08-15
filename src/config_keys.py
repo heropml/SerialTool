@@ -28,6 +28,7 @@ CFG_KEYS = (
     "connection_presets",
     "keyword_groups", "keyword_active",
     "frame_rules",
+    "stream_frame",
     "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
     "plot_hex_header", "plot_maxpts", "plot_xaxis", "plot_view", "plot_dual_y",
     # 数值仪表盘

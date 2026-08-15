@@ -730,6 +730,8 @@ RX and TX share one view; arrows indicate direction:
 
 **Save / Clear** — buttons at the bottom of the card; save filename is `save_log_YYYYMMDD_HHMMSS.log`
 
+**Frame Parse** (Functions → Frame Parse) — by default each received chunk is one frame. For serial/TCP sticky or split packets, enable **Protocol frames** (header + length field; can copy from auto-reply). Plot HEX, dashboard HEX, and structured record share that frame source. UDP stays one datagram = one frame. The data view and `.ctrec` still record raw chunks. A status line shows parse counts and the last failure reason.
+
 **Right-click menu** — localized context menu: **Copy / Select All / Clear / Save**, plus **Convert to Text** / **Convert to HEX** for the current selection (result dialog + clipboard; 64 KiB cap)
 
 ### Sending Data

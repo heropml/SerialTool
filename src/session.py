@@ -19,6 +19,9 @@ import modbus_slave
 import rec_replay
 import seq_context
 from fonts import mono_font
+from parse_diag import ParseDiagnostics
+from frame_stream import FrameAssemblerMap
+import frame_stream
 
 MAX_SESSIONS = 8
 _DEFAULT_TAB_TITLE = "Session"
@@ -92,7 +95,7 @@ class Session:
         "_ansi_state", "_ansi_pending", "_ansi_states", "_ansi_pendings",
         "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
         "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
-        "_ar_buf", "_ar_gap_timer",
+        "_ar_buf", "_ar_gap_timer", "_ar_stream_buffers",
         "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
         "_ar_generation", "_ar_seq",
         "_ar_enabled",
@@ -131,6 +134,7 @@ class Session:
         "_log_ends_with_nl", "_log_limit",
         "clients", "udp_peer",
         "_tab_index",
+        "_frame_assemblers", "_parse_diag",
     )
 
     def __init__(self, app, title=None, session_id=None, title_index=None):
@@ -186,6 +190,7 @@ class Session:
         self._reset_recv_fields()
         self._ar_enabled = False
         self._ar_buf = b""
+        self._ar_stream_buffers = {}
         self._ar_gap_timer = QTimer(app)
         self._ar_gap_timer.setSingleShot(True)
         self._ar_gap_timer.timeout.connect(
@@ -204,6 +209,8 @@ class Session:
             modbus_slave.slave_bank_from_config(cfg) if cfg is not None
             else modbus_slave.slave_bank_from_config({}))
         self._modbus_buffers = {}
+        self._frame_assemblers = FrameAssemblerMap()
+        self._parse_diag = ParseDiagnostics()
         self._reset_timer = QTimer(app)
         self._reset_timer.setSingleShot(True)
         self._reset_timer.timeout.connect(
@@ -546,3 +553,21 @@ class Session:
         self._ar_enabled = _persist_bool(data.get("ar_enabled", False))
         self._mbm_enabled = _persist_bool(data.get("mbm_enabled", False))
         self._mbm_wanted = _persist_bool(data.get("mbm_wanted", self._mbm_enabled))
+
+    def reset_stream_frames(self, reset_diag=False):
+        """Drop half-frames (and optionally parse counters) after close / reconfig."""
+        self._frame_assemblers.reset()
+        if reset_diag:
+            self._parse_diag.reset()
+
+    def feed_analysis_frames(self, data, source, cfg, proto):
+        """Feed one RX chunk into the analysis assembler; return complete frames.
+
+        Chunk/compat mode returns [data] and does not touch the assembler.
+        """
+        self._parse_diag.note_chunk()
+        units, stats = frame_stream.analysis_rx_units(
+            cfg, proto, data, source, self._frame_assemblers)
+        if stats is not None:
+            self._parse_diag.note_assemble(len(units), stats)
+        return units
