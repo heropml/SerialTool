@@ -1,0 +1,40 @@
+---
+description: Git 提交与发版文案必须按 RELEASE.md §8 分节详写，禁止一句摘要
+alwaysApply: true
+---
+
+# Commit / push copy (RELEASE.md §8)
+
+When the user says 提交 / 推送 / push, **read `RELEASE.md` §8 first** and write the message **before** `git commit`. Do not use a one-line or 1–2 sentence body. The generic “concise commit” habit does **not** apply in this repo.
+
+## Git commits (feat / fix / chore / docs / test)
+
+Title: `type: 一句话摘要` (release commits use `release: comm-vX.Y.Z — …`).
+
+Body **must** be numbered sections with `-` bullets, blank line between sections:
+
+```
+feat: 多会话引擎按标签独立运行
+
+1. 脚本 / MBM / 序列
+- 双标签可各跑；Run/Stop 跟当前标签
+- 关控制台结束全部 worker
+
+2. 测试
+- …
+
+全量测试：1594 passed，11 skipped，295 subtests passed。
+```
+
+Include: what landed, user-visible behavior, compatibility, docs, tests. End with **full** pytest numbers when a suite was run. Confirm with `git log -1 --format='%B'` before push.
+
+## Releases
+
+Same body depth for GitHub/Gitee Release. Current version only; do not paste older versions into this Release.
+
+## Forbidden
+
+- Title-only, or title + one paragraph of joined clauses
+- Dropping section bullets to “save space”
+- Amending a detailed message into a short one
+- PowerShell `git commit -m "…"` for Chinese bodies (encoding breaks). Write UTF-8 file, then `git commit -F` that file.
