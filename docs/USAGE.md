@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.6.0](#whats-new-in-v160)
 - [What's New in v1.5.7](#whats-new-in-v157)
 - [What's New in v1.5.6](#whats-new-in-v156)
 - [What's New in v1.5.5](#whats-new-in-v155)
@@ -44,6 +45,20 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual)
+
+---
+
+## What's New in v1.6.0
+
+Protocol-frame analysis on the v1.5.7 baseline (default remains one received chunk = one frame):
+
+- **Protocol frames** — enable header + length assembly for serial/TCP sticky or split packets; Frame Parse, plot HEX, dashboard HEX, and structured record share that frame source. Config is independent of auto-reply (can copy those fields). UDP stays one datagram = one frame unless stream mode is on.
+- **TCP Server** — half-frame buffers are per client and dropped when the client disconnects, so a reused address:port cannot glue an old tail onto a new connection.
+- **Parse diagnostics** — counts and last failure reason at the bottom of the Frame Parse dialog.
+- **Display / recording** — the data view, protocol highlight, and `.ctrec` still use raw chunks.
+- **Live log rotate** — open the next file first; if that fails, keep writing the current file and warn (do not turn logging off).
+- **Linux** — the installer waits until this process has exited before overwriting the install dir; official packages are x86_64 only.
+- **Boundary** — no session tree / split / undock; P2 still deferred. This round ships Windows first; macOS DMG and Linux `.run` land on the same `comm-v1.6.0` tag.
 
 ---
 
@@ -906,7 +921,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.5.7`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.6.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -940,17 +955,17 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.5.7**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.5.7); Gitee does not host the Mac or Linux packages.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.6.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.6.0); Gitee does not host the Mac or Linux packages.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.5.7.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.5.7.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.6.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.6.0.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.5.7.dmg`
+- **Apple Silicon** (arm64) only: `CommTool_v1.6.0.dmg`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -961,11 +976,11 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.5.7_linux_x86_64.run`
+- File: `CommTool_Setup_v1.6.0_linux_x86_64.run`
 
 ```bash
-chmod +x CommTool_Setup_v1.5.7_linux_x86_64.run
-./CommTool_Setup_v1.5.7_linux_x86_64.run
+chmod +x CommTool_Setup_v1.6.0_linux_x86_64.run
+./CommTool_Setup_v1.6.0_linux_x86_64.run
 ```
 
 - Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon

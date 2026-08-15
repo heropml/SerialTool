@@ -1,44 +1,37 @@
-**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.5.7 正式版**：TCP Server 多客户端可导出 PCAP；关键字增量高亮与搜索节流；Ctrl+Enter 发送；实时日志及时落盘。
+**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.6.0 正式版**：分析层可按完整协议帧解析粘包/拆包；默认仍按收包兼容旧工程。日志轮转失败不再停写；Linux 在线更新等主进程退出后再覆盖。
 
-## v1.5.7 正式版
+## v1.6.0 正式版
 
-### TCP Server 多客户端 PCAP
-- 多于一个对端（含定向回复与 `__all__` 广播）不再拒绝导出 `.pcap` / `.pcapng`
-- 每个客户端独立 4 元组与 TCP 序号；导出前多于一个对端会列出确认
-- 广播按该次发送时的对端展开；后来才连上的客户端不会被补进更早的广播帧
-- 旧的单对端 `.ctrec` 仍可导出
+### 协议流组帧与解析诊断
+- 默认每个收包仍是一帧（旧工程、未勾选时行为不变）
+- 勾选 **协议帧模式** 后，按帧头 + 长度字段组成完整帧，再喂帧解析 / 波形 HEX / 仪表盘 HEX / 结构化记录
+- 配置独立于自动应答（可选用自动应答的组帧参数）；UDP 默认一数据报一帧，可选择也按流组帧
+- TCP Server 按客户端隔离半帧缓存；客户端断开即丢弃该来源，避免短连接泄漏与端口复用拼成伪帧
+- 组帧对话框底部显示解析计数；「没有字段」时可看最近失败原因
+- 数据区显示、协议高亮、`.ctrec` 录制仍是原始收包，不按组帧结果改写
 
-### 关键字高亮与搜索
-- 增量着色按文末累积脏区间扫描，长会话 + 头部截断不再漏高亮
-- 终端模式纳入规则指纹；开关与 `ESC[2J` 全清会清掉残留选区
-- 搜索栏 150ms 防抖；查询未变时跳过全文档扫描，文档增长则重建当前页
-
-### 发送与日志
-- 普通发送框 **Ctrl+Enter** 发送（Enter 仍换行）；先提交 IME 组合；终端模式不变
-- 实时日志每次写入后 `flush()`，约 1 秒合并 `fsync`；磁盘满仍会关掉日志；空闲同步异常不再冒出定时器
-
-### 工程加固
-- 文案里的字面花括号不再误触发 `.format`
-- TCP 普通发送加写缓冲上限，避免慢客户端无限积压
-- 会话上限统一；串口 / 网络清理共用 `safe_step`；UDP 基类收口
+### 日志与 Linux 更新
+- 按日 / 按大小轮转：先打开新段再关旧文件；新段失败则继续写旧段并提示，不再关掉「实时日志」
+- Linux 安装器等待当前进程退出后再覆盖安装目录，超时可见失败（不再 `sleep 1`）
+- 官方 Linux 仅 **x86_64**；非 x86_64/amd64 主机打包 / 发布脚本直接拒绝，避免生成无法上架的包名
 
 ### 产品边界
 - 本版不做会话树、拖拽分屏、标签拖出成窗
 - P2（CLI / REST / 插件 dissector）继续暂缓
-- **macOS**：`CommTool_v1.5.7.dmg` 已挂同一 Release（Apple Silicon）；未公证，首次打开见下方 `xattr` 说明
-- **Linux x86_64**：`CommTool_Setup_v1.5.7_linux_x86_64.run` 免 sudo 安装到 `~/.local/opt/CommTool`；xcb/X11 已打进包。在线更新走 `latest.json` 的 `url_linux`（GitHub）
+- **本轮先发 Windows**；macOS `.dmg` 与 Linux x86_64 `.run` 仍补到同一 tag `comm-v1.6.0`（校验后再写入 `url_mac` / `url_linux`）
+- macOS 未公证，首次打开见下方 `xattr` 说明；Linux 不提供 ARM 官方包
 
 ### 测试
-- 全量测试：按文件隔离 pytest 全部通过（1574 collected，11 skipped）
+- 全量测试：1594 passed，11 skipped，295 subtests passed
 
 ## 下载
 
 | 形式 | 文件 | 说明 |
 |------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.5.7.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.5.7.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.5.7.dmg` | arm64；拖入「应用程序」。未公证，首次打开见下方说明 |
-| Linux（x86_64） | `CommTool_Setup_v1.5.7_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
+| Windows 安装版 | `CommTool_Setup_v1.6.0.exe` | 推荐，向导安装 + 桌面快捷方式 |
+| Windows 单文件版 | `CommTool_v1.6.0.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
+| macOS（Apple Silicon）| `CommTool_v1.6.0.dmg` | arm64；拖入「应用程序」。本轮随后补同一 Release |
+| Linux（x86_64） | `CommTool_Setup_v1.6.0_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；本轮随后补同一 Release |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 

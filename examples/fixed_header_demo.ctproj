@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.5.7",
+  "app_version": "1.6.0",
   "name": "Fixed Header Demo",
   "metadata": {
     "device_type": "generic",
