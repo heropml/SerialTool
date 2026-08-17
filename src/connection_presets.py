@@ -19,6 +19,7 @@ CONN_FIELD_KEYS = (
     "auto_reconnect",
     "ble_address", "ble_name", "ble_profile",
     "ble_service_uuid", "ble_write_uuid", "ble_notify_uuid",
+    "ble_write_mode",
 )
 
 _DEFAULTS = {
@@ -45,6 +46,7 @@ _DEFAULTS = {
     "ble_service_uuid": "FFF0",
     "ble_write_uuid": "FFF2",
     "ble_notify_uuid": "FFF1",
+    "ble_write_mode": "auto",
 }
 
 
@@ -294,7 +296,8 @@ def tcp_client_signature(proto, ip, port):
     return (proto, ip, port)
 
 
-def ble_signature(proto, address, service_uuid, write_uuid, notify_uuid):
+def ble_signature(proto, address, service_uuid, write_uuid, notify_uuid,
+                  write_mode="auto"):
     """BLE connection config signature tuple."""
     import ble_uuid
     return (
@@ -303,6 +306,7 @@ def ble_signature(proto, address, service_uuid, write_uuid, notify_uuid):
         ble_uuid.normalize_uuid(service_uuid) if service_uuid else "",
         ble_uuid.normalize_uuid(write_uuid),
         ble_uuid.normalize_uuid(notify_uuid),
+        ble_uuid.normalize_write_mode(write_mode),
     )
 
 
@@ -399,6 +403,8 @@ def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv
             "service_uuid": ble_uuid.normalize_uuid(service) if service else "",
             "write_uuid": ble_uuid.normalize_uuid(write),
             "notify_uuid": ble_uuid.normalize_uuid(notify),
+            "write_mode": ble_uuid.normalize_write_mode(
+                fields.get("write_mode") or fields.get("ble_write_mode")),
         }
 
     if proto == "UDP Multicast":
@@ -455,6 +461,7 @@ def open_fields_from_ui(proto, ui):
             "service_uuid": u.get("ble_service_uuid") or u.get("service_uuid"),
             "write_uuid": u.get("ble_write_uuid") or u.get("write_uuid"),
             "notify_uuid": u.get("ble_notify_uuid") or u.get("notify_uuid"),
+            "write_mode": u.get("ble_write_mode") or u.get("write_mode") or "auto",
         }
     return {
         "local_ip": u.get("local_ip"), "local_port": u.get("local_port"),

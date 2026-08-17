@@ -2,6 +2,8 @@
 cd /d %~dp0..
 echo ============================================
 echo  Building CommTool.exe with PyInstaller
+echo  Use this script or release.ps1; do not pyinstaller CommTool.spec
+echo  (spec files are gitignored and omit --collect-all bleak).
 echo ============================================
 echo.
 

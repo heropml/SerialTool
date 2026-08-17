@@ -53,6 +53,18 @@ _TEMPLATE_SAMPLES = {
     "plot_cursor_fmt": {"x": 1.25, "y": 2.5, "stats": ""},
     "ble_scan_status_on": {"n": 3},
     "ble_scan_status_off": {"n": 3},
+    "ble_scan_status_on_filt": {"n": 8, "shown": 3},
+    "ble_scan_status_off_filt": {"n": 8, "shown": 3},
+    "ble_adv_rssi": {"n": -51},
+    "ble_adv_tx": {"n": 4},
+    "ble_adv_type": {"kind": "ADV_IND"},
+    "ble_adv_appearance": {"label": "Generic Phone (0x0040)"},
+    "ble_adv_interval": {"n": 152},
+    "ble_adv_flags": {"bits": "LE General Discoverable", "n": "06"},
+    "ble_connected": {"name": "GEE701", "addr": "AA:BB:CC:DD:EE:01", "mtu": 23},
+    "ble_scan_rssi_hint": {"n": -84},
+    "ble_adv_svc_n": {"n": 2},
+    "ble_adv_last_connect": {"when": "08-15 16:30:18"},
 }
 
 

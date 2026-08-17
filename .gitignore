@@ -13,7 +13,9 @@ dist_onefile/
 dist_verify*/
 build_verify*/
 installer/
-# .spec 文件每次 PyInstaller 自动重新生成（build.bat 用 CLI 参数构造）
+# .spec 文件每次 PyInstaller 自动重新生成（build.bat / build_onefile.bat / release.ps1
+# 用 CLI 参数构造，含 --collect-all bleak）。不要直接 pyinstaller CommTool.spec：
+# 本地遗留 spec 没有 bleak 收集，打出的包 BLE 不可用。
 *.spec
 
 # 运行时用户配置（每台机器不同）

@@ -112,4 +112,5 @@ def test_build_serial_catalogs_and_conn_types():
     assert hasattr(host, "btn_ble_scan")
     assert not hasattr(host, "tbl_ble")
     assert not hasattr(host, "btn_ble_stop")
-    assert host.cb_ble_profile.count() == 4
+    assert host.cb_ble_profile.count() == 5
+    assert host.cb_ble_write_mode.count() == 3

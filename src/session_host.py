@@ -1387,7 +1387,10 @@ class SessionHostMixin:
             return ("serial", str(port).upper()) if port else None
         if proto == "BLE":
             addr = str(fields.get("address") or fields.get("ble_address") or "").strip()
-            addr = addr.upper().replace("-", ":")
+            if not addr:
+                return None
+            import ble_uuid
+            addr = ble_uuid.normalize_address(addr)
             return ("ble", addr) if addr else None
         port = fields.get("local_port")
         if not port:
@@ -1424,7 +1427,9 @@ class SessionHostMixin:
         if proto == "Serial" and cfg and len(cfg) > 1:
             return ("serial", str(cfg[1]).upper())
         if proto == "BLE" and cfg and len(cfg) > 1 and cfg[1]:
-            return ("ble", str(cfg[1]).upper())
+            import ble_uuid
+            addr = ble_uuid.normalize_address(cfg[1])
+            return ("ble", addr) if addr else None
         snapshot = getattr(session, "_reconnect_snapshot", None) or {}
         if snapshot:
             key = self._session_resource_key_from_open(

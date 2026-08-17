@@ -2,13 +2,81 @@
 """iOS 风格控件：IOSSwitch / TitleBar / Card / make_label。"""
 import sys
 from PyQt5.QtCore import (Qt, QEvent, QPropertyAnimation, QEasingCurve, QPoint,
-                          pyqtSignal, pyqtProperty)
+                          QRect, QSize, pyqtSignal, pyqtProperty)
 from PyQt5.QtGui import QColor, QPainter, QBrush, QIcon, QPen, QPalette
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QFrame, QHBoxLayout,
-                             QVBoxLayout, QComboBox, QLineEdit,
+                             QVBoxLayout, QComboBox, QLineEdit, QLayout,
                              QGraphicsDropShadowEffect, QMainWindow, QApplication)
 from theme import COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_GREEN
 from fonts import ui_font
+
+
+class FlowLayout(QLayout):
+    """自动换行的流式布局（Qt 官方示例精简移植）：控件按可用宽度从左到右排、满则换行。"""
+
+    def __init__(self, parent=None, margin=0, spacing=10):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._items = []
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        m = self.contentsMargins()
+        x = rect.x() + m.left()
+        y = rect.y() + m.top()
+        right = rect.x() + rect.width() - m.right()
+        line_h = 0
+        spacing = self.spacing()
+        for item in self._items:
+            w, h = item.sizeHint().width(), item.sizeHint().height()
+            next_x = x + w + spacing
+            if next_x - spacing > right and line_h > 0:
+                x = rect.x() + m.left()
+                y = y + line_h + spacing
+                next_x = x + w + spacing
+                line_h = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+            x = next_x
+            line_h = max(line_h, h)
+        return y + line_h + m.bottom() - rect.y()
 
 
 # ============== iOS 风格滑动开关 ==============
@@ -18,6 +86,7 @@ class IOSSwitch(QWidget):
     def __init__(self, checked=False, parent=None):
         super().__init__(parent)
         self.setFixedSize(40, 24)
+        self.setLayoutDirection(Qt.LeftToRight)
         self._checked = checked
         self._circle_pos = 18 if checked else 2
         self.setCursor(Qt.PointingHandCursor)
@@ -38,16 +107,22 @@ class IOSSwitch(QWidget):
         return self._checked
 
     def setChecked(self, value, animate=True):
+        value = bool(value)
+        target = 18 if value else 2
         if self._checked == value:
+            if self._circle_pos != target and self._anim.state() == QPropertyAnimation.Stopped:
+                self._circle_pos = target
+                self.update()
             return
         self._checked = value
         self._anim.stop()
-        if animate:
+        if animate and self.isVisible():
+            self._anim.setDirection(QPropertyAnimation.Forward)
             self._anim.setStartValue(self._circle_pos)
-            self._anim.setEndValue(18 if value else 2)
+            self._anim.setEndValue(target)
             self._anim.start()
         else:
-            self._circle_pos = 18 if value else 2
+            self._circle_pos = target
             self.update()
         self.toggled.emit(value)
 

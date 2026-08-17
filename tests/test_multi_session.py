@@ -2183,11 +2183,11 @@ def test_udp_tab_label_ignores_leftover_serial_port(monkeypatch, tmp_path):
     s.conn_fields = {
         "net_proto": "UDP",
         "ser_port": "COM1",  # shared serial combo bleed
-        "net_remote_ip": "192.168.5.100",
+        "net_remote_ip": "192.168.1.10",
         "net_remote_port": "8082",
     }
     s._conn_proto = "UDP"
-    s._conn_cfg = ("UDP", "192.168.5.104", "6000")
+    s._conn_cfg = ("UDP", "10.0.0.1", "6000")
     assert s.tab_label() == "UDP"
     # close_conn clears live cfg; label must stay UDP, not COM1
     s._conn_proto = None

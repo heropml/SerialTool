@@ -101,7 +101,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - **TCP Server**：本地IP + 本地端口 →「开始监听」；连入后「目标」下拉可选某客户端或「全部」广播
   - **TCP Client**：远程IP + 远程端口 →「连接」
 - **Virtual（虚拟）**：不接硬件即可开连接；可开「回环」；用于无设备验证规则/脚本，以及 `.ctrec` 回放注入
-- **BLE（Windows）**：点「扫描」弹出窗口选择附近低功耗设备，按 UART 风格 Notify/Write 收发（FFF0 / FFE0 / Nordic UART 模板，可对调写入与通知 UUID）。经典蓝牙 SPP 仍走 Serial COM。不支持 macOS/Linux BLE，也无 BLE PCAP
+- **BLE（Windows）**：点「扫描」弹出窗口选择附近低功耗设备，按 UART 风格 Notify/Write 收发（FFF0 / FFE0 / Nordic UART / Microchip UART / Custom 模板，可对调写入与通知 UUID）。经典蓝牙 SPP 仍走 Serial COM。不支持 macOS/Linux BLE，也无 BLE PCAP
 - 动作按钮随协议/状态：打开/关闭、开始监听/停止监听、连接/断开；连接后整卡片锁定变灰
 - 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，BLE 走 Bleak，Virtual 为进程内注入
 
@@ -182,7 +182,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.6.0`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.7.0`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -291,7 +291,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.6.0")
+│   └── version.py          版本号单点真源 (__version__ = "1.7.0")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -362,6 +362,7 @@ scripts\build.bat
 ```powershell
 py -3 -m PyInstaller --noconfirm --clean --windowed ^
     --name CommTool --icon assets\icon.ico ^
+    --collect-all bleak ^
     src\main.py
 ```
 
@@ -369,7 +370,7 @@ py -3 -m PyInstaller --noconfirm --clean --windowed ^
 
 > ⚠️ **没有 `--add-data icon.ico`**：图标已经 base64 编码在 `src\icon_data.py` 里（被 `app_icon.py` import），运行时不读取外部文件。`--icon assets\icon.ico` 是 PyInstaller 把图标嵌入 exe 文件本身的 Windows 资源段（让资源管理器里 exe 显示图标），跟运行时窗口图标是两回事。
 
-`build.bat` 加了 20+ 个 `--exclude-module` 排除不用的 Qt 模块（WebEngine、Multimedia、Bluetooth、Quick/QML、Sql 等），把打包体积从默认 ~150 MB 砍到 **~98 MB**。
+`build.bat` 加了 20+ 个 `--exclude-module` 排除不用的 Qt 模块（WebEngine、Multimedia、QtBluetooth、Quick/QML、Sql 等），把打包体积从默认 ~150 MB 砍到 **~98 MB**。BLE 走运行时动态导入的 Bleak，Windows 包必须带 `--collect-all bleak`；这与排除 QtBluetooth 不冲突。
 
 ### 5.2 单文件版（onefile）
 
@@ -385,6 +386,7 @@ scripts\build_onefile.bat
 py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
     --name CommTool_onefile_v1.4.2 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
+    --collect-all bleak ^
     src\main.py
 ```
 
@@ -409,8 +411,8 @@ scripts\build_installer.bat
 官方安装包（x86_64，建议在 Ubuntu 18.04 或同级 glibc 上构建，以便 20.04/22.04/麒麟也能跑）：
 
 ```bash
-chmod +x CommTool_Setup_v1.6.0_linux_x86_64.run
-./CommTool_Setup_v1.6.0_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.0_linux_x86_64.run
+./CommTool_Setup_v1.7.0_linux_x86_64.run
 ```
 
 默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。用户向安装步骤见 [`docs/使用说明.md` §9](docs/使用说明.md#9-安装与系统要求) / [USAGE](docs/USAGE.md#install-windows--macos--linux) / [`docs/使用說明.md` §6](docs/使用說明.md#6-安裝與系統需求)。
@@ -648,6 +650,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
 - **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run`** 与 **macOS DMG** 已挂同一 Release（更新走 `url_linux` / `url_mac`）。
 - **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。Windows + Linux x86_64 已发；Mac 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
+- **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。本轮先发 Windows；Mac / Linux 包补同一 tag。1644 passed / 11 skipped / 295 subtests。
 
 ---
 

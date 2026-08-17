@@ -80,3 +80,15 @@ def test_conn_token_and_signatures():
     assert cp.serial_signature("Serial", "COM1", 9600, "8", "None", "1", "None")[1] == "COM1"
     assert cp.tcp_client_signature("TCP Client", "a", 1) == ("TCP Client", "a", 1)
     assert cp.proto_only_signature("UDP") == ("UDP",)
+    addr, svc, wr, ntf = "AA:BB:CC:DD:EE:FF", "fff0", "fff2", "fff1"
+    auto = cp.ble_signature("BLE", addr, svc, wr, ntf, "auto")
+    write = cp.ble_signature("BLE", addr, svc, wr, ntf, "write")
+    wwr = cp.ble_signature("BLE", addr, svc, wr, ntf, "Write NR")
+    omitted = cp.ble_signature("BLE", addr, svc, wr, ntf)
+    assert auto != write
+    assert auto != wwr
+    assert write != wwr
+    assert omitted == auto
+    assert auto[-1] == "auto"
+    assert write[-1] == "write"
+    assert wwr[-1] == "wwr"

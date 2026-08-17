@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.6.0",
+  "app_version": "1.7.0",
   "name": "AT Modem Demo",
   "metadata": {
     "device_type": "at",
@@ -39,7 +39,7 @@
     "ser_baud": "115200",
     "show_timestamp": true,
     "snippets": "[{\"name\": \"AT\", \"text\": \"AT\", \"hex\": false}, {\"name\": \"ATI\", \"text\": \"ATI\", \"hex\": false}, {\"name\": \"AT+CSQ\", \"text\": \"AT+CSQ\", \"hex\": false}]",
-    "connection_presets": "[{\"id\": \"example-at-modem\", \"name\": \"AT Modem\", \"note\": \"ASCII line mode for AT commands\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\"}]",
+    "connection_presets": "[{\"id\": \"example-at-modem\", \"name\": \"AT Modem\", \"note\": \"ASCII line mode for AT commands\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\"}]",
     "sequence_rules": "[{\"on\": true, \"name\": \"AT\", \"send\": \"AT\", \"send_hex\": false, \"expect\": \"OK\", \"expect_hex\": false, \"timeout\": 1000, \"delay\": 0}, {\"on\": true, \"name\": \"ATI\", \"send\": \"ATI\", \"send_hex\": false, \"expect\": \"\", \"expect_hex\": false, \"timeout\": 1000, \"delay\": 100}]"
   },
   "resources": {
@@ -97,7 +97,8 @@
           "ble_profile": "fff0",
           "ble_service_uuid": "FFF0",
           "ble_write_uuid": "FFF2",
-          "ble_notify_uuid": "FFF1"
+          "ble_notify_uuid": "FFF1",
+          "ble_write_mode": "auto"
         }
       ]
     },

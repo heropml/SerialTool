@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.6.0",
+  "app_version": "1.7.0",
   "name": "NMEA GPS Demo",
   "metadata": {
     "device_type": "sensor",
@@ -39,7 +39,7 @@
     "ser_baud": "9600",
     "show_timestamp": true,
     "snippets": "[{\"name\": \"GPGGA sample\", \"text\": \"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\", \"hex\": false}, {\"name\": \"GPGSA sample\", \"text\": \"$GPGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1*39\", \"hex\": false}]",
-    "connection_presets": "[{\"id\": \"example-nmea-gps-serial\", \"name\": \"NMEA GPS 9600\", \"note\": \"Typical GPS NMEA 0183 UART\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"9600\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\"}]"
+    "connection_presets": "[{\"id\": \"example-nmea-gps-serial\", \"name\": \"NMEA GPS 9600\", \"note\": \"Typical GPS NMEA 0183 UART\", \"last_used\": 0.0, \"net_proto\": \"Serial\", \"ser_port\": \"\", \"ser_baud\": \"9600\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\"}]"
   },
   "resources": {
     "device": {
@@ -91,7 +91,8 @@
           "ble_profile": "fff0",
           "ble_service_uuid": "FFF0",
           "ble_write_uuid": "FFF2",
-          "ble_notify_uuid": "FFF1"
+          "ble_notify_uuid": "FFF1",
+          "ble_write_mode": "auto"
         }
       ]
     },

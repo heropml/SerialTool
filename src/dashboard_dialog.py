@@ -5,10 +5,9 @@
 """
 import math
 
-from PyQt5.QtCore import Qt, QTimer, QRect, QSize, QPoint
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
-                             QComboBox, QLineEdit, QPushButton, QScrollArea, QFrame,
-                             QLayout)
+                             QComboBox, QLineEdit, QPushButton, QScrollArea, QFrame)
 
 import stream_parse
 from stream_parse import MODE_DELIM, MODE_REGEX, MODE_HEX
@@ -18,75 +17,12 @@ from theme import chrome_for, _mix
 from fonts import localize_qss
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
 from ui_tips import set_tooltip
+from widgets import FlowLayout
 
 _TILE_W, _TILE_H = 168, 110
 _WARN_RGB = "#E6A23C"   # 主题里没有预警色，固定琥珀色与 danger 区分
 _MAX_TILES = 64        # 通道卡片上限：防分隔符模式下畸形长行（上千列）建出海量卡片卡死 UI
 _ACCENT_FALLBACK = "#4C8BF5"
-
-
-class FlowLayout(QLayout):
-    """自动换行的流式布局（Qt 官方示例精简移植）：卡片按可用宽度从左到右排、满则换行。"""
-
-    def __init__(self, parent=None, margin=0, spacing=10):
-        super().__init__(parent)
-        if parent is not None:
-            self.setContentsMargins(margin, margin, margin, margin)
-        self.setSpacing(spacing)
-        self._items = []
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, i):
-        return self._items[i] if 0 <= i < len(self._items) else None
-
-    def takeAt(self, i):
-        return self._items.pop(i) if 0 <= i < len(self._items) else None
-
-    def expandingDirections(self):
-        return Qt.Orientations(Qt.Orientation(0))
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._do_layout(QRect(0, 0, width, 0), True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._do_layout(rect, False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        m = self.contentsMargins()
-        size += QSize(m.left() + m.right(), m.top() + m.bottom())
-        return size
-
-    def _do_layout(self, rect, test_only):
-        x, y, line_h = rect.x(), rect.y(), 0
-        spacing = self.spacing()
-        for item in self._items:
-            w, h = item.sizeHint().width(), item.sizeHint().height()
-            next_x = x + w + spacing
-            if next_x - spacing > rect.right() and line_h > 0:
-                x = rect.x()
-                y = y + line_h + spacing
-                next_x = x + w + spacing
-                line_h = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
-            x = next_x
-            line_h = max(line_h, h)
-        return y + line_h - rect.y()
 
 
 def _fmt(v):

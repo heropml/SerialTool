@@ -60,6 +60,24 @@ def test_plan_schedule_serial_exhausted():
     assert out["reset_attempts"] is True
 
 
+def test_plan_schedule_ble_exhausted():
+    armed = rp.plan_schedule(
+        user_closing=False, auto_reconnect=True, timer_active=False,
+        serial_retry=False, attempts=0,
+        attempt_limit=rp.BLE_RECONNECT_LIMIT)
+    assert armed["action"] == "arm"
+    out = rp.plan_schedule(
+        user_closing=False, auto_reconnect=True, timer_active=False,
+        serial_retry=False, attempts=rp.BLE_RECONNECT_LIMIT,
+        attempt_limit=rp.BLE_RECONNECT_LIMIT)
+    assert out["action"] == "exhausted"
+    assert out["clear_serial_target"] is False
+    net = rp.plan_schedule(
+        user_closing=False, auto_reconnect=True, timer_active=False,
+        serial_retry=False, attempts=rp.BLE_RECONNECT_LIMIT)
+    assert net["action"] == "arm"
+
+
 def test_plan_try_device_gate_and_open():
     cfg = ("Serial", "COM9", 9600, "8", "None", "1", "None")
     wait = rp.plan_try(

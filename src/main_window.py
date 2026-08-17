@@ -1204,7 +1204,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                 getattr(self, "row_ble_profile", None),
                 getattr(self, "row_ble_service", None),
                 getattr(self, "row_ble_write", None),
-                getattr(self, "row_ble_notify", None)):
+                getattr(self, "row_ble_notify", None),
+                getattr(self, "row_ble_write_mode", None)):
             if row is not None:
                 row.setVisible(ble_on)
         if (not ble_on) and getattr(self, "_ble_scanner", None) is not None:
@@ -1236,6 +1237,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         dlg = getattr(self, "_ble_scan_dlg", None)
         if dlg is not None:
             dlg.set_scanning(scanning)
+        btn = getattr(self, "btn_ble_scan", None)
+        if btn is not None:
+            btn.setEnabled((not scanning) and self.conn is None)
 
     def _hide_ble_scan_dialog(self):
         dlg = getattr(self, "_ble_scan_dlg", None)
@@ -1259,6 +1263,9 @@ class CommTool(SessionHostMixin, QMainWindow):
         if self.conn is not None:
             return False
         scanner = self._ensure_ble_scanner()
+        if scanner.is_scanning:
+            self._sync_ble_scan_buttons()
+            return True
         dlg = self._ble_scan_dialog()
         dlg.clear_devices()
         if not scanner.start():
@@ -1286,10 +1293,10 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _on_ble_scan_finished(self):
         self._sync_ble_scan_buttons()
 
-    def _on_ble_device_found(self, address, name, rssi, _uuids):
+    def _on_ble_device_found(self, address, name, rssi, uuids, adv=None):
         dlg = getattr(self, "_ble_scan_dlg", None)
         if dlg is not None:
-            dlg.upsert(address, name, rssi)
+            dlg.upsert(address, name, rssi, uuids, adv)
 
     def _apply_ble_device(self, address, name):
         if hasattr(self, "ed_ble_address"):
@@ -3011,7 +3018,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.ed_ble_address.text() if hasattr(self, "ed_ble_address") else "",
                 self.ed_ble_service.text() if hasattr(self, "ed_ble_service") else "",
                 self.ed_ble_write.text() if hasattr(self, "ed_ble_write") else "",
-                self.ed_ble_notify.text() if hasattr(self, "ed_ble_notify") else "")
+                self.ed_ble_notify.text() if hasattr(self, "ed_ble_notify") else "",
+                self.cb_ble_write_mode.currentData()
+                if hasattr(self, "cb_ble_write_mode") else "auto")
         return _conn_proto_sig(proto)
 
     def open_conn(self, reconnect_cfg=None, reconnect_snapshot=None):
@@ -3038,6 +3047,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                                    if hasattr(self, "ed_ble_write") else ""),
                 "ble_notify_uuid": (self.ed_ble_notify.text()
                                     if hasattr(self, "ed_ble_notify") else ""),
+                "ble_write_mode": (
+                    self.cb_ble_write_mode.currentData() or "auto"
+                    if hasattr(self, "cb_ble_write_mode") else "auto"),
             }
             if reconnect_cfg:
                 proto, fields = _conn_open_fields_from_reconnect(reconnect_cfg)
@@ -3111,7 +3123,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._hide_ble_scan_dialog()
             conn = BleConn(
                 checked["address"], checked.get("service_uuid", ""),
-                checked["write_uuid"], checked["notify_uuid"])
+                checked["write_uuid"], checked["notify_uuid"],
+                write_mode=checked.get("write_mode", "auto"))
         else:
             conn = UdpConn(
                 checked["local_ip"], checked["lport"],
@@ -3455,6 +3468,11 @@ class CommTool(SessionHostMixin, QMainWindow):
                         or bool(getattr(sess, "_user_closing", False)))
         visible = sess is None or sess is self.active_session()
         auto = CommTool._session_auto_reconnect_enabled(self, sess)
+        proto = getattr(self, "_conn_proto", None)
+        if not proto and sess is not None:
+            proto = (getattr(sess, "conn_fields", None) or {}).get("net_proto")
+        if not proto and hasattr(self, "cb_proto"):
+            proto = self.cb_proto.currentText()
         plan = _reconnect_policy.plan_schedule(
             user_closing=user_closing,
             auto_reconnect=auto,
@@ -3462,6 +3480,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             serial_retry=self._serial_reconnect_cfg is not None,
             attempts=self._reconnect_attempts,
             serial_limit=self._serial_reconnect_limit,
+            attempt_limit=(
+                _reconnect_policy.BLE_RECONNECT_LIMIT
+                if proto == PROTO_BLE else None),
         )
         action = plan.get("action")
         if action == "skip":
@@ -3565,11 +3586,26 @@ class CommTool(SessionHostMixin, QMainWindow):
         """已连接/监听(up=True) 或 对端断开(up=False)。
         主动 close_conn() 会先 blockSignals，断开的 False 不会回到这里。"""
         if up:
+            if self.conn is None:
+                return
+            sender = self.sender()
+            if sender is not None and sender is not self.conn:
+                return
             self._conn_engaged = True   # 已成功建立 → 此后的 error 属"运行时"而非"打开失败"
             self._reconnect_attempts = 0  # 连上 → 重置退避；串口下次从 500ms、网络从 1s 起
             self._cancel_reconnect()
             self._update_conn_status()
             self._update_net_fields()   # TCP Server 连上后显示「目标」行
+            if getattr(self, "_conn_proto", None) == PROTO_BLE:
+                addr = getattr(self.conn, "address", None) or ""
+                if not addr and hasattr(self, "ed_ble_address"):
+                    addr = self.ed_ble_address.text().strip()
+                dlg = getattr(self, "_ble_scan_dlg", None)
+                if dlg is not None:
+                    dlg.remember_last_connect(addr)
+                else:
+                    from ble_scan_dialog import remember_ble_connect
+                    remember_ble_connect(getattr(self, "settings", None), addr)
             if self._io_session_owns("modbus") or (
                     self._io_owner_session("modbus") is self._session_ctx()):
                 self._mbm_resume_after_link_up()     # 连上 → 若本会话拥有 Modbus 主机则启动
@@ -3693,7 +3729,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                     if hasattr(self, "ed_ble_address") else "")
             label = name or addr or "BLE"
             if getattr(self.conn, "is_open", False):
-                self.lbl_state.setText(self._t("ble_connected", name=label, addr=addr))
+                mtu = getattr(self.conn, "mtu", None) or 23
+                self.lbl_state.setText(self._t(
+                    "ble_connected", name=label, addr=addr, mtu=mtu))
                 self._set_state_color(opened=True)
             else:
                 self.lbl_state.setText(self._t("net_connecting"))
@@ -4122,11 +4160,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             w.setEnabled(enabled)
         for w in (
                 getattr(self, "btn_ble_scan", None),
+                getattr(self, "ed_ble_name", None),
                 getattr(self, "ed_ble_address", None),
                 getattr(self, "cb_ble_profile", None),
                 getattr(self, "ed_ble_service", None),
                 getattr(self, "ed_ble_write", None),
                 getattr(self, "ed_ble_notify", None),
+                getattr(self, "cb_ble_write_mode", None),
                 getattr(self, "btn_ble_swap", None)):
             if w is not None:
                 w.setEnabled(enabled)
@@ -6498,6 +6538,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                                if hasattr(self, "ed_ble_write") else ""),
             "ble_notify_uuid": (self.ed_ble_notify.text()
                                 if hasattr(self, "ed_ble_notify") else ""),
+            "ble_write_mode": (
+                self.cb_ble_write_mode.currentData() or "auto"
+                if hasattr(self, "cb_ble_write_mode") else "auto"),
         })
 
     def _apply_connection_fields(self, fields, persist_defaults=False):
@@ -6554,6 +6597,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.ed_ble_service.setText(str(fields.get("ble_service_uuid") or ""))
             self.ed_ble_write.setText(str(fields.get("ble_write_uuid") or ""))
             self.ed_ble_notify.setText(str(fields.get("ble_notify_uuid") or ""))
+            if hasattr(self, "cb_ble_write_mode"):
+                mode = ble_uuid.normalize_write_mode(fields.get("ble_write_mode"))
+                midx = self.cb_ble_write_mode.findData(mode)
+                self.cb_ble_write_mode.blockSignals(True)
+                self.cb_ble_write_mode.setCurrentIndex(midx if midx >= 0 else 0)
+                self.cb_ble_write_mode.blockSignals(False)
             pid = ble_uuid.normalize_profile(fields.get("ble_profile"))
             idx = self.cb_ble_profile.findData(pid)
             self.cb_ble_profile.blockSignals(True)
@@ -9180,7 +9229,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                     fields.get("ble_address"),
                     fields.get("ble_service_uuid"),
                     fields.get("ble_write_uuid"),
-                    fields.get("ble_notify_uuid"))
+                    fields.get("ble_notify_uuid"),
+                    fields.get("ble_write_mode"))
             else:
                 expected = _conn_proto_sig(configured)
         return bool(actual in (PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE)
@@ -11518,6 +11568,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                 s.setValue("ble_service_uuid", self.ed_ble_service.text())
                 s.setValue("ble_write_uuid", self.ed_ble_write.text())
                 s.setValue("ble_notify_uuid", self.ed_ble_notify.text())
+                s.setValue(
+                    "ble_write_mode",
+                    self.cb_ble_write_mode.currentData() or "auto")
             # 串口设置
             s.setValue("ser_port", self.cb_port.currentData() or "")
             s.setValue("ser_baud", self.cb_baud.currentText())
@@ -11731,6 +11784,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             v = s.value("ble_notify_uuid", None)
             if v is not None:
                 self.ed_ble_notify.setText(str(v))
+            v = s.value("ble_write_mode", None)
+            if v is not None and hasattr(self, "cb_ble_write_mode"):
+                midx = self.cb_ble_write_mode.findData(
+                    ble_uuid.normalize_write_mode(v))
+                if midx >= 0:
+                    self.cb_ble_write_mode.blockSignals(True)
+                    self.cb_ble_write_mode.setCurrentIndex(midx)
+                    self.cb_ble_write_mode.blockSignals(False)
             pid = ble_uuid.normalize_profile(s.value("ble_profile", "fff0"))
             idx = self.cb_ble_profile.findData(pid)
             if idx >= 0:
@@ -13027,6 +13088,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._save_settings()
         self._close_all_sessions(update_active_ui=True)
         self._stop_ble_scan()
+        try:
+            import ble_io
+            ble_io.shutdown_loop()
+        except Exception:
+            _log.debug("BLE loop shutdown failed", exc_info=True)
         scanner = self.port_scanner
         if scanner:
             scanner.stop()

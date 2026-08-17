@@ -7,6 +7,7 @@ budget and device-gate decisions live here so CLI/API can reuse them.
 from __future__ import annotations
 
 SERIAL_RECONNECT_LIMIT = 10
+BLE_RECONNECT_LIMIT = 10
 SERIAL_DELAY_CAP_MS = 5000
 SERIAL_DELAY_STEP_MS = 500
 NET_DELAY_CAP_MS = 30000
@@ -36,6 +37,7 @@ def plan_schedule(
     serial_retry,
     attempts,
     serial_limit=SERIAL_RECONNECT_LIMIT,
+    attempt_limit=None,
 ):
     """Decide whether to arm the reconnect timer.
 
@@ -54,6 +56,12 @@ def plan_schedule(
         return {
             "action": "exhausted",
             "clear_serial_target": True,
+            "reset_attempts": True,
+        }
+    if attempt_limit is not None and n >= int(attempt_limit):
+        return {
+            "action": "exhausted",
+            "clear_serial_target": False,
             "reset_attempts": True,
         }
     if serial_retry:

@@ -78,6 +78,9 @@ def test_summary_and_json_roundtrip():
     assert "BLE" in cp.summary(ble)
     assert "GEE701" in cp.summary(ble)
     assert ble["ble_address"] == "69:1E:38:38:39:0D"
+    assert ble["ble_write_mode"] == "auto"
+    forced = cp.normalize({"ble_write_mode": "wwr"})
+    assert forced["ble_write_mode"] == "wwr"
     assert cp.from_json('[{"name":"x"}]')[0]["name"] == "x"
     assert cp.from_json('{"items":[{"name":"y"}]}')[0]["name"] == "y"
 

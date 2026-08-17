@@ -209,7 +209,7 @@ def build(app):
     ble_scan_l.setContentsMargins(0, 0, 0, 0)
     ble_scan_l.setSpacing(6)
     app.btn_ble_scan = QPushButton(app._t("ble_scan"))
-    app.btn_ble_scan.setObjectName("GhostBtnSm")
+    app.btn_ble_scan.setObjectName("PrimaryBtn")
     app.btn_ble_scan.setProperty("tr_text", "ble_scan")
     app.btn_ble_scan.setProperty("tr_tooltip", "ble_scan_tip")
     set_tooltip(app.btn_ble_scan, app._t("ble_scan_tip"))
@@ -254,6 +254,16 @@ def build(app):
 
     app.ed_ble_notify = QLineEdit()
     app.row_ble_notify = make_row("ble_notify_uuid", app.ed_ble_notify)
+
+    app.cb_ble_write_mode = QComboBox()
+    app.cb_ble_write_mode.blockSignals(True)
+    for _mid in ble_uuid.WRITE_MODES:
+        app.cb_ble_write_mode.addItem(ble_uuid.WRITE_MODE_LABELS[_mid], _mid)
+    app.cb_ble_write_mode.setCurrentIndex(0)
+    app.cb_ble_write_mode.blockSignals(False)
+    app.cb_ble_write_mode.setProperty("tr_tooltip", "ble_write_mode_tip")
+    set_tooltip(app.cb_ble_write_mode, app._t("ble_write_mode_tip"))
+    app.row_ble_write_mode = make_row("ble_write_mode", app.cb_ble_write_mode)
 
     _ble_preset = ble_uuid.apply_preset(ble_uuid.PROFILE_FFF0)
     app.ed_ble_service.setText(ble_uuid.short_uuid(_ble_preset["service_uuid"]))

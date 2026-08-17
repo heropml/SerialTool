@@ -175,7 +175,11 @@ exec "$HERE/CommTool.bin" "$@"
 
 
 def main():
-    app_dir = sys.argv[1] if len(sys.argv) > 1 else "/home/kylin/Desktop/SerialTool/dist/CommTool"
+    if len(sys.argv) > 1:
+        app_dir = sys.argv[1]
+    else:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        app_dir = os.path.join(root, "dist", "CommTool")
     internal = os.path.join(app_dir, "_internal")
     work = "/tmp/commtool-syslibs"
     os.makedirs(work, exist_ok=True)

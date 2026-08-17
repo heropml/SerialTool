@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.7.0](#whats-new-in-v170)
 - [What's New in v1.6.0](#whats-new-in-v160)
 - [What's New in v1.5.7](#whats-new-in-v157)
 - [What's New in v1.5.6](#whats-new-in-v156)
@@ -45,6 +46,17 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual / BLE), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
+
+---
+
+## What's New in v1.7.0
+
+Windows BLE host UART on the v1.6.0 baseline (macOS / Linux still show unsupported):
+
+- **BLE type** — Windows BLE Central, UART-style Notify + Write into the existing TX/RX pipeline (text/HEX, log, `.ctrec`, auto-reply, sequences, scripts, stream framing). Presets: FFF0 / FFE0 / Nordic UART / Microchip UART / Custom; optional Swap and Auto write mode.
+- **Scan window** — sidebar no longer embeds the device table. Filter, RSSI slider, advertisement detail, last-connected time (only after a real connect). **Observed interval (estimate)** is this PC’s callback gap, not the peripheral Advertising Interval.
+- **Reconnect** — saved address + UUIDs, no rescan, stop after 10 attempts. Scan must go idle (with timeout) before connect so Windows radio is not stuck “Connecting…”.
+- **Boundary** — no GATT browser, no classic SPP (use Serial COM), no BLE PCAP. Same device cannot be opened by two sessions. Windows ships now; macOS DMG and Linux `.run` land on the same `comm-v1.7.0` tag.
 
 ---
 
@@ -699,11 +711,11 @@ The fields below change to match the selected type:
   - Start without hardware; optional **Loopback**
   - Used to verify auto-reply / scripts / sequences, and as the sink for session replay
 - **BLE (Windows)**
-  - **Scan** opens a window with name / address / RSSI (deduped by address; unnamed devices still show an address). Search, double-click, or **Use this device** to fill the sidebar
-  - Then pick a **preset** (FFF0 / FFE0 / Nordic UART / Custom) and edit Service / **Write (PC→device)** / **Notify (device→PC)** UUIDs; **Swap** if the direction is reversed
-  - **Connect**; while connecting the status shows Connecting… and the button is Disconnect (cancel). The status bar shows name + address
+  - **Scan** opens a window with name / address / advertised **UUID** / RSSI (with bars) / **TX** / **connectable** / **observed interval (estimate)** / **manufacturer** (deduped by address). The interval column is this PC’s smoothed time between scan callbacks (Windows / Bleak batching, scan responses, and missed packets all affect it) — not the peripheral’s real Advertising Interval. **Filter** is on by default with selectable rules (hide empty unnamed packets; optionally named only / connectable / has UUID / has manufacturer data / hide stale / used before); turn it off to list every device. Turn on **RSSI filter** and drag the −100 to −30 dBm slider to hide weaker devices. Select a row for the advertisement pane (type, Flags, appearance name, manufacturer name, advertised service count, last connected time, service data, copyable RAW). Rows with no recent advertisements gray out. Search by name, address, UUID, or manufacturer. Double-click or **Use this device** to fill the sidebar
+  - Then pick a **preset** (FFF0 / FFE0 / Nordic UART / Microchip UART / Custom) and edit Service / **Write (PC→device)** / **Notify (device→PC)** UUIDs; **Swap** if the direction is reversed. **Write mode** Auto follows the characteristic (Write vs Write Without Response)
+  - **Connect**; while connecting the status shows Connecting… and the button is Disconnect (cancel). The status bar shows name + address + **MTU**
   - After connect, the existing TX/RX pipeline applies (text/HEX, log, `.ctrec`, auto-reply, sequences, scripts, stream framing). **No PCAP** (not a NIC capture). macOS / Linux show an unsupported toast
-  - Two sessions cannot open the same device; auto-reconnect uses the saved address + UUIDs (no rescan)
+  - Two sessions cannot open the same device; auto-reconnect uses the saved address + UUIDs (no rescan) and stops after 10 attempts (same budget as serial)
 
 **Action button** — its text depends on the protocol and state:
 
@@ -929,7 +941,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.6.0`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.7.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -963,17 +975,17 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.6.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.6.0); Gitee does not host the Mac or Linux packages.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.0); Gitee does not host the Mac or Linux packages.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.6.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.6.0.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.7.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.7.0.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.6.0.dmg`
+- **Apple Silicon** (arm64) only: `CommTool_v1.7.0.dmg`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -984,11 +996,11 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.6.0_linux_x86_64.run`
+- File: `CommTool_Setup_v1.7.0_linux_x86_64.run`
 
 ```bash
-chmod +x CommTool_Setup_v1.6.0_linux_x86_64.run
-./CommTool_Setup_v1.6.0_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.0_linux_x86_64.run
+./CommTool_Setup_v1.7.0_linux_x86_64.run
 ```
 
 - Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon
