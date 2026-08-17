@@ -14,7 +14,7 @@ _APP = QApplication.instance() or QApplication([])
 
 import settings_card as sc
 import serial_params as sp
-from conn_ui import CONN_TYPES
+from conn_ui import visible_conn_types
 from widgets import make_label
 
 
@@ -95,8 +95,9 @@ def test_build_serial_catalogs_and_conn_types():
     host = _FakeHost()
     card = sc.build(host)
     assert card is not None
-    assert host.cb_proto.count() == len(CONN_TYPES)
-    assert [host.cb_proto.itemText(i) for i in range(host.cb_proto.count())] == list(CONN_TYPES)
+    shown = visible_conn_types()
+    assert host.cb_proto.count() == len(shown)
+    assert [host.cb_proto.itemText(i) for i in range(host.cb_proto.count())] == shown
     assert host.cb_baud.count() == len(sp.BAUD_RATES)
     assert host.cb_baud.currentText() == "115200"
     assert list(host.cb_databits.itemText(i) for i in range(host.cb_databits.count())) == list(sp.DATABITS_OPTIONS)

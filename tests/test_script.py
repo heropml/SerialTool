@@ -5576,9 +5576,8 @@ class VirtualConnTests(unittest.TestCase):
 
     def test_registered_as_conn_type(self):
         from virtual_io import PROTO_VIRTUAL
-        from main_window import CONN_TYPES
+        from conn_ui import CONN_TYPES, PROTO_BLE
         self.assertIn(PROTO_VIRTUAL, CONN_TYPES)
-        from conn_ui import PROTO_BLE
         self.assertIn(PROTO_BLE, CONN_TYPES)
 
 

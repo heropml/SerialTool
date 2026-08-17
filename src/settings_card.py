@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 from theme import COLOR_TEXT_SECONDARY
 from ui_tips import set_tooltip
 from widgets import Card, IOSSwitch
-from conn_ui import CONN_TYPES
+from conn_ui import visible_conn_types
 from net_io import local_ipv4_list
 import ble_uuid
 from serial_params import (
@@ -82,7 +82,7 @@ def build(app):
 
     # 连接类型：串口 + 网络协议，统一进一个下拉
     app.cb_proto = QComboBox()
-    app.cb_proto.addItems(CONN_TYPES)
+    app.cb_proto.addItems(visible_conn_types())
     app.cb_proto.currentIndexChanged.connect(lambda _: app._update_net_fields())
     make_row("protocol_type", app.cb_proto)
 

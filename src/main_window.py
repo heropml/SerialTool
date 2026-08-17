@@ -146,7 +146,7 @@ from ui_tips import set_tooltip
 from conn_ui import (
     PROTO_SERIAL,
     PROTO_BLE,
-    CONN_TYPES,
+    visible_conn_types,
     field_visibility as _conn_field_vis,
 )
 
@@ -12315,7 +12315,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def new_project(self):
         from project_wizard import ProjectWizard
         wizard = ProjectWizard(
-            self._project_wizard_texts(), CONN_TYPES, self,
+            self._project_wizard_texts(), visible_conn_types(), self,
             theme_id=self._theme_id())
         if wizard.exec_() != QDialog.Accepted:
             return

@@ -23,6 +23,15 @@ def test_conn_types_match_historical_order():
     ]
 
 
+def test_visible_conn_types_hides_ble_off_windows():
+    assert cu.visible_conn_types("win32") == list(cu.CONN_TYPES)
+    assert cu.PROTO_BLE not in cu.visible_conn_types("darwin")
+    assert cu.PROTO_BLE not in cu.visible_conn_types("linux")
+    assert cu.visible_conn_types("darwin") == [
+        t for t in cu.CONN_TYPES if t != cu.PROTO_BLE
+    ]
+
+
 def test_open_btn_keys():
     assert cu.open_btn_key(cu.PROTO_SERIAL, False) == "btn_serial_open"
     assert cu.open_btn_key(cu.PROTO_SERIAL, True) == "btn_serial_close"

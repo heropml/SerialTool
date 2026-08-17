@@ -5,6 +5,7 @@ S-2 R35: open-button i18n keys and row visibility for CommTool
 `_update_net_fields`. String constants mirror net_io / virtual_io
 without importing Qt.
 """
+import sys
 
 PROTO_SERIAL = "Serial"
 PROTO_VIRTUAL = "Virtual"
@@ -19,6 +20,18 @@ PROTOCOLS = (
     PROTO_UDP, PROTO_UDP_MULTICAST, PROTO_TCP_SERVER, PROTO_TCP_CLIENT,
 )
 CONN_TYPES = [PROTO_SERIAL] + list(PROTOCOLS) + [PROTO_VIRTUAL, PROTO_BLE]
+
+
+def visible_conn_types(platform=None):
+    """Types shown in the connection dropdown.
+
+    BLE host UART is Windows-only. Hide it on macOS/Linux instead of
+    offering a type that only toasts 'unsupported'.
+    """
+    plat = sys.platform if platform is None else platform
+    if plat == "win32":
+        return list(CONN_TYPES)
+    return [t for t in CONN_TYPES if t != PROTO_BLE]
 
 _OPEN_BTN_ENGAGED = {
     PROTO_SERIAL: "btn_serial_close",

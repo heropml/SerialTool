@@ -29,6 +29,9 @@ def _make_window(tmp_path, monkeypatch):
         lambda self, title, body, is_error=False: None)
     w = CommTool()
     w.settings = QSettings(str(tmp_path / "ble.ini"), QSettings.IniFormat)
+    # BLE rows still need a selectable type in off-Windows UI tests.
+    if w.cb_proto.findText(PROTO_BLE) < 0:
+        w.cb_proto.addItem(PROTO_BLE)
     _WINDOWS.append(w)
     return w
 
