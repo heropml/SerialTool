@@ -32,7 +32,7 @@
 ### 产品边界
 - 本版不做会话树、拖拽分屏、标签拖出成窗
 - P2（CLI / REST / 插件 dissector）继续暂缓
-- **本轮已发 Windows + Linux x86_64**；macOS `.dmg` 仍补同一 tag `comm-v1.7.0`（校验后再写入 `url_mac`）
+- **本轮已发 Windows + macOS + Linux x86_64**；`url_mac` / `url_linux` 已写入 GitHub 直链
 - macOS 未公证，首次打开见下方 `xattr` 说明；Linux 不提供 ARM 官方包；BLE 仅 Windows
 
 ### 测试
@@ -44,7 +44,7 @@
 |------|------|------|
 | Windows 安装版 | `CommTool_Setup_v1.7.0.exe` | 推荐，向导安装 + 桌面快捷方式 |
 | Windows 单文件版 | `CommTool_v1.7.0.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.7.0.dmg` | arm64；拖入「应用程序」。本轮随后补同一 Release |
+| macOS（Apple Silicon）| `CommTool_v1.7.0.dmg` | arm64；拖入「应用程序」。已挂同一 Release |
 | Linux（x86_64） | `CommTool_Setup_v1.7.0_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
