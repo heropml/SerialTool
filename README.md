@@ -650,7 +650,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v60 (v1.5.6)**: **正式版** — **多会话引擎补齐：传输/回放/扫描/自动应答 per-session；脚本控制台日志、扫描表、录制捕获按标签隔离；脚本 I/O 钉住与超大文件确认等修复**；Mac DMG 仍由协作者补同一 Release。
 - **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run`** 与 **macOS DMG** 已挂同一 Release（更新走 `url_linux` / `url_mac`）。
 - **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。Windows + Linux x86_64 已发；Mac 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
-- **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。本轮先发 Windows；Mac / Linux 包补同一 tag。1644 passed / 11 skipped / 295 subtests。
+- **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。Windows + Linux x86_64 已发；Mac 包补同一 tag。1644 passed / 11 skipped / 295 subtests。
 
 ---
 

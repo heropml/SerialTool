@@ -56,7 +56,7 @@ Windows BLE host UART on the v1.6.0 baseline (macOS / Linux still show unsupport
 - **BLE type** — Windows BLE Central, UART-style Notify + Write into the existing TX/RX pipeline (text/HEX, log, `.ctrec`, auto-reply, sequences, scripts, stream framing). Presets: FFF0 / FFE0 / Nordic UART / Microchip UART / Custom; optional Swap and Auto write mode.
 - **Scan window** — sidebar no longer embeds the device table. Filter, RSSI slider, advertisement detail, last-connected time (only after a real connect). **Observed interval (estimate)** is this PC’s callback gap, not the peripheral Advertising Interval.
 - **Reconnect** — saved address + UUIDs, no rescan, stop after 10 attempts. Scan must go idle (with timeout) before connect so Windows radio is not stuck “Connecting…”.
-- **Boundary** — no GATT browser, no classic SPP (use Serial COM), no BLE PCAP. Same device cannot be opened by two sessions. Windows ships now; macOS DMG and Linux `.run` land on the same `comm-v1.7.0` tag.
+- **Boundary** — no GATT browser, no classic SPP (use Serial COM), no BLE PCAP. Same device cannot be opened by two sessions. Windows and Linux x86_64 ship now; macOS DMG lands on the same `comm-v1.7.0` tag.
 
 ---
 

@@ -32,7 +32,7 @@
 ### 产品边界
 - 本版不做会话树、拖拽分屏、标签拖出成窗
 - P2（CLI / REST / 插件 dissector）继续暂缓
-- **本轮先发 Windows**；macOS `.dmg` 与 Linux `.run` 仍补同一 tag `comm-v1.7.0`（校验后再写入 `url_mac` / `url_linux`）
+- **本轮已发 Windows + Linux x86_64**；macOS `.dmg` 仍补同一 tag `comm-v1.7.0`（校验后再写入 `url_mac`）
 - macOS 未公证，首次打开见下方 `xattr` 说明；Linux 不提供 ARM 官方包；BLE 仅 Windows
 
 ### 测试
