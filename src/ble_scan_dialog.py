@@ -4,22 +4,23 @@ import json
 import time
 from datetime import datetime
 
-from PyQt5.QtCore import QPoint, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy,
-    QSlider, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QSizePolicy, QSlider, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 from fonts import localize_qss, mono_font, ui_font
 from theme import chrome_for
 from dialogs import _dialog_list_qss, _set_win_titlebar_dark
-from widgets import FlowLayout, IOSSwitch
+from widgets import IOSSwitch
 import ble_uuid
 
-COL_NAME, COL_ADDR, COL_UUID, COL_RSSI, COL_TX, COL_CONN, COL_INT, COL_MFR = (
-    0, 1, 2, 3, 4, 5, 6, 7)
-_COL_WIDTHS = (168, 138, 148, 88, 48, 56, 56, 160)
+(COL_NO, COL_NAME, COL_ADDR, COL_UUID, COL_RSSI, COL_TX, COL_CONN, COL_INT,
+ COL_MFR) = range(9)
+_COL_WIDTHS = (52, 168, 138, 148, 88, 48, 56, 56, 160)
 _CONN_YES, _CONN_NO = "●", "○"
 _STALE_SEC = 8.0
 _INT_MIN_S, _INT_MAX_S = 0.02, 12.0
@@ -128,11 +129,9 @@ class BleScanDialog(QDialog):
         top.addWidget(self.btn_stop)
         self.btn_filter = QPushButton()
         self.btn_filter.setObjectName("BleFilterBtn")
-        self.btn_filter.setCheckable(True)
-        self.btn_filter.setChecked(True)
         self.btn_filter.setMinimumHeight(32)
         self.btn_filter.setMinimumWidth(96)
-        self.btn_filter.toggled.connect(self._on_filter_toggled)
+        self.btn_filter.clicked.connect(self._show_filter_popup)
         top.addWidget(self.btn_filter)
         self.btn_rssi = QPushButton()
         self.btn_rssi.setObjectName("BleRssiBtn")
@@ -153,34 +152,14 @@ class BleScanDialog(QDialog):
         root.addLayout(search_row)
 
         self._rssi_popup = None
+        self._filter_popup = None
+        self._popup_hide_from_toggle = False
+        self._renumbering = False
         self._build_rssi_popup()
-
-        self.filter_box = QWidget()
-        self.filter_box.setObjectName("BleFiltBox")
-        flay = QVBoxLayout(self.filter_box)
-        flay.setContentsMargins(10, 8, 10, 8)
-        flay.setSpacing(6)
-        self.lbl_filt_rules = QLabel()
-        self.lbl_filt_rules.setObjectName("BleFiltHint")
-        self.lbl_filt_rules.setFont(ui_font(10))
-        flay.addWidget(self.lbl_filt_rules)
-        filt_host = QWidget()
-        self._filt_flow = FlowLayout(filt_host, margin=0, spacing=12)
-        self.chk_filt = {}
-        for key, default in _FILT_RULES:
-            chk = QCheckBox()
-            chk.setObjectName("BleFiltChk")
-            chk.setChecked(bool(default))
-            chk.setFont(ui_font(10))
-            chk.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-            chk.toggled.connect(self._on_filter_rule_toggled)
-            self.chk_filt[key] = chk
-            self._filt_flow.addWidget(chk)
-        flay.addWidget(filt_host)
-        root.addWidget(self.filter_box)
+        self._build_filter_popup()
         self._last_connect = {}
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setObjectName("BleScanTable")
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -192,11 +171,17 @@ class BleScanDialog(QDialog):
         hh = self.table.horizontalHeader()
         hh.setStretchLastSection(False)
         hh.setSectionsMovable(True)
+        if hasattr(hh, "setFirstSectionMovable"):
+            hh.setFirstSectionMovable(False)
         hh.setMinimumSectionSize(48)
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         for col, width in enumerate(_COL_WIDTHS):
             hh.setSectionResizeMode(col, QHeaderView.Interactive)
             self.table.setColumnWidth(col, width)
+        hh.blockSignals(True)
+        hh.setSortIndicator(-1, Qt.AscendingOrder)
+        hh.blockSignals(False)
+        hh.sortIndicatorChanged.connect(self._on_table_sorted)
         self.table.verticalHeader().setDefaultSectionSize(26)
         self.table.setFont(mono_font(10))
         self.table.itemDoubleClicked.connect(lambda *_: self._use_selected())
@@ -269,6 +254,139 @@ class BleScanDialog(QDialog):
         self._sync_filter_panel()
         self._sync_rssi_panel()
         self._refresh_detail()
+
+    def _build_filter_popup(self):
+        pop = QDialog(self, Qt.Popup)
+        pop.setObjectName("BleFilterPopup")
+        pop.setMinimumWidth(460)
+        lay = QVBoxLayout(pop)
+        lay.setContentsMargins(16, 14, 16, 16)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        self.lbl_filter_title = QLabel()
+        self.lbl_filter_title.setObjectName("BleFilterTitle")
+        self.lbl_filter_title.setFont(ui_font(14, bold=True))
+        head.addWidget(self.lbl_filter_title)
+        head.addStretch(1)
+        self.btn_filter_close = QPushButton("×")
+        self.btn_filter_close.setObjectName("BleFilterCloseBtn")
+        self.btn_filter_close.setFixedSize(28, 28)
+        self.btn_filter_close.clicked.connect(pop.close)
+        head.addWidget(self.btn_filter_close)
+        lay.addLayout(head)
+        self.filter_card = QWidget()
+        self.filter_card.setObjectName("BleFilterCard")
+        card_lay = QVBoxLayout(self.filter_card)
+        card_lay.setContentsMargins(14, 10, 14, 12)
+        card_lay.setSpacing(8)
+        self.filter_switch_row = QWidget()
+        self.filter_switch_row.setObjectName("BleFilterSwitchRow")
+        switch_lay = QHBoxLayout(self.filter_switch_row)
+        switch_lay.setContentsMargins(0, 2, 0, 2)
+        switch_lay.setSpacing(8)
+        self.lbl_filter_enable = QLabel()
+        self.lbl_filter_enable.setObjectName("BleFilterEnable")
+        self.lbl_filter_enable.setFont(ui_font(11, bold=True))
+        switch_lay.addWidget(self.lbl_filter_enable)
+        switch_lay.addStretch(1)
+        self.sw_filter = IOSSwitch(True)
+        self.sw_filter.toggled.connect(self._on_filter_toggled)
+        switch_lay.addWidget(self.sw_filter)
+        card_lay.addWidget(self.filter_switch_row)
+        self._filter_divider = QFrame()
+        self._filter_divider.setObjectName("BleFilterDivider")
+        self._filter_divider.setFrameShape(QFrame.NoFrame)
+        self._filter_divider.setFixedHeight(1)
+        card_lay.addWidget(self._filter_divider)
+        self.filter_rules_panel = QWidget()
+        self.filter_rules_panel.setObjectName("BleFilterRulesPanel")
+        rules_lay = QVBoxLayout(self.filter_rules_panel)
+        rules_lay.setContentsMargins(0, 0, 0, 0)
+        rules_lay.setSpacing(8)
+        self.lbl_filt_rules = QLabel()
+        self.lbl_filt_rules.setObjectName("BleFiltHint")
+        self.lbl_filt_rules.setFont(ui_font(10))
+        rules_lay.addWidget(self.lbl_filt_rules)
+        self._filt_grid = QGridLayout()
+        self._filt_grid.setContentsMargins(0, 2, 0, 0)
+        self._filt_grid.setHorizontalSpacing(20)
+        self._filt_grid.setVerticalSpacing(10)
+        self._filt_grid.setColumnStretch(0, 1)
+        self._filt_grid.setColumnStretch(1, 1)
+        self.chk_filt = {}
+        for i, (key, default) in enumerate(_FILT_RULES):
+            chk = QCheckBox()
+            chk.setObjectName("BleFiltChk")
+            chk.setChecked(bool(default))
+            chk.setFont(ui_font(10))
+            chk.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            chk.toggled.connect(self._on_filter_rule_toggled)
+            self.chk_filt[key] = chk
+            self._filt_grid.addWidget(chk, i // 2, i % 2)
+        rules_lay.addLayout(self._filt_grid)
+        card_lay.addWidget(self.filter_rules_panel)
+        lay.addWidget(self.filter_card)
+        pop._suppress_reopen = False
+        pop.installEventFilter(self)
+        self._filter_popup = pop
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Hide
+                and obj in (self._filter_popup, self._rssi_popup)
+                and not self._popup_hide_from_toggle):
+            obj._suppress_reopen = True
+            QTimer.singleShot(0, lambda: self._clear_popup_suppress(obj))
+        return super().eventFilter(obj, event)
+
+    def _clear_popup_suppress(self, pop):
+        if pop is None:
+            return
+        try:
+            pop.objectName()
+        except RuntimeError:
+            return
+        if QApplication.mouseButtons() != Qt.NoButton:
+            QTimer.singleShot(30, lambda: self._clear_popup_suppress(pop))
+            return
+        pop._suppress_reopen = False
+
+    def _toggle_popup_below(self, anchor, pop, prepare):
+        if pop is None:
+            return
+        if pop.isVisible():
+            self._popup_hide_from_toggle = True
+            pop.hide()
+            self._popup_hide_from_toggle = False
+            return
+        if getattr(pop, "_suppress_reopen", False):
+            pop._suppress_reopen = False
+            return
+        other = (self._rssi_popup if pop is self._filter_popup
+                 else self._filter_popup)
+        if other is not None and other.isVisible():
+            self._popup_hide_from_toggle = True
+            other.hide()
+            self._popup_hide_from_toggle = False
+        prepare()
+        self._show_popup_below(anchor, pop)
+
+    def _show_popup_below(self, anchor, pop):
+        pop.adjustSize()
+        pos = anchor.mapToGlobal(QPoint(0, anchor.height() + 4))
+        screen = QApplication.desktop().availableGeometry(anchor)
+        x = max(screen.left(), min(pos.x(), screen.right() - pop.width() + 1))
+        y = pos.y()
+        if y + pop.height() > screen.bottom() + 1:
+            y = anchor.mapToGlobal(QPoint(0, -pop.height() - 4)).y()
+        pop.move(x, max(screen.top(), y))
+        pop.show()
+
+    def _show_filter_popup(self):
+        self._toggle_popup_below(
+            self.btn_filter, self._filter_popup,
+            lambda: (self._sync_filter_panel(),
+                     self._refresh_filter_popup_theme()))
 
     def _build_rssi_popup(self):
         pop = QDialog(self, Qt.Popup)
@@ -346,21 +464,39 @@ class BleScanDialog(QDialog):
         self.lbl_rssi_hint.setWordWrap(True)
         self.lbl_rssi_hint.setFont(ui_font(10))
         lay.addWidget(self.lbl_rssi_hint)
+        pop._suppress_reopen = False
+        pop.installEventFilter(self)
         self._rssi_popup = pop
 
     def _show_rssi_popup(self):
-        pop = self._rssi_popup
-        self._sync_rssi_panel()
-        self._refresh_rssi_popup_theme()
-        pop.adjustSize()
-        pos = self.btn_rssi.mapToGlobal(QPoint(0, self.btn_rssi.height() + 4))
-        screen = QApplication.desktop().availableGeometry(self.btn_rssi)
-        x = max(screen.left(), min(pos.x(), screen.right() - pop.width() + 1))
-        y = pos.y()
-        if y + pop.height() > screen.bottom() + 1:
-            y = self.btn_rssi.mapToGlobal(QPoint(0, -pop.height() - 4)).y()
-        pop.move(x, max(screen.top(), y))
-        pop.show()
+        self._toggle_popup_below(
+            self.btn_rssi, self._rssi_popup,
+            lambda: (self._sync_rssi_panel(),
+                     self._refresh_rssi_popup_theme()))
+
+    def _refresh_filter_popup_theme(self):
+        if self._filter_popup is None:
+            return
+        c = chrome_for(self.app.cb_theme.currentData() if hasattr(
+            self.app, "cb_theme") else None)
+        self._filter_popup.setStyleSheet(localize_qss("""
+            QDialog#BleFilterPopup {{
+                background-color: {card}; border: 1px solid {sep}; border-radius: 12px;
+            }}
+            QLabel#BleFilterTitle, QLabel#BleFilterEnable {{ color: {txt}; }}
+            QWidget#BleFilterCard {{
+                background-color: {inp}; border-radius: 10px;
+            }}
+            QFrame#BleFilterDivider {{ background-color: {sep}; border: none; }}
+            QLabel#BleFiltHint {{ color: {sec}; }}
+            QCheckBox#BleFiltChk {{ color: {txt}; spacing: 8px; }}
+            QPushButton#BleFilterCloseBtn {{
+                background: transparent; color: {txt}; border: none; font-size: 28px;
+            }}
+            QPushButton#BleFilterCloseBtn:hover {{ background: {ghost}; border-radius: 14px; }}
+        """.format(card=c["card_bg"], sep=c["separator"], txt=c["text"],
+                   inp=c["input_bg"], sec=c["text_sec"], ghost=c["ghost_hover"])))
+        self.sw_filter.set_theme_colors(c["separator"], "#FFFFFF")
 
     def _refresh_rssi_popup_theme(self):
         if self._rssi_popup is None:
@@ -408,6 +544,8 @@ class BleScanDialog(QDialog):
         self.ed_search.setPlaceholderText(t("ble_scan_search_ph"))
         self.btn_filter.setText(t("ble_scan_filter"))
         self.btn_filter.setToolTip(t("ble_scan_filter_tip"))
+        self.lbl_filter_title.setText(t("ble_scan_filter"))
+        self.lbl_filter_enable.setText(t("ble_filt_enable"))
         self.btn_rssi.setText(t("ble_scan_rssi_filter"))
         self.lbl_filt_rules.setText(t("ble_filt_rules"))
         for key, _default in _FILT_RULES:
@@ -420,9 +558,9 @@ class BleScanDialog(QDialog):
         self.lbl_rssi_threshold.setText(t("ble_scan_rssi_threshold"))
         self._refresh_rssi_labels()
         self.table.setHorizontalHeaderLabels([
-            t("ble_col_name"), t("ble_col_addr"), t("ble_col_uuid"),
-            t("ble_col_rssi"), t("ble_col_tx"), t("ble_col_conn"),
-            t("ble_col_int"), t("ble_col_mfr")])
+            t("ble_col_no"), t("ble_col_name"), t("ble_col_addr"),
+            t("ble_col_uuid"), t("ble_col_rssi"), t("ble_col_tx"),
+            t("ble_col_conn"), t("ble_col_int"), t("ble_col_mfr")])
         scanning = bool(
             getattr(getattr(self.app, "_ble_scanner", None), "is_scanning", False))
         self.set_scanning(scanning)
@@ -441,15 +579,6 @@ class BleScanDialog(QDialog):
         }}
         QLineEdit#SnipSearch:focus {{
             border: 1px solid {acc}; background-color: {focus};
-        }}
-        QWidget#BleFiltBox {{
-            background-color: {card}; border: 1px solid {sep}; border-radius: 8px;
-        }}
-        QLabel#BleFiltHint {{
-            color: {sec}; font-family: 'Segoe UI'; font-size: 10pt;
-        }}
-        QCheckBox#BleFiltChk {{
-            color: {txt}; font-family: 'Segoe UI'; font-size: 10pt; spacing: 6px;
         }}
         QWidget#BleRssiPanel {{
             background: transparent;
@@ -518,10 +647,10 @@ class BleScanDialog(QDialog):
             padding: 6px 16px; font-weight: 600;
         }}
         QPushButton#BleFilterBtn:hover {{ background-color: {ghost_h}; }}
-        QPushButton#BleFilterBtn:checked {{
+        QPushButton#BleFilterBtn[active="true"] {{
             background-color: {acc}; color: #FFFFFF; border: none;
         }}
-        QPushButton#BleFilterBtn:checked:hover {{ background-color: {acc_h}; }}
+        QPushButton#BleFilterBtn[active="true"]:hover {{ background-color: {acc_h}; }}
         QPushButton#BleRssiBtn {{
             background-color: {card}; color: {txt}; border: 1px solid {sep};
             border-radius: 8px; padding: 6px 12px; font-weight: 600;
@@ -554,6 +683,7 @@ class BleScanDialog(QDialog):
         )
         self.setStyleSheet(localize_qss(qss))
         _set_win_titlebar_dark(self, c.get("mode") == "dark")
+        self._refresh_filter_popup_theme()
         self._refresh_rssi_popup_theme()
         self._refresh_stale()
         self._repaint_rows()
@@ -565,6 +695,43 @@ class BleScanDialog(QDialog):
         self._meta.clear()
         self._apply_filter()
         self._refresh_detail()
+
+    def _no_item(self, n):
+        item = _RssiItem(str(n))
+        item.setData(Qt.UserRole, int(n))
+        item.setTextAlignment(Qt.AlignCenter)
+        return item
+
+    def _on_table_sorted(self, logical, _order):
+        if self._renumbering or logical < 0:
+            return
+        if logical == COL_NO:
+            hh = self.table.horizontalHeader()
+            hh.blockSignals(True)
+            hh.setSortIndicator(-1, Qt.AscendingOrder)
+            hh.blockSignals(False)
+        # Real header clicks emit this before the model is reordered.
+        QTimer.singleShot(0, self._renumber_rows)
+
+    def _renumber_rows(self):
+        if getattr(self, "_renumbering", False):
+            return
+        self._renumbering = True
+        try:
+            n = 1
+            for r in range(self.table.rowCount()):
+                if self.table.isRowHidden(r):
+                    continue
+                item = self.table.item(r, COL_NO)
+                if item is None:
+                    self.table.setItem(r, COL_NO, self._no_item(n))
+                else:
+                    if item.text() != str(n):
+                        item.setText(str(n))
+                    item.setData(Qt.UserRole, n)
+                n += 1
+        finally:
+            self._renumbering = False
 
     def _uuid_item(self, uuids):
         empty = self.app._t("ble_uuid_none")
@@ -804,6 +971,7 @@ class BleScanDialog(QDialog):
             rssi_item = _RssiItem(rssi_s)
             rssi_item.setData(Qt.UserRole, rssi_n)
             rssi_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(r, COL_NO, self._no_item(r + 1))
             self.table.setItem(r, COL_NAME, name_item)
             self.table.setItem(r, COL_ADDR, addr_item)
             self.table.setItem(r, COL_UUID, self._uuid_item(merged_uuids))
@@ -914,10 +1082,6 @@ class BleScanDialog(QDialog):
         return False
 
     def _on_filter_toggled(self, _on=False):
-        sty = self.btn_filter.style()
-        sty.unpolish(self.btn_filter)
-        sty.polish(self.btn_filter)
-        self.btn_filter.update()
         self._sync_filter_panel()
         self._save_filter_prefs()
         self._apply_filter()
@@ -927,7 +1091,12 @@ class BleScanDialog(QDialog):
         self._apply_filter()
 
     def _sync_filter_panel(self):
-        self.filter_box.setVisible(bool(self.btn_filter.isChecked()))
+        on = bool(self.sw_filter.isChecked())
+        self.btn_filter.setProperty("active", on)
+        self.btn_filter.style().unpolish(self.btn_filter)
+        self.btn_filter.style().polish(self.btn_filter)
+        self.btn_filter.update()
+        self.filter_rules_panel.setEnabled(on)
         self._sync_rssi_panel()
 
     def _filt(self, key):
@@ -958,9 +1127,9 @@ class BleScanDialog(QDialog):
                         rules[key] = val.strip().lower() in ("1", "true", "yes")
                     else:
                         rules[key] = bool(val)
-        self.btn_filter.blockSignals(True)
-        self.btn_filter.setChecked(on)
-        self.btn_filter.blockSignals(False)
+        self.sw_filter.blockSignals(True)
+        self.sw_filter.setChecked(on, animate=False)
+        self.sw_filter.blockSignals(False)
         for key, chk in self.chk_filt.items():
             chk.blockSignals(True)
             chk.setChecked(bool(rules.get(key)))
@@ -970,7 +1139,7 @@ class BleScanDialog(QDialog):
         settings = getattr(self.app, "settings", None)
         if settings is None:
             return
-        settings.setValue(_FILT_ON_KEY, bool(self.btn_filter.isChecked()))
+        settings.setValue(_FILT_ON_KEY, bool(self.sw_filter.isChecked()))
         data = {key: bool(self.chk_filt[key].isChecked()) for key, _d in _FILT_RULES}
         settings.setValue(_FILT_RULES_KEY, json.dumps(data))
 
@@ -1003,7 +1172,7 @@ class BleScanDialog(QDialog):
         settings.setValue(_RSSI_MIN_KEY, int(self.sl_rssi.value()))
 
     def _sync_rssi_panel(self):
-        enabled = bool(self.btn_filter.isChecked())
+        enabled = bool(self.sw_filter.isChecked())
         on = bool(enabled and self.sw_rssi.isChecked())
         self.btn_rssi.setProperty("active", on)
         self.btn_rssi.style().unpolish(self.btn_rssi)
@@ -1065,7 +1234,7 @@ class BleScanDialog(QDialog):
 
     def _apply_filter(self):
         q = (self.ed_search.text() or "").strip().lower()
-        filter_on = self.btn_filter.isChecked()
+        filter_on = self.sw_filter.isChecked()
         min_rssi = self._rssi_min() if filter_on else None
         for r in range(self.table.rowCount()):
             uuid = self.table.item(r, COL_UUID)
@@ -1078,6 +1247,8 @@ class BleScanDialog(QDialog):
                 snap = dict(mfr.data(Qt.UserRole) or {})
             cells = []
             for col in range(self.table.columnCount()):
+                if col == COL_NO:
+                    continue
                 item = self.table.item(r, col)
                 if item is None:
                     continue
@@ -1102,6 +1273,7 @@ class BleScanDialog(QDialog):
         scanning = bool(
             getattr(getattr(self.app, "_ble_scanner", None), "is_scanning", False))
         self.set_scanning(scanning)
+        self._renumber_rows()
 
     def _chrome(self):
         tid = self.app.cb_theme.currentData() if hasattr(self.app, "cb_theme") else None
@@ -1111,10 +1283,11 @@ class BleScanDialog(QDialog):
         c = self._chrome()
         color = QColor(c["text_sec"] if stale else c["text"])
         brush = QBrush(color)
+        no_brush = QBrush(QColor(c["text_sec"]))
         for col in range(self.table.columnCount()):
             item = self.table.item(row, col)
             if item is not None:
-                item.setForeground(brush)
+                item.setForeground(no_brush if col == COL_NO else brush)
 
     def _repaint_rows(self):
         for r in range(self.table.rowCount()):
@@ -1135,7 +1308,7 @@ class BleScanDialog(QDialog):
             meta["stale"] = stale
             self._meta[addr] = meta
             self._paint_row(r, stale)
-        if changed and self.btn_filter.isChecked() and self._filt("hide_stale"):
+        if changed and self.sw_filter.isChecked() and self._filt("hide_stale"):
             self._apply_filter()
 
     def _selected_row(self):

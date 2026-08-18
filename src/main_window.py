@@ -11316,7 +11316,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._update_project_label()
         self._refresh_workspace_statuses()
         self._retranslate_workspace_template_panel()
+        # _ble_scan_dlg 是顶层非模态窗（QDialog(None)），findChildren 刷不到。
         i18n_ui.retranslate_dialogs(self)
+        if getattr(self, "_ble_scan_dlg", None) is not None:
+            self._ble_scan_dlg.retranslate()
         self._rebuild_connection_preset_combo()
         # 选中即算校验和的状态栏文案是算出来的（含「选中」「选区过大」等译词），
         # tr_text 机制刷不到 —— 重算一次，让它跟着切语言

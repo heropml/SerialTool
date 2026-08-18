@@ -182,7 +182,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.7.0`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.7.1`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -291,7 +291,7 @@ CommTool/
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.7.0")
+│   └── version.py          版本号单点真源 (__version__ = "1.7.1")
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）
@@ -411,8 +411,8 @@ scripts\build_installer.bat
 官方安装包（x86_64，建议在 Ubuntu 18.04 或同级 glibc 上构建，以便 20.04/22.04/麒麟也能跑）：
 
 ```bash
-chmod +x CommTool_Setup_v1.7.0_linux_x86_64.run
-./CommTool_Setup_v1.7.0_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.1_linux_x86_64.run
+./CommTool_Setup_v1.7.1_linux_x86_64.run
 ```
 
 默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。用户向安装步骤见 [`docs/使用说明.md` §9](docs/使用说明.md#9-安装与系统要求) / [USAGE](docs/USAGE.md#install-windows--macos--linux) / [`docs/使用說明.md` §6](docs/使用說明.md#6-安裝與系統需求)。
@@ -651,6 +651,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v61 (v1.5.7)**: **正式版** — **TCP Server 多客户端 PCAP 导出**（每对端一条流，广播按发送当时的对端展开，导出前确认）；**关键字增量高亮 / 搜索节流**；**Ctrl+Enter 发送**；实时日志 flush/fsync；发送背压与清理路径加固。**Linux x86_64 官方 `.run`** 与 **macOS DMG** 已挂同一 Release（更新走 `url_linux` / `url_mac`）。
 - **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。Windows + Linux x86_64 已发；Mac 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
 - **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。Windows / macOS / Linux x86_64 已发。1644 passed / 11 skipped / 295 subtests。
+- **v64 (v1.7.1)**: **正式版** — **BLE 扫描打磨**（过滤单卡片与两列规则、再点关闭弹层、可见行序号、已开窗口跟语言）；**macOS / Linux 类型下拉隐藏 BLE**。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1647 passed / 11 skipped / 295 subtests。
 
 ---
 

@@ -7,10 +7,14 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings, Qt
 from PyQt5.QtWidgets import QApplication, QHBoxLayout
 
 from conn_ui import PROTO_BLE
+from ble_scan_dialog import (
+    COL_ADDR, COL_CONN, COL_INT, COL_MFR, COL_NAME, COL_NO, COL_RSSI, COL_TX,
+    COL_UUID,
+)
 
 _APP = QApplication.instance() or QApplication([])
 _WINDOWS = []
@@ -73,9 +77,10 @@ def test_ble_scan_dialog_select_and_preset_roundtrip(tmp_path, monkeypatch):
     dlg.upsert("69:1E:38:38:39:0D", "GEE7016691F98FE", -51, ["fff0"])
     dlg.upsert("69:1E:38:38:39:0D", "GEE7016691F98FE", -40, ["180A"])
     assert dlg.table.rowCount() == 1
-    assert dlg.table.columnCount() == 8
-    assert "-40" in dlg.table.item(0, 3).text()
-    uuid_txt = dlg.table.item(0, 2).text()
+    assert dlg.table.columnCount() == 9
+    assert dlg.table.item(0, COL_NO).text() == "1"
+    assert "-40" in dlg.table.item(0, COL_RSSI).text()
+    uuid_txt = dlg.table.item(0, COL_UUID).text()
     assert "FFF0" in uuid_txt
     assert "180A" in uuid_txt
     hh = dlg.table.horizontalHeader()
@@ -87,8 +92,10 @@ def test_ble_scan_dialog_select_and_preset_roundtrip(tmp_path, monkeypatch):
     dlg.ed_search.setText("no-such")
     assert dlg.table.isRowHidden(0) is True
     dlg.ed_search.setText("")
-    assert dlg.btn_filter.isCheckable()
-    assert dlg.btn_filter.isChecked()
+    assert dlg.btn_filter.isCheckable() is False
+    assert dlg.btn_filter.property("active") is True
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
     assert dlg.btn_scan.objectName() == "BleScanStartBtn"
     assert dlg.btn_stop.objectName() == "BleScanStopBtn"
     dlg.set_scanning(False)
@@ -119,7 +126,7 @@ def test_ble_scan_dialog_select_and_preset_roundtrip(tmp_path, monkeypatch):
 def _row_by_addr(dlg, addr):
     want = addr.upper()
     for i in range(dlg.table.rowCount()):
-        item = dlg.table.item(i, 1)
+        item = dlg.table.item(i, COL_ADDR)
         if item is not None and item.text() == want:
             return i
     return -1
@@ -128,7 +135,8 @@ def _row_by_addr(dlg, addr):
 def test_ble_scan_filter_hides_unnamed_by_default(tmp_path, monkeypatch):
     w = _make_window(tmp_path, monkeypatch)
     dlg = w._ble_scan_dialog()
-    assert dlg.btn_filter.isChecked() is True
+    assert dlg.sw_filter.isChecked() is True
+    assert dlg.btn_filter.property("active") is True
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE7016691F98FE", -51, ["fff0"])
     dlg.upsert("AA:BB:CC:DD:EE:02", "", -70, [])
     dlg.upsert("AA:BB:CC:DD:EE:03", "\x04BLGW", -60, ["fff0"])
@@ -141,7 +149,7 @@ def test_ble_scan_filter_hides_unnamed_by_default(tmp_path, monkeypatch):
     assert dlg.table.isRowHidden(named) is False
     assert dlg.table.isRowHidden(unnamed) is True
     assert dlg.table.isRowHidden(garbled) is False
-    assert dlg.table.item(garbled, 0).text() == "BLGW"
+    assert dlg.table.item(garbled, COL_NAME).text() == "BLGW"
     assert dlg.table.isRowHidden(junk) is True
     assert dlg._visible_count() == 2
     dlg.upsert("AA:BB:CC:DD:EE:05", "", -65, ["fe95"], {
@@ -156,9 +164,10 @@ def test_ble_scan_filter_hides_unnamed_by_default(tmp_path, monkeypatch):
     named_ad = _row_by_addr(dlg, "AA:BB:CC:DD:EE:06")
     assert named_ad >= 0
     assert dlg.table.isRowHidden(named_ad) is False
-    assert dlg.table.item(named_ad, 0).text() == "LynkCo"
+    assert dlg.table.item(named_ad, COL_NAME).text() == "LynkCo"
     assert dlg._visible_count() == 4
-    dlg.btn_filter.setChecked(False)
+    dlg.sw_filter.setChecked(False)
+    assert dlg.btn_filter.property("active") is False
     assert dlg.table.isRowHidden(named) is False
     assert dlg.table.isRowHidden(unnamed) is False
     assert dlg.table.isRowHidden(garbled) is False
@@ -166,8 +175,8 @@ def test_ble_scan_filter_hides_unnamed_by_default(tmp_path, monkeypatch):
     assert dlg._visible_count() == 6
     dlg.upsert("AA:BB:CC:DD:EE:01", "", -40, None)
     named = _row_by_addr(dlg, "AA:BB:CC:DD:EE:01")
-    assert "GEE701" in dlg.table.item(named, 0).text()
-    assert "-40" in dlg.table.item(named, 3).text()
+    assert "GEE701" in dlg.table.item(named, COL_NAME).text()
+    assert "-40" in dlg.table.item(named, COL_RSSI).text()
 
 
 def test_ble_scan_filter_rules_selectable(tmp_path, monkeypatch):
@@ -206,8 +215,11 @@ def test_ble_scan_filter_rules_selectable(tmp_path, monkeypatch):
     dlg._meta["AA:BB:CC:DD:EE:02"] = {"seen": 0.0, "stale": True}
     dlg._apply_filter()
     assert dlg.table.isRowHidden(unnamed) is True
-    dlg.btn_filter.setChecked(False)
-    assert dlg.filter_box.isVisible() is False
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
+    assert dlg.filter_rules_panel.isEnabled() is True
+    dlg.sw_filter.setChecked(False)
+    assert dlg.filter_rules_panel.isEnabled() is False
     assert dlg.table.isRowHidden(named) is False
     assert dlg.table.isRowHidden(unnamed) is False
 
@@ -221,14 +233,103 @@ def test_ble_scan_filter_uses_ui_point_size(tmp_path, monkeypatch):
     assert hint.font().pointSize() == 10 or hint.font().pixelSize() >= 12
 
 
-def test_ble_scan_filter_rules_wrap_to_width(tmp_path, monkeypatch):
+def test_ble_scan_popups_toggle_on_button(tmp_path, monkeypatch):
     w = _make_window(tmp_path, monkeypatch)
     dlg = w._ble_scan_dialog()
-    flow = dlg._filt_flow
-    one = flow.heightForWidth(2000)
-    many = flow.heightForWidth(160)
-    assert one > 0
-    assert many > one
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is False
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
+    dlg.btn_rssi.click()
+    assert dlg._filter_popup.isVisible() is False
+    assert dlg._rssi_popup.isVisible() is True
+    dlg.btn_rssi.click()
+    assert dlg._rssi_popup.isVisible() is False
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
+    dlg._filter_popup.hide()
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is False
+    _APP.processEvents()
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is True
+    dlg._filter_popup.hide()
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton))
+    _APP.processEvents()
+    assert dlg._filter_popup._suppress_reopen is True
+    dlg.btn_filter.click()
+    assert dlg._filter_popup.isVisible() is False
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.NoButton))
+
+
+def test_ble_scan_filter_rules_grid_two_columns(tmp_path, monkeypatch):
+    w = _make_window(tmp_path, monkeypatch)
+    dlg = w._ble_scan_dialog()
+    assert dlg.filter_switch_row.parentWidget() is dlg.filter_card
+    assert dlg.filter_rules_panel.parentWidget() is dlg.filter_card
+    assert dlg.filter_switch_row.parentWidget() is not dlg.filter_rules_panel
+    grid = dlg._filt_grid
+    assert grid.columnStretch(0) == 1
+    assert grid.columnStretch(1) == 1
+    for i, key in enumerate(dlg.chk_filt):
+        item = grid.itemAtPosition(i // 2, i % 2)
+        assert item is not None
+        assert item.widget() is dlg.chk_filt[key]
+    assert dlg.lbl_filter_enable.text() == w._t("ble_filt_enable")
+
+
+def test_ble_scan_row_numbers_follow_visible_order(tmp_path, monkeypatch):
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+
+    w = _make_window(tmp_path, monkeypatch)
+    dlg = w._ble_scan_dialog()
+    dlg.sw_filter.setChecked(False)
+    dlg.upsert("AA:BB:CC:DD:EE:01", "Alpha", -40, ["fff0"])
+    dlg.upsert("AA:BB:CC:DD:EE:02", "Bravo", -50, ["fff0"])
+    dlg.upsert("AA:BB:CC:DD:EE:03", "Charlie", -60, ["fff0"])
+    assert [dlg.table.item(r, COL_NO).text() for r in range(3)] == ["1", "2", "3"]
+    dlg.show()
+    _APP.processEvents()
+    hh = dlg.table.horizontalHeader()
+    x = hh.sectionViewportPosition(COL_RSSI) + max(hh.sectionSize(COL_RSSI) // 2, 8)
+    y = max(hh.height() // 2, 4)
+    QTest.mouseClick(hh.viewport(), Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+    _APP.processEvents()
+    visible = []
+    rssi_vals = []
+    names = []
+    for r in range(dlg.table.rowCount()):
+        if dlg.table.isRowHidden(r):
+            continue
+        visible.append(dlg.table.item(r, COL_NO).text())
+        rssi_vals.append(int(dlg.table.item(r, COL_RSSI).data(Qt.UserRole)))
+        names.append(dlg.table.item(r, COL_NAME).text())
+    assert visible == ["1", "2", "3"]
+    assert rssi_vals == sorted(rssi_vals) or rssi_vals == sorted(rssi_vals, reverse=True)
+    assert len(set(names)) == 3
+    dlg.ed_search.setText("a")
+    shown = []
+    shown_rssi = []
+    for r in range(dlg.table.rowCount()):
+        if dlg.table.isRowHidden(r):
+            continue
+        shown.append(dlg.table.item(r, COL_NO).text())
+        shown_rssi.append(int(dlg.table.item(r, COL_RSSI).data(Qt.UserRole)))
+    assert shown == [str(i) for i in range(1, len(shown) + 1)]
+    assert shown_rssi == sorted(shown_rssi) or shown_rssi == sorted(
+        shown_rssi, reverse=True)
+    dlg.ed_search.setText("Alpha")
+    shown = [
+        dlg.table.item(r, COL_NO).text()
+        for r in range(dlg.table.rowCount())
+        if not dlg.table.isRowHidden(r)]
+    assert shown == ["1"]
+    assert dlg.table.horizontalHeaderItem(COL_NO).text() == w._t("ble_col_no")
 
 
 def test_ble_scan_repeat_start_keeps_rows(tmp_path, monkeypatch):
@@ -269,15 +370,15 @@ def test_ble_scan_adv_columns_tooltip_and_search(tmp_path, monkeypatch):
         "advertisement_type": "ADV_IND",
     }
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", -51, ["fff0"], adv)
-    assert dlg.table.columnCount() == 8
-    assert "-51" in dlg.table.item(0, 3).text()
-    assert dlg.table.item(0, 4).text() == "+4"
-    assert dlg.table.item(0, 5).text() == "●"
-    mfr = dlg.table.item(0, 7).text()
+    assert dlg.table.columnCount() == 9
+    assert "-51" in dlg.table.item(0, COL_RSSI).text()
+    assert dlg.table.item(0, COL_TX).text() == "+4"
+    assert dlg.table.item(0, COL_CONN).text() == "●"
+    mfr = dlg.table.item(0, COL_MFR).text()
     assert "004C" in mfr
     assert "100612" in mfr
     assert "Apple" in mfr
-    tip = dlg.table.item(0, 0).toolTip()
+    tip = dlg.table.item(0, COL_NAME).toolTip()
     assert "ADV_IND" in tip
     assert "004C" in tip
     assert "0040" in tip
@@ -302,12 +403,12 @@ def test_ble_scan_adv_columns_tooltip_and_search(tmp_path, monkeypatch):
         "manufacturer": [(0x02E5, "abcd")],
         "connectable": False,
     })
-    assert "-40" in dlg.table.item(0, 3).text()
-    assert dlg.table.item(0, 5).text() == "●"
-    assert "004C" in dlg.table.item(0, 7).text()
-    assert "02E5" in dlg.table.item(0, 7).text()
+    assert "-40" in dlg.table.item(0, COL_RSSI).text()
+    assert dlg.table.item(0, COL_CONN).text() == "●"
+    assert "004C" in dlg.table.item(0, COL_MFR).text()
+    assert "02E5" in dlg.table.item(0, COL_MFR).text()
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", None, None)
-    assert "-40" in dlg.table.item(0, 3).text()
+    assert "-40" in dlg.table.item(0, COL_RSSI).text()
 
 
 def test_ble_scan_interval_stale_and_rssi_filter(tmp_path, monkeypatch):
@@ -316,11 +417,11 @@ def test_ble_scan_interval_stale_and_rssi_filter(tmp_path, monkeypatch):
     clock = [100.0]
     dlg._now = lambda: clock[0]
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", -51, ["fff0"])
-    assert dlg.table.item(0, 6).text() == w._t("ble_uuid_none")
+    assert dlg.table.item(0, COL_INT).text() == w._t("ble_uuid_none")
     clock[0] = 100.152
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", -48, ["fff0"])
-    assert dlg.table.item(0, 6).text() == "152"
-    assert "▂" in dlg.table.item(0, 3).text() or "▄" in dlg.table.item(0, 3).text()
+    assert dlg.table.item(0, COL_INT).text() == "152"
+    assert "▂" in dlg.table.item(0, COL_RSSI).text() or "▄" in dlg.table.item(0, COL_RSSI).text()
     top = dlg.layout().itemAt(0).layout()
     assert top.indexOf(dlg.btn_rssi) == top.indexOf(dlg.btn_filter) + 1
     assert dlg.rssi_panel.parentWidget() is dlg._rssi_popup
@@ -335,11 +436,12 @@ def test_ble_scan_interval_stale_and_rssi_filter(tmp_path, monkeypatch):
     assert dlg.btn_rssi.property("active") is True
     assert dlg.rssi_panel.isEnabled() is True
     assert dlg.table.isRowHidden(0) is True
-    dlg.btn_filter.setChecked(False)
-    assert dlg.filter_box.isHidden() is True
+    dlg.sw_filter.setChecked(False)
+    assert dlg.filter_rules_panel.isEnabled() is False
     assert dlg.rssi_panel.isEnabled() is False
     assert dlg.table.isRowHidden(0) is False
-    dlg.btn_filter.setChecked(True)
+    dlg.sw_filter.setChecked(True)
+    assert dlg.filter_rules_panel.isEnabled() is True
     assert dlg.rssi_panel.isEnabled() is True
     assert dlg.table.isRowHidden(0) is True
     dlg.sw_rssi.setChecked(False)
@@ -354,7 +456,7 @@ def test_ble_scan_interval_stale_and_rssi_filter(tmp_path, monkeypatch):
     clock[0] = 110.0
     dlg._refresh_stale()
     from PyQt5.QtGui import QColor
-    fg = dlg.table.item(0, 0).foreground().color()
+    fg = dlg.table.item(0, COL_NAME).foreground().color()
     sec = QColor(dlg._chrome()["text_sec"])
     assert fg == sec
 
@@ -377,12 +479,19 @@ def test_ble_scan_retranslate_refreshes_row_tooltip(tmp_path, monkeypatch):
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", -51, ["fff0"], {
         "connectable": True,
     })
-    before = dlg.table.item(0, 0).toolTip()
+    before = dlg.table.item(0, COL_NAME).toolTip()
     assert w._t("ble_adv_conn_yes") in before
+    assert dlg.btn_filter.text() == w._t("ble_scan_filter")
+    assert dlg.table.horizontalHeaderItem(COL_NO).text() == w._t("ble_col_no")
     w._set_language("en")
-    dlg.retranslate()
-    after = dlg.table.item(0, 0).toolTip()
+    after = dlg.table.item(0, COL_NAME).toolTip()
     assert "Connectable: yes" in after
+    assert dlg.windowTitle() == w._t("ble_scan_title")
+    assert dlg.btn_filter.text() == w._t("ble_scan_filter")
+    assert dlg.lbl_filter_enable.text() == w._t("ble_filt_enable")
+    assert dlg.lbl_filt_rules.text() == w._t("ble_filt_rules")
+    assert dlg.table.horizontalHeaderItem(COL_NO).text() == w._t("ble_col_no")
+    assert dlg.table.horizontalHeaderItem(COL_NAME).text() == w._t("ble_col_name")
 
 
 def test_ble_scan_theme_repaints_stable_rows(tmp_path, monkeypatch):
@@ -392,7 +501,7 @@ def test_ble_scan_theme_repaints_stable_rows(tmp_path, monkeypatch):
     w = _make_window(tmp_path, monkeypatch)
     dlg = w._ble_scan_dialog()
     dlg.upsert("AA:BB:CC:DD:EE:01", "GEE701", -51, ["fff0"])
-    before = dlg.table.item(0, 0).foreground().color()
+    before = dlg.table.item(0, COL_NAME).foreground().color()
     assert before == QColor(chrome_for("default")["text"])
     idx = w.cb_theme.findData("dark")
     assert idx >= 0
@@ -400,7 +509,7 @@ def test_ble_scan_theme_repaints_stable_rows(tmp_path, monkeypatch):
     w.cb_theme.setCurrentIndex(idx)
     w.cb_theme.blockSignals(False)
     dlg.refresh_theme()
-    after = dlg.table.item(0, 0).foreground().color()
+    after = dlg.table.item(0, COL_NAME).foreground().color()
     assert after == QColor(chrome_for("dark")["text"])
     assert after != before
 
