@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import seq_context
-import sequence_engine as se
+from automation import seq_context
+from automation import sequence_engine as se
 
 
 def test_clamp_loops_and_retries():

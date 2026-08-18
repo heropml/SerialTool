@@ -11,10 +11,10 @@ from PyQt5.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication([])
 
-import send_options_card as soc
-import ui_options as uo
-from i18n import CHECKSUM_KEYS
-from widgets import make_label
+from ui import send_options_card as soc
+from ui import ui_options as uo
+from ui.i18n import CHECKSUM_KEYS
+from ui.widgets import make_label
 
 
 class _FakeSettings(object):

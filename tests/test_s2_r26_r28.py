@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config_io as cio
+from project import config_io as cio
 
 
 def test_normalize_and_combo_helpers():

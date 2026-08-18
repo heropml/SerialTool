@@ -3,7 +3,7 @@
 import math
 import unittest
 
-import plot_stats
+from record import plot_stats
 
 
 class PlotStatsTests(unittest.TestCase):

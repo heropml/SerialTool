@@ -14,11 +14,10 @@ from PyQt5.QtWidgets import QApplication, QDialog
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from main_window import CommTool, PortScannerThread
-from auto_reply_dialog import AutoReplyDialog
-from plot_dialog import PlotDialog
-from ui_tips import tip_html
-import i18n
-
+from ui.auto_reply_dialog import AutoReplyDialog
+from ui.plot_dialog import PlotDialog
+from ui.ui_tips import tip_html
+from ui import i18n
 _APP = QApplication.instance() or QApplication([])
 
 
@@ -197,7 +196,7 @@ def test_io_graph_restores_plot_view_and_dual_y(tmp_path, monkeypatch):
 
 
 def test_fc08_sub_data_qty_normalizes():
-    from modbus_master import normalize_poll
+    from modbus.modbus_master import normalize_poll
 
     rec = normalize_poll({
         "enabled": True, "name": "d", "unit": 1, "func": 8,
@@ -213,7 +212,7 @@ def test_fc08_bare_qty_is_data_with_sub_zero():
 
     Switching FC03 qty=1 to FC08 used to emit diag_sub=1 (Restart Communications).
     """
-    from modbus_master import normalize_poll
+    from modbus.modbus_master import normalize_poll
 
     rec = normalize_poll({
         "enabled": True, "name": "d", "unit": 1, "func": 8,
@@ -233,9 +232,8 @@ def test_fc08_bare_qty_is_data_with_sub_zero():
 def test_fc08_collect_bare_qty_after_func_switch(tmp_path, monkeypatch):
     """Dialog: FC03 qty=1 then switch to 08 must collect sub=0,data=1 — not sub=1."""
     from PyQt5.QtWidgets import QComboBox
-    from modbus_master_dialog import ModbusMasterDialog
-    import modbus_master as mm
-
+    from ui.modbus_master_dialog import ModbusMasterDialog
+    from modbus import modbus_master as mm
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("fc08-switch-test")
     window._mbm_rules = [mm.normalize_poll({
@@ -341,9 +339,8 @@ def test_plot_click_backfills_missing_walls(tmp_path, monkeypatch):
 
 def test_fc08_to_read_func_clamps_zero_qty(tmp_path, monkeypatch):
     """Leaving FC08 with data=0 for FC03 must yield qty=1, not qty=0."""
-    from modbus_master_dialog import ModbusMasterDialog
-    import modbus_master as mm
-
+    from ui.modbus_master_dialog import ModbusMasterDialog
+    from modbus import modbus_master as mm
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("fc08-to-read")
     window._mbm_rules = [mm.normalize_poll({
@@ -406,7 +403,7 @@ def test_tray_tooltip_stays_plain_text(tmp_path, monkeypatch):
     records what production code writes.
     """
     from PyQt5.QtWidgets import QApplication
-    from ui_tips import tip_html
+    from ui.ui_tips import tip_html
     import main_window as mw
 
     tips = []
@@ -524,9 +521,8 @@ def test_tray_tooltip_stays_plain_text(tmp_path, monkeypatch):
 
 def test_fc08_func_switch_refreshes_qty_tooltip(tmp_path, monkeypatch):
     """Switching to/from FC08 must refresh the qty cell tooltip."""
-    from modbus_master_dialog import ModbusMasterDialog
-    import modbus_master as mm
-
+    from ui.modbus_master_dialog import ModbusMasterDialog
+    from modbus import modbus_master as mm
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("fc08-tip")
     window._mbm_rules = [mm.normalize_poll({
@@ -588,7 +584,7 @@ def test_auto_reply_close_event_syncs_settings(tmp_path, monkeypatch):
         assert "settings.sync" in src
         assert "_commit" in src
         ar_src = (Path(__file__).resolve().parents[1] /
-                  "src" / "auto_reply_dialog.py").read_text(encoding="utf-8")
+                  "src" / "ui" / "auto_reply_dialog.py").read_text(encoding="utf-8")
         assert ar_src.count("def closeEvent") == 1
     finally:
         dlg.deleteLater()

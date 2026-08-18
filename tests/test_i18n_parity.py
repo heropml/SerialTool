@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from i18n import TR
+from ui.i18n import TR
 
 _REQUIRED_LANGS = ("zh", "en", "zh_tw")
 

@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import ansi
-import rx_text as rt
+from protocol import ansi
+from protocol import rx_text as rt
 
 
 def test_decode_auto_utf8_and_partial():

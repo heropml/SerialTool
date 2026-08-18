@@ -4,11 +4,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_master as mm
-import modbus_slave as ms
+from modbus import modbus_master as mm
+from modbus import modbus_slave as ms
 import pytest
 
-from modbus_gateway import (
+from modbus.modbus_gateway import (
     ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE,
     parse_unit_map, clamp_timeout_s,
 )

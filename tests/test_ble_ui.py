@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PyQt5.QtCore import QCoreApplication, QEvent, QSettings, Qt
 from PyQt5.QtWidgets import QApplication, QHBoxLayout
 
-from conn_ui import PROTO_BLE
-from ble_scan_dialog import (
+from ui.conn_ui import PROTO_BLE
+from ui.ble_scan_dialog import (
     COL_ADDR, COL_CONN, COL_INT, COL_MFR, COL_NAME, COL_NO, COL_RSSI, COL_TX,
     COL_UUID,
 )
@@ -496,7 +496,7 @@ def test_ble_scan_retranslate_refreshes_row_tooltip(tmp_path, monkeypatch):
 
 def test_ble_scan_theme_repaints_stable_rows(tmp_path, monkeypatch):
     from PyQt5.QtGui import QColor
-    from theme import chrome_for
+    from ui.theme import chrome_for
 
     w = _make_window(tmp_path, monkeypatch)
     dlg = w._ble_scan_dialog()
@@ -602,7 +602,7 @@ def test_ble_scan_last_used_refilters_after_stamp(tmp_path, monkeypatch):
 
 
 def test_ble_scan_showevent_reloads_last_used(tmp_path, monkeypatch):
-    from ble_scan_dialog import remember_ble_connect
+    from ui.ble_scan_dialog import remember_ble_connect
 
     w = _make_window(tmp_path, monkeypatch)
     dlg = w._ble_scan_dialog()
@@ -641,7 +641,7 @@ def test_ble_rssi_filter_label_has_object_name(tmp_path, monkeypatch):
 
 def test_flow_layout_respects_margins():
     from PyQt5.QtWidgets import QLabel, QWidget
-    from widgets import FlowLayout
+    from ui.widgets import FlowLayout
 
     host = QWidget()
     flow = FlowLayout(host, margin=8, spacing=4)

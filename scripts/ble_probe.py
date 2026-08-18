@@ -24,7 +24,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import ble_uuid  # noqa: E402
+from transport import ble_uuid  # noqa: E402
 
 
 def _ts():

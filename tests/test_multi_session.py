@@ -63,7 +63,7 @@ def _pump(n=30, dt=0.02):
 
 
 def _open_virtual(w, loopback=True):
-    from virtual_io import PROTO_VIRTUAL
+    from transport.virtual_io import PROTO_VIRTUAL
     w.cb_proto.setCurrentText(PROTO_VIRTUAL)
     w._update_net_fields()
     if hasattr(w, "sw_vconn_loop"):
@@ -1090,8 +1090,7 @@ def test_background_engine_feed_keeps_owner_display_context(
 def test_background_engines_do_not_mix_window_structured_recording(
         monkeypatch, tmp_path):
     """Structured rows have no session ID, so only the visible tab may add them."""
-    import device_resources
-
+    from project import device_resources
     w = _window(monkeypatch, tmp_path, "bg-structured-owner")
     background = w.active_session()
     active = w.add_session(activate=True)
@@ -1174,7 +1173,7 @@ def test_background_network_reconnect_uses_saved_snapshot(monkeypatch, tmp_path)
     }
     s1._reconnect_snapshot = snapshot
     s2 = w.add_session(activate=True)
-    from virtual_io import PROTO_VIRTUAL
+    from transport.virtual_io import PROTO_VIRTUAL
     w.cb_proto.setCurrentText(PROTO_VIRTUAL)
     seen = []
 
@@ -1935,7 +1934,7 @@ def test_session_switch_restores_terminal_highlight_and_freeze(monkeypatch, tmp_
 
 
 def test_period_and_log_intent_persist_roundtrip(monkeypatch, tmp_path):
-    from session import Session
+    from sessions.session import Session
 
     w = _window(monkeypatch, tmp_path, "intent-persist")
     s = w.active_session()
@@ -2476,13 +2475,13 @@ def test_default_session_title_follows_language(monkeypatch, tmp_path):
     s1 = w.active_session()
     assert s1.title_index == 1
     w._lang = "zh"
-    w._L = __import__("i18n", fromlist=["TR"]).TR["zh"]
+    w._L = __import__("ui.i18n", fromlist=["TR"]).TR["zh"]
     assert s1.tab_label() == w._t("session_default")
     s2 = w.add_session(activate=False)
     assert s2.title_index >= 2
     assert s2.tab_label() == "%s-%d" % (w._t("session_default"), s2.title_index)
     w._lang = "en"
-    w._L = __import__("i18n", fromlist=["TR"]).TR["en"]
+    w._L = __import__("ui.i18n", fromlist=["TR"]).TR["en"]
     w._apply_language()
     assert s1.tab_label() == "Session"
     assert s2.tab_label().startswith("Session-")
@@ -3021,8 +3020,7 @@ def test_import_apply_failure_restores_previous_session_runtime(
 def test_open_project_apply_failure_restores_previous_session_runtime(
         monkeypatch, tmp_path):
     """A project apply exception rolls the temporary session replacement back."""
-    import project_model
-
+    from project import project_model
     w = _window(monkeypatch, tmp_path, "project-session-rollback")
     first = w.active_session()
     w.txt_send.setPlainText("draft-a")
@@ -3689,8 +3687,7 @@ def test_sequence_dialog_tracks_active_session_only(monkeypatch, tmp_path):
 
 def test_background_rx_feeds_triggers(monkeypatch, tmp_path):
     """Inactive-tab RX still matches trigger rules (per-session decoder)."""
-    import triggers
-
+    from automation import triggers
     w = _window(monkeypatch, tmp_path, "bg-trg")
     _open_virtual(w)
     s1 = w.active_session()
@@ -3736,8 +3733,8 @@ def test_two_sessions_can_each_own_a_script(monkeypatch, tmp_path):
 
 def test_script_end_does_not_clear_other_session_pin(monkeypatch, tmp_path):
     """A 标签脚本结束不能清掉 B 标签仍在跑的脚本 I/O 钉。"""
-    from script_console_dialog import ScriptConsoleDialog
-    from script_console import ScriptWorker
+    from ui.script_console_dialog import ScriptConsoleDialog
+    from automation.script_console import ScriptWorker
 
     w = _window(monkeypatch, tmp_path, "script-end-pin")
     s1 = w.active_session()
@@ -3819,7 +3816,7 @@ def test_two_sessions_can_enable_modbus_independently(monkeypatch, tmp_path):
 
 def test_script_console_close_ends_background_owner(monkeypatch, tmp_path):
     """Closing the console must _script_end even if the owner tab is not visible."""
-    from script_console_dialog import ScriptConsoleDialog
+    from ui.script_console_dialog import ScriptConsoleDialog
 
     w = _window(monkeypatch, tmp_path, "sc-close-bg")
     owner = w.active_session()
@@ -3851,7 +3848,7 @@ def test_script_console_close_ends_background_owner(monkeypatch, tmp_path):
 
 
 def test_script_console_running_follows_visible_tab(monkeypatch, tmp_path):
-    from script_console_dialog import ScriptConsoleDialog
+    from ui.script_console_dialog import ScriptConsoleDialog
 
     w = _window(monkeypatch, tmp_path, "sc-follow-tab")
     owner = w.active_session()
@@ -4089,7 +4086,7 @@ def test_two_sessions_can_scan_without_hijacking_mbm_rules(monkeypatch, tmp_path
 
 def test_device_scan_dialog_keeps_per_session_results(monkeypatch, tmp_path):
     """A 扫描中切到 B 再扫：A 的回调不能写进 B 的表格。"""
-    from device_center_dialog import DeviceCenterDialog
+    from ui.device_center_dialog import DeviceCenterDialog
 
     w = _window(monkeypatch, tmp_path, "scan-ui-iso")
     s1 = w.active_session()
@@ -4132,7 +4129,7 @@ def test_device_scan_dialog_keeps_per_session_results(monkeypatch, tmp_path):
 
 def test_recording_capture_is_per_session(monkeypatch, tmp_path):
     """A、B 分别录制停止后，切回 A 仍保存/回放 A 的事件。"""
-    from rec_replay_dialog import RecReplayDialog
+    from ui.rec_replay_dialog import RecReplayDialog
 
     w = _window(monkeypatch, tmp_path, "rr-capture-iso")
     dlg = RecReplayDialog(w)
@@ -4161,7 +4158,7 @@ def test_recording_capture_is_per_session(monkeypatch, tmp_path):
 
 
 def test_script_console_logs_are_isolated_per_session(monkeypatch, tmp_path):
-    from script_console_dialog import ScriptConsoleDialog
+    from ui.script_console_dialog import ScriptConsoleDialog
 
     w = _window(monkeypatch, tmp_path, "sc-log-iso")
     s1 = w.active_session()

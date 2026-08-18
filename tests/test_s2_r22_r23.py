@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config_io as cio
-import send_history as hist
+from project import config_io as cio
+from automation import send_history as hist
 
 
 def test_trigger_gate_helpers_identity_and_strip():

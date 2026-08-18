@@ -13,9 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QCoreApplication, QEvent
 
-import ble_io
-import ble_uuid as bu
-
+from transport import ble_io
+from transport import ble_uuid as bu
 _APP = QApplication.instance() or QApplication([])
 
 
@@ -400,6 +399,40 @@ def test_ble_drain_chunk_size_error_fails_link_and_returns_queued():
         assert conn.send(b"hi") == 2
         assert _wait_until(lambda: False in states and conn._queued == 0)
         assert conn.is_open is False
+    finally:
+        _cleanup(conn, old)
+
+
+def test_ble_write_oserror_fails_link_and_logs_traceback(caplog):
+    """GATT write OSError: user-visible link drop + debug traceback (B6-3)."""
+    import logging
+
+    created = []
+
+    class BoomWrite(FakeClient):
+        def __init__(self, address, disconnected_callback=None):
+            FakeClient.__init__(self, address, disconnected_callback)
+            created.append(self)
+
+        async def write_gatt_char(self, uuid, data, response=False):
+            raise OSError("adapter gone")
+
+    conn, old = _make_conn(BoomWrite)
+    states = []
+    errs = []
+    conn.state_changed.connect(states.append)
+    conn.error_occurred.connect(errs.append)
+    try:
+        assert conn.open() is True
+        assert _wait_until(lambda: conn.is_open)
+        with caplog.at_level(logging.DEBUG, logger="transport.ble_io"):
+            assert conn.send(b"hi") == 2
+            assert _wait_until(lambda: False in states and conn._queued == 0)
+        assert conn.is_open is False
+        assert errs
+        assert any(
+            rec.exc_info and "BLE write failed" in rec.getMessage()
+            for rec in caplog.records)
     finally:
         _cleanup(conn, old)
 

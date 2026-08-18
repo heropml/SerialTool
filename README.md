@@ -270,7 +270,7 @@ dist\CommTool\CommTool.exe
 
 ## 3. 文件结构
 
-> 代码已按模块拆分，并把源码 / 文档 / 脚本 / 资源分类到子目录。所有脚本内部用 `cd %~dp0..`（或 `dirname/..`）切回项目根再执行，双击即用，无需手动 cd。
+> 源码按领域分包（transport / protocol / ui 等），文档 / 脚本 / 资源分目录。所有脚本内部用 `cd %~dp0..`（或 `dirname/..`）切回项目根再执行，双击即用，无需手动 cd。
 
 ```
 CommTool/
@@ -279,19 +279,21 @@ CommTool/
 ├── requirements-dev.txt    开发/打包/单测依赖（含 -r requirements.txt）
 ├── latest.json             在线更新版本清单（version / url / notes）
 │
-├── src/                    Python 源码（按模块拆分）
+├── src/                    Python 源码（领域分包，import 形如 from transport.serial_io import …）
 │   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
-│   ├── main_window.py      主窗口 CommTool 主体类（最大模块）
-│   ├── dialogs.py          多条发送 / 关键字高亮 / 关闭确认 弹窗
-│   ├── widgets.py          自定义控件（IOSSwitch / TitleBar / Card）
-│   ├── serial_io.py        串口连接层（SerialConn + SerialReader 读线程 + 端口扫描）
-│   ├── net_io.py           网络连接层（TCP Server/Client、UDP、UDP 组播）
-│   ├── theme.py            主题配色表 + 角色着色（ROLE_*）
-│   ├── i18n.py             三语翻译表（简 / 英 / 繁）
-│   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
-│   ├── icon_data.py        128×128 PNG base64（运行时图标，~545 行）
+│   ├── main_window.py      主窗口 CommTool 主体类（最大模块，仍留在 src 根）
+│   ├── version.py          版本号单点真源 (__version__ = "1.7.1")
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
-│   └── version.py          版本号单点真源 (__version__ = "1.7.1")
+│   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
+│   ├── icon_data.py        128×128 PNG base64（运行时图标）
+│   ├── transport/          连接层：serial_io / net_io / ble_io / virtual_io
+│   ├── protocol/           组帧与显示：binproto / convert / ansi / frame_stream
+│   ├── modbus/             Modbus 主从/网关 + 字节桥接引擎
+│   ├── sessions/           多会话模型与 host（包名 sessions，避免挡住模块 session）
+│   ├── automation/         脚本 / 序列 / 触发 / 自动应答 / 传输
+│   ├── record/             录制回放、diff、pcap、波形统计
+│   ├── project/            配置、工程文件、连接预设、设备资源
+│   └── ui/                 对话框、控件、主题、三语 i18n
 │
 ├── docs/                   文档
 │   ├── USAGE.md            用户文档（英文，安装包附带）

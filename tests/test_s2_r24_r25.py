@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config_keys import PROJECT_PERSONAL_KEYS, CFG_KEYS
-import config_io as cio
+from project.config_keys import PROJECT_PERSONAL_KEYS, CFG_KEYS
+from project import config_io as cio
 
 
 def test_settings_to_bool():

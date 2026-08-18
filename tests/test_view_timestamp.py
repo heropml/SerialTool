@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import connection_presets as cp
-import view_format as vf
+from project import connection_presets as cp
+from protocol import view_format as vf
 
 
 def test_parse_port():

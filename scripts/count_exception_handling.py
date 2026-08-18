@@ -23,6 +23,18 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 
+def iter_src_py():
+    """All application modules under src/, including domain packages."""
+    for path in sorted(SRC.rglob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        yield path
+
+
+def src_label(path):
+    return path.relative_to(SRC).as_posix()
+
+
 def is_broad(handler):
     """裸 except 或 except Exception（含 as e）。"""
     if handler.type is None:
@@ -63,10 +75,10 @@ def main():
     args = ap.parse_args()
 
     rows = []
-    for path in sorted(SRC.glob("*.py")):
+    for path in iter_src_py():
         broad, silent = scan(path)
         if broad:
-            rows.append((path.name, broad, silent))
+            rows.append((src_label(path), broad, silent))
     total_broad = sum(r[1] for r in rows)
     total_silent = sum(r[2] for r in rows)
 
@@ -77,10 +89,10 @@ def main():
               % (total_broad, total_silent, top))
         return 0
 
-    print("%-32s %8s %8s" % ("module", "broad", "silent"))
+    print("%-40s %8s %8s" % ("module", "broad", "silent"))
     for name, broad, silent in sorted(rows, key=lambda r: (-r[2], -r[1])):
-        print("%-32s %8d %8d" % (name, broad, silent))
-    print("%-32s %8d %8d" % ("TOTAL", total_broad, total_silent))
+        print("%-40s %8d %8d" % (name, broad, silent))
+    print("%-40s %8d %8d" % ("TOTAL", total_broad, total_silent))
     return 0
 
 

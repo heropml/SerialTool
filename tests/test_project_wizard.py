@@ -8,10 +8,10 @@ from PyQt5.QtWidgets import QApplication, QLabel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_templates import DEVICE_IDS, PROTOCOL_IDS
-from project_wizard import ProjectWizard
-from dialogs import InfoDialog
-from theme import chrome_for
+from project.project_templates import DEVICE_IDS, PROTOCOL_IDS
+from project.project_wizard import ProjectWizard
+from ui.dialogs import InfoDialog
+from ui.theme import chrome_for
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -147,7 +147,7 @@ def test_manual_connection_survives_after_protocol_recommend():
         wizard.cb_connection.setCurrentText("TCP Server")
         data = wizard.result_data()
         assert data["connection_type"] == "TCP Server"
-        from project_templates import protocol_template_settings
+        from project.project_templates import protocol_template_settings
         cfg = protocol_template_settings(
             data["protocol_template"], data["connection_type"])
         assert cfg["net_proto"] == "TCP Server"

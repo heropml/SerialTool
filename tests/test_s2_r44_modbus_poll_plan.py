@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import modbus_master as mbm
-import modbus_poll_plan as plan
+from modbus import modbus_master as mbm
+from modbus import modbus_poll_plan as plan
 
 
 def _rule(**kw):

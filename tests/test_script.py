@@ -13,13 +13,13 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from ui_tips import tip_html
+from ui.ui_tips import tip_html
 
 try:
     from PyQt5.QtWidgets import QApplication, QLabel
     from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
     from main_window import CommTool
-    from i18n import CHECKSUM_KEYS
+    from ui.i18n import CHECKSUM_KEYS
     _IMPORT_ERR = None
 except ModuleNotFoundError as e:
     if (e.name or "").split(".")[0] in {"serial", "PyQt5"}:
@@ -120,7 +120,7 @@ class XferTests(unittest.TestCase):
 
     def _run(self, mode, data, drop_send=(), drop_recv=(), corrupt_send=()):
         import threading
-        import xfer
+        from automation import xfer
         a2b, b2a = _XInbox(), _XInbox()      # a=发→收, b=收→发
         sc, rc, res = {"n": 0}, {"n": 0}, {}
 
@@ -155,11 +155,11 @@ class XferTests(unittest.TestCase):
         return res
 
     def test_crc16_standard(self):
-        import xfer
+        from automation import xfer
         self.assertEqual(xfer._crc16(b"123456789"), 0x31C3)   # XMODEM CRC-16 标准校验值
 
     def test_loopback_all_modes(self):
-        import xfer
+        from automation import xfer
         for mode in xfer.MODES:
             for sz in (0, 1, 128, 1024, 3000):
                 data = bytes((i * 7 + 3) & 0xFF for i in range(sz))
@@ -177,7 +177,7 @@ class XferTests(unittest.TestCase):
                     self.assertGreaterEqual(len(got), sz)
 
     def test_lossy_retransmit_and_dedup(self):
-        import xfer
+        from automation import xfer
         saved = (xfer.START_TIMEOUT, xfer.ACK_TIMEOUT, xfer.BLOCK_TIMEOUT)
         xfer.START_TIMEOUT = xfer.ACK_TIMEOUT = xfer.BLOCK_TIMEOUT = 0.3   # 调小超时跑快
         try:
@@ -198,7 +198,7 @@ class XferTests(unittest.TestCase):
 
     def test_ymodem_send_tolerates_missing_end_handshake(self):
         """YMODEM 发送端：数据 + EOT 已确认交付后，接收方不发批次结束块的 C，也不应把「已成功交付」判为失败。"""
-        import xfer
+        from automation import xfer
         q = [xfer.C]                     # 接收方回发队列（单字节）；预置起传 C
         blocks = []
 
@@ -225,7 +225,7 @@ class XferTests(unittest.TestCase):
     def test_loopback_block_number_wrap(self):
         """块号回绕：>256 块的传输要走过 seq 255→0 边界，数据仍完整（mod 256、send/recv 两端一致）。
         loopback 常规用例尺寸 ≤3000B 绕不到，这里用 XMODEM-CRC 128B/块 × ~313 块专门覆盖回绕。"""
-        import xfer
+        from automation import xfer
         data = bytes((i * 7 + 3) & 0xFF for i in range(40000))
         res = self._run(xfer.MODE_XMODEM_CRC, data)
         self.assertIsInstance(res.get("r"), tuple, "recv err: %r" % (res.get("r"),))
@@ -236,7 +236,7 @@ class XferTests(unittest.TestCase):
     def test_send_block_number_is_mod256(self):
         """发送端线上块号回绕为 mod 256：255 之后是 0（标准 XMODEM/YMODEM），不是 255→1。
         loopback 两端一致时 255→1 也会自洽通过，故这里直接断言线上块号值、把标准钉死。"""
-        import xfer
+        from automation import xfer
         seqs, q = [], [xfer.C]            # 反应式 stub：预置起传 C；逐块 / EOT 回 ACK
         def getc(n, timeout):
             if len(q) >= n:
@@ -316,7 +316,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_tcp_connection_reports_actual_short_write(self):
         from PyQt5.QtNetwork import QAbstractSocket
-        from net_io import TcpClientConn
+        from transport.net_io import TcpClientConn
 
         class ShortSocket:
             @staticmethod
@@ -332,7 +332,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         self.assertEqual(conn.send(b"1234567890"), 3)
 
     def test_tcp_server_rejects_and_drops_partial_client_stream(self):
-        from net_io import TcpServerConn
+        from transport.net_io import TcpServerConn
 
         class ShortClient:
             aborted = False
@@ -375,7 +375,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         self.assertTrue(CommTool._mbm_import_enabled(closed, True))
 
     def test_changed_serial_settings_pause_existing_connection(self):
-        from modbus_master_dialog import ModbusMasterDialog
+        from ui.modbus_master_dialog import ModbusMasterDialog
         w = _win()
         old_cfg, old_proto, old_on = w._conn_cfg, w._conn_proto, w._mbm_on
         old_rules, old_open = w._mbm_rules, w._is_open
@@ -614,7 +614,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._mbm_guard_until = old_guard
 
     def test_dirty_dialog_blocks_runtime_changes_using_old_rules(self):
-        from modbus_master_dialog import ModbusMasterDialog
+        from ui.modbus_master_dialog import ModbusMasterDialog
         w = _win()
         old_rules, old_on = w._mbm_rules, w._mbm_on
         old_variant, old_echo = w._mbm_variant, w._mbm_echo
@@ -645,7 +645,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_header_stays_aligned_when_vertical_scrollbar_appears(self):
         from PyQt5.QtWidgets import QApplication
-        from modbus_master_dialog import ModbusMasterDialog
+        from ui.modbus_master_dialog import ModbusMasterDialog
         w = _win()
         old_rules = w._mbm_rules
         try:
@@ -668,7 +668,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._mbm_rules = old_rules
 
     def test_tcp_server_broadcast_succeeds_if_any_client_gets_full_frame(self):
-        from net_io import TcpServerConn
+        from transport.net_io import TcpServerConn
 
         class _Addr:
             def __init__(self, host):
@@ -713,7 +713,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         self.assertEqual(conn._clients, [dead, good])
 
     def test_disable_autoreply_syncs_open_dialog_checkbox(self):
-        from auto_reply_dialog import AutoReplyDialog
+        from ui.auto_reply_dialog import AutoReplyDialog
         w = _win()
         old_ar, old_dlg = w._ar_on, getattr(w, "_ar_dlg", None)
         try:
@@ -746,7 +746,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_multi_send_column_width_persists(self):
         """拖动名称/数据列宽 → 写盘；重开对话框恢复（不再回默认）。"""
-        from dialogs import MultiSendDialog
+        from ui.dialogs import MultiSendDialog
 
         class _FakeSplit:                       # 绕开离屏下 splitter 无几何的问题
             def sizes(self):
@@ -773,7 +773,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_modbus_master_column_width_persists(self):
         """Modbus 主机轮询：拖动列宽 → 写盘；重开对话框恢复。"""
-        from modbus_master_dialog import ModbusMasterDialog, _DEFAULT_SPLIT
+        from ui.modbus_master_dialog import ModbusMasterDialog, _DEFAULT_SPLIT
 
         class _FakeSplit:
             def __init__(self, sizes):
@@ -800,7 +800,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_autoreply_column_width_persists(self):
         """自动应答：拖动收到/回复列宽 → 写盘；重开对话框恢复。"""
-        from auto_reply_dialog import AutoReplyDialog
+        from ui.auto_reply_dialog import AutoReplyDialog
 
         class _FakeSplit:
             def sizes(self):
@@ -1503,7 +1503,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             self.assertEqual(sends.count("GO"), 3)             # 每轮发一次
             self.assertEqual(len(s["round_list"]), 3)
             # 报告：循环时出按轮次表
-            from dialogs import SequenceDialog
+            from ui.dialogs import SequenceDialog
             dlg = SequenceDialog(w)
             try:
                 self.assertTrue(dlg._report_is_loop())
@@ -1540,7 +1540,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_loop_input_validation(self):
         """循环次数非法(0/空)→ 纠正为 1 并 toast 提示，不静默；合法值不动也不提示。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules, o_toast = w._seq_rules, w.toast
         toasts = []
@@ -1615,7 +1615,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_loop_summary_shows_planned_when_partial(self):
         """回归(P2)：提前停止(失败即停/中途停)时汇总标出计划总轮数，避免"0/1"被误读；跑满不标。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         dlg = None
         try:
@@ -1634,7 +1634,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_loop_count_capped(self):
         """回归(P2)：循环次数钳到上限 _SEQ_MAX_LOOPS，防无界内存/巨表。"""
-        import sequence_engine
+        from automation import sequence_engine
         w = _win()
         o_open, o_send = w._is_open, w._send_text
         w._is_open = lambda: True
@@ -1778,7 +1778,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         """步骤导入/导出：真实 JSON 文件 → 文件选择/确认 → 应用，并清掉旧结果。"""
         import json, tempfile
         from unittest.mock import patch
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules = w._seq_rules
         o_results = getattr(w, "_seq_results", [])
@@ -1801,7 +1801,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
             w._seq_results = [{"status": "pass", "ms": 1, "detail": ""}]
             w._seq_summary = {"ok": 1, "total": 1, "ms": 1, "pass": True}
             w._confirm_dlg = lambda *a, **k: True
-            with patch("dialogs.QFileDialog.getOpenFileName", return_value=(path, "JSON (*.json)")):
+            with patch("ui.dialogs.QFileDialog.getOpenFileName", return_value=(path, "JSON (*.json)")):
                 dlg._import_steps()
             got = dlg._all_steps()
             self.assertEqual([s["name"] for s in got], ["握手", "读"])
@@ -1848,7 +1848,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_dialog_smoke(self):
         """序列对话框：构造 + 加行 + 读回步骤 + 重译/主题/结果刷新，均不抛异常。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules = w._seq_rules
         dlg = None
@@ -1873,7 +1873,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_dialog_columns_draggable_and_persist(self):
         """只有发送/期望两数据框可拖：表头与每行都是 2 面板(左组/右组) splitter，拖动同步且列宽持久化。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules = w._seq_rules
         dlg = None
@@ -1901,7 +1901,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         """回归（崩溃根因）：对话框 deleteLater 后，构造期/滚动条 rangeChanged 排的 singleShot
         仍会触发；若回调对已析构的 splitter 调 sizes()/setSizes() 会因 PyQt 槽内异常 abort 硬崩溃。
         删除后泵事件循环，不得崩溃。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         from PyQt5.QtWidgets import QApplication
         w = _win()
         o_rules = w._seq_rules
@@ -2070,7 +2070,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_dialog_clears_stale_results_on_edit(self):
         """非运行态编辑步骤 → 清掉上次运行的结果/汇总，避免旧「通过/失败」赖在改过的步骤上或删行后错位。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules = w._seq_rules
         o_results = getattr(w, "_seq_results", [])
@@ -2096,7 +2096,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_sequence_dialog_export_report(self):
         """导出测试报告：跑完(有结果)才可导出；HTML 含标题/步骤/结果/HEX 标记/失败底色，CSV 含表头与各步。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules = w._seq_rules
         o_steps = getattr(w, "_seq_steps", [])
@@ -2178,7 +2178,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_sequence_dialog_locks_editing_while_running(self):
         """回归(P2)：运行中只锁「结构性改动」(增行/删行)防结果按索引错位；步骤字段/勾选框不锁
         (改字段不影响在跑快照，且禁用勾选框会丢选中蓝色像被取消)。运行按钮变绿、结束后恢复。"""
-        from dialogs import SequenceDialog
+        from ui.dialogs import SequenceDialog
         w = _win()
         o_rules, o_on = w._seq_rules, w._seq_on
         dlg = None
@@ -2269,7 +2269,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_binproto_pack_field(self):
         """帧构造器打包：数值大小端 / 有符号 / ascii / hex / float / 溢出与坏 hex 报错。"""
-        import binproto
+        from protocol import binproto
         self.assertEqual(binproto.pack_field("0x03", "u8"), b"\x03")
         self.assertEqual(binproto.pack_field("258", "u16be"), b"\x01\x02")
         self.assertEqual(binproto.pack_field("258", "u16le"), b"\x02\x01")  # 大小端相反
@@ -2286,7 +2286,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_binproto_build_frame(self):
         """帧构造器拼帧：Modbus 读帧交叉核对 build_rtu_request；length 字段=其后字节数。"""
-        import binproto, modbus_master
+        from protocol import binproto
+        from modbus import modbus_master
         from main_window import CommTool
         modbus = [("num", "u8", 1), ("num", "u8", 3), ("num", "u16be", 0),
                   ("num", "u16be", 1), ("checksum", 5, "")]
@@ -2307,7 +2308,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_convert_byte_sequences(self):
         """工具箱：字节序列 HEX / 文本 / 十进制 / 二进制 互转 + 非法输入报错。"""
-        import convert as C
+        from protocol import convert as C
         self.assertEqual(C.hex_to_bytes("01 41 FF"), b"\x01\x41\xff")
         self.assertEqual(C.hex_to_bytes("0141ff"), b"\x01\x41\xff")
         self.assertEqual(C.bytes_to_hex(b"\x01\x41\xff"), "01 41 FF")
@@ -2331,7 +2332,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_convert_single_value(self):
         """工具箱：单值多进制转换（位宽 + 有无符号；负数按补码落进位宽）。"""
-        import convert as C
+        from protocol import convert as C
         self.assertEqual(C.parse_value("255", "dec", 8), 255)
         self.assertEqual(C.parse_value("FF", "hex", 8), 255)
         self.assertEqual(C.parse_value("11111111", "bin", 8), 255)
@@ -2353,7 +2354,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_convert_custom_crc(self):
         """通用 CRC（Rocksoft 参数）拿多个已知标准值核对 + 交叉核对主程序 compute_checksum。"""
-        import convert as C
+        from protocol import convert as C
         from main_window import CommTool
         d = b"123456789"
         self.assertEqual(C.custom_crc(d, 16, 0x8005, 0xFFFF, True, True, 0, "big").hex().upper(), "4B37")   # CRC-16/MODBUS
@@ -2366,7 +2367,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_toolbox_dialog(self):
         """工具箱对话框：字节序列互转同步、单值进制(位宽/符号)、校验计算(ModbusCRC16 交叉核对)、菜单入口。"""
-        from toolbox_dialog import ToolboxDialog
+        from ui.toolbox_dialog import ToolboxDialog
         from PyQt5.QtWidgets import QMenu
         w = _win()
         dlg = None
@@ -2459,7 +2460,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_serial_break_and_flow(self):
         """Break 走 conn.send_break；流控下拉 RTS/CTS 禁用手动 RTS；SerialConn 存 flow 参数。"""
         from main_window import PROTO_SERIAL
-        import serial_io
+        from transport import serial_io
         w = _win()
         rec = {"break": 0}
         class _Mock:
@@ -2481,7 +2482,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_port_label_format(self):
         """端口标签 = '设备名  系统描述  [芯片型号]'；型号已在描述内不重复，认不出芯片/无描述时降级。"""
-        import serial_io
+        from transport import serial_io
         # _chip_ident：精确型号 / 厂商退路 / 认不出 / 虚拟口
         self.assertEqual(serial_io._chip_ident(0x0403, 0x6001), "FT232R")   # 精确
         self.assertEqual(serial_io._chip_ident(0x1A86, 0x9999), "WCH")      # 未收录 pid→厂商
@@ -2512,8 +2513,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_worker_loopback(self):
         """两个真实 XferWorker(QThread) 经 sig_send↔feed 直连对拼：验证线程 + 信号桥端到端收发一致。"""
-        import xfer
-        from xfer_dialog import XferWorker
+        from automation import xfer
+        from ui.xfer_dialog import XferWorker
         from PyQt5.QtCore import Qt
         _win()   # 确保 QApplication 存在
         for mode in (xfer.MODE_XMODEM_CRC, xfer.MODE_YMODEM):
@@ -2537,7 +2538,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_raw_send(self):
         """原始字节流：XferWorker raw 模式按 chunk 分块 sig_send、逐字节拼回等于原文、末块为余数；takes_input=False。"""
-        from xfer_dialog import XferWorker, MODE_RAW
+        from ui.xfer_dialog import XferWorker, MODE_RAW
         from PyQt5.QtCore import Qt
         _win()   # 确保 QApplication 存在
         payload = bytes((i * 3 + 1) & 0xFF for i in range(5000))
@@ -2553,7 +2554,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_raw_keeps_recv_disabled_after_busy(self):
         """原始字节流只支持发送：忙碌状态恢复后也不能把接收单选框重新启用。"""
-        from xfer_dialog import XferDialog, MODE_RAW
+        from ui.xfer_dialog import XferDialog, MODE_RAW
         w = _win()
         dlg = XferDialog(w)
         try:
@@ -2573,8 +2574,8 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_proto_change_preserves_send_path(self):
         """发送方向切换协议不应清空已选文件；只有切到 raw 导致方向变化时才清路径。"""
-        import xfer
-        from xfer_dialog import XferDialog, MODE_RAW
+        from automation import xfer
+        from ui.xfer_dialog import XferDialog, MODE_RAW
         w = _win()
         dlg = XferDialog(w)
         try:
@@ -2603,7 +2604,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_stale_done_does_not_detach_current_worker(self):
         """迟到的旧 worker 完成信号不能结束新一轮传输。"""
-        from xfer_dialog import XferDialog
+        from ui.xfer_dialog import XferDialog
         w = _win()
         dlg = XferDialog(w)
 
@@ -2636,7 +2637,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_xfer_send_confirms_huge_file(self):
         """超过内存阈值的发送文件必须先确认，取消则不读入、不启动 worker。"""
         import os
-        from xfer_dialog import XferDialog, _XFER_WARN_BYTES
+        from ui.xfer_dialog import XferDialog, _XFER_WARN_BYTES
         w = _win()
         dlg = XferDialog(w)
         confirmed = []
@@ -2660,7 +2661,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_xfer_done_does_not_block_gui_join(self):
         """完成回调不得在 GUI 线程 wait(2000)；收尾推迟到下一拍。"""
         from PyQt5.QtWidgets import QApplication
-        from xfer_dialog import XferDialog
+        from ui.xfer_dialog import XferDialog
         w = _win()
         dlg = XferDialog(w)
 
@@ -2693,7 +2694,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_xfer_refuses_periodic_or_modbus_traffic(self):
         """文件传输接管原始收流前，必须排除定时发送及 Modbus 主机/在途响应。"""
-        from xfer_dialog import XferDialog
+        from ui.xfer_dialog import XferDialog
         w = _win()
         dlg = XferDialog(w)
         old = (w._is_open, w.toast, w._mbm_active, w._mbm_inflight)
@@ -2906,7 +2907,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_frame_builder_dialog(self):
         """帧构造器对话框：默认模板出正确 HEX、填入发送框置 HEX 态、发送走 _send_text、坏字段禁用按钮。"""
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_send, o_toast, o_hex = w._send_text, w.toast, w.sw_tx_hex.isChecked()
         o_nl, o_cs = w.sw_append_newline.isChecked(), w.cb_checksum.currentIndex()
@@ -2959,7 +2960,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_frame_builder_reopen_keeps_saved_fields(self):
         """回归：单实例对话框关闭/重开时，不得用构造时的旧快照覆盖刚保存的字段。"""
         import json
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         dlg = None
@@ -2980,7 +2981,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_frame_builder_external_config_discards_old_pending_edit(self):
         """回归：导入/切换配置后，旧槽位的防抖草稿不得覆盖新配置。"""
         import json
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         o_dlg = w._frame_builder_dlg
@@ -3014,7 +3015,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         """回归：①存成数值 0 的字段值要还原成 "0"（不能被 `x or ""` 吞成空串）；
         ②未知/不支持的类型不得静默降级成 u8——原样保留、拼帧时报错标红（绝不改变发送字节）。"""
         import json
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         dlg = None
@@ -3038,7 +3039,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
 
     def test_frame_builder_template_apply_confirms(self):
         """回归：套用协议模板会覆盖当前字段 → 先弹确认；取消则字段不动、下拉回到自定义。"""
-        from frame_builder_dialog import FrameBuilderDialog, _TEMPLATE_ORDER
+        from ui.frame_builder_dialog import FrameBuilderDialog, _TEMPLATE_ORDER
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         o_confirm = w._confirm_dlg
@@ -3068,7 +3069,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_frame_builder_drag_reorder(self):
         """字段行拖拽排序：拖第 0 行落到末尾 → _rows / HEX 顺序随之改变并落盘。"""
         import json
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         dlg = None
@@ -3093,7 +3094,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_frame_builder_columns_draggable_and_persist(self):
         """列宽拖拽：表头 + 每行都是 3 面板(名称/类型/值) splitter，拖动同步且列宽持久化。"""
         import json
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
         o_split = w.settings.value("frame_builder_split", "")
@@ -3141,7 +3142,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
     def test_frame_builder_delete_then_pump_no_crash(self):
         """回归：对话框 deleteLater 后，构造期/滚动条 rangeChanged 排的 singleShot 仍会触发；
         回调对已析构的 splitter 调 sizes()/setSizes() 须被 RuntimeError 守卫接住，不得崩溃。"""
-        from frame_builder_dialog import FrameBuilderDialog
+        from ui.frame_builder_dialog import FrameBuilderDialog
         from PyQt5.QtWidgets import QApplication
         w = _win()
         o_fields = w.settings.value("frame_builder_fields", "")
@@ -3677,7 +3678,7 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
              w.toast, w._schedule_reconnect, w._refresh_stat_labels) = old
 
     def test_exact_int_accepts_leading_zero_decimal(self):
-        from modbus_master import _exact_int
+        from modbus.modbus_master import _exact_int
         self.assertEqual(_exact_int("08"), 8)
         self.assertEqual(_exact_int("010"), 10)      # 十进制 10，不是八进制
         self.assertEqual(_exact_int("0x1F"), 31)     # 十六进制前缀仍支持
@@ -3938,7 +3939,7 @@ class NumericStreamParserTests(unittest.TestCase):
     """数值流解析器（仪表盘/波形图共用语义）：三模式 + 跨包缓冲 + 通道命名。仅依赖 binproto，无需 Qt。"""
 
     def _p(self, mode=0):
-        from stream_parse import NumericStreamParser
+        from protocol.stream_parse import NumericStreamParser
         p = NumericStreamParser()
         p.mode = mode
         return p
@@ -4013,7 +4014,7 @@ class DashboardTests(unittest.TestCase):
     """数值仪表盘：feed → 建卡片 + 最新值 + 阈值告警着色。"""
 
     def _dlg(self, thresh=""):
-        from dashboard_dialog import DashboardDialog
+        from ui.dashboard_dialog import DashboardDialog
         w = _win()
         for k in ("dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header"):
             w.settings.setValue(k, "")
@@ -4143,7 +4144,7 @@ class DashboardTests(unittest.TestCase):
             dlg.deleteLater()
 
     def test_tile_cap(self):
-        from dashboard_dialog import _MAX_TILES
+        from ui.dashboard_dialog import _MAX_TILES
         w, dlg = self._dlg()
         try:
             line = ",".join(str(i) for i in range(_MAX_TILES + 30)) + "\n"
@@ -4286,7 +4287,7 @@ class ProtoHighlightTests(unittest.TestCase):
 
     def test_frame_dialog_checkbox_drives(self):
         """「帧解析」对话框的勾选框 ↔ 主窗 _proto_hl_on 双向同步。"""
-        from frame_dialog import FrameParseDialog
+        from ui.frame_dialog import FrameParseDialog
         w = self._setup()                 # _proto_hl_on = True
         old = getattr(w, "_frame_dlg", None)
         dlg = FrameParseDialog(w)
@@ -4319,11 +4320,11 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def _w(self, code=""):
         _win()                                  # 确保 QApplication 存在
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         return ScriptWorker(code)
 
     def test_parse_hex(self):
-        from script_console import parse_hex
+        from automation.script_console import parse_hex
         self.assertEqual(parse_hex("AA BB"), b"\xaa\xbb")
         self.assertEqual(parse_hex("0xAA,0xBB"), b"\xaa\xbb")
         self.assertEqual(parse_hex(""), b"")
@@ -4378,7 +4379,7 @@ class ScriptConsoleTests(unittest.TestCase):
         self.assertEqual((w.checks_passed, w.checks_failed), (1, 1))
 
     def test_stop_interrupts_sleep_and_expect(self):
-        from script_console import ScriptStopped
+        from automation.script_console import ScriptStopped
         w = self._w()
         w.stop()
         with self.assertRaises(ScriptStopped):
@@ -4466,7 +4467,7 @@ class ScriptConsoleTests(unittest.TestCase):
     def test_stale_worker_send_is_rejected(self):
         """关窗/换轮后才送达 GUI 的旧 worker 发送不能落到当前连接。"""
         import threading
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         app = _win()
         old, new = ScriptWorker(""), ScriptWorker("")
         old_reg, old_send = app._script_worker, app._send_text
@@ -4501,8 +4502,8 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_default_template_modbus_frame_has_crc(self):
         """默认模板里的 Modbus 帧必须是带 CRC 的完整帧（与帮助文档示例一致）。"""
-        import modbus_master as mm
-        from script_console_dialog import _DEFAULT_CODE
+        from modbus import modbus_master as mm
+        from ui.script_console_dialog import _DEFAULT_CODE
         want = mm.build_rtu_request(1, 3, 0, 1).hex(" ").upper()   # 01 03 00 00 00 01 84 0A
         self.assertIn(want, _DEFAULT_CODE)
         self.assertNotIn("hex=False", _DEFAULT_CODE)   # hexs() 已返回 bytes，该参数多余且误导
@@ -4510,8 +4511,8 @@ class ScriptConsoleTests(unittest.TestCase):
     def test_stale_finish_does_not_orphan_new_worker(self):
         """竞态回归：上一轮 worker 的迟到 run_finished 不能把新一轮 worker 架空。
         （run_finished 是队列信号，旧信号可能在新一轮已 start 之后才送达）"""
-        from script_console_dialog import ScriptConsoleDialog
-        from script_console import ScriptWorker
+        from ui.script_console_dialog import ScriptConsoleDialog
+        from automation.script_console import ScriptWorker
         w = _win()
         d = ScriptConsoleDialog(w)
         old_reg = getattr(w, "_script_worker", None)
@@ -4539,8 +4540,8 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_code_over_limit_truncates_editor_and_resets_warning(self):
         """超上限必须同步截断编辑器；切脚本或回到限制内后允许再次提示。"""
-        import script_console_dialog as scd
-        from script_console_dialog import ScriptConsoleDialog
+        from ui import script_console_dialog as scd
+        from ui.script_console_dialog import ScriptConsoleDialog
         w = _win()
         d = ScriptConsoleDialog(w)
         old_max = scd._MAX_CODE_CHARS
@@ -4570,8 +4571,8 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_finish_counts_come_from_signaling_worker(self):
         """通过/失败计数取自发信的 worker，关窗把 self._worker 置空也不会显示成 0/0。"""
-        from script_console_dialog import ScriptConsoleDialog
-        from script_console import ScriptWorker
+        from ui.script_console_dialog import ScriptConsoleDialog
+        from automation.script_console import ScriptWorker
         w = _win()
         d = ScriptConsoleDialog(w)
         old_reg = getattr(w, "_script_worker", None)
@@ -4593,7 +4594,7 @@ class ScriptConsoleTests(unittest.TestCase):
         """断连要停掉脚本（同自动化序列）：否则脚本对着断掉的连接空跑，每个 expect 等满超时。
         钩子放在 close_conn —— 出错断线 / 用户手动断 / 设备移除 三条路径都经过它。"""
         w = _win()
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         sw = ScriptWorker("")
         old = (w.conn, w._script_worker, w.toast)
         try:
@@ -4610,14 +4611,14 @@ class ScriptConsoleTests(unittest.TestCase):
     def test_worker_has_no_qt_parent(self):
         """worker 不能以对话框为 parent：对话框销毁会连带析构仍在运行的 QThread，
         Qt 会 std::terminate() 让进程 abort。靠 Python 引用保命，不靠 Qt 父子链。"""
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         _win()
         self.assertIsNone(ScriptWorker("").parent())
 
     def test_unstoppable_worker_is_kept_alive_on_close(self):
         """关窗时停不下来的 worker 要转移到主窗常驻列表续命，避免被析构导致进程 abort。"""
-        from script_console_dialog import ScriptConsoleDialog
-        from script_console import ScriptWorker
+        from ui.script_console_dialog import ScriptConsoleDialog
+        from automation.script_console import ScriptWorker
         w = _win()
         d = ScriptConsoleDialog(w)
         n0 = len(w._script_orphans)
@@ -4637,7 +4638,7 @@ class ScriptConsoleTests(unittest.TestCase):
             d.deleteLater()
 
     def test_lib_parse_filters_bad_entries(self):
-        from script_console_dialog import ScriptConsoleDialog as D
+        from ui.script_console_dialog import ScriptConsoleDialog as D
         good = D.parse_lib('[{"name":"a","code":"x"},{"name":"","code":"y"},'
                            '"junk",{"code":"no name"}]')
         self.assertEqual(good, [{"name": "a", "code": "x"}])
@@ -4647,7 +4648,7 @@ class ScriptConsoleTests(unittest.TestCase):
     def test_modbus_master_is_inactive_while_script_registered(self):
         """含 start 前短窗口在内，只要脚本已接管就不能恢复 Modbus 轮询。"""
         w = _win()
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         old = w._script_worker
         try:
             w._script_worker = ScriptWorker("")
@@ -4657,7 +4658,7 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_sequence_refuses_to_start_while_script_registered(self):
         w = _win()
-        from script_console import ScriptWorker
+        from automation.script_console import ScriptWorker
         old = (w._script_worker, w._seq_on, w.toast)
         notices = []
         try:
@@ -4750,7 +4751,7 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_script_combo_overrides_native_on_background(self):
         """Windows 下拉框打开/收起后的 :on 状态不能透出系统青绿色底色。"""
-        from script_console_dialog import ScriptConsoleDialog
+        from ui.script_console_dialog import ScriptConsoleDialog
         d = ScriptConsoleDialog(_win())
         try:
             qss = d.styleSheet()
@@ -4761,7 +4762,7 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_script_run_button_matches_main_primary_style(self):
         """脚本运行/停止按钮沿用主界面主操作按钮的尺寸和交互状态。"""
-        from script_console_dialog import ScriptConsoleDialog
+        from ui.script_console_dialog import ScriptConsoleDialog
         d = ScriptConsoleDialog(_win())
         try:
             self.assertGreaterEqual(d.btn_run.minimumHeight(), 34)
@@ -4775,7 +4776,7 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_script_delete_uses_themed_danger_confirmation(self):
         """删除脚本使用统一主题确认框，并将删除动作标成危险按钮。"""
-        from script_console_dialog import ScriptConsoleDialog
+        from ui.script_console_dialog import ScriptConsoleDialog
         w = _win()
         d = ScriptConsoleDialog(w)
         old_confirm = w._confirm_dlg
@@ -4794,7 +4795,7 @@ class ScriptConsoleTests(unittest.TestCase):
 
     def test_script_run_rejection_shows_themed_popup_and_local_error(self):
         """未连接时弹主题错误框，同时在控制台输出区和底栏留下原因。"""
-        from script_console_dialog import ScriptConsoleDialog
+        from ui.script_console_dialog import ScriptConsoleDialog
         w = _win()
         d = ScriptConsoleDialog(w)
         old = (w._script_start_blocked, w._is_open, w.toast, w._info_dlg)
@@ -4821,8 +4822,8 @@ class ScriptConsoleTests(unittest.TestCase):
     def test_shared_dialog_combo_popup_uses_neutral_palette(self):
         """波形图/仪表盘/桥接/Modbus 共用样式应同时覆盖 :on 和独立弹出容器。"""
         from PyQt5.QtWidgets import QDialog, QComboBox, QVBoxLayout
-        from dialogs import _dialog_list_qss, _style_combo_popups
-        from theme import chrome_for
+        from ui.dialogs import _dialog_list_qss, _style_combo_popups
+        from ui.theme import chrome_for
         root = QDialog()
         combo = QComboBox(root)
         combo.addItems(["A", "B"])
@@ -4842,13 +4843,13 @@ class MacroRecorderTests(unittest.TestCase):
     """宏录制：事件采集 + 翻译成脚本代码。纯逻辑，无需 Qt。"""
 
     def _r(self):
-        from macro_recorder import MacroRecorder
+        from automation.macro_recorder import MacroRecorder
         r = MacroRecorder()
         r.start()
         return r
 
     def test_not_recording_drops_events(self):
-        from macro_recorder import MacroRecorder
+        from automation.macro_recorder import MacroRecorder
         r = MacroRecorder()
         r.on_tx(b"AT")                      # 未 start → 不采集
         self.assertEqual(len(r), 0)
@@ -4919,7 +4920,7 @@ class MacroRecorderTests(unittest.TestCase):
         self.assertIn("未录到任何收发", r.to_script())
 
     def test_event_cap_marks_truncated(self):
-        from macro_recorder import MacroRecorder
+        from automation.macro_recorder import MacroRecorder
         r = MacroRecorder(max_events=3)
         r.start()
         for i in range(10):
@@ -4979,7 +4980,7 @@ class MacroRecorderIntegrationTests(unittest.TestCase):
     def _dlg(self):
         """建对话框，并记下 settings 里的脚本库以便测试后还原
         （对话框的 _save_cfg 会写 settings，不还原会污染后续用例）。"""
-        from script_console_dialog import ScriptConsoleDialog
+        from ui.script_console_dialog import ScriptConsoleDialog
         w = _win()
         self._saved_lib = (w.settings.value("script_lib", ""),
                            w.settings.value("script_active", ""))
@@ -4993,7 +4994,7 @@ class MacroRecorderIntegrationTests(unittest.TestCase):
 
     def test_full_library_keeps_recording_for_retry(self):
         """库满时不能先 clear 再报错 —— 录到的东西要留着，腾出空位后能重试保存。"""
-        from script_console_dialog import _MAX_SCRIPTS
+        from ui.script_console_dialog import _MAX_SCRIPTS
         w = _win()
         rec = w._macro
         d = self._dlg()
@@ -5018,7 +5019,7 @@ class MacroRecorderIntegrationTests(unittest.TestCase):
 
     def test_full_library_refuses_to_start(self):
         """库满时直接拒绝开始录制，别让用户白录一场。"""
-        from script_console_dialog import _MAX_SCRIPTS
+        from ui.script_console_dialog import _MAX_SCRIPTS
         w = _win()
         rec = w._macro
         d = self._dlg()
@@ -5155,41 +5156,41 @@ class SendDslTests(unittest.TestCase):
     """命令 DSL 编译：指令解析 / 重复展开 / 边界与错误。纯逻辑，无需 Qt。"""
 
     def _c(self, text, **kw):
-        import send_dsl
+        from automation import send_dsl
         return send_dsl.compile_dsl(text, **kw)
 
     def test_has_dsl(self):
-        import send_dsl
+        from automation import send_dsl
         self.assertTrue(send_dsl.has_dsl(r"AT\!(Delay100)"))
         self.assertFalse(send_dsl.has_dsl("AT+VER"))
         self.assertFalse(send_dsl.has_dsl(""))
 
     def test_delay_between_segments(self):
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"AT\!(Delay500)BT")
         self.assertEqual([o for o, _a in ops],
                          [send_dsl.OP_SEND, send_dsl.OP_DELAY, send_dsl.OP_SEND])
         self.assertEqual(ops[1][1], 500)
 
     def test_wait_is_delay_alias(self):
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"A\!(Wait50)B")
         self.assertEqual(ops[1], (send_dsl.OP_DELAY, 50))
 
     def test_case_and_space_tolerant(self):
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"A\!( delay 250 )B")
         self.assertEqual(ops[1], (send_dsl.OP_DELAY, 250))
 
     def test_repeat_expands_following_ops(self):
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"\!(Repeat3)PING\!(Delay200)")
         self.assertEqual(len(ops), 6)
         self.assertEqual(sum(1 for o, _a in ops if o == send_dsl.OP_SEND), 3)
 
     def test_repeat_only_repeats_what_follows(self):
         """Repeat 之前的内容只发一次。"""
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"HEAD\!(Repeat2)X")
         sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
         self.assertEqual(sends, ["HEAD", "X", "X"])
@@ -5201,7 +5202,7 @@ class SendDslTests(unittest.TestCase):
         self.assertEqual(payloads[1][1], False)    # text 段
 
     def test_hex_text_reject_numeric_suffix(self):
-        import send_dsl
+        from automation import send_dsl
         for bad in (r"\!(Hex1)01", r"\!(Text99)hello"):
             with self.assertRaises(send_dsl.DslError, msg=bad):
                 self._c(bad)
@@ -5212,7 +5213,7 @@ class SendDslTests(unittest.TestCase):
         self.assertIsNone(ops[0][1][1])
 
     def test_errors(self):
-        import send_dsl
+        from automation import send_dsl
         for bad in (r"\!(Delay)X", r"\!(Repeat)X", r"\!(Repeat0)X",
                     r"\!(Nope)X", r"\!(Delay100)", r"\!(Repeat2)",
                     r"HEAD\!(Repeat1)", r"A\!(Delay-1)B", r"A\!(Delay500"):
@@ -5220,18 +5221,18 @@ class SendDslTests(unittest.TestCase):
                 self._c(bad)
 
     def test_malformed_marker_is_detected_before_send(self):
-        import send_dsl
+        from automation import send_dsl
         self.assertTrue(send_dsl.has_dsl(r"A\!(Delay-1)B"))
         with self.assertRaises(send_dsl.DslError):
             self._c(r"A\!(Delay-1)B\!(Delay1)C")
 
     def test_repeat_twice_rejected(self):
-        import send_dsl
+        from automation import send_dsl
         with self.assertRaises(send_dsl.DslError):
             self._c(r"\!(Repeat2)A\!(Repeat3)B")
 
     def test_limits(self):
-        import send_dsl
+        from automation import send_dsl
         with self.assertRaises(send_dsl.DslError):
             self._c(r"\!(Repeat999999)X")          # 次数上限
         with self.assertRaises(send_dsl.DslError):
@@ -5242,13 +5243,13 @@ class SendDslTests(unittest.TestCase):
                 self._c(r"A\!(Delay0)B\!(Delay0)C")
 
     def test_describe(self):
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"A\!(Delay100)B\!(Delay50)C")
         self.assertEqual(send_dsl.describe(ops), (3, 150))
 
     def test_send_box_tip_documents_dsl(self):
         """发送框悬浮提示必须介绍 DSL —— 用户在那里查动态字段，不该不知道还能写时序指令。"""
-        import i18n
+        from ui import i18n
         for lang in ("zh", "en", "zh_tw"):
             tip = i18n.TR[lang]["send_box_tip"]
             self.assertIn("DSL", tip, lang)
@@ -5257,7 +5258,9 @@ class SendDslTests(unittest.TestCase):
 
     def test_tip_examples_actually_compile(self):
         """提示里给的示例必须真能跑 —— 否则改了语法忘改文档，用户照抄就报错。"""
-        import re, i18n, send_dsl
+        import re
+        from ui import i18n
+        from automation import send_dsl
         for lang in ("zh", "en", "zh_tw"):
             tip = i18n.TR[lang]["send_box_tip"]
             # 取 DSL 小节里出现指令的示例行（行首缩进或「示例/範例/Example:」引出）
@@ -5276,7 +5279,7 @@ class SendDslTests(unittest.TestCase):
 
     def test_escaped_backslash_not_an_instruction(self):
         r"""\\!(...) 是转义，当成字面量 \!(...) 发送，不当作指令。"""
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"AT\\!(Delay100)BT")
         sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
         self.assertEqual(sends, [r"AT\!(Delay100)BT"])
@@ -5284,7 +5287,7 @@ class SendDslTests(unittest.TestCase):
 
     def test_escaped_backslash_before_real_instruction(self):
         r"""\\ 后跟 \!(...) 指令：\\→字面量 \，指令照常生效。"""
-        import send_dsl
+        from automation import send_dsl
         ops = self._c(r"\\\!(Delay200)X")
         sends = [a[0] for o, a in ops if o == send_dsl.OP_SEND]
         delays = [a for o, a in ops if o == send_dsl.OP_DELAY]
@@ -5293,7 +5296,7 @@ class SendDslTests(unittest.TestCase):
 
     def test_escaped_has_dsl_still_true(self):
         """含 \\!(...) 的文本 has_dsl 仍返回 True，走 DSL 路径由 compile_dsl 妥善处理。"""
-        import send_dsl
+        from automation import send_dsl
         self.assertTrue(send_dsl.has_dsl(r"\\!(Delay100)"))
 
 
@@ -5301,7 +5304,7 @@ class RecReplayTests(unittest.TestCase):
     """数据录制/回放引擎：采集 / 存盘载入往返 / 回放时序。纯逻辑，无需 Qt。"""
 
     def _rec(self):
-        import rec_replay
+        from record import rec_replay
         r = rec_replay.StreamRecorder()
         r.start()
         return r
@@ -5316,13 +5319,13 @@ class RecReplayTests(unittest.TestCase):
         self.assertEqual((r.rx_count, r.tx_count), (1, 1))
 
     def test_not_recording_drops(self):
-        import rec_replay
+        from record import rec_replay
         r = rec_replay.StreamRecorder()
         r.on_rx(b"A")
         self.assertEqual(len(r), 0)
 
     def test_event_cap(self):
-        import rec_replay
+        from record import rec_replay
         r = rec_replay.StreamRecorder(max_events=3)
         r.start()
         for i in range(10):
@@ -5331,7 +5334,7 @@ class RecReplayTests(unittest.TestCase):
         self.assertTrue(r.truncated)
 
     def test_large_chunk_is_split_without_losing_bytes(self):
-        import rec_replay
+        from record import rec_replay
         from unittest.mock import patch
         r = rec_replay.StreamRecorder()
         r.start()
@@ -5343,7 +5346,8 @@ class RecReplayTests(unittest.TestCase):
         self.assertFalse(r.truncated)
 
     def test_save_load_roundtrip(self):
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         r = self._rec()
         r.on_rx(b"\x01\x02", t=1.0)
         r.on_tx(b"OK", t=1.25)
@@ -5356,7 +5360,8 @@ class RecReplayTests(unittest.TestCase):
         os.remove(p)
 
     def test_load_rejects_non_ctrec(self):
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
         with open(p, "w", encoding="utf-8") as f:
             f.write('{"hello": 1}\n')
@@ -5366,7 +5371,8 @@ class RecReplayTests(unittest.TestCase):
 
     def test_load_skips_bad_lines(self):
         """录制文件常被手改，坏行跳过而不是整体失败。"""
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
         with open(p, "w", encoding="utf-8") as f:
             f.write('{"_": "ctrec", "v": 1}\n')
@@ -5383,7 +5389,8 @@ class RecReplayTests(unittest.TestCase):
         os.remove(p)
 
     def test_load_rejects_unknown_version_and_event_overflow(self):
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         from unittest.mock import patch
         p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
         with open(p, "w", encoding="utf-8") as f:
@@ -5400,7 +5407,8 @@ class RecReplayTests(unittest.TestCase):
         os.remove(p)
 
     def test_load_skips_oversized_event(self):
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         from unittest.mock import patch
         p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
         with open(p, "w", encoding="utf-8") as f:
@@ -5415,7 +5423,8 @@ class RecReplayTests(unittest.TestCase):
 
     def test_load_handles_leading_blank_lines(self):
         """.ctrec 文件头前有空行不该导致整份文件被拒。"""
-        import rec_replay, tempfile, os
+        from record import rec_replay
+        import tempfile, os
         p = os.path.join(tempfile.mkdtemp(), "x.ctrec")
         with open(p, "w", encoding="utf-8") as f:
             f.write('\n')                            # 手改时常在文件头前留空行
@@ -5428,7 +5437,7 @@ class RecReplayTests(unittest.TestCase):
         os.remove(p)
 
     def test_player_respects_timing(self):
-        import rec_replay
+        from record import rec_replay
         got = []
         p = rec_replay.Player([(0.0, "rx", b"A"), (1.0, "rx", b"B")], got.append)
         p.start(now=0.0)
@@ -5441,7 +5450,7 @@ class RecReplayTests(unittest.TestCase):
         self.assertTrue(p.finished)
 
     def test_player_speed(self):
-        import rec_replay
+        from record import rec_replay
         got = []
         p = rec_replay.Player([(0.0, "rx", b"A"), (1.0, "rx", b"B")], got.append, speed=2.0)
         p.start(now=0.0)
@@ -5449,7 +5458,7 @@ class RecReplayTests(unittest.TestCase):
         self.assertEqual(got, [b"A", b"B"])
 
     def test_player_caps_each_tick_to_avoid_ui_event_storm(self):
-        import rec_replay
+        from record import rec_replay
         from unittest.mock import patch
         got = []
         events = [(0.0, "rx", bytes([i])) for i in range(4)]
@@ -5464,13 +5473,13 @@ class RecReplayTests(unittest.TestCase):
 
     def test_player_skips_tx_by_default(self):
         """默认只回放 RX：回放我方发的会造成自问自答。"""
-        import rec_replay
+        from record import rec_replay
         events = [(0.0, "rx", b"A"), (0.1, "tx", b"B")]
         self.assertEqual(len(rec_replay.Player(events, lambda b: None)), 1)
         self.assertEqual(len(rec_replay.Player(events, lambda b: None, include_tx=True)), 2)
 
     def test_player_loop(self):
-        import rec_replay
+        from record import rec_replay
         got = []
         p = rec_replay.Player([(0.0, "rx", b"A")], got.append, loop=True)
         p.start(now=0.0)
@@ -5481,7 +5490,8 @@ class RecReplayTests(unittest.TestCase):
 
     def test_player_inject_failure_does_not_break(self):
         """注入失败（连接已关）不该打断回放收尾。"""
-        import rec_replay
+        from record import rec_replay
+
 
         def boom(_b):
             raise RuntimeError("closed")
@@ -5497,7 +5507,7 @@ class VirtualConnTests(unittest.TestCase):
     """虚拟连接（离线模式）：接口契约 / 回环 / 注入。"""
 
     def _conn(self, loopback=False):
-        from virtual_io import VirtualConn
+        from transport.virtual_io import VirtualConn
         _win()
         return VirtualConn(loopback=loopback)
 
@@ -5565,18 +5575,18 @@ class VirtualConnTests(unittest.TestCase):
         self.assertEqual(got, [])
 
     def test_oversize_inject_returns_partial_count_and_warns(self):
-        from virtual_io import _MAX_INJECT
+        from transport.virtual_io import _MAX_INJECT
         c = self._conn()
         c.open()
-        with self.assertLogs("virtual_io", level="WARNING") as logs:
+        with self.assertLogs("transport.virtual_io", level="WARNING") as logs:
             accepted = c.inject(b"X" * (_MAX_INJECT + 1))
         c.close()  # scheduled delivery is intentionally discarded
         self.assertEqual(accepted, _MAX_INJECT)
         self.assertIn("truncated", "\n".join(logs.output))
 
     def test_registered_as_conn_type(self):
-        from virtual_io import PROTO_VIRTUAL
-        from conn_ui import CONN_TYPES, PROTO_BLE
+        from transport.virtual_io import PROTO_VIRTUAL
+        from ui.conn_ui import CONN_TYPES, PROTO_BLE
         self.assertIn(PROTO_VIRTUAL, CONN_TYPES)
         self.assertIn(PROTO_BLE, CONN_TYPES)
 
@@ -5594,7 +5604,7 @@ class OfflineIntegrationTests(unittest.TestCase):
         _dispose_win()
 
     def _virtual(self, loopback=False):
-        from virtual_io import PROTO_VIRTUAL
+        from transport.virtual_io import PROTO_VIRTUAL
         w = _win()
         w.cb_proto.setCurrentText(PROTO_VIRTUAL)
         w._update_net_fields()
@@ -5610,7 +5620,7 @@ class OfflineIntegrationTests(unittest.TestCase):
     def test_virtual_open_close(self):
         w = self._virtual()
         try:
-            from virtual_io import VirtualConn
+            from transport.virtual_io import VirtualConn
             self.assertIsInstance(w.conn, VirtualConn)
             self.assertTrue(w.conn.is_open)
         finally:
@@ -5657,7 +5667,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_closing_record_dialog_keeps_capture_for_save(self):
         """关闭录制窗口等同于停止按钮：本次数据仍要留在对话框里，重开后可保存。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         r = w._recorder
         dlg = RecReplayDialog(w)
@@ -5673,7 +5683,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_disconnect_stops_replay_and_releases_busy_state(self):
         """回放绑定旧虚拟连接；断连必须停定时器并释放 replay 占用态。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         old_dlg = w._rr_dlg
         dlg = RecReplayDialog(w)
@@ -5695,7 +5705,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_disconnect_stops_recording_and_keeps_capture(self):
         """录制跨断连继续会混入下一会话；断连时应停止并保留当前现场。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         old_dlg = w._rr_dlg
         dlg = RecReplayDialog(w)
@@ -5712,7 +5722,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_recording_count_refreshes_on_main_rate_tick(self):
         """录制中的事件数应随主窗 1Hz 定时器刷新，不能一直显示启动时的 0。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         old_dlg = w._rr_dlg
         dlg = RecReplayDialog(w)
@@ -5730,7 +5740,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_record_and_replay_refuse_active_modbus_master(self):
         """录制/回放不会暂停 Modbus 主机，因此从这一侧启动时也必须遵守互斥。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         from unittest.mock import patch
         w = self._virtual()
         dlg = RecReplayDialog(w)
@@ -5746,7 +5756,7 @@ class OfflineIntegrationTests(unittest.TestCase):
             w._recorder.stop(); dlg.close(); dlg.deleteLater(); w.close_conn()
 
     def test_recording_locks_file_and_replay_controls(self):
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         dlg = RecReplayDialog(w)
         try:
@@ -5764,7 +5774,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_pcap_export_does_not_borrow_current_connection_metadata(self):
         """A metadata-free historical capture must stay unsupported."""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         from unittest.mock import patch
         w = self._virtual()
         dlg = RecReplayDialog(w)
@@ -5777,7 +5787,7 @@ class OfflineIntegrationTests(unittest.TestCase):
         }
         try:
             with patch.object(w, "_recorder_link_snapshot", return_value=current), \
-                    patch("rec_replay_dialog.QFileDialog.getSaveFileName") as choose:
+                    patch("ui.rec_replay_dialog.QFileDialog.getSaveFileName") as choose:
                 dlg._on_export_pcap()
             choose.assert_not_called()
         finally:
@@ -5785,7 +5795,7 @@ class OfflineIntegrationTests(unittest.TestCase):
 
     def test_plain_send_cannot_mix_into_replay(self):
         """回放期间手动发送会污染复现场景；自动应答等内部发送仍有专用绕过通道。"""
-        from rec_replay_dialog import RecReplayDialog
+        from ui.rec_replay_dialog import RecReplayDialog
         w = self._virtual()
         old_dlg = w._rr_dlg
         dlg = RecReplayDialog(w)
@@ -5931,7 +5941,7 @@ class HexLineSelectionTests(unittest.TestCase):
     """整行 HEX 选区 → 字节（Qt-free）：结合布局剔除装饰，残缺 token 宁可丢也不能猜。"""
 
     def setUp(self):
-        import convert
+        from protocol import convert
         self.convert = convert
 
     def test_plain_hex(self):
@@ -5976,7 +5986,7 @@ class FormatNumericTests(unittest.TestCase):
     """字节流 → 数值序列（Qt-free）：余数必须原样返回，否则跨包流会永久错位。"""
 
     def setUp(self):
-        import convert
+        from protocol import convert
         self.convert = convert
 
     def test_u16_le_be(self):
@@ -6459,7 +6469,7 @@ class SelectionChecksumTests(unittest.TestCase):
 
     def test_tooltip_uses_ui_names_and_monospace_values(self):
         """名称与应用 UI 一致，校验值统一用等宽字体，字节列能精确对齐。"""
-        from fonts import ui_font, mono_font
+        from ui.fonts import ui_font, mono_font
         w = self._setup()
         w._on_data_received_impl(self.FRAME)
         self._select_all(w)
@@ -6511,7 +6521,7 @@ class SelectionChecksumTests(unittest.TestCase):
         self.assertEqual(w.txt_recv.property("tr_tooltip"), "sel_chk_hint")
 
     def test_i18n_keys_present(self):
-        from i18n import TR
+        from ui.i18n import TR
         for lang in TR:
             for k in ("numview", "numview_tip", "numview_type_tip", "numview_tail",
                       "sel_chk", "sel_chk_too_big", "sel_chk_tip", "sel_chk_hint"):
@@ -6564,7 +6574,7 @@ class SerialLiveParamsTests(unittest.TestCase):
 
     def _conn(self):
         import serial
-        from serial_io import SerialConn
+        from transport.serial_io import SerialConn
         c = SerialConn("COM_FAKE", 9600, serial.EIGHTBITS,
                        serial.PARITY_NONE, serial.STOPBITS_ONE)
         c._ser = _FakeSerial()
@@ -6652,7 +6662,7 @@ class SerialLiveParamsUiTests(unittest.TestCase):
 
     def _setup(self):
         import serial
-        from serial_io import SerialConn
+        from transport.serial_io import SerialConn
         from main_window import PROTO_SERIAL
         w = _win()
         c = SerialConn("COM_FAKE", 9600, serial.EIGHTBITS,
@@ -6742,7 +6752,7 @@ class SerialLiveParamsUiTests(unittest.TestCase):
     def test_maps_shared_with_open_conn(self):
         """建连接与动态改参数必须共用同一份映射，两处解释不允许分叉。"""
         import serial
-        from serial_params import (
+        from transport.serial_params import (
             PARITY_MAP, DATABITS_MAP, STOPBITS_MAP, FLOW_MAP,
         )
         self.assertEqual(PARITY_MAP["Even"], serial.PARITY_EVEN)
@@ -6765,7 +6775,7 @@ class SerialLiveParamsUiTests(unittest.TestCase):
         self.assertTrue(w.sw_rts.isEnabled(), "无流控时应恢复手动 RTS 开关")
 
     def test_i18n_key_present(self):
-        from i18n import TR
+        from ui.i18n import TR
         for lang in TR:
             with self.subTest(lang=lang):
                 self.assertIn("live_params_applied", TR[lang])
@@ -6778,7 +6788,7 @@ class LogNamingTests(unittest.TestCase):
     WHEN = None      # setUp 里填，避免模块导入期算时间
 
     def setUp(self):
-        import log_naming
+        from record import log_naming
         from datetime import datetime
         self.L = log_naming
         self.WHEN = datetime(2026, 7, 23, 14, 30, 5)
@@ -6975,7 +6985,7 @@ class LogRotationTests(unittest.TestCase):
         self.assertIn("20260723", path)
 
     def test_i18n_keys_present(self):
-        from i18n import TR
+        from ui.i18n import TR
         for lang in TR:
             with self.subTest(lang=lang):
                 self.assertIn("log_vars_tip", TR[lang])
@@ -6988,7 +6998,7 @@ class RecDiffTests(unittest.TestCase):
     """会话比较对齐算法（Qt-free）。"""
 
     def setUp(self):
-        import rec_diff
+        from record import rec_diff
         self.D = rec_diff
 
     @staticmethod
@@ -7221,7 +7231,7 @@ class RecDiffDialogTests(unittest.TestCase):
 
     def _write(self, name, rows):
         import os
-        import rec_replay
+        from record import rec_replay
         r = rec_replay.StreamRecorder()
         r.events = [(t, d, bytes.fromhex(h)) for t, d, h in rows]
         path = os.path.join(self.tmp, name)
@@ -7229,7 +7239,7 @@ class RecDiffDialogTests(unittest.TestCase):
         return path
 
     def _dlg_with(self, rows_a, rows_b):
-        import rec_replay
+        from record import rec_replay
         pa = self._write("a.ctrec", rows_a)
         pb = self._write("b.ctrec", rows_b)
         self.w.open_rec_diff()
@@ -7285,11 +7295,11 @@ class RecDiffDialogTests(unittest.TestCase):
     def test_help_uses_self_drawn_dialog_not_qmessagebox(self):
         """帮助必须走自绘主题窗（对齐录制/回放），不用系统 QMessageBox —— 后者跨平台
         样式和主题都对不上。模块级不再导入 QMessageBox 即证明整个对话框都不依赖它。"""
-        import rec_diff_dialog
+        from ui import rec_diff_dialog
         self.assertFalse(hasattr(rec_diff_dialog, "QMessageBox"),
                          "rec_diff_dialog 仍导入 QMessageBox，帮助/错误提示应走自绘窗+toast")
         # 三语言帮助正文与标题齐全，且正文是富文本（有 <b> 标签，对齐 rr 观感）
-        from i18n import TR
+        from ui.i18n import TR
         for lang in TR:
             with self.subTest(lang=lang):
                 self.assertIn("rd_help_title", TR[lang])
@@ -7303,7 +7313,7 @@ class RecDiffDialogTests(unittest.TestCase):
         self.assertIn(self.w._t("rd_identical"), dlg.lbl_stat.text())
 
     def test_hex_cell_shows_direction_and_truncates(self):
-        from rec_diff_dialog import RecDiffDialog, _HEX_PREVIEW
+        from ui.rec_diff_dialog import RecDiffDialog, _HEX_PREVIEW
         self.assertEqual(RecDiffDialog._hex_cell(b"", "rx"), "")
         self.assertTrue(RecDiffDialog._hex_cell(b"\x01", "rx").startswith("\u2190"))
         self.assertTrue(RecDiffDialog._hex_cell(b"\x01", "tx").startswith("\u2192"))
@@ -7355,7 +7365,7 @@ class RecDiffDialogTests(unittest.TestCase):
             self.w._set_language(old)
 
     def test_i18n_keys_present(self):
-        from i18n import TR
+        from ui.i18n import TR
         keys = [k for k in TR["zh"] if k.startswith("rd_")]
         self.assertGreater(len(keys), 20)
         for lang in TR:
@@ -7369,7 +7379,7 @@ class SnippetsCoreTests(unittest.TestCase):
     """模板库纯数据逻辑（Qt-free）。"""
 
     def setUp(self):
-        import snippets
+        from automation import snippets
         self.S = snippets
 
     def test_normalize_fills_and_truncates(self):
@@ -7443,7 +7453,7 @@ class SnippetsDialogTests(unittest.TestCase):
         import tempfile
         self.w = _win()
         # 用干净的临时库，避免测试间互相污染
-        import snippets
+        from automation import snippets
         self.w._snippets = snippets.default_snippets()
         self.w.open_snippets()
         self.dlg = self.w._snip_dlg
@@ -7560,11 +7570,18 @@ class SnippetsDialogTests(unittest.TestCase):
         self.assertFalse(self.w.sw_tx_hex.isChecked())
 
     def test_persistence_roundtrip(self):
-        import json, snippets
+        import json
+        from automation import snippets
         self.w._snippets = [{"name": "a", "text": "01", "hex": True}]
         self.w._save_snippets()
         raw = self.w.settings.value("snippets", "")
         self.assertEqual(snippets.sanitize_list(json.loads(raw)), self.w._snippets)
+
+    def test_export_default_filename_unprefixed(self):
+        import inspect
+        src = inspect.getsource(self.dlg._export)
+        self.assertIn('"snippets.json"', src)
+        self.assertNotIn("automation.snippets.json", src)
 
     def test_snippets_in_terminal_workbench(self):
         """Snippet library is directly reachable in Terminal and Multi-Send."""
@@ -7582,7 +7599,7 @@ class SnippetsDialogTests(unittest.TestCase):
 
     def test_multi_send_dialog_opens_snippets(self):
         """多条发送对话框顶部的「模板库」按钮点击后打开模板库——两个发送辅助工具就近串联。"""
-        from i18n import TR
+        from ui.i18n import TR
         for lang in TR:                       # 按钮文案键三语言齐全
             self.assertIn("ms_snip_btn", TR[lang])
             self.assertIn("ms_snip_btn_tip", TR[lang])
@@ -7617,7 +7634,7 @@ class SnippetsDialogTests(unittest.TestCase):
             self.w._set_language(old)
 
     def test_i18n_keys_present(self):
-        from i18n import TR
+        from ui.i18n import TR
         keys = [k for k in TR["zh"] if k.startswith("snip_")]
         self.assertGreater(len(keys), 15)
         for lang in TR:

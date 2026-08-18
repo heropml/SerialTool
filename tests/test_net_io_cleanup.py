@@ -14,7 +14,7 @@ from PyQt5.QtNetwork import QAbstractSocket  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
-from net_io import (  # noqa: E402
+from transport.net_io import (  # noqa: E402
     TcpServerConn, TcpClientConn, UdpGroupConn, _safe,
     ERR_SEND_BACKPRESSURE, _MAX_PENDING_BYTES,
 )

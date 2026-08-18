@@ -12,12 +12,12 @@ from PyQt5.QtWidgets import QApplication, QTextEdit, QWidget
 
 _APP = QApplication.instance() or QApplication([])
 
-import receive_card as rc
-import send_card as sc
-import sidebar as sb
-import workspace_ui as wu
-import ui_options as uo
-from widgets import make_label, Card
+from ui import receive_card as rc
+from ui import send_card as sc
+from ui import sidebar as sb
+from ui import workspace_ui as wu
+from ui import ui_options as uo
+from ui.widgets import make_label, Card
 
 
 class _BaseHost(QWidget):

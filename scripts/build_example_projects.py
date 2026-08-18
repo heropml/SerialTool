@@ -9,9 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from connection_presets import make_preset  # noqa: E402
-from project_model import make_project, save_project, collect_project_resources  # noqa: E402
-from project_templates import protocol_template_settings  # noqa: E402
+from project.connection_presets import make_preset  # noqa: E402
+from project.project_model import make_project, save_project, collect_project_resources  # noqa: E402
+from project.project_templates import protocol_template_settings  # noqa: E402
 from version import __version__  # noqa: E402
 
 

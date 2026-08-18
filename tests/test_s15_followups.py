@@ -74,7 +74,7 @@ def test_custom_title_prefers_name_over_connection(monkeypatch, tmp_path):
 
 
 def test_custom_title_restore_and_conflict_allowed(monkeypatch, tmp_path):
-    from session import Session
+    from sessions.session import Session
     w = _window(monkeypatch, tmp_path, "rename-restore")
     a = Session.from_persist(w, {"id": "a", "custom_title": "Same", "title_index": None})
     b = Session.from_persist(w, {"id": "b", "title": "Same", "title_index": None})
@@ -88,7 +88,7 @@ def test_custom_title_restore_and_conflict_allowed(monkeypatch, tmp_path):
 
 
 def test_keyword_rule_regex_and_hex_helpers():
-    from keyword_groups import rule_matches, rule_spans, normalize_match
+    from protocol.keyword_groups import rule_matches, rule_spans, normalize_match
     assert normalize_match(None) == "plain"
     assert normalize_match("REGEX") == "regex"
     assert rule_matches("err ERROR ok", {"pattern": r"ERR\w+", "match": "regex"})
@@ -105,8 +105,8 @@ def test_keyword_rule_regex_and_hex_helpers():
 
 
 def test_keyword_match_limit_caps_work():
-    from search_helper import find_spans
-    from keyword_groups import rule_spans
+    from protocol.search_helper import find_spans
+    from protocol.keyword_groups import rule_spans
 
     assert len(find_spans("x" * 1000, "x", limit=7)) == 7
     assert len(rule_spans(
@@ -313,8 +313,8 @@ def test_recv_search_passes_hard_cap_into_find_spans(monkeypatch, tmp_path):
         base = int(start or 0)
         return [(base + i, base + i + 1) for i in range(n)]
 
-    monkeypatch.setattr("search_helper.find_spans", _fake_find_spans)
-    monkeypatch.setattr("search_helper.to_utf16_spans", lambda text, spans: spans)
+    monkeypatch.setattr("protocol.search_helper.find_spans", _fake_find_spans)
+    monkeypatch.setattr("protocol.search_helper.to_utf16_spans", lambda text, spans: spans)
     w._search_term = "00"
     w._search_mode = "hex"
     w.txt_recv.setPlainText("00 00 00")
@@ -392,7 +392,7 @@ def test_open_io_graph_applies_rate_preset(monkeypatch, tmp_path):
     # even though it deliberately shares the display name "rx_Bps".
     csv_path = tmp_path / "io-graph.csv"
     monkeypatch.setattr(
-        "plot_dialog.QFileDialog.getSaveFileName",
+        "ui.plot_dialog.QFileDialog.getSaveFileName",
         lambda *_a, **_k: (str(csv_path), "CSV (*.csv)"))
     dlg._export_csv()
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:

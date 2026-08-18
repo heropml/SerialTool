@@ -14,11 +14,11 @@ from PyQt5.QtCore import QObject, pyqtSignal  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
-from bridge import BridgeEngine  # noqa: E402
-from bridge_dialog import BridgeDialog, _BridgeSidePanel  # noqa: E402
-from net_io import (TcpServerConn, UdpConn, SEND_NO_TARGET,  # noqa: E402
+from modbus.bridge import BridgeEngine  # noqa: E402
+from ui.bridge_dialog import BridgeDialog, _BridgeSidePanel  # noqa: E402
+from transport.net_io import (TcpServerConn, UdpConn, SEND_NO_TARGET,  # noqa: E402
                     _UDP_MAX_PAYLOAD)
-from modbus_gateway import TcpReply  # noqa: E402
+from modbus.modbus_gateway import TcpReply  # noqa: E402
 
 
 class FakeConn(QObject):
@@ -380,8 +380,8 @@ class GatewayRoutingTests(unittest.TestCase):
         self.assertIsNone(eng._gateway)
 
     def _setup(self):
-        import modbus_master as mm
-        import modbus_slave as ms
+        from modbus import modbus_master as mm
+        from modbus import modbus_slave as ms
         eng = BridgeEngine()
         a, b = FakeTcpServerConn(), FakeConn()
         eng.set_connection(0, a)

@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import QApplication, QLineEdit, QComboBox, QLabel, QPushBut
 
 _APP = QApplication.instance() or QApplication([])
 
-import log_naming  # noqa: E402
-import modbus_master  # noqa: E402
+from record import log_naming  # noqa: E402
+from modbus import modbus_master  # noqa: E402
 
 
 def test_parse_size_limit_units():
@@ -50,7 +50,7 @@ def test_oneshot_normalize_read_and_write():
 
 
 def test_oneshot_run_reuses_device_scan():
-    from modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
+    from ui.modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
 
     class FakeApp:
         def __init__(self):
@@ -95,7 +95,7 @@ def test_oneshot_run_reuses_device_scan():
 
 
 def test_oneshot_cancelled_clears_running_placeholder():
-    from modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
+    from ui.modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
 
     class FakeApp:
         def __init__(self):
@@ -127,7 +127,7 @@ def test_oneshot_cancelled_clears_running_placeholder():
 
 
 def test_oneshot_func_change_clears_stale_result():
-    from modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
+    from ui.modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
 
     class FakeApp:
         def __init__(self):
@@ -150,7 +150,7 @@ def test_oneshot_func_change_clears_stale_result():
 
 
 def _oneshot_dlg(app, func_index=2, qty="1"):
-    from modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
+    from ui.modbus_master_dialog import ModbusMasterDialog, ONESHOT_FUNCS
 
     dlg = ModbusMasterDialog.__new__(ModbusMasterDialog)
     dlg.app = app
@@ -197,7 +197,7 @@ def test_oneshot_fc05_write_uses_wval():
 
 
 def test_oneshot_scan_locked_guard_toasts_and_skips():
-    from modbus_master_dialog import ModbusMasterDialog
+    from ui.modbus_master_dialog import ModbusMasterDialog
 
     class FakeApp:
         def __init__(self):

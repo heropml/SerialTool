@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import io_stats as st
+from transport import io_stats as st
 
 
 def test_note_and_size_stats():

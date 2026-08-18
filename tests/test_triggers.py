@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import triggers as tg  # noqa: E402
+from automation import triggers as tg  # noqa: E402
 
 
 def rule(**kw):

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import modbus_timing as mt
+from modbus import modbus_timing as mt
 
 
 def test_serial_char_bits():

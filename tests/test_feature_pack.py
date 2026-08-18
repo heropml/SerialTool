@@ -11,9 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import dash_widgets
-import rec_replay
-import seq_report
+from record import dash_widgets
+from record import rec_replay
+from automation import seq_report
 
 
 class DashWidgetsTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class DashWidgetsTests(unittest.TestCase):
     def test_fmt_nan_inf(self):
         # Import helper from dashboard (requires Qt)
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from dashboard_dialog import _fmt
+        from ui.dashboard_dialog import _fmt
         self.assertEqual(_fmt(float("nan")), "--")
         self.assertEqual(_fmt(float("inf")), "--")
         self.assertEqual(_fmt(3.0), "3")

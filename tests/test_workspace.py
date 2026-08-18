@@ -13,10 +13,10 @@ from PyQt5.QtWidgets import QApplication, QLabel, QDialog, QWidgetAction
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from main_window import CommTool, PortScannerThread
-from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
-from plot_dialog import PlotDialog
-from project_model import load_project, make_project, save_project
-from widgets import IOSSwitch
+from ui.device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
+from ui.plot_dialog import PlotDialog
+from project.project_model import load_project, make_project, save_project
+from ui.widgets import IOSSwitch
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -323,7 +323,7 @@ def test_tcp_server_client_disconnect_drops_half_frame(tmp_path, monkeypatch):
     window = CommTool("stream-frame-client-drop")
     try:
         _APP.processEvents()
-        from conn_ui import PROTO_TCP_SERVER
+        from ui.conn_ui import PROTO_TCP_SERVER
         window._set_stream_frame({
             "on": True, "header": "AA BB", "len_off": 2, "len_width": 1,
             "len_extra": 3,
@@ -368,7 +368,7 @@ def test_structured_modbus_ignores_device_scan_and_survives_decode_error(
         assert window._structured_recorder.rows == []
 
         window._device_scan_state = None
-        import device_resources
+        from project import device_resources
         monkeypatch.setattr(
             device_resources, "decode_modbus_samples",
             lambda *_args: (_ for _ in ()).throw(RuntimeError("bad decode")))
@@ -679,7 +679,7 @@ def test_broken_last_project_is_forgotten_without_startup_dialog(tmp_path, monke
 def test_modbus_slave_ascii_sends_text_frame_rtu_sends_hex(tmp_path, monkeypatch):
     """A 落地：从机 ASCII 变体把响应按 ASCII 字面字节发（hex_mode=False、':' 开头）；
     RTU 变体仍按 hex 串发（hex_mode=True）。验证 _modbus_send 的分支不互相串味。"""
-    import modbus_slave, modbus_master
+    from modbus import modbus_slave, modbus_master
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("modbus-ascii-slave-test")
@@ -723,7 +723,7 @@ def test_modbus_slave_ascii_sends_text_frame_rtu_sends_hex(tmp_path, monkeypatch
 
 def test_modbus_master_ascii_variant_builds_and_feeds_ascii(tmp_path, monkeypatch):
     """A 落地：主机 ascii 变体 → _mbm_variant_eff=ascii；_mbm_feed 走 take_ascii_response。"""
-    import modbus_master
+    from modbus import modbus_master
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("modbus-ascii-master-test")
@@ -1069,7 +1069,7 @@ def test_freeze_view_has_hover_help(tmp_path, monkeypatch):
     try:
         _APP.processEvents()
         assert window.sw_freeze_view.property("tr_tooltip") == "freeze_view_tip"
-        from ui_tips import tip_html
+        from ui.ui_tips import tip_html
         assert window.sw_freeze_view.toolTip() == tip_html(window._t("freeze_view_tip"))
     finally:
         window.deleteLater()
@@ -1188,7 +1188,7 @@ def test_modbus_slave_variant_survives_normalize(tmp_path, monkeypatch):
 def test_ascii_master_timeout_longer_than_rtu_for_same_request(tmp_path, monkeypatch):
     """Bugbot#3(med)：ASCII 响应是 hex 编码、约 2 倍 RTU 长度；超时必须按 ASCII 帧长估算，
     否则低波特率大包下超时偏短而误判。"""
-    import modbus_master
+    from modbus import modbus_master
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("ascii-timeout-test")
@@ -1210,7 +1210,7 @@ def test_ascii_master_timeout_longer_than_rtu_for_same_request(tmp_path, monkeyp
 def test_ascii_master_strips_local_echo_before_parsing(tmp_path, monkeypatch):
     """Bugbot#2(med)：半双工 RS-485 开本地回显时，ASCII 请求帧会被回显回来；
     inflight 必须登记 echo 并在解析前剥掉，否则回显会被当成响应误解析。"""
-    import modbus_master, modbus_slave
+    from modbus import modbus_master, modbus_slave
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("ascii-echo-test")
@@ -1236,7 +1236,7 @@ def test_ascii_master_strips_local_echo_before_parsing(tmp_path, monkeypatch):
 def test_rtu_slave_addr_58_sends_binary_not_ascii_mangled(tmp_path, monkeypatch):
     """复审#1(med)：RTU 从机地址 58=0x3A=':'，_modbus_send 必须按 variant 路由、不能嗅探首字节——
     否则 RTU 二进制响应被 decode('ascii','replace') 破坏，主机侧 CRC 必败、该地址永远收不到响应。"""
-    import modbus_master, modbus_slave
+    from modbus import modbus_master, modbus_slave
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("rtu-addr58-test")
@@ -1266,7 +1266,7 @@ def test_rtu_slave_addr_58_sends_binary_not_ascii_mangled(tmp_path, monkeypatch)
 def test_ascii_master_resyncs_past_bad_frame_in_one_chunk(tmp_path, monkeypatch):
     """复审#3(low-med)：单 chunk 内坏帧+好帧粘在一起时，ASCII _mbm_feed 应丢坏帧继续解好帧，
     而非一次失败就 return 让好帧搁到超时。"""
-    import modbus_master, modbus_slave
+    from modbus import modbus_master, modbus_slave
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("ascii-resync-test")
@@ -1559,7 +1559,7 @@ def test_search_lazy_pages_with_next_prev(tmp_path, monkeypatch):
 
 def test_example_projects_validate_and_merge(tmp_path):
     """Shipped examples/ packs load as v2 projects with useful resources."""
-    from project_model import load_project, merge_project_resources, validate
+    from project.project_model import load_project, merge_project_resources, validate
     examples = Path(__file__).resolve().parents[1] / "examples"
     files = sorted(examples.glob("*.ctproj"))
     assert len(files) >= 3
@@ -1578,7 +1578,7 @@ def test_example_projects_validate_and_merge(tmp_path):
 def test_example_project_generation_is_stable_and_dual_session_loops_back(tmp_path):
     """Generated demos are reproducible and the virtual starter works immediately."""
     from scripts import build_example_projects as builder
-    from project_model import merge_project_resources
+    from project.project_model import merge_project_resources
 
     first = tmp_path / "first"
     second = tmp_path / "second"

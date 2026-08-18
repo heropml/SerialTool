@@ -8,13 +8,13 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_master
-import modbus_slave
-import rec_diff
-import rec_replay
+from modbus import modbus_master
+from modbus import modbus_slave
+from record import rec_diff
+from record import rec_replay
 from main_window import CommTool, PortScannerThread
-from rec_diff_dialog import RecDiffDialog
-from rec_replay_dialog import RecReplayDialog
+from ui.rec_diff_dialog import RecDiffDialog
+from ui.rec_replay_dialog import RecReplayDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -154,7 +154,7 @@ def test_fc23_exception_policy_matches_write_address():
 
 def test_once_mode_not_double_counted_by_multi_address_check():
     """The multi-candidate address check must stay a single should_raise call."""
-    import modbus_dyn
+    from modbus import modbus_dyn
     inj = modbus_dyn.ExceptionInjector(
         {"enabled": True, "code": 4, "mode": "once", "funcs": [0x17], "addrs": [5]})
     assert inj.should_raise(0x17, (0, 5)) == 4

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_dyn  # noqa: E402
+from modbus import modbus_dyn  # noqa: E402
 
 
 class DynamicEngineTests(unittest.TestCase):
@@ -68,7 +68,7 @@ class ReviewFixTests(unittest.TestCase):
             {"mode": "static", "value": 1234})["value"], 1234)
 
     def test_slave_addr_is_clamped_not_masked(self):
-        import modbus_slave
+        from modbus import modbus_slave
         # addr:300 used to be masked to 44, answering as a completely different slave.
         self.assertEqual(modbus_slave.ModbusSlave(addr=300).addr, 0xFF)
         self.assertEqual(modbus_slave.ModbusSlave(addr=-1).addr, 0)

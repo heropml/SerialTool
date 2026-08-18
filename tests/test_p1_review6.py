@@ -8,9 +8,9 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import io_stats
+from transport import io_stats
 from main_window import CommTool, PortScannerThread
-from structured_record_dialog import StructuredRecordDialog
+from ui.structured_record_dialog import StructuredRecordDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -85,7 +85,7 @@ def test_jump_to_session_time_refreshes_hidden_dialog(tmp_path, monkeypatch):
 def test_invalid_slave_extra_json_is_rejected(tmp_path, monkeypatch):
     """Extra column must be a JSON object; invalid JSON must not wipe slaves."""
     from PyQt5.QtWidgets import QDialog, QLineEdit
-    from auto_reply_dialog import AutoReplyDialog
+    from ui.auto_reply_dialog import AutoReplyDialog
 
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("ar-slaves-extra-test")
@@ -137,7 +137,7 @@ def _click_add_slave(dlg):
 def test_slave_table_commit_writes_rows(tmp_path, monkeypatch):
     """Table rows (addr / server_id / Extra) commit into ar_modbus.slaves."""
     from PyQt5.QtWidgets import QDialog, QLineEdit
-    from auto_reply_dialog import AutoReplyDialog
+    from ui.auto_reply_dialog import AutoReplyDialog
 
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("ar-slaves-table-test")
@@ -180,7 +180,7 @@ def test_slave_table_commit_writes_rows(tmp_path, monkeypatch):
 def test_duplicate_slave_addr_is_rejected(tmp_path, monkeypatch):
     """Duplicate slave addresses must not be accepted by the table editor."""
     from PyQt5.QtWidgets import QDialog, QLineEdit
-    from auto_reply_dialog import AutoReplyDialog
+    from ui.auto_reply_dialog import AutoReplyDialog
 
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("ar-duplicate-slave-test")
@@ -230,7 +230,7 @@ def test_modbus_dialog_commit_preserves_widgetless_fields(tmp_path, monkeypatch)
     """server_id / exception mode+filters / dynamics have no widget in the Modbus
     dialog; committing it must carry them over instead of resetting them."""
     from PyQt5.QtWidgets import QDialog
-    from auto_reply_dialog import AutoReplyDialog
+    from ui.auto_reply_dialog import AutoReplyDialog
 
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("ar-widgetless-test")

@@ -18,13 +18,11 @@ from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 _APP = QApplication.instance() or QApplication([])
 
-from net_io import TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn  # noqa: E402
-import modbus_master as mm  # noqa: E402
-from modbus_gateway import ModbusGatewayEngine  # noqa: E402
-from device_resources import parse_bitfields, decode_modbus_samples  # noqa: E402
-import triggers  # noqa: E402
-
-
+from transport.net_io import TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn  # noqa: E402
+from modbus import modbus_master as mm  # noqa: E402
+from modbus.modbus_gateway import ModbusGatewayEngine  # noqa: E402
+from project.device_resources import parse_bitfields, decode_modbus_samples  # noqa: E402
+from automation import triggers  # noqa: E402
 # =========================================================================
 # 1. Double-open guard for all 4 connection classes
 #    Test that calling close() when never opened should NOT emit state_changed(False).
@@ -73,7 +71,7 @@ def test_udp_group_conn_close_when_never_opened_no_signal():
 
 def test_gateway_resync_caps_drops_per_call():
     """Pathological noise must not resync without a per-feed ceiling."""
-    from modbus_gateway import _RESYNC_MAX_PER_FEED
+    from modbus.modbus_gateway import _RESYNC_MAX_PER_FEED
     gw = ModbusGatewayEngine()
     gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1))
     assert gw._pending is not None
@@ -89,7 +87,7 @@ def test_gateway_resync_caps_drops_per_call():
 
 def test_gateway_resync_continues_on_next_call():
     """After hitting the per-feed ceiling, the next feed keeps resyncing."""
-    from modbus_gateway import _RESYNC_MAX_PER_FEED
+    from modbus.modbus_gateway import _RESYNC_MAX_PER_FEED
     gw = ModbusGatewayEngine()
     gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1))
     assert gw._pending is not None
@@ -106,7 +104,7 @@ def test_gateway_resync_same_batch_keeps_the_valid_frame():
     The old 8-drop early-return left the valid frame in _rtu_buf; with no more
     slave traffic the gateway timed out and cleared it — silent data loss.
     """
-    import modbus_slave as ms
+    from modbus import modbus_slave as ms
     gw = ModbusGatewayEngine(timeout_s=1.0)
     gw.feed_tcp(mm.build_tcp_request(1, 1, 3, 0, 1), client="A", now=0.0)
     body = bytes([1, 0x03, 0x02, 0x12, 0x34])
@@ -192,7 +190,7 @@ def test_tcp_resync_same_batch_keeps_the_valid_request():
 
 def test_fc11_byte_count_too_large_raises():
     """FC11 with byte_count > 252 must raise ValueError."""
-    from modbus_slave import crc16
+    from modbus.modbus_slave import crc16
     frame_body = bytes([1, 0x11, 253])
     frame_body += b"\x00" * 253
     frame = frame_body + crc16(frame_body)
@@ -202,7 +200,7 @@ def test_fc11_byte_count_too_large_raises():
 
 def test_fc11_byte_count_at_boundary_ok():
     """FC11 with byte_count == 252 should not raise byte_count error."""
-    from modbus_slave import crc16
+    from modbus.modbus_slave import crc16
     frame_body = bytes([1, 0x11, 252])
     frame_body += b"\x00" * 252
     frame = frame_body + crc16(frame_body)

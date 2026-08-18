@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
+from ui.split_persist import load_split_sizes, save_split_sizes, sync_splitter_group
 
 
 class _FakeSettings(object):

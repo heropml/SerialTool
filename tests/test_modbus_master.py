@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from modbus_slave import crc16, ModbusException, ModbusSlave  # noqa: E402
-import modbus_master as mm
-import modbus_slave  # noqa: E402
+from modbus.modbus_slave import crc16, ModbusException, ModbusSlave  # noqa: E402
+from modbus import modbus_master as mm
+from modbus import modbus_slave  # noqa: E402
 
 
 class BuildRequestTests(unittest.TestCase):
@@ -454,7 +454,7 @@ class AsciiRequestTests(unittest.TestCase):
 
     def test_ascii_exception_response_raises(self):
         # 非法功能码 0x41 → 异常 func 0xC1 code 01
-        from modbus_slave import ascii_wrap
+        from modbus.modbus_slave import ascii_wrap
         bad = ascii_wrap(bytes([1, 0x41, 0, 0, 0, 1]))
         resp = ModbusSlave(addr=1).handle_ascii(bad)
         self.assertIsNotNone(resp)

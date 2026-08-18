@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import auto_reply_core as core
+from automation import auto_reply_core as core
 
 
 def test_parse_tx_hex_ok_and_errors():

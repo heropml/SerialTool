@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from device_resources import (
+from project.device_resources import (
     STRUCTURED_COLUMNS, StructuredRecorder, decode_modbus_samples,
     decode_register_value, normalize_registers, normalize_sample,
 )
@@ -74,7 +74,7 @@ def test_structured_recorder_caps_rows_and_rejects_nonfinite():
 
 def test_f64_and_bitfields():
     import struct
-    from device_resources import decode_register_value, decode_modbus_samples, parse_bitfields
+    from project.device_resources import decode_register_value, decode_modbus_samples, parse_bitfields
     # f64 AB order across 4 regs: pack as big-endian double split into words
     raw8 = struct.pack(">d", 1.5)
     regs = [int.from_bytes(raw8[i:i+2], "big") for i in range(0, 8, 2)]
@@ -92,7 +92,7 @@ def test_f64_and_bitfields():
 
 
 def test_value_level_thresholds():
-    from device_resources import value_level
+    from project.device_resources import value_level
     rec = {"warn_hi": 80, "alarm_hi": 100}
     assert value_level(50, rec) == ""
     assert value_level(85, rec) == "warn"

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import auto_reply_gate as gate
+from automation import auto_reply_gate as gate
 
 
 def test_ingress_mode_priority():

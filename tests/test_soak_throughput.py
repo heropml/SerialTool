@@ -408,7 +408,7 @@ def test_disconnect_env_helpers():
 
 def test_virtual_link_drop_triggers_auto_reconnect(monkeypatch, tmp_path):
     """CI-safe: VirtualConn.simulate_link_drop schedules reconnect (net path)."""
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     w = _fresh_window(monkeypatch, tmp_path, "vdrop")
     try:
@@ -449,7 +449,7 @@ def test_virtual_link_drop_triggers_auto_reconnect(monkeypatch, tmp_path):
 
 def test_virtual_disconnect_reconnect_churn(monkeypatch, tmp_path):
     """Repeated virtual drops must not stack timers or unbounded attempts."""
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     w = _fresh_window(monkeypatch, tmp_path, "vchurn")
     try:
@@ -490,7 +490,7 @@ def test_virtual_disconnect_reconnect_churn(monkeypatch, tmp_path):
 )
 def test_extended_virtual_disconnect_soak(monkeypatch, tmp_path):
     """Optional longer drop/reopen loop under COMMTOOL_SOAK_DISCONNECT."""
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     seconds = _soak_seconds_from_env() or 5.0
     w = _fresh_window(monkeypatch, tmp_path, "vdropsoak")
@@ -540,7 +540,7 @@ def test_real_serial_open_close_soak():
     and optionally COMMTOOL_SOAK_NIGHTLY=1 for more cycles.
     """
     import serial
-    from serial_io import SerialConn
+    from transport.serial_io import SerialConn
 
     ports = _serial_soak_ports()
     assert ports

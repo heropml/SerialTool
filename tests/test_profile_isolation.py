@@ -83,7 +83,7 @@ def test_two_profiles_keep_isolated_settings(monkeypatch, tmp_path):
 
 def test_two_profiles_keep_virtual_runtime_isolated(monkeypatch, tmp_path):
     """TX/RX and connection objects stay inside their owning live window."""
-    from virtual_io import PROTO_VIRTUAL
+    from transport.virtual_io import PROTO_VIRTUAL
 
     wa = wb = None
     try:

@@ -13,7 +13,7 @@ from PyQt5.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PyQt5.QtGui import QWheelEvent
 from PyQt5.QtWidgets import QApplication, QComboBox, QWidget, QVBoxLayout
 
-from widgets import find_combo_ancestor, should_block_combo_wheel
+from ui.widgets import find_combo_ancestor, should_block_combo_wheel
 
 _APP = QApplication.instance() or QApplication([])
 

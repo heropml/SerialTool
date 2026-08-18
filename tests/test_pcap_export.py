@@ -5,8 +5,8 @@ import struct
 import tempfile
 import unittest
 
-import pcap_export
-import rec_replay
+from record import pcap_export
+from record import rec_replay
 
 
 class PcapExportTests(unittest.TestCase):

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import auto_reply_core as ar
+from automation import auto_reply_core as ar
 
 
 def test_state_tokens():

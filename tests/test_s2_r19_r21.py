@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import auto_reply_core as ar
-import multi_send as ms
-import view_format as vf
+from automation import auto_reply_core as ar
+from automation import multi_send as ms
+from protocol import view_format as vf
 
 
 def test_multi_send_load_and_cycle():

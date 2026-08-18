@@ -9,9 +9,9 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import app_style
-import i18n_ui
-from theme import THEMES, THEME_DEFAULT, chrome_for
+from ui import app_style
+from ui import i18n_ui
+from ui.theme import THEMES, THEME_DEFAULT, chrome_for
 
 
 def test_build_app_qss_embeds_chrome_and_theme_colors():

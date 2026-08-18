@@ -4,10 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_dyn
-import modbus_slave
-import rec_replay
-import io_stats
+from modbus import modbus_dyn
+from modbus import modbus_slave
+from record import rec_replay
+from transport import io_stats
 
 
 class ReviewFixTests(unittest.TestCase):

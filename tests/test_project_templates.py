@@ -3,8 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import binproto
-from project_templates import (
+from protocol import binproto
+from project.project_templates import (
     protocol_template_settings, recommended_connection,
     recommended_device_connection, recommended_protocol, recommended_views,
 )

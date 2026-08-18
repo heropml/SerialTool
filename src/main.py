@@ -6,10 +6,10 @@ from PyQt5.QtCore import Qt, QLockFile, QSettings
 from PyQt5.QtNetwork import QNetworkProxy
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from app_icon import get_app_icon
-from fonts import install_font_substitutions, ui_font
-from i18n import TR
+from ui.fonts import install_font_substitutions, ui_font
+from ui.i18n import TR
 from main_window import CommTool
-from session import MAX_SESSIONS
+from sessions.session import MAX_SESSIONS
 from updater import cleanup_temp_installers, set_translator
 
 

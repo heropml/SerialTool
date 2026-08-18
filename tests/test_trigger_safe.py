@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import trigger_safe as ts
+from automation import trigger_safe as ts
 
 
 def test_is_private_url_matrix():

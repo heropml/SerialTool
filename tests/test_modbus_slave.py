@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_slave
-import modbus_master
-from modbus_slave import (  # noqa: E402
+from modbus import modbus_slave
+from modbus import modbus_master
+from modbus.modbus_slave import (  # noqa: E402
     ModbusSlave, crc16, iter_frames, iter_ascii_frames, parse_ascii_frame,
     ascii_wrap, lrc8,
 )

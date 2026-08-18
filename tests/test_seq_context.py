@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import seq_context as sc
+from automation import seq_context as sc
 
 
 def _destroy_win(w, app):

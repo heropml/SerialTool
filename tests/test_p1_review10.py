@@ -13,9 +13,9 @@ from PyQt5.QtCore import Qt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from main_window import CommTool, PortScannerThread
-import rec_replay
-import rec_diff
-from rec_diff_dialog import RecDiffDialog
+from record import rec_replay
+from record import rec_diff
+from ui.rec_diff_dialog import RecDiffDialog
 
 _APP = QApplication.instance() or QApplication([])
 

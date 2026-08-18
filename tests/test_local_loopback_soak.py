@@ -188,7 +188,7 @@ def _maybe_write_metrics(payload):
 
 def test_virtual_loopback_tx_rx_closed_loop(monkeypatch, tmp_path):
     """TX via VirtualConn(loopback) must arrive as RX on the main window."""
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     w = _fresh_window(monkeypatch, tmp_path, "vloop")
     try:
@@ -224,7 +224,7 @@ def test_virtual_loopback_tx_rx_closed_loop(monkeypatch, tmp_path):
 
 def test_virtual_loopback_survives_link_drop_mid_burst(monkeypatch, tmp_path):
     """Mid-burst simulate_link_drop must stop further RX without crashing."""
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     w = _fresh_window(monkeypatch, tmp_path, "vdrop")
     try:
@@ -253,7 +253,7 @@ def test_virtual_loopback_survives_link_drop_mid_burst(monkeypatch, tmp_path):
 @pytest.mark.skipif(_soak_seconds() is None,
                     reason="set COMMTOOL_SOAK=<seconds> for extended virtual loop")
 def test_extended_virtual_loopback_soak(monkeypatch, tmp_path):
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 
     seconds = _soak_seconds()
     w = _fresh_window(monkeypatch, tmp_path, "vloop-ext")
@@ -295,7 +295,7 @@ def test_extended_virtual_loopback_soak(monkeypatch, tmp_path):
 
 def test_tcp_localhost_echo_closed_loop():
     """Server echoes client payloads on 127.0.0.1 (port 0)."""
-    from net_io import TcpServerConn, TcpClientConn
+    from transport.net_io import TcpServerConn, TcpClientConn
 
     srv = TcpServerConn("127.0.0.1", 0)
     cli = TcpClientConn("127.0.0.1", 1)  # port patched after listen
@@ -346,7 +346,7 @@ def test_tcp_localhost_echo_closed_loop():
 
 def test_tcp_localhost_peer_drop_stops_echo():
     """Closing the client must leave the server listening without clients."""
-    from net_io import TcpServerConn, TcpClientConn
+    from transport.net_io import TcpServerConn, TcpClientConn
 
     srv = TcpServerConn("127.0.0.1", 0)
     cli = TcpClientConn("127.0.0.1", 1)
@@ -374,7 +374,7 @@ def test_tcp_localhost_peer_drop_stops_echo():
 @pytest.mark.skipif(_soak_seconds() is None,
                     reason="set COMMTOOL_SOAK=<seconds> for extended TCP echo")
 def test_extended_tcp_localhost_echo_soak():
-    from net_io import TcpServerConn, TcpClientConn
+    from transport.net_io import TcpServerConn, TcpClientConn
 
     seconds = _soak_seconds()
     srv = TcpServerConn("127.0.0.1", 0)
@@ -429,7 +429,7 @@ def test_extended_tcp_localhost_echo_soak():
 
 def test_udp_localhost_pair_closed_loop():
     """Two UdpConn on 127.0.0.1 exchange datagrams (port 0)."""
-    from net_io import UdpConn
+    from transport.net_io import UdpConn
 
     a = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)
     b = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)
@@ -480,7 +480,7 @@ def test_udp_localhost_pair_closed_loop():
 
 
 def test_udp_any_bind_resolves_concrete_export_endpoint():
-    from net_io import UdpConn
+    from transport.net_io import UdpConn
 
     conn = UdpConn("0.0.0.0", 0, "127.0.0.1", 9)
     try:
@@ -496,7 +496,7 @@ def test_udp_any_bind_resolves_concrete_export_endpoint():
 @pytest.mark.skipif(_soak_seconds() is None,
                     reason="set COMMTOOL_SOAK=<seconds> for extended UDP pair")
 def test_extended_udp_localhost_pair_soak():
-    from net_io import UdpConn
+    from transport.net_io import UdpConn
 
     seconds = _soak_seconds()
     a = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)
@@ -541,7 +541,7 @@ def test_extended_udp_localhost_pair_soak():
 # ---- Drop / reconnect closed loops (still no hardware) ----
 
 def _attach_virtual(w, loopback=True):
-    from virtual_io import VirtualConn, PROTO_VIRTUAL
+    from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
     conn = VirtualConn(loopback=loopback)
     assert conn.open() is True
     w.conn = conn
@@ -593,7 +593,7 @@ def test_virtual_drop_reopen_continues_loopback(monkeypatch, tmp_path):
 
 def test_tcp_reconnect_after_client_close_continues_echo():
     """Client close + reopen must resume echo with byte integrity."""
-    from net_io import TcpServerConn, TcpClientConn
+    from transport.net_io import TcpServerConn, TcpClientConn
 
     srv = TcpServerConn("127.0.0.1", 0)
     rx = []
@@ -723,7 +723,7 @@ def test_extended_virtual_drop_reopen_churn(monkeypatch, tmp_path):
 def test_tcp_multiclient_broadcast_and_target():
     """Two clients: targeted echo stays private; broadcast reaches both;
     dropping one client must not break the other."""
-    from net_io import TcpServerConn, TcpClientConn
+    from transport.net_io import TcpServerConn, TcpClientConn
 
     srv = TcpServerConn("127.0.0.1", 0)
     rx_a, rx_b = [], []
@@ -791,7 +791,7 @@ def test_tcp_multiclient_broadcast_and_target():
 
 def test_udp_no_remote_then_reply_last_peer():
     """Empty remote => SEND_NO_TARGET until a peer speaks; then reply works."""
-    from net_io import UdpConn, SEND_NO_TARGET
+    from transport.net_io import UdpConn, SEND_NO_TARGET
 
     sink = UdpConn("127.0.0.1", 0, "", 0)
     peer = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)
@@ -833,7 +833,7 @@ def test_udp_no_remote_then_reply_last_peer():
 
 def test_udp_fixed_remote_works_without_prior_rx():
     """Configured remote must send successfully with no prior datagram."""
-    from net_io import UdpConn, SEND_NO_TARGET
+    from transport.net_io import UdpConn, SEND_NO_TARGET
 
     a = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)
     b = UdpConn("127.0.0.1", 0, "127.0.0.1", 0)

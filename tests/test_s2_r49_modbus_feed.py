@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import modbus_feed as mf
+from modbus import modbus_feed as mf
 
 
 def test_idle_guard_rtu_extends_ascii_does_not():

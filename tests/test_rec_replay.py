@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import rec_replay  # noqa: E402
+from record import rec_replay  # noqa: E402
 
 
 class PlayerControlTests(unittest.TestCase):

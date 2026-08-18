@@ -25,7 +25,7 @@
 | 测试 | **1647 passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
-| `except Exception` | 宽泛约 **199**（B6 二批后）/ 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
+| `except Exception` | 宽泛约 **205**（B6-3 后；不是 KPI）/ 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
 | 多会话 | 脚本/MBM/录制/宏/DSL/扫描/序列 per-session | 后台 RX 喂引擎+AR+触发器；关忙标签仍拦；非目标：树/分屏/拖出 |
 | 功能路线 | P0 / P1 / v1.4 / v1.5 / v1.5.2 / v1.5.3 | **均已收口** |
 
@@ -120,8 +120,32 @@
 5. ~~**v1.6.0**~~ **DONE**（协议流组帧 / 解析诊断；日志轮转失败继续写旧段；Linux 更新等 PID 退出；官方 Linux 仅 x86_64）
 6. ~~**v1.7.0**~~ **DONE**（Windows BLE 主机 UART：独立扫描窗口、Notify+Write、模板与自动重连上限）
 7. ~~**v1.7.1**~~ **DONE**（BLE 扫描过滤/序号/跟语言；macOS/Linux 隐藏 BLE 类型）
-8. **不上**覆盖率硬门槛（B3 只收集，见 §6）
-9. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加  
+8. ~~**v1.7.2 B6-3 / 体验盘点**~~ **DONE**（见下）
+9. **不上**覆盖率硬门槛（B3 只收集，见 §6）
+10. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加
+
+### v1.7.2 · B6-3 与体验盘点
+
+**A0 盘点**（代码 + 现有单测走三路径；无硬件 GUI 复现则不进本版）：
+
+| 路径 | 结论 |
+|---|---|
+| 多会话（双标签脚本/序列/AR、后台 RX、关忙标签、循环发送切标签） | 已有 `test_multi_session*` 覆盖；无新增可复现边角 |
+| 组帧（分析层 vs AR、粘包/半包、TCP Server 多对端） | 已有 `test_frame_stream*`；无新增可复现边角 |
+| BLE 扫描后再连 / 空闲后再连 | 已有 `test_ble_io` / `test_ble_ui`；无新增可复现边角 |
+
+**A1–A2**：清单为空，本版不硬凑体验修复（上限 6 条）。1.7.1 已标成非 bug 的（`#` 列排序、退出 `singleShot`）不重开。
+
+**B 范围站点**（只改这些；对话框/绘图/仪表盘不进本批）：
+
+| 站点 | 原状 | 本批 |
+|---|---|---|
+| `transport/ble_io.py` 扫描提交 / `_run` / `open` / `_connect_and_subscribe` / `_drain` 写 | `except Exception` | `_BLE_OP_ERRORS`（BleakError/OSError/RuntimeError/…）+ debug traceback；关连接/`stop_notify` 仍宽捕，避免拖死 BLE 线程 |
+| `main_window.py` `_send_text` / `_script_send` / `_terminal_send` / `_mbm_send_raw` / `load_file_to_send` | `except Exception` | `_TX_IO_ERRORS` / `_LOG_IO_ERRORS` + debug；失败仍 toast / 返回 False，不炸窗口 |
+| `main_window.py` `_write_log_block` / `_open_log_segment` / `_rotate_log_to` / `save_recv` | `except Exception` | `_LOG_IO_ERRORS` + debug traceback |
+| `session_host.py` 切标签同步 | 5 处 debug + 不炸 UI | 不改 |
+
+静默预算仍冻 **9**。宽泛总数不是 KPI。
 
 ---
 

@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import connection_presets as cp
-import config_io as cio
+from project import connection_presets as cp
+from project import config_io as cio
 
 
 def _ok_ip(ip):

@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_model import (
+from project.project_model import (
     PROJECT_FORMAT, PROJECT_VERSION, ProjectError, collect_project_resources,
     load_project, make_project, merge_project_resources, prepare_project_settings,
     save_project,

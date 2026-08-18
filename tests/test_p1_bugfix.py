@@ -4,10 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_slave
-import modbus_master as mm
-import modbus_dyn
-import rec_replay
+from modbus import modbus_slave
+from modbus import modbus_master as mm
+from modbus import modbus_dyn
+from record import rec_replay
 
 
 class BroadcastAndFc23Tests(unittest.TestCase):

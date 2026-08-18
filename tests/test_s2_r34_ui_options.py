@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config_io as cio
-import ui_options as uo
-import view_format as vf
+from project import config_io as cio
+from ui import ui_options as uo
+from protocol import view_format as vf
 
 
 def test_view_mode_unique_ids():

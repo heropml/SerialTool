@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import sequence_engine as se
+from automation import sequence_engine as se
 
 
 def test_feed_action():

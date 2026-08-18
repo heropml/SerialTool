@@ -12,9 +12,9 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import rec_replay
+from record import rec_replay
 from main_window import CommTool, PortScannerThread
-from structured_record_dialog import StructuredRecordDialog
+from ui.structured_record_dialog import StructuredRecordDialog
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -70,7 +70,7 @@ def test_h1_filter_during_replay_stops_and_resyncs(tmp_path, monkeypatch):
 
 
 def test_m6_feed_does_not_clear_named_source_levels():
-    from dashboard_dialog import DashboardDialog
+    from ui.dashboard_dialog import DashboardDialog
 
     app = types.SimpleNamespace(
         settings=types.SimpleNamespace(
@@ -124,9 +124,9 @@ def test_m12_load_recovers_header_after_leading_garbage():
 
 def test_m13_addr_base_out_of_range_kept_with_warning(caplog):
     import logging
-    from device_resources import normalize_registers
+    from project.device_resources import normalize_registers
 
-    with caplog.at_level(logging.WARNING, logger="device_resources"):
+    with caplog.at_level(logging.WARNING, logger="project.device_resources"):
         rec = normalize_registers([{"address": 10, "addr_base": 9}])[0]
     assert rec["addr_base"] == 9
     assert rec["display_address"] == 19

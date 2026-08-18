@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 
-import fonts
+from ui import fonts
 
 
 def test_localize_qss_replaces_windows_symbol_font_before_ui_alias():

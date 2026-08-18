@@ -8,10 +8,10 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_master
-import modbus_slave
+from modbus import modbus_master
+from modbus import modbus_slave
 from main_window import CommTool, PortScannerThread
-from modbus_master_dialog import ModbusMasterDialog
+from ui.modbus_master_dialog import ModbusMasterDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -87,8 +87,7 @@ def test_slave_without_server_id_inherits_top_level(tmp_path, monkeypatch):
 def test_diag_and_server_id_results_are_translated(tmp_path, monkeypatch):
     """Comparing against window._t(...) would pass even if i18n returned raw keys,
     so assert on the rendered text and on the languages actually differing."""
-    import i18n
-
+    from ui import i18n
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
     window = CommTool("mbm-result-i18n-test")
     try:

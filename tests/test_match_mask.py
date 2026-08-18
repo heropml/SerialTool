@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from auto_reply_core import parse_hex_pat, hex_at, hit_test
+from automation.auto_reply_core import parse_hex_pat, hex_at, hit_test
 
 
 class ParseHexPatTests(unittest.TestCase):

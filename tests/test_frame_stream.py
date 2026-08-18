@@ -7,9 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import binproto
-import frame_stream
-from parse_diag import ParseDiagnostics
+from protocol import binproto
+from protocol import frame_stream
+from protocol.parse_diag import ParseDiagnostics
 
 # AA BB | len(1) | data | sum(1)  → total = L + 4
 _HDR = b"\xAA\xBB"

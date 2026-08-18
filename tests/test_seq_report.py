@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import seq_report as sr
+from automation import seq_report as sr
 
 
 def test_csv_safe_formula_prefix():

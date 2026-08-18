@@ -8,9 +8,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import serial
-import serial_params as sp
-import project_templates as pt
-import config_io as cio
+from transport import serial_params as sp
+from project import project_templates as pt
+from project import config_io as cio
 
 
 def test_serial_params_maps_and_options():

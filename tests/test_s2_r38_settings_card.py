@@ -12,10 +12,10 @@ from PyQt5.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication([])
 
-import settings_card as sc
-import serial_params as sp
-from conn_ui import visible_conn_types
-from widgets import make_label
+from ui import settings_card as sc
+from transport import serial_params as sp
+from ui.conn_ui import visible_conn_types
+from ui.widgets import make_label
 
 
 class _FakeHost(QObject):

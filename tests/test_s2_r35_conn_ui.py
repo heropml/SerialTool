@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import conn_ui as cu
+from ui import conn_ui as cu
 
 
 def test_conn_types_match_historical_order():

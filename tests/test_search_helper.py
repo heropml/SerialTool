@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from search_helper import find_last_page, find_spans, parse_hex_term  # noqa: E402
+from protocol.search_helper import find_last_page, find_spans, parse_hex_term  # noqa: E402
 
 
 class FindSpansTests(unittest.TestCase):
@@ -33,8 +33,8 @@ class FindSpansTests(unittest.TestCase):
         self.assertEqual(find_spans("a" * 30, r"(a+)+$"), [])
 
     def test_regex_ignorecase_uses_guarded_compiler(self):
-        import triggers
-        with mock.patch("triggers.compile_regex",
+        from automation import triggers
+        with mock.patch("automation.triggers.compile_regex",
                         wraps=triggers.compile_regex) as compile_regex:
             self.assertEqual(find_spans("A1", r"[a-z]\d", mode="regex"),
                              [(0, 2)])

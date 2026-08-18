@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import view_format as vf
+from protocol import view_format as vf
 
 
 def test_bytes_to_hex():

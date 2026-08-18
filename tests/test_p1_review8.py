@@ -9,10 +9,10 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_master as mm
-import modbus_slave as ms
+from modbus import modbus_master as mm
+from modbus import modbus_slave as ms
 from main_window import CommTool, PortScannerThread
-from modbus_master_dialog import ModbusMasterDialog
+from ui.modbus_master_dialog import ModbusMasterDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -318,8 +318,7 @@ def test_parse_pdu_rejects_truncated_and_overlong_cleanly():
 def test_qty_tooltip_stays_wrapped():
     """mbm_qty_tip is plain text, and Qt only word-wraps tooltips it thinks are
     rich text -- so every locale has to bring its own line breaks."""
-    import i18n
-
+    from ui import i18n
     for lang in ("zh", "en", "zh_tw"):
         tip = i18n.TR[lang]["mbm_qty_tip"]
         assert "\r" not in tip, "%s: tooltip carries a stray CR" % lang
@@ -333,8 +332,7 @@ def test_no_i18n_value_carries_a_carriage_return():
     """A CR inside a translation is invisible to a byte-level CRLF check, because
     it is written as the two-character escape, and it shows up as a stray glyph
     in Qt widgets."""
-    import i18n
-
+    from ui import i18n
     offenders = []
     for lang, table in i18n.TR.items():
         for key, val in table.items():

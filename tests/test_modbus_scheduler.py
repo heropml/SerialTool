@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import modbus_scheduler as ms
+from modbus import modbus_scheduler as ms
 
 
 def test_pick_next_due_skips_disabled_and_honors_guard():

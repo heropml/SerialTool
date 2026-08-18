@@ -12,16 +12,15 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
 _SCRIPT = ROOT / "scripts" / "count_exception_handling.py"
 
 # 故意保留的静默（窗口几何 / nativeEvent / DPI / AppUserModelID / shutdown 等）。
 # 值 = 该文件允许的静默条数；总预算 = 各值之和。
 ALLOWED_SILENT = {
-    "dialogs.py": 1,       # Win 标题栏 SetWindowPos 失败可忽略
-    "main.py": 2,          # AppUserModelID + HiDPI roundingPolicy（旧 Qt 无属性）
-    "main_window.py": 5,   # 几何搬移 / 原生边框 / nativeEvent / 关机关对话框
-    "session.py": 1,       # 默认会话名 i18n 回退
+    "ui/dialogs.py": 1,       # Win 标题栏 SetWindowPos 失败可忽略
+    "main.py": 2,             # AppUserModelID + HiDPI roundingPolicy（旧 Qt 无属性）
+    "main_window.py": 5,      # 几何搬移 / 原生边框 / nativeEvent / 关机关对话框
+    "sessions/session.py": 1, # 默认会话名 i18n 回退
 }
 
 
@@ -36,10 +35,11 @@ def _load_counter():
 def _silent_by_file(mod):
     counts = Counter()
     sites = []
-    for path in sorted(SRC.glob("*.py")):
+    for path in mod.iter_src_py():
+        label = mod.src_label(path)
         for lineno, _end in mod.iter_silent_handlers(path):
-            counts[path.name] += 1
-            sites.append("%s:%d" % (path.name, lineno))
+            counts[label] += 1
+            sites.append("%s:%d" % (label, lineno))
     return counts, sites
 
 
@@ -77,7 +77,7 @@ def test_silent_except_budget_not_increased():
 def test_count_script_scan_matches_budget():
     """脚本 TOTAL与白名单一致，避免脚本/门禁口径分叉。"""
     mod = _load_counter()
-    total_silent = sum(mod.scan(p)[1] for p in SRC.glob("*.py"))
+    total_silent = sum(mod.scan(p)[1] for p in mod.iter_src_py())
     assert total_silent == sum(ALLOWED_SILENT.values())
 
 

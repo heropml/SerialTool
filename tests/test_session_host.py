@@ -19,11 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 
-from session_host import (
+from sessions.session_host import (
     SessionHostMixin, _BACKGROUND_DISPLAY_DEFAULTS, _SESSION_PROXY_ATTRS,
     _assert_session_proxy_attrs,
 )
-from session import Session
+from sessions.session import Session
 
 _APP = QApplication.instance() or QApplication([])
 _TEST_WINDOWS = []
@@ -134,7 +134,7 @@ def _pump(n=20, dt=0.01):
 
 
 def _open_virtual(w):
-    from virtual_io import PROTO_VIRTUAL
+    from transport.virtual_io import PROTO_VIRTUAL
     w.cb_proto.setCurrentText(PROTO_VIRTUAL)
     w._update_net_fields()
     if hasattr(w, "sw_vconn_loop"):

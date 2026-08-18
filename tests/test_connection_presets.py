@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import connection_presets as cp
-from project_model import collect_project_resources, merge_project_resources
+from project import connection_presets as cp
+from project.project_model import collect_project_resources, merge_project_resources
 
 
 def _dispose_window(app, window):
@@ -101,7 +101,7 @@ def test_gui_save_and_apply_preset(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication, QPushButton
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
-    from theme import chrome_for
+    from ui.theme import chrome_for
     # Mirror test_workspace._patch_window_runtime: strip side effects from
     # CommTool construction (tray icon, real settings file, port scanner
     # thread, modal info dialogs) so this window cannot destabilize the
@@ -217,7 +217,7 @@ def test_dialog_keeps_selection_after_apply_mru(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
-    from connection_presets_dialog import ConnectionPresetsDialog
+    from ui.connection_presets_dialog import ConnectionPresetsDialog
     monkeypatch.setattr(CommTool, "_settings_file",
                         staticmethod(lambda profile="": str(tmp_path / "mru.ini")))
     monkeypatch.setattr(CommTool, "_setup_tray", lambda self: None)
@@ -242,3 +242,12 @@ def test_dialog_keeps_selection_after_apply_mru(tmp_path, monkeypatch):
     assert dlg._items[dlg._cur]["id"] == b["id"]
 
     _dispose_window(app, w)
+
+
+def test_export_default_filename_unprefixed():
+    """Save-as default must stay connection_presets.json (not a package-prefixed name)."""
+    import inspect
+    from ui.connection_presets_dialog import ConnectionPresetsDialog
+    src = inspect.getsource(ConnectionPresetsDialog._export)
+    assert '"connection_presets.json"' in src
+    assert "project.connection_presets.json" not in src

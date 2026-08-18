@@ -8,10 +8,10 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import rec_replay
-import pcap_export
+from record import rec_replay
+from record import pcap_export
 from main_window import CommTool, PortScannerThread
-from rec_replay_dialog import RecReplayDialog
+from ui.rec_replay_dialog import RecReplayDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -72,7 +72,7 @@ def test_fc23_read_half_feeds_structured_samples(tmp_path, monkeypatch):
 
 def test_seeded_random_is_reproducible_after_reset():
     """A seeded rule must replay the same sequence after reset(), not continue it."""
-    import modbus_dyn
+    from modbus import modbus_dyn
     rules = [{"space": "holding", "addr": 0, "mode": "random",
               "min": 0, "max": 0xFFFF, "period_ms": 1000, "seed": 7}]
     eng = modbus_dyn.DynamicEngine(rules, now=0.0)

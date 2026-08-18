@@ -7,11 +7,11 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config_io as cfg
-import connection_presets as cp
-import view_format as vf
-import term_vt
-import send_options_card as soc
+from project import config_io as cfg
+from project import connection_presets as cp
+from protocol import view_format as vf
+from protocol import term_vt
+from ui import send_options_card as soc
 
 
 def test_r51_settings_ini_and_group():

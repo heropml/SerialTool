@@ -11,9 +11,9 @@ from PyQt5.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication([])
 
-import data_options_card as doc
-import ui_options as uo
-from widgets import make_label
+from ui import data_options_card as doc
+from ui import ui_options as uo
+from ui.widgets import make_label
 
 
 class _FakeSettings(object):

@@ -6,8 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import rec_diff  # noqa: E402
-import project_model  # noqa: E402
+from record import rec_diff  # noqa: E402
+from project import project_model  # noqa: E402
 
 
 class RecDiffFilterTests(unittest.TestCase):

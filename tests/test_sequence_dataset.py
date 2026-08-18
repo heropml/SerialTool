@@ -5,8 +5,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import sequence_dataset as sd
-import seq_context as sc
+from automation import sequence_dataset as sd
+from automation import seq_context as sc
 
 
 def test_load_and_seed(tmp_path):
@@ -116,7 +116,7 @@ def test_stale_csv_path_cleared_on_dialog_init(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
-    from dialogs import SequenceDialog
+    from ui.dialogs import SequenceDialog
 
     monkeypatch.setattr(CommTool, "_settings_file",
                         staticmethod(lambda profile="": str(tmp_path / "stale.ini")))
@@ -167,7 +167,7 @@ def test_single_row_csv_report_includes_row_meta(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PROTO_VIRTUAL, PortScannerThread
-    from dialogs import SequenceDialog
+    from ui.dialogs import SequenceDialog
 
     monkeypatch.setattr(CommTool, "_settings_file",
                         staticmethod(lambda profile="": str(tmp_path / "one.ini")))
@@ -235,7 +235,7 @@ def test_flush_pending_preserves_manual_loops_when_csv_bound(tmp_path, monkeypat
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PortScannerThread
-    from dialogs import SequenceDialog
+    from ui.dialogs import SequenceDialog
 
     monkeypatch.setattr(CommTool, "_settings_file",
                         staticmethod(lambda profile="": str(tmp_path / "flush.ini")))
@@ -286,7 +286,7 @@ def test_run_reloads_csv_from_disk(tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QSettings
     from main_window import CommTool, PROTO_VIRTUAL, PortScannerThread
-    from dialogs import SequenceDialog
+    from ui.dialogs import SequenceDialog
 
     monkeypatch.setattr(CommTool, "_settings_file",
                         staticmethod(lambda profile="": str(tmp_path / "reload.ini")))

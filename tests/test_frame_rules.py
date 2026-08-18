@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import binproto as bp
+from protocol import binproto as bp
 
 
 def test_parse_frame_rules():

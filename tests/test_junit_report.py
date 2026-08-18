@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import junit_report as jr
+from automation import junit_report as jr
 import xml.etree.ElementTree as ET
 
 

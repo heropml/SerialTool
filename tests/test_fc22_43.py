@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import modbus_master as mm
-import modbus_slave as ms
+from modbus import modbus_master as mm
+from modbus import modbus_slave as ms
 
 
 def test_fc22_mask_write_formula():

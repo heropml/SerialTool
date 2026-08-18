@@ -27,41 +27,62 @@ try:
     from version import __version__ as APP_VERSION
 except ImportError:
     APP_VERSION = "0.0.0"
-import app_style
-import i18n_ui
-from theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, _mix,
+from ui import app_style
+from ui import i18n_ui
+from ui.theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, _mix,
                    chrome_for, COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_BLUE)
-from i18n import TR, CHECKSUM_KEYS
+from ui.i18n import TR, CHECKSUM_KEYS
 from app_icon import get_app_icon
-from fonts import ui_font, mono_font, localize_qss
-from widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
+from ui.fonts import ui_font, mono_font, localize_qss
+from ui.widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
                      SuffixLineEdit, find_combo_ancestor, should_block_combo_wheel)
 
 _log = logging.getLogger(__name__)
+
+# Connect/send/live-log: OS and runtime IO. Do not use bare Exception here —
+# unexpected bugs should still surface rather than look like a wire failure.
+_TX_IO_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
+# RuntimeError: deleted Qt widgets (toPlainText / setPlainText) still toast.
+_LOG_IO_ERRORS = (OSError, RuntimeError, ValueError, TypeError)
+_CHECKSUM_ERRORS = (TypeError, ValueError, OverflowError)
+_RX_SIDE_LABELS = {
+    "auto_reply": "ar_title",
+    "automation.triggers.feed": "trg_title",
+    "automation.xfer.feed": "xfer_title",
+    "plot.feed": "plot_title",
+    "frame.feed": "frame_title",
+    "dashboard.feed": "dash_title",
+    "macro.on_rx": "io_task_macro",
+    "recorder.on_rx": "rr_title",
+    "structured.feed": "structured_title",
+    "script.feed": "sc_title",
+    "seq.feed": "seq_title",
+    "mbm.feed": "mbm_title",
+}
 
 # setMaximumBlockCount only caps QTextBlock count. With line/packet split off,
 # a newline-free stream stays in one block forever; budget chars as
 # max_lines * _RECV_CHARS_PER_LINE.
 _RECV_CHARS_PER_LINE = 256
-from net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
+from transport.net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupConn,
                     PROTO_TCP_SERVER, PROTO_TCP_CLIENT, PROTO_UDP, PROTO_UDP_MULTICAST,
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, ERR_SEND_BACKPRESSURE,
                     local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip, is_local_ipv4, resolve_export_local_ipv4)
-from serial_io import SerialConn, PortScannerThread, OneShotPortScanner
-import conn_error_tips
-from virtual_io import VirtualConn, PROTO_VIRTUAL
-from ble_io import BleConn, BleScanner, ERROR_I18N as _BLE_ERROR_I18N
-from session_host import SessionHostMixin, _install_session_proxies
-import send_dsl
-import ansi
-import binproto
-import triggers
-import convert
-import snippets
-import connection_presets
-from config_keys import CFG_KEYS as _CFG_KEYS_MOD
-from config_io import (
+from transport.serial_io import SerialConn, PortScannerThread, OneShotPortScanner
+from transport import conn_error_tips
+from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
+from transport.ble_io import BleConn, BleScanner, ERROR_I18N as _BLE_ERROR_I18N
+from sessions.session_host import SessionHostMixin, _install_session_proxies
+from automation import send_dsl
+from protocol import ansi
+from protocol import binproto
+from automation import triggers
+from protocol import convert
+from automation import snippets
+from project import connection_presets
+from project.config_keys import CFG_KEYS as _CFG_KEYS_MOD
+from project.config_io import (
     parse_json_list as _cfg_parse_json_list,
     settings_to_bool as _cfg_to_bool,
     project_fingerprint as _cfg_project_fingerprint,
@@ -97,69 +118,68 @@ from config_io import (
     ar_mbm_mutex_disable_ar as _cfg_ar_mbm_mutex_disable_ar,
     settings_ini_name as _cfg_settings_ini_name,
 )
-from send_history import (
+from automation.send_history import (
     push as _hist_push,
     load_list as _hist_load_list,
     dumps as _hist_dumps,
     remove_at as _hist_remove_at,
     nav_idx_after_remove as _hist_nav_after_remove,
 )
-from multi_send import (
+from automation.multi_send import (
     load_groups as _ms_load_groups,
     active_items as _ms_active_items_fn,
     build_cycle_seq as _ms_build_cycle_seq,
     groups_json as _ms_groups_json,
 )
-from connection_presets import parse_port as _conn_parse_port
-from connection_presets import parse_baud as _conn_parse_baud
-from connection_presets import validate_open as _conn_validate_open
-from connection_presets import open_fields_from_ui as _conn_open_fields_from_ui
-from connection_presets import open_fields_from_reconnect as _conn_open_fields_from_reconnect
-from connection_presets import serial_extras_from_reconnect as _conn_serial_extras
-from connection_presets import (
+from project.connection_presets import parse_port as _conn_parse_port
+from project.connection_presets import parse_baud as _conn_parse_baud
+from project.connection_presets import validate_open as _conn_validate_open
+from project.connection_presets import open_fields_from_ui as _conn_open_fields_from_ui
+from project.connection_presets import open_fields_from_reconnect as _conn_open_fields_from_reconnect
+from project.connection_presets import serial_extras_from_reconnect as _conn_serial_extras
+from project.connection_presets import (
     serial_signature as _conn_serial_sig,
     tcp_client_signature as _conn_tcp_sig,
     ble_signature as _conn_ble_sig,
     proto_only_signature as _conn_proto_sig,
 )
-import seq_context
-import sequence_dataset
-import io_stats
-from io_stats import (
+from automation import seq_context
+from automation import sequence_dataset
+from transport import io_stats
+from transport.io_stats import (
     fmt_bytes as _io_fmt_bytes,
     fmt_rate as _io_fmt_rate,
     format_stat_bar as _io_format_stat_bar,
 )
-import log_naming
-import modbus_slave
-import modbus_master
-from dialogs import (CloseDialog, MultiSendDialog, KeywordHighlightDialog,
+from record import log_naming
+from modbus import modbus_slave
+from modbus import modbus_master
+from ui.dialogs import (CloseDialog, MultiSendDialog, KeywordHighlightDialog,
                      AboutDialog, InfoDialog, _set_win_titlebar_dark,
                      _style_one_combo_popup)
 from updater import UpdateChecker
-from ui_tips import set_tooltip
+from ui.ui_tips import set_tooltip
 
 # 串口作为统一连接层的一种「类型」，排在网络协议之前一起进 cb_proto 下拉。
 # 不放进 net_io.PROTOCOLS 是为保持 net_io 纯网络语义；这里组合成完整下拉列表。
 # 虚拟连接排最后：它不接硬件，作为一种类型接入后，自动应答 / Modbus / 序列 / 脚本 /
 # 波形图 等全部机制都能在离线下直接跑，无需各自改造。
-from conn_ui import (
+from ui.conn_ui import (
     PROTO_SERIAL,
     PROTO_BLE,
     visible_conn_types,
     field_visibility as _conn_field_vis,
 )
 
-import send_options_card as _send_options_card
-import data_options_card as _data_options_card
-import settings_card as _settings_card
-import receive_card as _receive_card
-import send_card as _send_card
-import sidebar as _sidebar
-import workspace_ui as _workspace_ui
-
+from ui import send_options_card as _send_options_card
+from ui import data_options_card as _data_options_card
+from ui import settings_card as _settings_card
+from ui import receive_card as _receive_card
+from ui import send_card as _send_card
+from ui import sidebar as _sidebar
+from ui import workspace_ui as _workspace_ui
 # Sequence engine limits (S-2: owned by sequence_engine; re-exported for callers).
-from sequence_engine import (
+from automation.sequence_engine import (
     MAX_RETRIES as _SEQ_MAX_RETRIES,
     QTIMER_MAX_MS as _SEQ_QTIMER_MAX_MS,
     RETRY_GUARD_MS as _SEQ_RETRY_GUARD_MS,
@@ -189,7 +209,7 @@ from sequence_engine import (
 )
 
 
-from modbus_timing import (
+from modbus.modbus_timing import (
     serial_char_bits as _mbm_timing_char_bits,
     rtu_silent_ms as _mbm_timing_silent_ms,
     rtu_tx_guard_ms as _mbm_timing_tx_guard_ms,
@@ -198,23 +218,23 @@ from modbus_timing import (
     span_bad as _mbm_timing_span_bad,
 )
 
-import reconnect_policy as _reconnect_policy
-import auto_reply_gate as _ar_gate
-import rx_dispatch as _rx_dispatch
-import term_vt as _term_vt
-import modbus_feed as _mbm_feed_plan
-from modbus_poll_plan import (
+from transport import reconnect_policy as _reconnect_policy
+from automation import auto_reply_gate as _ar_gate
+from sessions import rx_dispatch as _rx_dispatch
+from protocol import term_vt as _term_vt
+from modbus import modbus_feed as _mbm_feed_plan
+from modbus.modbus_poll_plan import (
     poll_reject_reason as _mbm_poll_reject_reason,
     build_poll_arg as _mbm_build_poll_arg,
     validate_response as _mbm_validate_response,
 )
-from modbus_scheduler import (
+from modbus.modbus_scheduler import (
     pick_next_due as _mbm_sched_pick_next,
     schedule_delay_ms as _mbm_sched_delay_ms,
     next_due_after as _mbm_sched_next_due,
 )
 
-from view_format import (
+from protocol.view_format import (
     bytes_to_hex as _view_bytes_to_hex,
     format_hexdump as _view_format_hexdump,
     with_leading_newline as _view_leading_nl,
@@ -227,7 +247,7 @@ from view_format import (
     offsets_after_trim as _view_offsets_after_trim,
 )
 
-from rx_text import (
+from protocol.rx_text import (
     decode_auto_chunk as _rx_decode_auto_chunk,
     split_lines_with_offsets as _rx_split_lines,
     ansi_flatten as _rx_ansi_flatten,
@@ -235,12 +255,12 @@ from rx_text import (
     ansi_slice as _rx_ansi_slice,
 )
 
-from trigger_safe import (
+from automation.trigger_safe import (
     is_private_url as _trg_is_private_url,
     shell_value as _trg_shell_quote,
 )
 
-from keyword_groups import (
+from protocol.keyword_groups import (
     load_groups as _kw_load_groups,
     active_rules as _kw_active_rules,
     save_fields as _kw_save_fields,
@@ -248,12 +268,12 @@ from keyword_groups import (
     rule_spans as _kw_rule_spans,
     rule_matches as _kw_rule_matches,
 )
-from project_templates import (
+from project.project_templates import (
     workspace_tool_entries as _ws_tool_entries,
     workspace_template_options as _ws_template_options,
 )
 
-from ui_options import (
+from ui.ui_options import (
     VIEW_MODE_ITEMS as _ui_view_mode_items,
     TS_FORMAT_ITEMS as _ui_ts_format_items,
     SEARCH_MODE_ITEMS as _ui_search_mode_items,
@@ -273,12 +293,12 @@ VIEW_TERMINAL = 5
 ANSI_FG_PROP = QTextFormat.UserProperty + 3
 ANSI_BG_PROP = QTextFormat.UserProperty + 4
 
-from serial_params import (
+from transport.serial_params import (
     resolve_pyserial as _resolve_serial_params,
 )
 
 
-from auto_reply_core import (
+from automation.auto_reply_core import (
     crc_impl as _ar_crc_impl,
     to_int as _ar_core_to_int,
     parse_hex_pat as _ar_core_parse_hex_pat,
@@ -722,7 +742,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             "modbus": None, "replay": None, "dsl": None, "recording": None,
             "device_scan": None,
         }
-        from device_resources import StructuredRecorder
+        from project.device_resources import StructuredRecorder
         self._structured_recorder = StructuredRecorder()
         self._structured_dlg = None
         self._replay_on = False            # 回放进行中（占用收发流，计入 _io_task_busy）
@@ -1226,7 +1246,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def _ble_scan_dialog(self):
         dlg = getattr(self, "_ble_scan_dlg", None)
         if dlg is None:
-            from ble_scan_dialog import BleScanDialog
+            from ui.ble_scan_dialog import BleScanDialog
             dlg = BleScanDialog(self)
             self._ble_scan_dlg = dlg
         return dlg
@@ -1305,7 +1325,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.ed_ble_name.setText(name or "")
 
     def _on_ble_profile_changed(self, *_a):
-        import ble_uuid
+        from transport import ble_uuid
         pid = self.cb_ble_profile.currentData() if hasattr(self, "cb_ble_profile") else ""
         if ble_uuid.normalize_profile(pid) == ble_uuid.PROFILE_CUSTOM:
             return
@@ -1315,7 +1335,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.ed_ble_notify.setText(ble_uuid.short_uuid(filled["notify_uuid"]))
 
     def _on_ble_swap_clicked(self):
-        import ble_uuid
+        from transport import ble_uuid
         w, n = ble_uuid.swap_write_notify(
             self.ed_ble_write.text(), self.ed_ble_notify.text())
         self.ed_ble_write.setText(w)
@@ -1840,7 +1860,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _load_search_page(self, start=0):
         """Load one page of matches from codepoint ``start`` (lazy pagination)."""
-        import search_helper
+        from protocol import search_helper
         doc = self.txt_recv.document()
         doc_text = doc.toPlainText()
         page = self._KW_MAX_SELECTIONS
@@ -1853,7 +1873,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _set_search_page(self, doc_text, spans, capped, start=0):
         """Install codepoint spans as the current QTextCursor search page."""
-        import search_helper
+        from protocol import search_helper
         doc = self.txt_recv.document()
         self._search_page_rev = doc.revision()
         self._search_page_chars = max(0, doc.characterCount() - 1)
@@ -1898,7 +1918,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _load_search_last_page(self):
         """Find the final page in one bounded scan for global ▲ wrap."""
-        import search_helper
+        from protocol import search_helper
         doc_text = self.txt_recv.document().toPlainText()
         spans, starts = search_helper.find_last_page(
             doc_text, self._search_term, page_size=self._KW_MAX_SELECTIONS,
@@ -3604,7 +3624,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 if dlg is not None:
                     dlg.remember_last_connect(addr)
                 else:
-                    from ble_scan_dialog import remember_ble_connect
+                    from ui.ble_scan_dialog import remember_ble_connect
                     remember_ble_connect(getattr(self, "settings", None), addr)
             if self._io_session_owns("modbus") or (
                     self._io_owner_session("modbus") is self._session_ctx()):
@@ -3886,9 +3906,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             try:
                 conn.blockSignals(True)
                 conn.close()
-            except (RuntimeError, OSError, TypeError):
+            except (RuntimeError, OSError, TypeError, AttributeError):
                 _log.debug("connection close failed", exc_info=True)
-            conn.deleteLater()
+            try:
+                conn.deleteLater()
+            except (RuntimeError, AttributeError):
+                _log.debug("connection deleteLater failed", exc_info=True)
 
         # Sequence is per-session — abort the context session's run on disconnect.
         if getattr(self, "_seq_on", False):
@@ -4399,8 +4422,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         except Exception:
             _log.warning("rx side-channel %s failed", name, exc_info=True)
             # Device-response paths: one throttled toast so silent failures are visible.
-            if name in ("auto_reply", "triggers.feed"):
+            if name in ("auto_reply", "automation.triggers.feed"):
                 self._toast_rx_side_throttled(name)
+
+    def _rx_side_display_name(self, name):
+        key = _RX_SIDE_LABELS.get(name)
+        if key:
+            return self._t(key)
+        return self._t("err_rx", e="").rstrip(": ").rstrip()
 
     def _toast_rx_side_throttled(self, name):
         now = time.monotonic()
@@ -4411,7 +4440,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         if now - float(last.get(name, 0.0) or 0.0) < 5.0:
             return
         last[name] = now
-        self.toast(self._t("err_rx_side", name=name), error=True)
+        self.toast(self._t("err_rx_side", name=self._rx_side_display_name(name)),
+                   error=True)
 
     def on_data_received(self, data: bytes, reply_target=None):
         # Stale post-close / post-reconnect chunks are dropped in
@@ -4445,7 +4475,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             for unit in units:
                 self._rx_side("dashboard.feed", lambda u=unit: ddlg.feed(u))
         # Triggers keep per-session decoders so background tabs can match too.
-        self._rx_side("triggers.feed",
+        self._rx_side("automation.triggers.feed",
                       lambda: self._triggers_feed(data, "rx", source=reply_target))
         self._feed_session_engines(
             data, reply_target=reply_target, analysis_units=units)
@@ -4464,7 +4494,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             # already be open before sig_done detaches the old worker.
             return False
         if getattr(w, "takes_input", True):
-            self._rx_side("xfer.feed", lambda: w.feed(data))
+            self._rx_side("automation.xfer.feed", lambda: w.feed(data))
         return True
 
     def _feed_session_engines(self, data, reply_target=None, analysis_units=None):
@@ -4524,7 +4554,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._rx_side("script.feed",
                               lambda: self._script_worker.feed(data))
         elif route == "seq_mbm":
-            self._rx_side("seq.feed", lambda: self._mbm_feed(data))
+            # Sequence is paused on a Modbus reply; the consumer is still MBM.
+            self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
         elif route == "seq":
             self._rx_side("seq.feed", lambda: self._seq_feed(data))
         else:
@@ -4705,7 +4736,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     @staticmethod
     def _ansi_flatten(runs):
-        """ansi.parse runs -> (plain_text, style spans)."""
+        """protocol.ansi.parse runs -> (plain_text, style spans)."""
         return _rx_ansi_flatten(runs)
 
     @staticmethod
@@ -5002,7 +5033,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             # _write_log_block already runs in the owning session context.
             # Keep the legacy no-argument call contract used by integrations.
             self._maybe_rotate_log()
-        except Exception as e:
+        except _LOG_IO_ERRORS as e:
+            _log.debug("live log write failed", exc_info=True)
             self.toast(self._t("err_log_write", e=e), error=True)
             self._close_log_file(session=session, toast=False)
             session.log_wanted = False
@@ -5253,7 +5285,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         pyqtgraph 懒导入：缺库时只提示、不影响主程序其余功能。"""
         if getattr(self, "_plot_dlg", None) is None:
             try:
-                from plot_dialog import PlotDialog
+                from ui.plot_dialog import PlotDialog
             except Exception as e:
                 self.toast(self._t("plot_need_lib", e=e), error=True)
                 return
@@ -5298,7 +5330,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_script_console(self):
         """打开脚本控制台（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_script_dlg", None) is None:
-            from script_console_dialog import ScriptConsoleDialog
+            from ui.script_console_dialog import ScriptConsoleDialog
             self._script_dlg = ScriptConsoleDialog(self)
         dlg = self._script_dlg
         dlg.refresh_theme()
@@ -5339,7 +5371,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             result["ok"] = bool(self._send_text(
                 bytes(payload).hex(" ").upper(), hex_mode=True, newline=0, checksum=0,
                 record_macro=False, allow_during_exclusive=True))
-        except Exception as e:
+        except _TX_IO_ERRORS as e:
+            _log.debug("script send failed", exc_info=True)
             self.toast(self._t(
                 "err_send_failed",
                 e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
@@ -6185,7 +6218,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         """打开触发告警对话框（单实例、非模态）。"""
         dlg = getattr(self, "_triggers_dlg", None)
         if dlg is None:
-            from triggers_dialog import TriggersDialog
+            from ui.triggers_dialog import TriggersDialog
             dlg = TriggersDialog(self)
             self._triggers_dlg = dlg
         dlg.show()
@@ -6294,7 +6327,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         Wildcard bind addresses (0.0.0.0 / ::) are resolved to a concrete host
         IPv4 via route table / local NIC list; failure refuses export.
         """
-        from pcap_export import can_export_link, as_unicast_peer
+        from record.pcap_export import can_export_link, as_unicast_peer
         proto = getattr(self, "_conn_proto", None) or self.cb_proto.currentText()
         remote_ip = ""
         remote_port = None
@@ -6404,7 +6437,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_rec_replay(self):
         """打开数据录制 / 回放（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_rr_dlg", None) is None:
-            from rec_replay_dialog import RecReplayDialog
+            from ui.rec_replay_dialog import RecReplayDialog
             self._rr_dlg = RecReplayDialog(self)
         dlg = self._rr_dlg
         dlg.refresh_theme()
@@ -6422,7 +6455,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         纯离线工具：只读两个 .ctrec 文件、不碰连接，因此不进 _io_task_busy 占用表。
         """
         if getattr(self, "_rd_dlg", None) is None:
-            from rec_diff_dialog import RecDiffDialog
+            from ui.rec_diff_dialog import RecDiffDialog
             self._rd_dlg = RecDiffDialog(self)
         dlg = self._rd_dlg
         dlg.refresh_theme()
@@ -6438,7 +6471,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         故不进 _io_task_busy 占用表。
         """
         if getattr(self, "_snip_dlg", None) is None:
-            from snippets_dialog import SnippetsDialog
+            from ui.snippets_dialog import SnippetsDialog
             self._snip_dlg = SnippetsDialog(self)
         dlg = self._snip_dlg
         dlg.refresh_theme()
@@ -6451,7 +6484,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_send_history(self):
         """Open send-history search picker (full-text filter + refill)."""
         if getattr(self, "_send_hist_dlg", None) is None:
-            from send_history_dialog import SendHistoryDialog
+            from ui.send_history_dialog import SendHistoryDialog
             self._send_hist_dlg = SendHistoryDialog(self)
         dlg = self._send_hist_dlg
         dlg.refresh_theme()
@@ -6591,7 +6624,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.ed_group.setText(str(fields.get("net_group_addr") or ""))
         self.sw_vconn_loop.setChecked(bool(fields.get("vconn_loopback")), animate=False)
         if hasattr(self, "ed_ble_address"):
-            import ble_uuid
+            from transport import ble_uuid
             self.ed_ble_address.setText(str(fields.get("ble_address") or ""))
             self.ed_ble_name.setText(str(fields.get("ble_name") or ""))
             self.ed_ble_service.setText(str(fields.get("ble_service_uuid") or ""))
@@ -6811,7 +6844,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def open_connection_presets(self):
         if getattr(self, "_cpreset_dlg", None) is None:
-            from connection_presets_dialog import ConnectionPresetsDialog
+            from ui.connection_presets_dialog import ConnectionPresetsDialog
             self._cpreset_dlg = ConnectionPresetsDialog(self)
         dlg = self._cpreset_dlg
         dlg.refresh_theme()
@@ -6824,7 +6857,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_dashboard(self):
         """打开数值仪表盘（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_dash_dlg", None) is None:
-            from dashboard_dialog import DashboardDialog
+            from ui.dashboard_dialog import DashboardDialog
             self._dash_dlg = DashboardDialog(self)
         dlg = self._dash_dlg
         dlg.refresh_theme()
@@ -6836,7 +6869,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_frame_parse(self):
         """打开协议帧解析表（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_frame_dlg", None) is None:
-            from frame_dialog import FrameParseDialog
+            from ui.frame_dialog import FrameParseDialog
             self._frame_dlg = FrameParseDialog(self)
         dlg = self._frame_dlg
         dlg.refresh_theme()
@@ -6851,7 +6884,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_auto_reply(self):
         """打开自动应答配置（单实例，复用并刷新主题/语言）。"""
         if getattr(self, "_ar_dlg", None) is None:
-            from auto_reply_dialog import AutoReplyDialog
+            from ui.auto_reply_dialog import AutoReplyDialog
             self._ar_dlg = AutoReplyDialog(self)
         dlg = self._ar_dlg
         if dlg._save_timer.isActive():
@@ -7086,7 +7119,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_sequence(self):
         """打开自动化序列对话框（单实例，复用并刷新主题/语言）。"""
         if self._seq_dlg is None:
-            from dialogs import SequenceDialog
+            from ui.dialogs import SequenceDialog
             self._seq_dlg = SequenceDialog(self)
         dlg = self._seq_dlg
         dlg.reload_rows()
@@ -7099,7 +7132,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_frame_builder(self):
         """打开帧构造器对话框（单实例，复用并刷新主题/语言）。"""
         if self._frame_builder_dlg is None:
-            from frame_builder_dialog import FrameBuilderDialog
+            from ui.frame_builder_dialog import FrameBuilderDialog
             self._frame_builder_dlg = FrameBuilderDialog(self)
         dlg = self._frame_builder_dlg
         dlg.reload_rows()
@@ -7118,7 +7151,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_toolbox(self):
         """打开工具箱（进制/编码转换 + 校验计算；单实例，复用并刷新主题/语言）。"""
         if self._toolbox_dlg is None:
-            from toolbox_dialog import ToolboxDialog
+            from ui.toolbox_dialog import ToolboxDialog
             self._toolbox_dlg = ToolboxDialog(self)
         dlg = self._toolbox_dlg
         dlg.refresh_theme()
@@ -7130,7 +7163,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_bridge(self):
         """打开桥接转发（A/B 两端任意 串口/TCP/UDP 双向透传；单实例，复用并刷新主题/语言）。"""
         if self._bridge_dlg is None:
-            from bridge_dialog import BridgeDialog
+            from ui.bridge_dialog import BridgeDialog
             self._bridge_dlg = BridgeDialog(self)
         dlg = self._bridge_dlg
         dlg.refresh_theme()
@@ -7142,7 +7175,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     def open_xfer(self):
         """打开文件传输（XMODEM/XMODEM-1K/YMODEM 收发；单实例，复用并刷新主题/语言）。"""
         if self._xfer_dlg is None:
-            from xfer_dialog import XferDialog
+            from ui.xfer_dialog import XferDialog
             self._xfer_dlg = XferDialog(self)
         dlg = self._xfer_dlg
         dlg.refresh_theme()
@@ -9119,7 +9152,7 @@ class CommTool(SessionHostMixin, QMainWindow):
     _MBM_QTIMER_MAX_MS = 0x7FFFFFFF
 
     def _load_device_registers(self):
-        from device_resources import normalize_registers
+        from project.device_resources import normalize_registers
         data = _cfg_parse_json_list(self.settings.value("device_registers", "")) or []
         return normalize_registers(data)
 
@@ -9508,7 +9541,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         send_target = self._send_target()
         try:
             sent = self.conn.send(frame, send_target)
-        except Exception:
+        except _TX_IO_ERRORS:
+            _log.debug("modbus master send failed", exc_info=True)
             return False
         # 串口 write() 允许返回短写；只有整帧全部交付才可登记为成功并等待响应。
         if sent == SEND_NO_TARGET or sent != len(frame):
@@ -9907,7 +9941,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             dash_tags = self._device_dash_tags
             if not want_record and not plot_tags and not dash_tags:
                 return
-            from device_resources import decode_modbus_samples
+            from project.device_resources import decode_modbus_samples
             # 17 的读段读的就是保持寄存器，与 03 同语义；寄存器定义只允许 3/4，
             # 不映射的话 FC23 轮询结果永远匹配不上任何标签。
             dec_func = 0x03 if info["func"] == 0x17 else info["func"]
@@ -10035,7 +10069,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _open_device_center(self):
         if self._device_center_dlg is None:
-            from device_center_dialog import DeviceCenterDialog
+            from ui.device_center_dialog import DeviceCenterDialog
             self._device_center_dlg = DeviceCenterDialog(self)
         elif not self._device_center_dlg.isVisible():
             self._device_center_dlg.reload_cfg()
@@ -10048,7 +10082,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _open_structured_record(self):
         if self._structured_dlg is None:
-            from structured_record_dialog import StructuredRecordDialog
+            from ui.structured_record_dialog import StructuredRecordDialog
             self._structured_dlg = StructuredRecordDialog(self)
         self._structured_dlg.refresh_rows()
         self._structured_dlg.show()
@@ -10057,7 +10091,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _open_modbus_master(self):
         if getattr(self, "_mbm_dlg", None) is None:
-            from modbus_master_dialog import ModbusMasterDialog
+            from ui.modbus_master_dialog import ModbusMasterDialog
             self._mbm_dlg = ModbusMasterDialog(self)
         dlg = self._mbm_dlg
         if not dlg._dirty:           # 保留尚未“应用”的界面草稿；已提交时才从运行配置刷新
@@ -10168,7 +10202,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         cs_idx = default_cs if checksum is None else checksum
         try:
             data = data + self.compute_checksum(data, cs_idx)
-        except Exception as e:
+        except _CHECKSUM_ERRORS as e:
+            _log.debug("checksum append failed", exc_info=True)
             if notify_ui:
                 self.toast(self._t("err_checksum", e=e), error=True)
             return False
@@ -10176,7 +10211,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         send_target = self._send_target() if target is None else target
         try:
             sent = self.conn.send(data, send_target)
-        except Exception as e:
+        except _TX_IO_ERRORS as e:
+            _log.debug("send failed", exc_info=True)
             self._stat_note_tx_error()
             if notify_ui:
                 self._refresh_stat_labels(with_tooltip=False)
@@ -10377,7 +10413,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         send_target = self._send_target()
         try:
             sent = self.conn.send(data, send_target)
-        except Exception as e:
+        except _TX_IO_ERRORS as e:
+            _log.debug("terminal send failed", exc_info=True)
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t(
@@ -10779,7 +10816,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             if session is self.active_session():
                 self._set_log_path_label(path)
             return True
-        except Exception as e:
+        except _LOG_IO_ERRORS as e:
+            _log.debug("open log segment failed", exc_info=True)
             self.toast(self._t("err_open_log", e=e), error=True)
             return False
 
@@ -10833,12 +10871,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             ts = when.strftime("%Y-%m-%d %H:%M:%S")
             new_f.write(self._t("log_header", time=ts))
             new_f.flush()
-        except Exception as e:
+        except _LOG_IO_ERRORS as e:
             if new_f is not None:
                 try:
                     new_f.close()
                 except OSError:
                     _log.debug("log rotate: close failed new segment", exc_info=True)
+            _log.debug("log rotate: open new segment failed", exc_info=True)
             self._toast_log_rotate_failed(e)
             return False
         try:
@@ -10999,7 +11038,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.txt_recv.toPlainText())
             self.toast(self._t("saved_to", path=path))
-        except Exception as e:
+        except _LOG_IO_ERRORS as e:
+            _log.debug("save recv failed", exc_info=True)
             self.toast(self._t("err_save_failed", e=e), error=True)
 
     def load_file_to_send(self):
@@ -11015,7 +11055,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             else:
                 # 按选定编码读取（默认 utf-8），lossy 容错避免文件偶有坏字节就报错
                 self.txt_send.setPlainText(data.decode(self._send_codec(), errors="replace"))
-        except Exception as e:
+        except _LOG_IO_ERRORS as e:
+            _log.debug("load file to send failed", exc_info=True)
             self.toast(self._t("err_read_failed", e=e), error=True)
 
     def clear_recv(self):
@@ -11227,7 +11268,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._update_legend_label()
         if hasattr(self, "_refresh_session_tab_styles"):
             try:
-                from session import format_default_title
+                from sessions.session import format_default_title
                 for s in self.sessions():
                     if getattr(s, "title_index", None) is not None:
                         s.title = format_default_title(self, s.title_index)
@@ -11771,7 +11812,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         if v is not None:
             self.ed_group.setText(str(v))
         if hasattr(self, "ed_ble_address"):
-            import ble_uuid
+            from transport import ble_uuid
             v = s.value("ble_address", None)
             if v is not None:
                 self.ed_ble_address.setText(str(v))
@@ -11889,7 +11930,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         label = getattr(self, "lbl_workspace_template_preview", None)
         if combo is None or label is None:
             return
-        from project_templates import protocol_template_settings
+        from project.project_templates import protocol_template_settings
         cfg = protocol_template_settings(combo.currentData() or "raw")
         yes = self._t("workspace_yes")
         no = self._t("workspace_no")
@@ -11927,7 +11968,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._t("workspace_template_confirm", name=template_name),
                 ok_text=self._t("workspace_template_apply"), danger=False):
             return
-        from project_templates import protocol_template_settings
+        from project.project_templates import protocol_template_settings
         cfg = protocol_template_settings(combo.currentData() or "raw")
         with self._workspace_autosave_paused():
             if not self._prepare_project_switch():
@@ -12250,7 +12291,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         converted = _cfg_coerce_map(data, self._CFG_KEYS)
 
         old = {key: self.settings.value(key, None) for key in self._CFG_KEYS}
-        from project_model import prepare_project_settings
+        from project.project_model import prepare_project_settings
         incoming = prepare_project_settings(converted, old, self._CFG_KEYS)
 
         def replace(values):
@@ -12316,7 +12357,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._rollback_sessions_runtime_reset(snapshot)
 
     def new_project(self):
-        from project_wizard import ProjectWizard
+        from project.project_wizard import ProjectWizard
         wizard = ProjectWizard(
             self._project_wizard_texts(), visible_conn_types(), self,
             theme_id=self._theme_id())
@@ -12337,7 +12378,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         if not path.lower().endswith(".ctproj"):
             path += ".ctproj"
         views = data["views"]
-        from project_templates import protocol_template_settings
+        from project.project_templates import protocol_template_settings
         template_cfg = protocol_template_settings(
             data["protocol_template"], data["connection_type"])
         # Display choices from the wizard override template recommendations.
@@ -12417,7 +12458,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _open_project_path(self, path, confirm=True, notify=True, notify_errors=True):
         try:
-            from project_model import load_project
+            from project.project_model import load_project
             payload = load_project(path)
         except Exception as e:
             if notify_errors:
@@ -12430,7 +12471,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             if not self._prepare_project_switch():
                 return False
             try:
-                from project_model import merge_project_resources
+                from project.project_model import merge_project_resources
                 project_settings = merge_project_resources(
                     payload["settings"], payload.get("resources", {}))
                 self._apply_project_settings(project_settings)
@@ -12467,7 +12508,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             if not path.lower().endswith(".ctproj"):
                 path += ".ctproj"
         try:
-            from project_model import collect_project_resources, make_project, save_project
+            from project.project_model import collect_project_resources, make_project, save_project
             settings = self._collect_project_settings()
             metadata = dict(self._project_meta)
             metadata["connection_type"] = settings.get(
@@ -13092,7 +13133,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._close_all_sessions(update_active_ui=True)
         self._stop_ble_scan()
         try:
-            import ble_io
+            from transport import ble_io
             ble_io.shutdown_loop()
         except Exception:
             _log.debug("BLE loop shutdown failed", exc_info=True)

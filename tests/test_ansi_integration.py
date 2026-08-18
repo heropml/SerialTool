@@ -15,9 +15,9 @@ _APP = QApplication.instance() or QApplication([])
 
 from main_window import (CommTool, PortScannerThread, ANSI_FG_PROP, ANSI_BG_PROP, ROLE_PROP,
                          PROTO_SERIAL, PROTO_TCP_SERVER, PROTO_UDP, SEND_NO_TARGET)  # noqa: E402
-from theme import THEMES  # noqa: E402
-import triggers  # noqa: E402
-import ansi as ansi_mod  # noqa: E402
+from ui.theme import THEMES  # noqa: E402
+from automation import triggers  # noqa: E402
+from protocol import ansi as ansi_mod  # noqa: E402
 import json  # noqa: E402
 
 _WIN = None
@@ -605,7 +605,7 @@ class TriggerIntegrationTests(unittest.TestCase):
     def test_alert_mark_is_decoration_not_rx_body(self):
         """回归：告警标记是我们自己插的说明行，不该被当成设备发来的 RX 正文
         （否则会参与关键字过滤、混进收发统计口径）。"""
-        from theme import ROLE_TS, ROLE_RX
+        from ui.theme import ROLE_TS, ROLE_RX
         w = self.w
         self._rules({"name": "m", "pattern": "Z", "cooldown": 0, "mark": True,
                      "beep": False, "notify": False})
@@ -708,7 +708,7 @@ class TriggerDialogTests(unittest.TestCase):
     def test_existing_rule_is_editable_on_open(self):
         """回归(P2)：打开对话框时 _cur 必须落到第 0 条 —— 否则编辑区全灰，
         已有规则点不动（setCurrentRow 触发的信号被 _reloading 挡掉了）。"""
-        from triggers_dialog import TriggersDialog
+        from ui.triggers_dialog import TriggersDialog
         w = _win()
         old = w._triggers
         try:
@@ -729,7 +729,7 @@ class TriggerDialogTests(unittest.TestCase):
 
     def test_sync_mode_items_safe_before_populate(self):
         """回归(P3-防御)：下拉未填充时不该崩。"""
-        from triggers_dialog import TriggersDialog
+        from ui.triggers_dialog import TriggersDialog
         w = _win()
         dlg = TriggersDialog(w)
         try:
@@ -742,7 +742,7 @@ class TriggerDialogTests(unittest.TestCase):
 
     def test_pending_edit_survives_add_reset_and_language_reload(self):
         """会重建编辑区的操作都必须先提交去抖中的草稿。"""
-        from triggers_dialog import TriggersDialog
+        from ui.triggers_dialog import TriggersDialog
         w = _win()
         old = w._triggers
         try:

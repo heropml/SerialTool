@@ -15,11 +15,11 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import modbus_master as mm
-import modbus_slave as ms
+from modbus import modbus_master as mm
+from modbus import modbus_slave as ms
 from main_window import CommTool, PortScannerThread
-from modbus_master_dialog import ModbusMasterDialog
-from modbus_gateway import ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE
+from ui.modbus_master_dialog import ModbusMasterDialog
+from modbus.modbus_gateway import ModbusGatewayEngine, EXC_GATEWAY_NO_RESPONSE
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -129,7 +129,7 @@ def test_fc43_zero_object_response_parses():
 
 def test_device_register_thresholds_round_trip():
     from PyQt5.QtWidgets import QTableWidget
-    from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
+    from ui.device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
 
     dlg = DeviceCenterDialog.__new__(DeviceCenterDialog)   # UI-free: table only
     dlg.table = QTableWidget(0, len(_REGISTER_COLUMNS))
@@ -148,7 +148,7 @@ def test_device_register_thresholds_round_trip():
 
 def test_device_register_blank_thresholds_stay_unset():
     from PyQt5.QtWidgets import QTableWidget
-    from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
+    from ui.device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
 
     dlg = DeviceCenterDialog.__new__(DeviceCenterDialog)
     dlg.table = QTableWidget(0, len(_REGISTER_COLUMNS))
@@ -163,7 +163,7 @@ def test_device_register_blank_thresholds_stay_unset():
 def test_structured_record_table_shows_threshold_level():
     """记录表要显示阈值级别，否则寄存器表里配的 warn/alarm 在界面上仍然无感。"""
     import types
-    from structured_record_dialog import StructuredRecordDialog
+    from ui.structured_record_dialog import StructuredRecordDialog
 
     texts = {"structured_level_warn": "预警", "structured_level_alarm": "报警"}
     dlg = StructuredRecordDialog.__new__(StructuredRecordDialog)
@@ -177,7 +177,7 @@ def test_structured_record_table_shows_threshold_level():
 def test_device_center_address_column_uses_the_selected_base():
     """地址列必须按地址基显示，否则切到 1 基后界面上看不出任何变化。"""
     from PyQt5.QtWidgets import QTableWidget
-    from device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
+    from ui.device_center_dialog import DeviceCenterDialog, _REGISTER_COLUMNS
 
     dlg = DeviceCenterDialog.__new__(DeviceCenterDialog)
     dlg.table = QTableWidget(0, len(_REGISTER_COLUMNS))
@@ -211,7 +211,7 @@ class _FakeConn(QObject):
 
 
 def _gw_bridge():
-    from bridge import BridgeEngine
+    from modbus.bridge import BridgeEngine
     eng = BridgeEngine()
     a, b = _FakeConn(), _FakeConn()
     eng.set_connection(0, a)
@@ -985,8 +985,8 @@ def test_dropped_actions_show_up_in_the_triggers_dialog(tmp_path, monkeypatch):
     丢弃时命中数照涨，但 webhook / 外部程序根本没跑；不说一声的话
     用户只能对着「命中 500 次」猜为什么告警没发出去。
     """
-    import triggers
-    from triggers_dialog import TriggersDialog
+    from automation import triggers
+    from ui.triggers_dialog import TriggersDialog
     _patch_window_runtime(monkeypatch, tmp_path / "dropped.ini")
     window = CommTool("trg-dropped")
     try:
@@ -1018,7 +1018,7 @@ def test_collect_registers_survives_a_missing_checkbox(tmp_path, monkeypatch):
     旁边每个列都走 text() / combo_value() 并带默认值，只有这一列直接
     .checkState()；缺项按启用算，与 normalize_registers 的默认值一致。
     """
-    from device_center_dialog import DeviceCenterDialog
+    from ui.device_center_dialog import DeviceCenterDialog
     _patch_window_runtime(monkeypatch, tmp_path / "regs.ini")
     window = CommTool("dev-regs")
     try:
@@ -1039,8 +1039,8 @@ def test_collect_registers_survives_a_missing_checkbox(tmp_path, monkeypatch):
 
 def test_deleting_a_trigger_asks_first(tmp_path, monkeypatch):
     """Deleting a trigger is irreversible; always confirm with trg_* copy."""
-    import triggers
-    from triggers_dialog import TriggersDialog
+    from automation import triggers
+    from ui.triggers_dialog import TriggersDialog
     _patch_window_runtime(monkeypatch, tmp_path / "trg.ini")
     window = CommTool("trg-del-confirm")
     try:

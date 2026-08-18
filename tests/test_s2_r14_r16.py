@@ -8,10 +8,10 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import auto_reply_core as ar
-import connection_presets as cp
-import io_stats as io
-import log_naming as ln
+from automation import auto_reply_core as ar
+from project import connection_presets as cp
+from transport import io_stats as io
+from record import log_naming as ln
 
 
 class _FixedRng(object):
