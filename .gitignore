@@ -23,6 +23,7 @@ settings.ini
 settings-*.ini
 *.ini.lock
 *.mwlock
+src/config/
 
 # Gitee 发版长期令牌（release_gitee.py 读它）—— 绝不入库
 scripts/.gitee_token
@@ -68,6 +69,6 @@ latest.json.keep
 scripts/_release_commit_body.txt
 pytest-results.xml
 
-# local pytest capture
-dist_pytest_out.txt
+# local pytest cache
+.pytest_cache/
 

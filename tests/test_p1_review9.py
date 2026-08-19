@@ -590,3 +590,81 @@ def test_auto_reply_close_event_syncs_settings(tmp_path, monkeypatch):
         dlg.deleteLater()
         window.deleteLater()
         _APP.processEvents()
+
+
+def test_plot_load_cfg_does_not_toast_saved_bad_patterns(tmp_path, monkeypatch):
+    """Opening the plot dialog with a stored invalid regex/header/fields
+    must not spam error toasts; typing the same garbage still does."""
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini")
+    window = CommTool("plot-load-toast")
+    toasts = []
+    window.toast = lambda *a, **k: toasts.append((a, k))
+    window.settings.setValue("plot_regex", "(")
+    window.settings.setValue("plot_hex_header", "ZZ")
+    window.settings.setValue("plot_hex_fields", "not-a-field")
+    try:
+        dlg = PlotDialog(window)
+        try:
+            assert toasts == []
+            dlg.ed_regex.setText("(")
+            dlg._on_regex_changed(save=False)
+            assert toasts
+        finally:
+            dlg.deleteLater()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_sequence_csv_error_toasts_instead_of_raising(tmp_path, monkeypatch):
+    """csv.Error on sequence CSV load/export must toast, not escape the slot."""
+    import csv
+    from PyQt5.QtWidgets import QFileDialog
+    from ui.dialogs import SequenceDialog
+
+    _patch_window_runtime(monkeypatch, tmp_path / "seq-csv.ini")
+    window = CommTool("seq-csv-err")
+    toasts = []
+    window.toast = lambda msg, error=False: toasts.append((msg, error))
+    monkeypatch.setattr(
+        "ui.dialogs.sequence_dataset.load_dataset",
+        lambda _path: (_ for _ in ()).throw(csv.Error("bad dialect")))
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName",
+        lambda *a, **k: (str(tmp_path / "x.csv"), ""))
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName",
+        lambda *a, **k: (str(tmp_path / "r.csv"), "CSV (*.csv)"))
+    started = []
+    window._seq_start = lambda *a, **k: started.append(True)
+    dlg = SequenceDialog(window)
+    try:
+        dlg._on_pick_csv()
+        assert toasts and toasts[-1][1] is True
+        assert "bad dialect" in str(toasts[-1][0])
+
+        toasts[:] = []
+        dlg._csv_path = str(tmp_path / "x.csv")
+        dlg._on_run()
+        assert toasts and toasts[-1][1] is True
+        assert "bad dialect" in str(toasts[-1][0])
+        assert started == []
+
+        toasts[:] = []
+        monkeypatch.setattr(
+            dlg, "_seq_runtime",
+            lambda name, default=None: {
+                "_seq_steps": [{"on": True, "name": "a"}],
+                "_seq_results": [{"status": "pass", "ms": 1, "detail": ""}],
+                "_seq_summary": {"ok": 1, "total": 1, "ms": 1, "pass": True},
+            }.get(name, default))
+        monkeypatch.setattr(
+            dlg, "_build_report_csv",
+            lambda *_a, **_k: (_ for _ in ()).throw(csv.Error("export dialect")))
+        dlg._on_export()
+        assert toasts and toasts[-1][1] is True
+        assert "export dialect" in str(toasts[-1][0])
+    finally:
+        dlg.deleteLater()
+        window.deleteLater()
+        _APP.processEvents()

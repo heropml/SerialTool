@@ -17,10 +17,74 @@ from ui import send_options_card as soc
 def test_r51_settings_ini_and_group():
     assert cfg.settings_ini_name("") == "settings.ini"
     assert cfg.settings_ini_name("2") == "settings-2.ini"
+    assert cfg.is_settings_ini_filename("settings.ini")
+    assert cfg.is_settings_ini_filename("settings-probe.ini")
+    assert not cfg.is_settings_ini_filename("settings.ini.lock")
+    assert not cfg.is_settings_ini_filename("settings-2.ini.mwlock")
     assert cfg.clamp_group_idx("1", 3) == 1
     assert cfg.clamp_group_idx(9, 3) == 0
     assert cfg.clamp_group_idx("x", 2) == 0
     assert cfg.clamp_group_idx(0, 0) == 0
+
+
+def test_r51_settings_migrate_into_config(tmp_path):
+    base = tmp_path / "app"
+    base.mkdir()
+    (base / "settings.ini").write_text("[General]\nlanguage=zh\n", encoding="utf-8")
+    (base / "settings-2.ini").write_text("[General]\n", encoding="utf-8")
+    (base / "settings-probe.ini").write_text("[General]\n", encoding="utf-8")
+    (base / "settings.ini.mwlock").write_text("", encoding="utf-8")
+    path = cfg.resolve_settings_file("", [(str(base), [str(base)])])
+    dest = base / "config"
+    assert path == str(dest / "settings.ini")
+    assert (dest / "settings.ini").read_text(encoding="utf-8").startswith("[General]")
+    assert (dest / "settings-2.ini").is_file()
+    assert (dest / "settings-probe.ini").is_file()
+    assert not (base / "settings.ini").exists()
+    assert not (base / "settings-2.ini").exists()
+    assert not (base / "settings.ini.mwlock").exists()
+
+
+def test_r51_settings_migrate_does_not_overwrite(tmp_path):
+    base = tmp_path / "app"
+    dest = base / "config"
+    dest.mkdir(parents=True)
+    (dest / "settings.ini").write_text("NEW\n", encoding="utf-8")
+    (base / "settings.ini").write_text("OLD\n", encoding="utf-8")
+    (base / "settings.ini.mwlock").write_text("", encoding="utf-8")
+    cfg.resolve_settings_file("", [(str(base), [str(base)])])
+    assert (dest / "settings.ini").read_text(encoding="utf-8") == "NEW\n"
+    assert (base / "settings.ini").read_text(encoding="utf-8") == "OLD\n"
+    assert (base / "settings.ini.mwlock").exists()
+
+
+def test_r51_settings_migrate_copy_failure_keeps_source(tmp_path, monkeypatch):
+    base = tmp_path / "app"
+    base.mkdir()
+    (base / "settings.ini").write_text("KEEP\n", encoding="utf-8")
+
+    def boom(_src, _dst, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cfg.shutil, "copy2", boom)
+    cfg.resolve_settings_file("", [(str(base), [str(base)])])
+    assert (base / "settings.ini").read_text(encoding="utf-8") == "KEEP\n"
+    assert not (base / "config" / "settings.ini").exists()
+
+
+def test_r51_settings_migrate_second_legacy_dir(tmp_path):
+    """APPDATA 回退时仍要把 NetworkTool / 安装根下的旧 ini 迁进 config/。"""
+    dest_parent = tmp_path / "CommTool"
+    dest_parent.mkdir()
+    old = tmp_path / "NetworkTool"
+    old.mkdir()
+    (old / "settings.ini").write_text("[General]\nfrom=nt\n", encoding="utf-8")
+    path = cfg.resolve_settings_file(
+        "", [(str(dest_parent), [str(dest_parent), str(old)])])
+    dest = dest_parent / "config" / "settings.ini"
+    assert path == str(dest)
+    assert dest.read_text(encoding="utf-8") == "[General]\nfrom=nt\n"
+    assert not (old / "settings.ini").exists()
 
 
 def test_r51_mbm_gates():

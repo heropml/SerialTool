@@ -1,7 +1,7 @@
 # CommTool 排期报告
 
-> 基线：**v1.7.2**（2026-08-19）  
-> 综合：阶段 A/B 收口事实、v1.5.6 多会话补齐、v1.5.7 PCAP/体验打磨、v1.6.0 协议流组帧、v1.7.0 Windows BLE、v1.7.1 扫描打磨、v1.7.2 领域分包与 B6-3。  
+> 基线：**v1.7.3**（2026-08-19）  
+> 综合：阶段 A/B 收口事实、v1.5.6 多会话补齐、v1.5.7 PCAP/体验打磨、v1.6.0 协议流组帧、v1.7.0 Windows BLE、v1.7.1 扫描打磨、v1.7.2 领域分包与 B6-3、v1.7.3 配置目录 / 事件总线 / B6-4。  
 > 产品定位不变：**轻量、稳定、好用的串口/网络协议调试工具**；闭环止于「预设 → 自动化 → 记录 → 定位 → 报告」。
 
 ---
@@ -13,7 +13,7 @@
 | 下一阶段主线 | 可信度 + 体验 + 跨平台回归，**不堆大功能** |
 | P2 | CLI / REST / 插件 **继续暂缓** |
 | 工程债 | 只排有明确 ROI 的项；不为指标而洁癖 |
-| 版本策略 | 阶段 A/B → **v1.5.3 已发**；打磨向 → **v1.5.4–v1.5.7**；**v1.6.0 已发**（协议流组帧）；**v1.7.0 已发**（Windows BLE 主机 UART）；**v1.7.1 已发**（扫描打磨）；**v1.7.2 已发**（领域分包 / B6-3） |
+| 版本策略 | 阶段 A/B → **v1.5.3 已发**；打磨向 → **v1.5.4–v1.5.7**；**v1.6.0 已发**（协议流组帧）；**v1.7.0 已发**（Windows BLE 主机 UART）；**v1.7.1 已发**（扫描打磨）；**v1.7.2 已发**（领域分包 / B6-3）；**v1.7.3 已发**（配置目录 / 事件总线 / B6-4） |
 
 ---
 
@@ -21,8 +21,8 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.7.2` | Windows Setup/onefile + macOS DMG + Linux x86_64 `.run`；`url_mac` / `url_linux` 已写入 |
-| 测试 | **1654 passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
+| 发布版 | `comm-v1.7.3` | Windows Setup/onefile + Linux x86_64 `.run`；macOS DMG 补同一 tag；`url_linux` 在 Linux 包上传后写入 |
+| 测试 | **1668 passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
 | `except Exception` | 宽泛约 **205**（B6-3 后；不是 KPI）/ 静默预算冻结 **9** | 见 `tests/test_silent_except_budget.py` |
@@ -92,7 +92,7 @@
 | macOS 公证 / 安装体验 | Mac 用户或投诉上升 | 消 `xattr`「已损坏」路径 |
 | Linux 官方包 + Linux CI | **x86_64 .run 已发**（v1.5.7）；CI 烟雾已加 | `build.sh` + `release_linux.sh`；glibc 下限 2.27；全量矩阵仍非硬门槛 |
 | PCAP 多客户端 TCP Server | 多客户端压测成常见场景 | **DONE**：每对端一条流、广播展开、导出前确认对端 |
-| 事件总线迁移触发动作 | Webhook/外部程序动作继续膨胀 | 触发器只产事件（见 TODO 约定） |
+| 事件总线迁移触发动作 | Webhook/外部程序动作继续膨胀 | **DONE**：触发器只产 `trigger.hit`；webhook / run_cmd 在 `TriggerActionRunner` 消费端 |
 | `pyproject.toml` / 子包化 | 需要可安装包或模块边界失控 | 高成本；非当前瓶颈 |
 | **P2** CLI / REST / 插件 | 核心 Qt-free + 异常可追溯 + soak 基线达标 | 前置未满足前**不排期** |
 
@@ -121,8 +121,9 @@
 6. ~~**v1.7.0**~~ **DONE**（Windows BLE 主机 UART：独立扫描窗口、Notify+Write、模板与自动重连上限）
 7. ~~**v1.7.1**~~ **DONE**（BLE 扫描过滤/序号/跟语言；macOS/Linux 隐藏 BLE 类型）
 8. ~~**v1.7.2**~~ **DONE**（领域分包 + B6-3 连接/发送/日志 + RX toast 标题；Windows + Linux x86_64）
-9. **不上**覆盖率硬门槛（B3 只收集，见 §6）
-10. 阶段 C 剩余项（Mac 公证 / 事件总线）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加
+9. ~~**v1.7.3**~~ **DONE**（配置迁入 `config/` + 触发动作事件总线 + B6-4 对话框/绘图误报 toast；Windows + Linux x86_64）
+10. **不上**覆盖率硬门槛（B3 只收集，见 §6）
+11. 阶段 C 剩余项（Mac 公证 / 本轮 macOS DMG）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加
 
 ### v1.7.2 · B6-3 与体验盘点
 
@@ -147,10 +148,18 @@
 
 静默预算仍冻 **9**。宽泛总数不是 KPI。
 
+**B6-4**（对话框 / 绘图 / 仪表盘，仅误报 toast）：波形图恢复已存的非法正则/帧头/字段不再弹错误；CSV/序列导入导出只把 IO / 编码 / JSON / `csv.Error` 当「保存失败」，xlsx 非法字符走 `ValueError`；不再把程序内部异常包装成文件错误。**已随 v1.7.3 发出。**
+
+### v1.7.3 · 配置目录与事件总线
+
+- 运行时配置：`<可写基目录>/config/settings.ini`；打包版优先 exe 同级，写不进则 AppData；macOS 固定 Application Support。旧同级 ini 复制成功才删源。
+- 触发器命中发 `trigger.hit`；Webhook / run_cmd 由 `TriggerActionRunner` 消费（并发 8、私有地址拦截不变）。
+- 本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。
+
 ---
 
 ## 8. 与 `docs/TODO.md` 的关系
 
 - **历史功能池 / P0–P1 / v1.4–v1.5 备查** → 仍以 `TODO.md` 为准。  
-- **v1.7.2 之后「接下来做什么」** → 以本文件 §5 / §7 为准（阶段 C 按触发条件；不上 P2）。  
+- **v1.7.3 之后「接下来做什么」** → 以本文件 §5 / §7 为准（阶段 C 按触发条件；不上 P2）。  
 - 完成 A1 时应把 `TODO.md` 过时数字与「Next up is P2」类表述一并校正，避免双真源。

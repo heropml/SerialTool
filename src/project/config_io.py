@@ -5,6 +5,8 @@ S-2 R22: security gate transforms + export/coerce for CommTool / project apply.
 Confirm dialogs stay in the GUI layer.
 """
 import json
+import os
+import shutil
 
 from project.config_keys import CFG_KEYS, PROJECT_PERSONAL_KEYS
 
@@ -289,6 +291,118 @@ def clamp_max_lines(v, default=10000):
 def settings_ini_name(profile=""):
     """settings.ini or settings-<profile>.ini."""
     return "settings.ini" if not profile else "settings-%s.ini" % profile
+
+
+SETTINGS_SUBDIR = "config"
+
+
+def is_settings_ini_filename(name):
+    """True for settings.ini / settings-*.ini (not QSettings .lock / .mwlock)."""
+    if not name or not name.endswith(".ini"):
+        return False
+    return name == "settings.ini" or name.startswith("settings-")
+
+
+def settings_dir(base):
+    """Directory that holds settings.ini (``<base>/config``)."""
+    return os.path.join(base, SETTINGS_SUBDIR)
+
+
+def ensure_writable_dir(path):
+    """Create ``path`` and probe a temp file. True if this process can write there."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return False
+    test = os.path.join(path, ".write_test")
+    try:
+        with open(test, "w"):
+            pass
+    except (OSError, PermissionError):
+        return False
+    try:
+        os.remove(test)
+    except OSError:
+        pass
+    return True
+
+
+def migrate_legacy_settings(dest_dir, legacy_dirs):
+    """Copy leftover settings*.ini into dest_dir, then drop the old copies.
+
+    Never overwrites a file already in dest_dir. Source (and sibling lock
+    files) are removed only after a successful copy; dest-exists or copy
+    failure leaves the original in place for the next launch.
+    """
+    dest_dir = os.path.abspath(dest_dir)
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError:
+        return
+    seen = set()
+    for raw in legacy_dirs or ():
+        legacy = os.path.abspath(raw)
+        if legacy in seen or not os.path.isdir(legacy):
+            continue
+        if os.path.normcase(legacy) == os.path.normcase(dest_dir):
+            continue
+        seen.add(legacy)
+        try:
+            names = os.listdir(legacy)
+        except OSError:
+            continue
+        for name in names:
+            if not is_settings_ini_filename(name):
+                continue
+            src = os.path.join(legacy, name)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(dest_dir, name)
+            if os.path.exists(dst):
+                continue
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
+            try:
+                os.remove(src)
+            except OSError:
+                pass
+            for extra in (src + ".mwlock", src + ".lock"):
+                try:
+                    os.remove(extra)
+                except OSError:
+                    pass
+
+
+def resolve_settings_file(profile, candidates):
+    """Pick the first writable ``<parent>/config`` and return the ini path.
+
+    ``candidates`` is ``[(dest_parent, legacy_dirs), ...]``. Each writable
+    dest migrates settings*.ini out of ``legacy_dirs`` first. The last
+    candidate is used even if the directory is not writable (QSettings still
+    gets a path).
+    """
+    name = settings_ini_name(profile)
+    last_dest = None
+    items = list(candidates or ())
+    for i, (dest_parent, legacy_dirs) in enumerate(items):
+        dest = settings_dir(dest_parent)
+        last_dest = dest
+        writable = ensure_writable_dir(dest)
+        if not writable and i + 1 < len(items):
+            continue
+        if writable:
+            migrate_legacy_settings(dest, list(legacy_dirs or ()))
+        else:
+            try:
+                os.makedirs(dest, exist_ok=True)
+            except OSError:
+                pass
+        return os.path.join(dest, name)
+    if last_dest:
+        return os.path.join(last_dest, name)
+    return name
 
 
 def clamp_group_idx(idx, n_groups):

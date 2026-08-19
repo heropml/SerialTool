@@ -405,6 +405,25 @@ def test_trigger_action_gate_is_silent_without_external_actions(tmp_path, monkey
         _APP.processEvents()
 
 
+def test_fire_trigger_publishes_webhook_to_runner(tmp_path, monkeypatch):
+    """命中后走总线消费端，不再在 _fire_trigger 里直接调 webhook。"""
+    _patch_window_runtime(monkeypatch, tmp_path / "bus.ini")
+    window = CommTool("trg-bus")
+    seen = []
+    try:
+        window._trg_actions.run_webhook = lambda *a: seen.append(a)
+        window._fire_trigger(0, {
+            "webhook": True, "webhook_url": "https://example.com/hook",
+            "notify": False, "beep": False, "mark": False,
+        }, "rx")
+        assert len(seen) == 1
+        assert seen[0][0]["webhook_url"] == "https://example.com/hook"
+        assert seen[0][3] == 0
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
 def test_trigger_actions_are_capped_in_flight(tmp_path, monkeypatch):
     """Cooldown can be 0; without a cap a busy link spawns unbounded workers."""
     import threading

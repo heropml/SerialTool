@@ -92,28 +92,35 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 ; 桌面快捷方式（可选）
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[Dirs]
+; 运行时配置目录。卸载时 Inno 会去掉本次 [INI] seed 的 language 键（旧版同样）；
+; 用户随后写入的其余设置仍留在文件里。空目录才会被卸掉。
+Name: "{app}\config"
+
 [INI]
 ; 首次安装时根据安装语言 seed settings.ini，让 CommTool 第一次启动就用对应语言
-; - 写两份（{app} 和 {userappdata}\CommTool）兼容两种 settings 落地路径：
-;   per-user 装 → 走 {app}；all-users 装到 Program Files + 非管理员运行 → 走 %APPDATA% fallback
-; - 用 Check 函数确保只在文件还不存在时 seed，不覆盖已有用户配置
-Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedApp
-Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedApp
-Filename: "{app}\settings.ini";                    Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedApp
-Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedAppData
-Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedAppData
-Filename: "{userappdata}\CommTool\settings.ini"; Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedAppData
+; - 写两份（{app}\config 和 {userappdata}\CommTool\config）兼容两种落地路径：
+;   per-user 装 → 走 {app}\config；all-users 装到 Program Files + 非管理员运行 → 走 %APPDATA% fallback
+; - Check：新旧路径都没有 settings.ini 才 seed，升级不覆盖（旧版同级文件启动时会迁入 config/）
+Filename: "{app}\config\settings.ini";                    Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedApp
+Filename: "{app}\config\settings.ini";                    Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedApp
+Filename: "{app}\config\settings.ini";                    Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedApp
+Filename: "{userappdata}\CommTool\config\settings.ini"; Section: "General"; Key: "language"; String: "en";    Languages: english;     Check: ShouldSeedAppData
+Filename: "{userappdata}\CommTool\config\settings.ini"; Section: "General"; Key: "language"; String: "zh";    Languages: chinesesimp; Check: ShouldSeedAppData
+Filename: "{userappdata}\CommTool\config\settings.ini"; Section: "General"; Key: "language"; String: "zh_tw"; Languages: chinesetrad; Check: ShouldSeedAppData
 
 [Code]
 function ShouldSeedApp: Boolean;
 begin
-  // 只在 {app}\settings.ini 不存在时 seed —— 升级安装保留用户旧偏好
-  Result := not FileExists(ExpandConstant('{app}\settings.ini'));
+  // 新旧路径都没有才 seed —— 升级保留用户旧偏好
+  Result := not FileExists(ExpandConstant('{app}\config\settings.ini'))
+        and not FileExists(ExpandConstant('{app}\settings.ini'));
 end;
 
 function ShouldSeedAppData: Boolean;
 begin
-  Result := not FileExists(ExpandConstant('{userappdata}\CommTool\settings.ini'));
+  Result := not FileExists(ExpandConstant('{userappdata}\CommTool\config\settings.ini'))
+        and not FileExists(ExpandConstant('{userappdata}\CommTool\settings.ini'));
 end;
 
 [Run]

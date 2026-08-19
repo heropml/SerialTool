@@ -116,7 +116,7 @@ from project.config_io import (
     normalize_mbm_variant as _cfg_normalize_mbm_variant,
     mbm_import_enabled as _cfg_mbm_import_enabled,
     ar_mbm_mutex_disable_ar as _cfg_ar_mbm_mutex_disable_ar,
-    settings_ini_name as _cfg_settings_ini_name,
+    resolve_settings_file as _cfg_resolve_settings_file,
 )
 from automation.send_history import (
     push as _hist_push,
@@ -258,6 +258,11 @@ from protocol.rx_text import (
 from automation.trigger_safe import (
     is_private_url as _trg_is_private_url,
     shell_value as _trg_shell_quote,
+)
+from automation.event_bus import EventBus, TOPIC_TRIGGER_HIT
+from automation.trigger_actions import (
+    TriggerActionRunner,
+    kill_proc as _trg_kill_proc_impl,
 )
 
 from protocol.keyword_groups import (
@@ -609,6 +614,8 @@ class CommTool(SessionHostMixin, QMainWindow):
     RESIZE_MARGIN = 6
     _AR_SCRIPT_TIMEOUT = 1.0   # B5：脚本执行超时(秒)，超时即放弃本次、防死循环/阻塞冻结 GUI
     _TRG_MAX_ACTIONS = 8       # in-flight webhook / run_cmd workers
+    _TRG_CMD_TIMEOUT = 30.0    # 单个外部程序动作的最长存活时间
+    _TRG_STOP_WAIT = 2.0       # 等在途启动收尾的上限
     _AR_SCRIPT_START_TIMEOUT = 5.0  # spawn/冻结版首启可较慢；与单次脚本超时分开
 
     def __init__(self, profile=""):
@@ -769,16 +776,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._triggers = self._load_triggers()
         self._trigger_engine = triggers.TriggerEngine(self._triggers)
         self._triggers_dlg = None
-        self._trg_action_lock = threading.Lock()   # webhook / 运行程序动作的并发闸门
-        self._trg_action_busy = 0
-        self._trg_action_dropped = 0
-        self._trg_procs = set()     # 外部程序动作的活动子进程，退出时靠它回收
+        # 触发器只产事件；webhook / run_cmd 走总线消费端（并发上限与杀进程都在 runner）。
+        self._event_bus = EventBus()
+        self._trg_actions = TriggerActionRunner(host=self)
+        self._event_bus.subscribe(TOPIC_TRIGGER_HIT, self._trg_actions.on_trigger_hit)
         # closeEvent 跑不到的路径（未捕获异常、sys.exit、脚本里直接退）也要把
         # 子进程收掉，否则 POSIX 上成孤儿、Windows 上同样残留。_trg_stop_procs
         # 只碰纯 Python 属性与 subprocess，不碰 Qt，在解释器退出阶段跑是安全的。
         atexit.register(self._trg_stop_procs)
-        self._trg_launching = 0     # 已开始、还没登记句柄的 Popen 数
-        self._trg_stopping = False  # 竖起后不再放行新动作（单向，只由退出流程置位）
         self._trg_dec_buf = {}      # 触发引擎的增量解码状态，按会话/方向/来源流隔离
         self._trg_dec = {}
         self._trg_dec_codec = {}    # stream_key → codec；两会话编码可以不同
@@ -5914,6 +5919,51 @@ class CommTool(SessionHostMixin, QMainWindow):
                 if isinstance(key, tuple) and key and key[0] == sid:
                     states.pop(key, None)
 
+    # webhook / run_cmd 状态挂在 TriggerActionRunner 上；测试仍读窗口上的旧名字。
+    @property
+    def _trg_action_lock(self):
+        return self._trg_actions.lock
+
+    @property
+    def _trg_action_busy(self):
+        return self._trg_actions.busy
+
+    @_trg_action_busy.setter
+    def _trg_action_busy(self, value):
+        self._trg_actions.busy = value
+
+    @property
+    def _trg_action_dropped(self):
+        return self._trg_actions.dropped
+
+    @_trg_action_dropped.setter
+    def _trg_action_dropped(self, value):
+        self._trg_actions.dropped = value
+
+    @property
+    def _trg_procs(self):
+        return self._trg_actions.procs
+
+    @_trg_procs.setter
+    def _trg_procs(self, value):
+        self._trg_actions.procs = value
+
+    @property
+    def _trg_launching(self):
+        return self._trg_actions.launching
+
+    @_trg_launching.setter
+    def _trg_launching(self, value):
+        self._trg_actions.launching = value
+
+    @property
+    def _trg_stopping(self):
+        return self._trg_actions.stopping
+
+    @_trg_stopping.setter
+    def _trg_stopping(self, value):
+        self._trg_actions.stopping = value
+
     def _fire_trigger(self, idx, rule, direction, session=None):
         """执行一条命中规则的动作。任一动作出错都不该影响其余动作与收包主流程。"""
         name = rule.get("name") or rule.get("pattern") or self._t("trg_unnamed")
@@ -5969,10 +6019,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             hits = int(self._trigger_engine.hits(idx, sid=sid))
         except Exception:
             hits = 0
-        if rule.get("webhook") and (rule.get("webhook_url") or "").strip():
-            self._trg_run_webhook(rule, name, direction, hits)
-        if rule.get("run_cmd_on") and (rule.get("run_cmd") or "").strip():
-            self._trg_run_cmd(rule, name, direction, hits)
+        bus = getattr(self, "_event_bus", None)
+        if bus is not None:
+            bus.publish(TOPIC_TRIGGER_HIT, {
+                "rule": rule,
+                "name": name,
+                "direction": direction,
+                "hits": hits,
+            })
 
     @staticmethod
     def _is_private_url(url):
@@ -5980,34 +6034,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         return _trg_is_private_url(url)
 
     def _trg_run_webhook(self, rule, name, direction, hits):
-        """POST a small JSON payload; never block the GUI thread."""
-        url = (rule.get("webhook_url") or "").strip()
-        if not url.lower().startswith(("http://", "https://")):
-            return
-        # SSRF 防护：拒绝私有/回环地址，避免配置文件被用来探测内网
-        if self._is_private_url(url):
-            return
-        payload = {
-            "name": name,
-            "direction": direction,
-            "hits": hits,
-            "pattern": rule.get("pattern") or "",
-            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-
-        def _worker():
-            try:
-                import urllib.request
-                data = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(
-                    url, data=data, method="POST",
-                    headers={"Content-Type": "application/json",
-                             "User-Agent": "CommTool-Trigger/1.0"})
-                urllib.request.urlopen(req, timeout=5).read(256)
-            except Exception:
-                _log.debug("trigger webhook failed", exc_info=True)
-
-        self._trg_spawn_action(_worker)
+        """测试兼容入口；生产路径是 EventBus → TriggerActionRunner。"""
+        return self._trg_actions.run_webhook(rule, name, direction, hits)
 
     @staticmethod
     def _trg_shell_value(value):
@@ -6015,204 +6043,27 @@ class CommTool(SessionHostMixin, QMainWindow):
         return _trg_shell_quote(value)
 
     def _trg_run_cmd(self, rule, name, direction, hits):
-        """Launch an external program with simple placeholder expansion."""
-        raw = (rule.get("run_cmd") or "").strip()
-        if not raw:
-            return
-        q = self._trg_shell_value
-        cmd = (raw.replace("{name}", q(name))
-                  .replace("{hits}", q(hits))
-                  .replace("{dir}", q(direction))
-                  .replace("{pattern}", q(rule.get("pattern") or "")))
-
-        def _worker():
-            with self._trg_action_lock:
-                if self._trg_stopping:
-                    return              # 正在退出，不再拉新进程
-                self._trg_launching += 1
-            proc = None
-            import subprocess
-            try:
-                kwargs = {"shell": True}
-                if sys.platform == "win32":
-                    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                else:
-                    # 自成进程组：shell=True 下真正干活的是孙进程，按组才收得干净
-                    kwargs["start_new_session"] = True
-                proc = subprocess.Popen(cmd, **kwargs)
-            except Exception:
-                _log.debug("run_cmd launch failed", exc_info=True)
-            finally:
-                kill_after_register = False
-                with self._trg_action_lock:
-                    # 登记必须排在放开占位之前：_trg_stop_procs 等的就是这个次序，
-                    # 否则它可能在句柄入表前就扫完走人，把进程漏在系统里。
-                    if proc is not None:
-                        if self._trg_stopping:
-                            # _trg_stop_procs 可能已经扫完并返回；退出态下不能再把
-                            # 句柄放进无人回收的集合，登记后由当前 worker 直接收掉。
-                            kill_after_register = True
-                        else:
-                            self._trg_procs.add(proc)
-                    self._trg_launching -= 1
-            if proc is None:
-                return
-            if kill_after_register:
-                self._trg_kill_proc(proc)
-                return
-            try:
-                # 必须等子进程退出：Popen 启动即返回，不等的话这个线程几微秒就结束并
-                # 把名额还回去，_TRG_MAX_ACTIONS 就只限制「同时在启动中的动作数」，
-                # 冷却设 0 时子进程仍可无限堆积。顺带回收 POSIX 上的僵尸进程。
-                proc.wait(timeout=self._TRG_CMD_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                # 挂死的命令会永久占着一个并发名额，_TRG_MAX_ACTIONS 个全卡住就等于
-                # 这个功能废了。到点按整组收掉：宁可打断也不留死槽——反正退出时
-                # 这些子进程也一律被回收，本来就不能活得比 CommTool 长。
-                _log.debug("run_cmd exceeded %ss, killing pid %s",
-                           self._TRG_CMD_TIMEOUT, proc.pid)
-                self._trg_kill_proc(proc)
-            except Exception:
-                _log.debug("run_cmd wait failed", exc_info=True)
-            finally:
-                with self._trg_action_lock:
-                    self._trg_procs.discard(proc)
-
-        self._trg_spawn_action(_worker)
+        """测试兼容入口；生产路径是 EventBus → TriggerActionRunner。"""
+        return self._trg_actions.run_cmd(rule, name, direction, hits)
 
     @staticmethod
     def _trg_kill_proc(proc):
-        """结束一个外部程序动作。
-
-        run_cmd 用 shell=True 启动，句柄指向的是 shell 本身，只 terminate()
-        会把真正干活的孙进程留下，所以两边都按整组（树）收：Windows
-        走 taskkill /T，POSIX 走 killpg（worker 用 start_new_session 让 shell 成组长）。
-        """
-        import subprocess
-        if sys.platform == "win32":
-            if proc.pid:
-                try:
-                    result = subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True, timeout=5)
-                    if result.returncode == 0 or proc.poll() is not None:
-                        return
-                    _log.debug("taskkill returned %s for pid %s",
-                               result.returncode, proc.pid)
-                except Exception:
-                    _log.debug("taskkill failed for pid %s", proc.pid, exc_info=True)
-        else:
-            import signal
-            if proc.pid:
-                # Windows 的 signal 没有 SIGKILL，这段平时不走但不能因此招 AttributeError
-                try:
-                    # 组长退出后 os.getpgid() 会失败，但后代仍用它的 PID 当 PGID，
-                    # 所以直接拿 proc.pid 当组号用。
-                    os.killpg(proc.pid, getattr(signal, "SIGTERM", 15))
-                except Exception:
-                    _log.debug("killpg SIGTERM failed for pid %s", proc.pid,
-                               exc_info=True)  # 没成组 → 走通用路径
-                else:
-                    try:
-                        proc.wait(timeout=0.5)
-                    except Exception:
-                        _log.debug("process group leader did not exit after SIGTERM",
-                                   exc_info=True)
-                    try:
-                        # 父 shell 可能已经退出，但它的后代仍留在同一进程组；
-                        # 无条件补 SIGKILL，只有进程组已消失时才算完成。
-                        os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
-                    except ProcessLookupError:
-                        return
-                    except Exception:
-                        _log.debug("killpg SIGKILL failed for pid %s", proc.pid,
-                                   exc_info=True)
-                    else:
-                        try:
-                            proc.wait(timeout=1)
-                        except Exception:
-                            _log.debug("process group leader did not exit after SIGKILL",
-                                       exc_info=True)
-                        return
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                _log.debug("cannot kill pid %s", proc.pid, exc_info=True)
-
-    _TRG_CMD_TIMEOUT = 30.0       # 单个外部程序动作的最长存活时间
-    _TRG_STOP_WAIT = 2.0          # 等在途启动收尾的上限
+        return _trg_kill_proc_impl(proc)
 
     def _trg_stop_procs(self):
-        """退出前终止仍在跑的外部程序动作；一旦调用就不再放行新动作。
-
-        动作 worker 是 daemon 线程，解释器退出时会被直接掉掉，但它拉起的
-        是独立的 OS 进程：不主动收的话，命令跑得久或卡死时，CommTool 关了
-        它们还在系统里。
-
-        Popen 返回到句柄登记之间有个窗口，只扫一遍 _trg_procs 会漏掉正好落在
-        窗口里的进程。所以先竖 _trg_stopping 挡住后续动作，再等已在途的启动
-        登记完毕。等的只是 Popen 本身，不是命令的执行，所以是有界的。
-        """
-        deadline = time.monotonic() + self._TRG_STOP_WAIT
-        while True:
-            with self._trg_action_lock:
-                self._trg_stopping = True
-                launching = self._trg_launching
-                procs, self._trg_procs = list(self._trg_procs), set()
-            for proc in procs:
-                if proc.poll() is None:
-                    self._trg_kill_proc(proc)
-            if not launching or time.monotonic() >= deadline:
-                return
-            time.sleep(0.01)
+        """退出前终止仍在跑的外部程序动作；一旦调用就不再放行新动作。"""
+        return self._trg_actions.stop_procs()
 
     def _trg_dropped_actions(self):
         """因并发上限被丢弃的动作次数。计数器由工作线程递增，读写都走锁。"""
-        with self._trg_action_lock:
-            return self._trg_action_dropped
+        return self._trg_actions.dropped_actions()
 
     def _trg_reset_dropped(self):
-        with self._trg_action_lock:
-            self._trg_action_dropped = 0
+        return self._trg_actions.reset_dropped()
 
     def _trg_spawn_action(self, worker):
-        """Run a trigger action off the GUI thread, capped in flight.
-
-        Cooldown may be set to 0, so a busy link would otherwise spawn one
-        thread -- and for run_cmd one process -- per matching packet.
-
-        A slot stays taken for the whole action: the webhook worker blocks on
-        the HTTP round-trip and the run_cmd worker waits on the child, so the
-        cap bounds live processes rather than just launch calls.
-        """
-        with self._trg_action_lock:
-            if self._trg_stopping:
-                return False      # 退出中：不算丢弃，就是不再开新工
-            if self._trg_action_busy >= self._TRG_MAX_ACTIONS:
-                self._trg_action_dropped += 1
-                return False
-            self._trg_action_busy += 1
-
-        def _run():
-            try:
-                worker()
-            except Exception:
-                _log.debug("trigger action failed", exc_info=True)
-            finally:
-                with self._trg_action_lock:
-                    self._trg_action_busy = max(0, self._trg_action_busy - 1)
-
-        try:
-            threading.Thread(target=_run, daemon=True).start()
-            return True
-        except Exception:
-            with self._trg_action_lock:
-                self._trg_action_busy = max(0, self._trg_action_busy - 1)
-            return False
+        """Run a trigger action off the GUI thread, capped in flight."""
+        return self._trg_actions.spawn(worker)
 
     def open_triggers(self):
         """打开触发告警对话框（单实例、非模态）。"""
@@ -11370,78 +11221,35 @@ class CommTool(SessionHostMixin, QMainWindow):
     @staticmethod
     def _settings_file(profile="") -> str:
         """
-        优先 exe 同级目录（绿色版/U 盘携带特性），写不动就回退 %APPDATA%\\CommTool\\。
-        场景：用户装到 Program Files（安装时选"为所有用户"），普通用户运行无写权限。
-        macOS：不走绿色版逻辑（绝不写进 .app 包内 —— 会破坏签名、重装即丢），
-        固定用 ~/Library/Application Support/CommTool/。
-        profile：多窗口配置隔离。""=主配置 settings.ini（含旧版路径兼容）；其余=settings-<profile>.ini
-        （只放主可写位置，不做旧版兼容——是新开的独立会话，本就该从默认起）。
+        配置落在 ``<基目录>/config/settings.ini``（多窗口为 settings-N.ini）。
+        优先 exe / 源码同级（绿色版可连 config 一起拷走）；写不动就回退
+        %APPDATA%\\CommTool\\config\\。首次启动会把旧版同级的 settings*.ini 迁进 config/。
+        macOS：不写进 .app 包内，固定 ~/Library/Application Support/CommTool/config/。
+        profile：""=主配置；其余=settings-<profile>.ini。
         """
-        name = _cfg_settings_ini_name(profile)
         if sys.platform == "darwin":
-            cfg_dir = os.path.join(
+            support = os.path.join(
                 os.path.expanduser("~/Library/Application Support"), "CommTool")
-            new_ini = os.path.join(cfg_dir, name)
-            # 向后兼容：早期 Mac 版曾回退到 ~/CommTool/，已有则沿用，避免设置丢失（仅主配置）。
+            home_legacy = os.path.join(os.path.expanduser("~"), "CommTool")
+            legacy = [support]
             if not profile:
-                legacy = os.path.join(os.path.expanduser("~"), "CommTool", "settings.ini")
-                if not os.path.exists(new_ini) and os.path.exists(legacy):
-                    return legacy
-            try:
-                os.makedirs(cfg_dir, exist_ok=True)
-            except OSError:
-                _log.debug("_settings_file failed", exc_info=True)
-            return new_ini
+                legacy.append(home_legacy)
+            return _cfg_resolve_settings_file(profile, [(support, legacy)])
 
         if getattr(sys, "frozen", False):
             base = os.path.dirname(sys.executable)
         else:
             base = os.path.dirname(os.path.abspath(__file__))
 
-        portable = os.path.join(base, name)
-
-        # 判定 portable 路径可不可用：
-        # - 文件已存在 → 测试能否打开追加写（覆盖只读文件场景）
-        # - 文件不存在 → 在目录里试写一个临时文件
-        def _portable_writable():
-            if os.path.exists(portable):
-                try:
-                    with open(portable, "a"):
-                        pass
-                    return True
-                except (OSError, PermissionError):
-                    return False
-            test = os.path.join(base, ".write_test")
-            try:
-                with open(test, "w"):
-                    pass
-            except (OSError, PermissionError):
-                return False
-            # 写成功 = 目录可写；删测试文件是 best-effort，删不掉(杀软锁等)也不该误判为不可写
-            try:
-                os.remove(test)
-            except OSError:
-                pass
-            return True
-
-        if _portable_writable():
-            return portable
-
-        # 回退用户配置目录
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-        cfg_dir = os.path.join(appdata, "CommTool")
-        new_ini = os.path.join(cfg_dir, name)
-        # 向后兼容：旧版 NetworkTool 的配置在 %APPDATA%\NetworkTool\。新目录尚无配置、
-        # 旧目录已有 → 继续沿用旧文件，避免改名后老用户设置全部丢失（仅主配置）。
+        appdata_root = os.path.join(appdata, "CommTool")
+        appdata_legacy = [appdata_root, base]
         if not profile:
-            old_ini = os.path.join(appdata, "NetworkTool", "settings.ini")
-            if not os.path.exists(new_ini) and os.path.exists(old_ini):
-                return old_ini
-        try:
-            os.makedirs(cfg_dir, exist_ok=True)
-        except OSError:
-            _log.debug("_settings_file failed", exc_info=True)
-        return new_ini
+            appdata_legacy.append(os.path.join(appdata, "NetworkTool"))
+        return _cfg_resolve_settings_file(profile, [
+            (base, [base]),
+            (appdata_root, appdata_legacy),
+        ])
 
 
     def _begin_workspace_autosave_pause(self):

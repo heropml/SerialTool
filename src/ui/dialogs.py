@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """对话框：CloseDialog / MultiSendDialog / KeywordHighlightDialog + 共享样式 helper。"""
+import csv
 import sys
 from PyQt5.QtCore import Qt, QTimer, QUrl, QMimeData, QEvent, QPoint
 from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontMetrics, QIntValidator
@@ -2140,7 +2141,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         except sequence_dataset.DatasetError as e:
             self.app.toast(self.app._t(e.code, **e.kwargs), error=True)
             return
-        except Exception as e:
+        except (OSError, UnicodeError, csv.Error) as e:
             self.app.toast(self.app._t("seq_csv_load_failed", e=e), error=True)
             return
         self._csv_path = ds["path"]
@@ -2173,7 +2174,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                 self._csv_dataset = None
                 self._refresh_csv_ui()
                 return
-            except Exception as e:
+            except (OSError, UnicodeError, csv.Error) as e:
                 self.app.toast(self.app._t("seq_csv_load_failed", e=e), error=True)
                 self._csv_dataset = None
                 self._refresh_csv_ui()
@@ -2602,7 +2603,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
             else:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self._build_report_html(rows))
-        except Exception as e:
+        except (OSError, UnicodeError, RuntimeError, ValueError, csv.Error) as e:
             self.app.toast(self.app._t("seq_export_fail", e=e), error=True)
             return
         self.app.toast(self.app._t("seq_export_ok", path=path))
@@ -2632,7 +2633,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._all_steps(), f, ensure_ascii=False, indent=2)
-        except Exception as e:
+        except (OSError, UnicodeError) as e:
             self.app.toast(self.app._t("seq_steps_export_fail", e=e), error=True)
             return
         self.app.toast(self.app._t("seq_steps_export_ok", path=path))
@@ -2652,7 +2653,7 @@ class SequenceDialog(_DragFramelessMixin, QDialog):
                 return
             with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
-        except Exception as e:
+        except (OSError, UnicodeError, json.JSONDecodeError) as e:
             self.app.toast(self.app._t("seq_steps_import_fail", e=e), error=True)
             return
         steps = self._validate_import_steps(data)

@@ -15,6 +15,7 @@
 import logging
 import re
 import time
+import csv
 from collections import deque
 
 import pyqtgraph as pg
@@ -280,7 +281,7 @@ class PlotDialog(QDialog):
         # 文本模式：解码 + 缓冲 + 拆完整行
         try:
             text = data.decode(self._codec(), errors="replace")
-        except Exception:
+        except (LookupError, UnicodeError, TypeError, AttributeError):
             _log.debug("plot decode failed", exc_info=True)
             return
         self._decode_buf += text
@@ -902,7 +903,8 @@ class PlotDialog(QDialog):
                 self._regex = re.compile(pat)
             except re.error:
                 self._regex = None
-                self.app.toast(self.app._t("plot_regex_bad"), error=True)
+                if not self._loading_cfg:
+                    self.app.toast(self.app._t("plot_regex_bad"), error=True)
         if save:
             # 捕获组/字段含义可能改变；先退出临时 I/O 视图，再清空旧曲线。
             self._clear_after_io_graph()
@@ -913,7 +915,8 @@ class PlotDialog(QDialog):
             self._hex_fields = binproto.parse_field_spec(self.ed_fields.text())
         except (ValueError, TypeError):
             self._hex_fields = []
-            self.app.toast(self.app._t("plot_fields_bad"), error=True)
+            if not self._loading_cfg:
+                self.app.toast(self.app._t("plot_fields_bad"), error=True)
         if save:                 # 字段定义变了：通道含义变，清空重建
             self._clear_after_io_graph()
             self._save_cfg()
@@ -925,7 +928,8 @@ class PlotDialog(QDialog):
         except ValueError:
             # 非法输入时停止 HEX 解析，不能退化成“空帧头=匹配全部”。
             self._hex_header_valid = False
-            self.app.toast(self.app._t("plot_header_bad"), error=True)
+            if not self._loading_cfg:
+                self.app.toast(self.app._t("plot_header_bad"), error=True)
         if save:                 # 帧头变了：过滤范围变，清空避免新旧数据混在一起
             self._clear_after_io_graph()
             self._save_cfg()
@@ -1094,7 +1098,7 @@ class PlotDialog(QDialog):
                             line += ["", ""]
                     w.writerow(line)
             self.app.toast(self.app._t("saved_to", path=path))
-        except Exception as e:
+        except (OSError, UnicodeError, csv.Error) as e:
             self.app.toast(self.app._t("err_save_failed", e=e), error=True)
 
     # ---------------- 主题 / 语言 ----------------

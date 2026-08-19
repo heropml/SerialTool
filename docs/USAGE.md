@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.7.3](#whats-new-in-v173)
 - [What's New in v1.7.2](#whats-new-in-v172)
 - [What's New in v1.7.1](#whats-new-in-v171)
 - [What's New in v1.7.0](#whats-new-in-v170)
@@ -48,6 +49,17 @@
 2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual / BLE), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
+
+---
+
+## What's New in v1.7.3
+
+Runtime config folder and trigger-action event bus on the v1.7.2 baseline:
+
+- **Config** — `settings.ini` (and `settings-2.ini` …) live in `config\` next to the exe / install dir; read-only installs fall back to `%APPDATA%\CommTool\config\`. Leftover root-level files migrate on first launch (source removed only after a successful copy).
+- **Bus** — a trigger hit publishes `trigger.hit`; webhook / run-program run in the consumer. Concurrency cap and import gate unchanged.
+- **Toasts** — restoring a stored invalid plot regex no longer error-toasts; sequence CSV / export treat format errors as save failures instead of wrapping internal bugs.
+- **Boundary** — this round ships Windows and Linux x86_64; macOS DMG lands on the same `comm-v1.7.3` tag.
 
 ---
 
@@ -924,7 +936,7 @@ Right-click the tray icon and choose **About** to open the **About** dialog. It 
 
 ### Auto-saved Configuration
 
-On exit, settings are written to `settings.ini` in the install directory; on next launch **everything is restored**:
+On exit, settings are written to `config/settings.ini` in the install directory; on next launch **everything is restored**:
 
 - Window position and size (including maximised state)
 - Splitter position
@@ -932,7 +944,7 @@ On exit, settings are written to `settings.ini` in the install directory; on nex
 - All switches / input fields / dropdown selections
 - Send box content, font size, max line count
 
-If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\CommTool\settings.ini` automatically.
+If the install directory is read-only (e.g. Program Files without admin), the config falls back to `%APPDATA%\CommTool\config\settings.ini` automatically. A leftover root-level `settings.ini` from older builds is moved into `config\` on startup.
 
 ---
 
@@ -966,7 +978,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.7.2`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.7.3`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1000,17 +1012,17 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.2**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.2); Gitee does not host the Mac or Linux packages.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.3); Gitee does not host the Mac or Linux packages. This round ships **Windows + Linux x86_64** first; the macOS DMG lands on the same tag.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.7.2.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.7.2.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.7.3.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.7.3.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.7.2.dmg`
+- **Apple Silicon** (arm64) only: `CommTool_v1.7.3.dmg` (same Release, uploaded after Windows/Linux)
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1021,11 +1033,11 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.7.2_linux_x86_64.run`
+- File: `CommTool_Setup_v1.7.3_linux_x86_64.run`
 
 ```bash
-chmod +x CommTool_Setup_v1.7.2_linux_x86_64.run
-./CommTool_Setup_v1.7.2_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.3_linux_x86_64.run
+./CommTool_Setup_v1.7.3_linux_x86_64.run
 ```
 
 - Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon

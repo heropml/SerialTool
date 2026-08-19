@@ -3248,9 +3248,9 @@ class ModbusMasterIntegrationTests(unittest.TestCase):
         main = CommTool._settings_file("")
         p2 = CommTool._settings_file("2")
         p3 = CommTool._settings_file("3")
-        self.assertTrue(main.endswith("settings.ini"))
-        self.assertTrue(p2.endswith("settings-2.ini"))
-        self.assertTrue(p3.endswith("settings-3.ini"))
+        self.assertTrue(main.endswith(_os.path.join("config", "settings.ini")))
+        self.assertTrue(p2.endswith(_os.path.join("config", "settings-2.ini")))
+        self.assertTrue(p3.endswith(_os.path.join("config", "settings-3.ini")))
         self.assertEqual(len({main, p2, p3}), 3)                       # 三个路径各不相同
         self.assertEqual(_os.path.dirname(main), _os.path.dirname(p2))  # 隔离只体现在文件名、同目录
 

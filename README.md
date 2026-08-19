@@ -182,7 +182,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.7.2`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+  - 右下：版本号 `v1.7.3`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -233,7 +233,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - 发送框内容
 - 字号、最大行数
 
-**位置**：`CommTool.exe` 同级目录的 `settings.ini`，整个 `dist\CommTool\` 文件夹可以连配置一起复制到其他机器。
+**位置**：`CommTool.exe` 同级的 `config\settings.ini`（多窗口为 `config\settings-2.ini` …）。整个 `dist\CommTool\` 文件夹可以连 `config` 一起复制到其他机器。旧版落在 exe 同级的 `settings.ini` 会在首次启动时自动迁入 `config\`。
 
 ### 1.8 在线更新
 
@@ -282,7 +282,7 @@ CommTool/
 ├── src/                    Python 源码（领域分包，import 形如 from transport.serial_io import …）
 │   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
 │   ├── main_window.py      主窗口 CommTool 主体类（最大模块，仍留在 src 根）
-│   ├── version.py          版本号单点真源 (__version__ = "1.7.2")
+│   ├── version.py          版本号单点真源 (__version__ = "1.7.3")
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标）
@@ -328,7 +328,7 @@ CommTool/
 └── installer/              Inno Setup 输出 CommTool_Setup_v*.exe
 ```
 
-> 运行时用户配置 `settings.ini`：打包版落在 exe 同级（装不进 Program Files 时回退 `%APPDATA%\CommTool\`）；开发模式落在源码同级（已 gitignore）。
+> 运行时用户配置 `config/settings.ini`：打包版落在 exe 同级 `config\`（装不进 Program Files 时回退 `%APPDATA%\CommTool\config\`）；开发模式落在 `src/config/`（已 gitignore）。旧版同级 `settings.ini` 启动时自动迁入。
 
 ---
 
@@ -413,8 +413,8 @@ scripts\build_installer.bat
 官方安装包（x86_64，建议在 Ubuntu 18.04 或同级 glibc 上构建，以便 20.04/22.04/麒麟也能跑）：
 
 ```bash
-chmod +x CommTool_Setup_v1.7.2_linux_x86_64.run
-./CommTool_Setup_v1.7.2_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.3_linux_x86_64.run
+./CommTool_Setup_v1.7.3_linux_x86_64.run
 ```
 
 默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。用户向安装步骤见 [`docs/使用说明.md` §9](docs/使用说明.md#9-安装与系统要求) / [USAGE](docs/USAGE.md#install-windows--macos--linux) / [`docs/使用說明.md` §6](docs/使用說明.md#6-安裝與系統需求)。
@@ -532,7 +532,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 
 ### 9.7 QSettings 持久化
 
-用 `QSettings` + `IniFormat`，路径在 `exe`（打包后）或 `main.py`（开发模式）同级。`saveGeometry()` / `saveState()` 保存窗口几何和 splitter 位置，恢复时按属性一一应用。开关用 `animate=False` 静默恢复，下拉用 `findText` 或 `index` 匹配。
+用 `QSettings` + `IniFormat`，路径在 `exe`（打包后）或 `src/`（开发模式）同级的 `config/`。`saveGeometry()` / `saveState()` 保存窗口几何和 splitter 位置，恢复时按属性一一应用。开关用 `animate=False` 静默恢复，下拉用 `findText` 或 `index` 匹配。
 
 ### 9.8 主题系统
 
@@ -655,6 +655,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。Windows / macOS / Linux x86_64 已发。1644 passed / 11 skipped / 295 subtests。
 - **v64 (v1.7.1)**: **正式版** — **BLE 扫描打磨**（过滤单卡片与两列规则、再点关闭弹层、可见行序号、已开窗口跟语言）；**macOS / Linux 类型下拉隐藏 BLE**。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1647 passed / 11 skipped / 295 subtests。
 - **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
+- **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1668 passed / 11 skipped / 295 subtests。
 
 ---
 

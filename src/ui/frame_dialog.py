@@ -9,6 +9,7 @@
 标签，各自分列（时间+该规则字段+原始帧）。每个表支持 Ctrl+C / 右键 复制·全选、暂停、清空、导出 CSV。
 不依赖 pyqtgraph。单实例非模态，复用刷新主题/语言；窗口带最小化/最大化、可拖动缩放。
 """
+import csv
 import time
 
 from PyQt5.QtCore import Qt, QTimer
@@ -598,7 +599,7 @@ class FrameParseDialog(QDialog):
                     w.writerow([(tbl.item(r, c).text() if tbl.item(r, c) else "")
                                 for c in range(cols)])
             self.app.toast(self.app._t("saved_to", path=path))
-        except Exception as e:
+        except (OSError, UnicodeError, csv.Error) as e:
             self.app.toast(self.app._t("err_save_failed", e=e), error=True)
 
     # ---------------- 主题 / 语言 ----------------
