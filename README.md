@@ -654,7 +654,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v62 (v1.6.0)**: **正式版** — **协议流组帧与解析诊断**（默认收包兼容；开启后按帧头+长度组完整帧再喂解析/曲线/仪表盘/结构化记录；TCP Server 断线清半帧）；日志轮转失败继续写旧段；Linux 安装器等进程退出后再覆盖；官方 Linux 仅 x86_64。Windows + Linux x86_64 已发；Mac 包补同一 tag。1594 passed / 11 skipped / 295 subtests。
 - **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。Windows / macOS / Linux x86_64 已发。1644 passed / 11 skipped / 295 subtests。
 - **v64 (v1.7.1)**: **正式版** — **BLE 扫描打磨**（过滤单卡片与两列规则、再点关闭弹层、可见行序号、已开窗口跟语言）；**macOS / Linux 类型下拉隐藏 BLE**。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1647 passed / 11 skipped / 295 subtests。
-- **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1654 passed / 11 skipped / 295 subtests。
+- **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
 
 ---
 

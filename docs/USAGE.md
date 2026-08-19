@@ -58,7 +58,7 @@ Source layout and I/O exception polish on the v1.7.1 baseline:
 - **Layout** — modules moved into `transport` / `protocol` / `modbus` / `sessions` and related packages; entry points stay at the `src` root. Export defaults remain `snippets.json` / `connection_presets.json`.
 - **Exceptions** — send and log failures toast as I/O errors; programming bugs are no longer disguised as “send failed”.
 - **Toasts** — RX-side failures use UI titles (Trigger Alarm / Auto Reply, etc.) instead of internal channel names.
-- **Boundary** — this round ships Windows and Linux x86_64; macOS DMG lands on the same `comm-v1.7.2` tag.
+- **Boundary** — Windows / macOS / Linux x86_64 packages are on the same `comm-v1.7.2` tag.
 
 ---
 
