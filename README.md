@@ -655,7 +655,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v63 (v1.7.0)**: **正式版** — **Windows BLE 主机 UART**（独立扫描窗口、FFF0/FFE0/Nordic/Microchip/Custom 模板、自动写入方式、同一地址会话互斥）；观测间隔为估算值；自动重连最多 10 次；扫描空闲超时后再连接。Windows / macOS / Linux x86_64 已发。1644 passed / 11 skipped / 295 subtests。
 - **v64 (v1.7.1)**: **正式版** — **BLE 扫描打磨**（过滤单卡片与两列规则、再点关闭弹层、可见行序号、已开窗口跟语言）；**macOS / Linux 类型下拉隐藏 BLE**。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1647 passed / 11 skipped / 295 subtests。
 - **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
-- **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。1668 passed / 11 skipped / 295 subtests。
+- **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。Windows / macOS / Linux x86_64 已发。1668 passed / 11 skipped / 295 subtests。
 
 ---
 

@@ -21,7 +21,7 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.7.3` | Windows Setup/onefile + Linux x86_64 `.run`；macOS DMG 补同一 tag；`url_linux` 在 Linux 包上传后写入 |
+| 发布版 | `comm-v1.7.3` | Windows Setup/onefile + macOS DMG + Linux x86_64 `.run`；`url_mac` / `url_linux` 已写入 |
 | 测试 | **1668 passed / 11 skipped** | Windows 按文件隔离 pytest + macOS smoke |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |
@@ -123,7 +123,7 @@
 8. ~~**v1.7.2**~~ **DONE**（领域分包 + B6-3 连接/发送/日志 + RX toast 标题；Windows + Linux x86_64）
 9. ~~**v1.7.3**~~ **DONE**（配置迁入 `config/` + 触发动作事件总线 + B6-4 对话框/绘图误报 toast；Windows + Linux x86_64）
 10. **不上**覆盖率硬门槛（B3 只收集，见 §6）
-11. 阶段 C 剩余项（Mac 公证 / 本轮 macOS DMG）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加
+11. 阶段 C 剩余项（Mac 公证）与 P2 / PyQt6 仅按触发条件启动；Linux CI 烟雾已加；1.7.3 macOS DMG 已挂同一 tag
 
 ### v1.7.2 · B6-3 与体验盘点
 
@@ -154,7 +154,7 @@
 
 - 运行时配置：`<可写基目录>/config/settings.ini`；打包版优先 exe 同级，写不进则 AppData；macOS 固定 Application Support。旧同级 ini 复制成功才删源。
 - 触发器命中发 `trigger.hit`；Webhook / run_cmd 由 `TriggerActionRunner` 消费（并发 8、私有地址拦截不变）。
-- 本轮发 Windows + Linux x86_64；macOS DMG 补同一 tag。
+- 本轮已发 Windows / macOS / Linux x86_64；`url_mac` / `url_linux` 已写入。
 
 ---
 

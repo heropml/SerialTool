@@ -22,7 +22,7 @@
 
 ### 产品边界
 - 本版不做会话树、拖拽分屏、标签拖出成窗；P2 继续暂缓
-- **本轮发 Windows + Linux x86_64**；macOS DMG 补同一 tag `comm-v1.7.3`
+- **本轮已发 Windows / macOS / Linux x86_64**；同一 tag `comm-v1.7.3`
 - Linux 不提供 ARM 官方包
 
 ### 测试
@@ -34,7 +34,7 @@
 |------|------|------|
 | Windows 安装版 | `CommTool_Setup_v1.7.3.exe` | 推荐，向导安装 + 桌面快捷方式 |
 | Windows 单文件版 | `CommTool_v1.7.3.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.7.3.dmg` | arm64；拖入「应用程序」。本轮稍后补同一 Release |
+| macOS（Apple Silicon）| `CommTool_v1.7.3.dmg` | arm64；拖入「应用程序」 |
 | Linux（x86_64） | `CommTool_Setup_v1.7.3_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。

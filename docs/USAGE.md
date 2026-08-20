@@ -59,7 +59,7 @@ Runtime config folder and trigger-action event bus on the v1.7.2 baseline:
 - **Config** — `settings.ini` (and `settings-2.ini` …) live in `config\` next to the exe / install dir; read-only installs fall back to `%APPDATA%\CommTool\config\`. Leftover root-level files migrate on first launch (source removed only after a successful copy).
 - **Bus** — a trigger hit publishes `trigger.hit`; webhook / run-program run in the consumer. Concurrency cap and import gate unchanged.
 - **Toasts** — restoring a stored invalid plot regex no longer error-toasts; sequence CSV / export treat format errors as save failures instead of wrapping internal bugs.
-- **Boundary** — this round ships Windows and Linux x86_64; macOS DMG lands on the same `comm-v1.7.3` tag.
+- **Boundary** — Windows / macOS / Linux x86_64 packages are on the same `comm-v1.7.3` tag.
 
 ---
 
@@ -1012,7 +1012,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.3); Gitee does not host the Mac or Linux packages. This round ships **Windows + Linux x86_64** first; the macOS DMG lands on the same tag.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.3); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
 
 ### Windows
 
@@ -1022,7 +1022,7 @@ Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases).
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.7.3.dmg` (same Release, uploaded after Windows/Linux)
+- **Apple Silicon** (arm64) only: `CommTool_v1.7.3.dmg`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
