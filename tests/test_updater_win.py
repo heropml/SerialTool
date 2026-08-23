@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import io
 import json
 import os
@@ -67,6 +68,15 @@ def test_downloader_rejects_non_https():
     path, err = finished[0]
     assert path == ""
     assert err  # updater_bad_url (or translated)
+
+
+def test_downloader_rejects_https_without_sha256():
+    finished = []
+    d = UpdateDownloader("https://example.com/CommTool_Setup_v9.exe")
+    d.finished.connect(lambda path, err: finished.append((path, err)))
+    d.start()
+    _pump(0.2)
+    assert finished and finished[0][0] == "" and finished[0][1]
 
 
 def test_download_worker_rejects_non_mz_on_win32(tmp_path, monkeypatch):
@@ -139,8 +149,46 @@ def test_download_worker_accepts_mz_header_on_win32(tmp_path, monkeypatch):
     assert out.read_bytes()[:2] == b"MZ"
 
 
+def test_download_worker_verifies_sha256_and_size(tmp_path, monkeypatch):
+    monkeypatch.setattr("updater._is_windows", lambda: True)
+    monkeypatch.setattr("updater._is_linux", lambda: False)
+    payload = b"MZ" + b"verified-artifact"
+
+    class _Resp:
+        headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1):
+            if getattr(self, "_done", False):
+                return b""
+            self._done = True
+            return payload
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    digest = hashlib.sha256(payload).hexdigest()
+
+    good = tmp_path / "good.exe"
+    done = []
+    w = _DownloadWorker("https://example.com/good.exe", str(good), digest, len(payload))
+    w.done.connect(lambda path, err: done.append((path, err)))
+    w.run()
+    assert done == [(str(good), "")]
+
+    bad = tmp_path / "bad.exe"
+    done.clear()
+    w = _DownloadWorker("https://example.com/bad.exe", str(bad), "0" * 64, len(payload))
+    w.done.connect(lambda path, err: done.append((path, err)))
+    w.run()
+    assert done and done[0][0] == ""
+    assert not bad.exists()
+
+
 def test_download_worker_skips_mz_check_off_windows(tmp_path, monkeypatch):
     monkeypatch.setattr("updater._is_windows", lambda: False)
+    # This covers the macOS .dmg path.  The test itself may run on Linux in
+    # the compatibility matrix, where a #! signature is correctly required.
+    monkeypatch.setattr("updater._is_linux", lambda: False)
     out = tmp_path / "CommTool_v1.5.3_1.dmg"
     payload = b"not-an-mz-but-ok-on-mac"
 

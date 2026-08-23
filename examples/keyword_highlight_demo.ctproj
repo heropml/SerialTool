@@ -67,7 +67,9 @@
           "hex": false
         }
       ],
-      "groups": []
+      "groups": [],
+      "frame_templates": [],
+      "frame_template_active": ""
     },
     "connection": {
       "presets": [
@@ -113,6 +115,23 @@
       "dash_regex": "",
       "dash_fields": "",
       "dash_header": ""
+    },
+    "operator_panels": {
+      "items": [
+        {
+          "id": "dashboard-main",
+          "name": "Main panel",
+          "dashboard": {
+            "dash_mode": 0,
+            "dash_sep": 0,
+            "dash_regex": "",
+            "dash_fields": "",
+            "dash_header": ""
+          },
+          "actions": []
+        }
+      ],
+      "active": "dashboard-main"
     },
     "plot": {
       "plot_mode": 0,

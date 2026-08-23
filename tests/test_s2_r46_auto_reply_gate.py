@@ -66,3 +66,5 @@ def test_len_filter_and_cooldown():
     assert gate.cooldown_blocks(10.0, 9.9, 0) is False
     assert gate.cooldown_blocks(10.0, 9.9, 200) is True
     assert gate.cooldown_blocks(10.0, 9.0, 200) is False
+    assert gate.cooldown_blocks(0.05, 0.0, 60000) is False
+    assert gate.cooldown_blocks(0.05, None, 60000) is False

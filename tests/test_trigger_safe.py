@@ -26,6 +26,42 @@ def test_is_private_url_matrix():
     assert ts.is_private_url("not-a-url") is False
 
 
+def _resolver(*addresses):
+    def resolve(_host, port, type=None):
+        return [(2, type, 6, "", (address, port)) for address in addresses]
+    return resolve
+
+
+def test_webhook_url_allowed_resolves_every_address():
+    assert ts.webhook_url_allowed(
+        "https://example.com/hook", resolver=_resolver("8.8.8.8")) is True
+    assert ts.webhook_url_allowed(
+        "https://example.com/hook",
+        resolver=_resolver("8.8.8.8", "127.0.0.1")) is False
+    assert ts.webhook_url_allowed(
+        "https://example.com/hook", resolver=_resolver("::ffff:192.168.1.1")) is False
+    target = ts.resolve_webhook_target(
+        "https://example.com/a/b?q=1#ignored", resolver=_resolver("8.8.8.8"))
+    assert target["path"] == "/a/b?q=1"
+    assert target["addresses"] == ("8.8.8.8",)
+
+
+def test_webhook_safe_defaults_and_explicit_lan_override():
+    lan = _resolver("192.168.1.20")
+    assert ts.webhook_url_allowed("http://device.lan/hook", resolver=lan) is False
+    assert ts.webhook_url_allowed(
+        "http://device.lan/hook", allow_insecure=True, resolver=lan) is True
+    assert ts.webhook_url_allowed(
+        "ftp://example.com/hook", allow_insecure=True, resolver=lan) is False
+    assert ts.webhook_url_allowed(
+        "https://user:secret@example.com/hook",
+        allow_insecure=True, resolver=_resolver("8.8.8.8")) is False
+    assert ts.webhook_url_allowed(
+        "https://missing.example/hook", resolver=lambda *a, **k: []) is False
+    assert ts.webhook_url_allowed(
+        "https://example.com:0/hook", resolver=_resolver("8.8.8.8")) is False
+
+
 def test_shell_value_win32():
     q = ts.shell_value("; rm -rf /", platform="win32")
     assert q.startswith('"') and q.endswith('"')

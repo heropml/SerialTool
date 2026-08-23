@@ -55,6 +55,10 @@ Set-Location $Root
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "版本号格式应为 X.Y.Z（如 1.1.4），你给的是 '$Version'"
 }
+& py -3.13 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "发布构建需要 Python 3.13（请安装后确认 py -3.13 可用）"
+}
 $Tag         = "comm-v$Version"
 $SetupName   = "CommTool_Setup_v$Version.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
@@ -68,6 +72,10 @@ $DownloadUrl = "https://gitee.com/$Repo/releases/download/$Tag/$SetupName"
 # 保留已由 Mac 门禁写入的精确 GitHub URL。
 $MacUrls     = @()
 $LinuxUrls   = @()
+$MacSha256   = ''
+$MacSize     = 0
+$LinuxSha256 = ''
+$LinuxSize   = 0
 $VerifiedMacUrl = "https://github.com/heropml/SerialTool/releases/download/$Tag/$MacName"
 $LinuxName   = "CommTool_Setup_v${Version}_linux_x86_64.run"
 $VerifiedLinuxUrl = "https://github.com/heropml/SerialTool/releases/download/$Tag/$LinuxName"
@@ -78,10 +86,14 @@ if (Test-Path $ExistingManifest) {
         if ([string]$ExistingLatest.version -eq $Version -and
             @($ExistingLatest.url_mac) -contains $VerifiedMacUrl) {
             $MacUrls = @($VerifiedMacUrl)
+            $MacSha256 = [string]$ExistingLatest.sha256_mac
+            $MacSize = [long]$ExistingLatest.size_mac
         }
         if ([string]$ExistingLatest.version -eq $Version -and
             @($ExistingLatest.url_linux) -contains $VerifiedLinuxUrl) {
             $LinuxUrls = @($VerifiedLinuxUrl)
+            $LinuxSha256 = [string]$ExistingLatest.sha256_linux
+            $LinuxSize = [long]$ExistingLatest.size_linux
         }
     } catch {
         Write-Warning "latest.json 无法解析，将按无 Mac/Linux 资产处理：$($_.Exception.Message)"
@@ -174,7 +186,7 @@ $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$V
 [IO.File]::WriteAllText($vp, $vtxt)
 # 示例工程带 app_version，须与 version.py 同步，否则 CI 字节比对会红
 Write-Host "①b 重生 examples/*.ctproj（同步 app_version）"
-& py -3 (Join-Path $Root 'scripts\build_example_projects.py')
+& py -3.13 (Join-Path $Root 'scripts\build_example_projects.py')
 if ($LASTEXITCODE -ne 0) { throw "examples 重生失败" }
 
 # ---- 2. 更新 latest.json（url 指向 Gitee Release）----
@@ -184,6 +196,12 @@ $manifest = [ordered]@{
     url = $DownloadUrl
     url_mac = $MacUrls
     url_linux = $LinuxUrls
+    sha256 = ''
+    size = 0
+    sha256_mac = $MacSha256
+    size_mac = $MacSize
+    sha256_linux = $LinuxSha256
+    size_linux = $LinuxSize
     notes = $Notes
 }
 $json = $manifest | ConvertTo-Json -Depth 3
@@ -202,10 +220,11 @@ $excludes = @(
 
 # ---- 3. PyInstaller 打包 folder 版（含 pyserial 串口 + pyqtgraph 波形图，靠各自 hook 自动收集）----
 Write-Host "③ PyInstaller 打包 folder 版（约 1~2 分钟）…"
-$pyargs = @('-3','-m','PyInstaller','--noconfirm','--clean','--windowed',
+$pyargs = @('-3.13','-m','PyInstaller','--noconfirm','--clean','--windowed',
             '--name','CommTool','--icon','assets/icon.ico')
 foreach ($e in $excludes) { $pyargs += '--exclude-module'; $pyargs += $e }
 $pyargs += '--collect-all'; $pyargs += 'bleak'
+$pyargs += '--add-data'; $pyargs += 'examples;examples'
 $pyargs += 'src/main.py'
 & py @pyargs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(folder) 打包失败" }
@@ -215,15 +234,19 @@ Write-Host "④ Inno Setup 编译安装包…"
 & $Iscc "/DMyAppVersion=$Version" "scripts\CommTool.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
 if (-not (Test-Path $SetupPath)) { throw "未生成安装包：$SetupPath" }
+& py -3.13 (Join-Path $Root 'scripts\update_manifest_integrity.py') `
+    (Join-Path $Root 'latest.json') $SetupPath windows --version $Version
+if ($LASTEXITCODE -ne 0) { throw "latest.json SHA-256 写入失败" }
 
 # ---- 5. PyInstaller 打包 onefile 版（免安装单文件，含 pyqtgraph/numpy）----
 #      命令行 --onefile，与 folder 版同一套 Analysis/excludes，输出到 dist_onefile（与 .gitignore 一致）。
 Write-Host "⑤ PyInstaller 打包 onefile 版（约 2 分钟）…"
-$onef = @('-3','-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
+$onef = @('-3.13','-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
           '--name',"CommTool_v$Version",'--icon','assets/icon.ico',
           '--distpath','dist_onefile','--workpath','build_onefile')
 foreach ($e in $excludes) { $onef += '--exclude-module'; $onef += $e }
 $onef += '--collect-all'; $onef += 'bleak'
+$onef += '--add-data'; $onef += 'examples;examples'
 $onef += 'src/main.py'
 & py @onef
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(onefile) 打包失败" }
@@ -299,7 +322,7 @@ if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 Write-Host "⑨ 发 Gitee Release $Tag（国内下载源 + 在线升级）…"
 $env:PYTHONIOENCODING = 'utf-8'
 $env:HTTPS_PROXY = ''; $env:HTTP_PROXY = ''; $env:ALL_PROXY = ''   # Gitee 直连，别绕代理
-& py -3 (Join-Path $Root 'scripts\release_gitee.py') $Version
+& py -3.13 (Join-Path $Root 'scripts\release_gitee.py') $Version
 if ($LASTEXITCODE -ne 0) { throw "Gitee Release 失败（检查 scripts/.gitee_token 与网络）" }
 
 Write-Host "==== 发版完成 CommTool $Tag ====" -ForegroundColor Green

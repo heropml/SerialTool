@@ -149,6 +149,10 @@ class TriggersDialog(QDialog):
         acts2.addWidget(self.ed_webhook, 1)
         right.addLayout(acts2)
 
+        self.chk_webhook_insecure = QCheckBox()
+        self.chk_webhook_insecure.toggled.connect(self._on_edit)
+        right.addWidget(self.chk_webhook_insecure)
+
         acts3 = QHBoxLayout()
         acts3.setSpacing(8)
         self.chk_run = QCheckBox(); self.chk_run.toggled.connect(self._on_edit)
@@ -255,6 +259,7 @@ class TriggersDialog(QDialog):
             for w_ in (self.chk_on, self.ed_name, self.ed_pat, self.cb_mode, self.chk_hex,
                        self.cb_scope, self.ed_cd, self.chk_beep, self.chk_notify,
                        self.chk_mark, self.chk_webhook, self.ed_webhook,
+                       self.chk_webhook_insecure,
                        self.chk_run, self.ed_run, self.ed_min, self.ed_every):
                 w_.setEnabled(ok)
             self.chk_on.setChecked(rule.get("on", True))
@@ -270,6 +275,8 @@ class TriggersDialog(QDialog):
             self.chk_mark.setChecked(rule.get("mark", False))
             self.chk_webhook.setChecked(rule.get("webhook", False))
             self.ed_webhook.setText(rule.get("webhook_url", ""))
+            self.chk_webhook_insecure.setChecked(
+                rule.get("webhook_allow_insecure", False))
             self.chk_run.setChecked(rule.get("run_cmd_on", False))
             self.ed_run.setText(rule.get("run_cmd", ""))
             self.ed_min.setText(str(rule.get("min_hits", 1)))
@@ -323,6 +330,7 @@ class TriggersDialog(QDialog):
             "mark": self.chk_mark.isChecked(),
             "webhook": self.chk_webhook.isChecked(),
             "webhook_url": self.ed_webhook.text(),
+            "webhook_allow_insecure": self.chk_webhook_insecure.isChecked(),
             "run_cmd_on": self.chk_run.isChecked(),
             "run_cmd": self.ed_run.text(),
             "min_hits": self.ed_min.text(),
@@ -469,6 +477,8 @@ class TriggersDialog(QDialog):
         self.chk_webhook.setText(t("trg_webhook"))
         set_tooltip(self.ed_webhook, t("trg_webhook_tip"))
         self.ed_webhook.setPlaceholderText(t("trg_webhook_ph"))
+        self.chk_webhook_insecure.setText(t("trg_webhook_insecure"))
+        set_tooltip(self.chk_webhook_insecure, t("trg_webhook_insecure_tip"))
         self.chk_run.setText(t("trg_run"))
         set_tooltip(self.ed_run, t("trg_run_tip"))
         self.ed_run.setPlaceholderText(t("trg_run_ph"))

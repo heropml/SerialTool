@@ -6,7 +6,7 @@ S-2 R39: CommTool.build_receive_card / _build_search_bar thin wrappers.
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout,
-    QWidget, QStackedWidget,
+    QWidget, QStackedWidget, QFrame,
 )
 
 from ui.fonts import ui_font, mono_font
@@ -160,6 +160,32 @@ def build(app):
 
     layout.addLayout(title_row)
 
+    # Empty-state onboarding: real actions, kept compact so it does not cover
+    # the receive view. It disappears as soon as the active session has data.
+    app.quick_start_bar = QFrame()
+    app.quick_start_bar.setObjectName("QuickStartBar")
+    quick = QHBoxLayout(app.quick_start_bar)
+    quick.setContentsMargins(12, 7, 12, 7)
+    quick.setSpacing(8)
+    quick_title = QLabel(app._t("quick_start"))
+    quick_title.setObjectName("QuickStartTitle")
+    quick_title.setProperty("tr_text", "quick_start")
+    quick.addWidget(quick_title)
+    for key, callback, attr in (
+            ("quick_virtual", app._quick_start_virtual, "btn_quick_virtual"),
+            ("quick_example", app._quick_start_example, "btn_quick_example"),
+            ("project_new", app.new_project, "btn_quick_new"),
+            ("quick_recent", app._quick_start_recent, "btn_quick_recent")):
+        button = QPushButton(app._t(key))
+        button.setObjectName("QuickStartBtn")
+        button.setProperty("tr_text", key)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(callback)
+        setattr(app, attr, button)
+        quick.addWidget(button)
+    quick.addStretch(1)
+    layout.addWidget(app.quick_start_bar)
+
     # Per-session receive views in a stack (multi-tab concurrent sessions).
     app.recv_stack = QStackedWidget()
     app.recv_stack.setObjectName("RecvStack")
@@ -182,6 +208,7 @@ def build(app):
         app.recv_stack.addWidget(te)
     app.recv_stack.setCurrentWidget(te)
     layout.addWidget(app.recv_stack, 1)
+    app._refresh_quick_start()
     build_search_bar(app)
 
     # ----- 单击行高亮 + 滚动锁定/回到底部（仿 SuperCom）-----
@@ -224,4 +251,3 @@ def build(app):
     app.txt_recv.setContextMenuPolicy(Qt.PreventContextMenu)
 
     return card
-

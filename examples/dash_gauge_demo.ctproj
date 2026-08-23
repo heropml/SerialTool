@@ -85,7 +85,9 @@
             }
           ]
         }
-      ]
+      ],
+      "frame_templates": [],
+      "frame_template_active": ""
     },
     "connection": {
       "presets": [
@@ -133,6 +135,25 @@
       "dash_header": "",
       "dash_thresholds": "CH1:10~40:C,CH2:20~80:%,CH3:3.0~3.6:V",
       "dash_widget": "gauge"
+    },
+    "operator_panels": {
+      "items": [
+        {
+          "id": "dashboard-main",
+          "name": "Main panel",
+          "dashboard": {
+            "dash_mode": 0,
+            "dash_sep": 0,
+            "dash_regex": "",
+            "dash_fields": "",
+            "dash_header": "",
+            "dash_thresholds": "CH1:10~40:C,CH2:20~80:%,CH3:3.0~3.6:V",
+            "dash_widget": "gauge"
+          },
+          "actions": []
+        }
+      ],
+      "active": "dashboard-main"
     },
     "plot": {
       "plot_mode": 0,

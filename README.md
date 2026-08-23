@@ -5,7 +5,7 @@
 > Serial / UART terminal and TCP/UDP network debugger in one desktop app — HEX, logging, Modbus, scripting, and automated tests.
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?logo=windows&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11%E2%80%933.13-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Release](https://img.shields.io/github/v/release/heropml/SerialTool?include_prereleases&label=release)
 
@@ -24,6 +24,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **从手工到自动化**：多条命令、定时发送、命令 DSL、自动应答、触发告警、脚本控制台、宏录制、序列测试与 JUnit 报告。
 - **面向设备协议**：多种校验（含 CRC / Modbus 等）、Modbus 主从机 / 扫描 / TCP↔RTU 网关、寄存器与位域、结构化记录、波形图与 I/O Graph。
 - **开箱即用**：Windows 安装包 / 便携版、macOS `.dmg`、Linux x86_64 `.run` 均可直接运行；简体中文、English、繁體中文；支持在线更新。
+- **安全与可诊断**：自动更新校验 SHA-256/大小；Webhook 默认仅公网 HTTPS 且固定到校验后的 IP；滚动错误日志与一键脱敏诊断包。详见 [安全模型](docs/SECURITY.md)。
 
 ## 主要功能
 
@@ -43,7 +44,11 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 3. 在「类型」选择 **Serial**、目标网络协议、**Virtual** 或 **BLE**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
 
+首次进入终端时也可直接点数据区上方的“虚拟回环演示 / 打开示例工程 / 继续最近工程”。帧构造器支持保存自己的帧模板，录制回放下拉会索引最近 `.ctrec`，工程文件会携带帧模板与操作面板资源。
+
 > 没有硬件？选 **Virtual（虚拟连接）** 并开回环，即可先验证发送、解析、脚本和自动化规则；回放 `.ctrec` 也需先连 Virtual。
+
+维护者可参阅 [架构与维护基线](docs/ARCHITECTURE.md) 和 [发版指南](RELEASE.md)。
 
 ---
 
@@ -343,7 +348,7 @@ pip install -r requirements-dev.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 py -3 src\main.py
 ```
 
-要求 Python ≥ 3.9（实际测试在 3.13）。
+要求 Python 3.11–3.13；CI 覆盖 3.11 / 3.12 / 3.13，发布构建固定使用 3.13。为避免依赖漂移，CI / 发版请同时使用 `constraints-runtime.txt`。
 
 ---
 

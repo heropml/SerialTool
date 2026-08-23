@@ -25,6 +25,9 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 `latest.json` 的 `url` 字段（Windows）**统一指向 Gitee Release 下载**（Gitee 全球可达）。
 `url_mac` 在 Windows 发版阶段保持空数组；macOS 脚本上传并校验 `.dmg` 后，才写入 GitHub 直链（标准流程不把 `.dmg` 传到 Gitee；运行时 `mac_download_candidates` 仍兼容旧清单并把 GitHub 提前）。
 `url_linux` 同样：Windows 发版保持空（或保留已校验的 GitHub `.run` 直链）；`release_linux.sh` 上传并校验后写入。Gitee 配额只放 Setup.exe，Linux 包只发 GitHub。
+每个平台还必须同时发布对应的 `sha256` / `size`、`sha256_mac` / `size_mac`、
+`sha256_linux` / `size_linux`。三套发布脚本会调用
+`scripts/update_manifest_integrity.py` 自动计算；缺失或无效摘要时客户端只打开人工下载页，绝不会自动运行安装包。
 改源顺序/下载地址 = 改 `updater.py` + `latest.json` / `release.ps1`；改 `updater.py` **要重打包**。
 
 > **`$Notes` 摘要建议**：以「串口调试助手 / 网络调试工具：…」开头写入 `latest.json` 的 `notes`（升级弹窗可见，也利于检索）。Release 正文仍用 `docs/RELEASE_NOTES.md` 全文，开头同样保留产品定位句。
@@ -35,12 +38,12 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 
 **Windows**
 - PowerShell 7
-- Python + PyInstaller
+- Python 3.11–3.13 + PyInstaller（发布固定 3.13；安装依赖时带 `-c constraints-runtime.txt`）
 - Inno Setup 6
 - GitHub CLI（`gh`，需先 `gh auth login`）
 
 **macOS**
-- Python 3 + PyInstaller + Pillow（`build_macos.sh` 会自动装进 `.venv`）
+- Python 3.13 + PyInstaller + Pillow（发布脚本使用版本匹配的 `.venv` / `.venv-macos`）
 - 系统自带 `iconutil` / `sips` / `hdiutil`
 - GitHub CLI（`gh`，可选；没登录则脚本自动建 tag + 给手动上传步骤）
 

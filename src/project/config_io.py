@@ -45,7 +45,8 @@ def strip_trigger_externals(rules):
             out.append(r)
             continue
         nr = dict(r)
-        for key in ("run_cmd", "run_cmd_on", "webhook", "webhook_url"):
+        for key in ("run_cmd", "run_cmd_on", "webhook", "webhook_url",
+                    "webhook_allow_insecure"):
             nr.pop(key, None)
         out.append(nr)
     return out

@@ -9,6 +9,7 @@ import tempfile
 PROJECT_FORMAT = "commtool-project"
 PROJECT_VERSION = 2
 SUPPORTED_PROJECT_VERSIONS = (1, 2)
+MAX_PROJECT_BYTES = 16 << 20
 
 _PLOT_KEYS = (
     "plot_mode", "plot_sep", "plot_regex", "plot_hex_fields",
@@ -43,7 +44,7 @@ def validate(payload):
     if payload.get("format") != PROJECT_FORMAT:
         raise ProjectError("not a CommTool project")
     version = payload.get("format_version")
-    if version not in SUPPORTED_PROJECT_VERSIONS:
+    if type(version) is not int or version not in SUPPORTED_PROJECT_VERSIONS:
         raise ProjectError("unsupported project version: %s" % version)
     if not isinstance(payload.get("settings"), dict):
         raise ProjectError("invalid project settings")
@@ -71,6 +72,17 @@ def _json_value(settings, key, default):
 def collect_project_resources(settings):
     """从现有 QSettings 形态提取显式工程资源包。设置仍保留一份，兼容旧版本。"""
     settings = dict(settings or {})
+    dashboard = {key: settings[key] for key in _DASHBOARD_KEYS if key in settings}
+    panels = _json_value(settings, "operator_panels", [])
+    if not panels and dashboard:
+        # Existing dashboard projects immediately become one portable operator
+        # panel; the deterministic id prevents every save from changing the file.
+        panels = [{
+            "id": "dashboard-main",
+            "name": "Main panel",
+            "dashboard": dict(dashboard),
+            "actions": [],
+        }]
     return {
         "device": {
             "registers": _json_value(settings, "device_registers", []),
@@ -80,6 +92,8 @@ def collect_project_resources(settings):
         "send": {
             "snippets": _json_value(settings, "snippets", []),
             "groups": _json_value(settings, "multi_send_groups", []),
+            "frame_templates": _json_value(settings, "frame_templates", []),
+            "frame_template_active": settings.get("frame_template_active", ""),
         },
         "connection": {
             "presets": _json_value(settings, "connection_presets", []),
@@ -88,8 +102,11 @@ def collect_project_resources(settings):
             "sequences": _json_value(settings, "sequence_rules", []),
             "scripts": _json_value(settings, "script_lib", []),
         },
-        "dashboard": {
-            key: settings[key] for key in _DASHBOARD_KEYS if key in settings
+        "dashboard": dashboard,
+        "operator_panels": {
+            "items": panels,
+            "active": settings.get(
+                "operator_panel_active", "dashboard-main" if panels else ""),
         },
         "plot": {
             key: settings[key] for key in _PLOT_KEYS if key in settings
@@ -106,6 +123,7 @@ def merge_project_resources(settings, resources):
     connection = resources.get("connection", {})
     automation = resources.get("automation", {})
     dashboard = resources.get("dashboard", {})
+    operator_panels = resources.get("operator_panels", {})
     plot = resources.get("plot", {})
     mappings = (
         (device, "registers", "device_registers"),
@@ -113,6 +131,7 @@ def merge_project_resources(settings, resources):
         (device, "dash_tags", "device_dash_tags"),
         (send, "snippets", "snippets"),
         (send, "groups", "multi_send_groups"),
+        (send, "frame_templates", "frame_templates"),
         (connection, "presets", "connection_presets"),
         (automation, "sequences", "sequence_rules"),
         (automation, "scripts", "script_lib"),
@@ -124,6 +143,14 @@ def merge_project_resources(settings, resources):
         for key in _DASHBOARD_KEYS:
             if key in dashboard:
                 merged[key] = dashboard[key]
+    if isinstance(send, dict) and "frame_template_active" in send:
+        merged["frame_template_active"] = send["frame_template_active"]
+    if isinstance(operator_panels, dict):
+        if "items" in operator_panels:
+            merged["operator_panels"] = json.dumps(
+                operator_panels["items"], ensure_ascii=False)
+        if "active" in operator_panels:
+            merged["operator_panel_active"] = operator_panels["active"]
     if isinstance(plot, dict):
         for key in _PLOT_KEYS:
             if key in plot:
@@ -133,6 +160,9 @@ def merge_project_resources(settings, resources):
 
 def load_project(path):
     try:
+        if os.path.getsize(path) > MAX_PROJECT_BYTES:
+            raise ProjectError(
+                "project too large (limit %d MiB)" % (MAX_PROJECT_BYTES >> 20))
         with open(path, "r", encoding="utf-8") as f:
             return validate(json.load(f))
     except ProjectError:

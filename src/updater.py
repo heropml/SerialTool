@@ -2,14 +2,16 @@
 """在线更新：检查最新版本（GitHub raw）+ 下载安装包并运行。
 
 更新源是一份「版本清单」JSON：
-    {"version": "1.0.5", "url": "<安装包下载地址>", "notes": "本次更新内容…"}
+    {"version": "1.0.5", "url": "<安装包下载地址>",
+     "sha256": "<64位摘要>", "size": 123456, "notes": "本次更新内容…"}
 按 UPDATE_MANIFEST_URLS 的顺序逐个尝试，第一个成功拿到的为准。
 基于 Qt 自带 QtNetwork，无需额外依赖。
 
-发版流程：打好安装包传到下载地址 → 更新各源上的 latest.json 的 version/url/notes。
+发版流程：打好安装包 → update_manifest_integrity.py 写摘要/大小 → 上传并发布清单。
 注意：清单 URL 必须能**免登录**访问（开放的内网 HTTP，或公开仓库的 raw / Releases）。
 """
 import glob
+import hashlib
 import http.client
 import json
 import logging
@@ -139,6 +141,23 @@ def linux_download_candidates(raw):
     return https_download_candidates(raw)
 
 
+def normalize_sha256(value):
+    """Return a canonical 64-char SHA-256 digest, or an empty string."""
+    digest = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", digest):
+        return digest
+    return ""
+
+
+def normalize_artifact_size(value):
+    """Return a positive expected byte size, or 0 when omitted/invalid."""
+    try:
+        size = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return size if size > 0 else 0
+
+
 def cleanup_temp_installers():
     """清理上次更新残留在临时目录的 Windows/macOS 安装包。启动时调用一次；
     删不掉（可能仍被占用）就跳过，不影响启动。多窗口下**跳过最近 10 分钟内改动的文件**——
@@ -225,6 +244,12 @@ class _ManifestWorker(QThread):
                 "url": str(m.get("url", "")),
                 "url_mac": m.get("url_mac", ""),      # macOS 专用下载(dmg)；可为字符串或多源列表
                 "url_linux": m.get("url_linux", ""),  # Linux 专用下载(.run)；可为字符串或多源列表
+                "sha256": normalize_sha256(m.get("sha256", "")),
+                "size": normalize_artifact_size(m.get("size", 0)),
+                "sha256_mac": normalize_sha256(m.get("sha256_mac", "")),
+                "size_mac": normalize_artifact_size(m.get("size_mac", 0)),
+                "sha256_linux": normalize_sha256(m.get("sha256_linux", "")),
+                "size_linux": normalize_artifact_size(m.get("size_linux", 0)),
                 "notes": str(m.get("notes", "")),
                 "newer": is_newer(ver, self._cur),
                 "source": url,
@@ -266,14 +291,16 @@ class UpdateChecker(QObject):
 
 
 class _DownloadWorker(QThread):
-    """子线程用 urllib（系统证书 + UA）下载到 path：分块写、报进度、可中止、校验 MZ 头。"""
+    """Download one artifact, verify expected SHA-256/size, then its file signature."""
     progressed = pyqtSignal(int, int)    # 已下载, 总大小
     done = pyqtSignal(str, str)          # 保存路径|'', 错误
 
-    def __init__(self, url, path):
+    def __init__(self, url, path, expected_sha256="", expected_size=0):
         super().__init__()
         self._url = url
         self._path = path
+        self._expected_sha256 = normalize_sha256(expected_sha256)
+        self._expected_size = normalize_artifact_size(expected_size)
         self._stop = False
 
     def stop(self):
@@ -294,11 +321,13 @@ class _DownloadWorker(QThread):
                                         context=ctx) as resp, open(self._path, "wb") as fp:
                 total = int(resp.headers.get("Content-Length") or 0)
                 got = 0
+                digest = hashlib.sha256()
                 while not self._stop:
                     chunk = resp.read(65536)
                     if not chunk:
                         break
                     fp.write(chunk)
+                    digest.update(chunk)
                     got += len(chunk)
                     self.progressed.emit(got, total)
         except (urllib.error.URLError, TimeoutError, OSError,
@@ -309,6 +338,14 @@ class _DownloadWorker(QThread):
         if self._stop:
             self._remove()                        # 中止：删半成品
             self.done.emit("", _translate("updater_cancelled"))
+            return
+        if self._expected_size and got != self._expected_size:
+            self._remove()
+            self.done.emit("", _translate("updater_bad_size"))
+            return
+        if self._expected_sha256 and digest.hexdigest() != self._expected_sha256:
+            self._remove()
+            self.done.emit("", _translate("updater_bad_hash"))
             return
         # 校验下载到的是不是真正的安装包（防 404/错误页被当成功）。
         # Windows：MZ/PE；Linux：shell 安装器以 #! 开头；mac .dmg 跳过（错误页走 HTTP 404）。
@@ -333,9 +370,11 @@ class UpdateDownloader(QObject):
     progress = pyqtSignal(int, int)   # 已下载, 总大小
     finished = pyqtSignal(str, str)   # 保存路径, 错误
 
-    def __init__(self, url, parent=None):
+    def __init__(self, url, parent=None, expected_sha256="", expected_size=0):
         super().__init__(parent)
         self._url = url
+        self._expected_sha256 = normalize_sha256(expected_sha256)
+        self._expected_size = normalize_artifact_size(expected_size)
         self._worker = None
         self._stopped = False
 
@@ -344,12 +383,17 @@ class UpdateDownloader(QObject):
         if not str(self._url).lower().startswith("https://"):
             self.finished.emit("", _translate("updater_bad_url"))
             return
+        # 没有可信摘要的旧清单只允许 UI 打开人工下载页，绝不自动执行产物。
+        if not self._expected_sha256:
+            self.finished.emit("", _translate("updater_unverified"))
+            return
         name = os.path.basename(QUrl(self._url).path()) or "Setup.exe"
         # 文件名插入 PID：多窗口同时下载各写各的文件、不会互相踩（清理仍按 CommTool_Setup_* 匹配）
         stem, ext = os.path.splitext(name)
         name = "%s_%d%s" % (stem, os.getpid(), ext)
         path = os.path.join(tempfile.gettempdir(), name)
-        w = _DownloadWorker(self._url, path)
+        w = _DownloadWorker(
+            self._url, path, self._expected_sha256, self._expected_size)
         w.progressed.connect(self._on_progress)
         w.done.connect(self._on_done)
         w.finished.connect(lambda: (_running_workers.discard(w), w.deleteLater()))

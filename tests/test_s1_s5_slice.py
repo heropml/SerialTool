@@ -115,7 +115,7 @@ def test_classify_disconnected_patterns():
 
 
 def test_rx_side_logs_without_raising():
-    from main_window import CommTool  # noqa: WPS433
+    from main_window import CommTool
 
     calls = []
 
@@ -130,7 +130,7 @@ def test_rx_side_logs_without_raising():
 
 
 def test_rx_side_toast_uses_user_facing_label():
-    from main_window import CommTool  # noqa: WPS433
+    from main_window import CommTool
 
     shown = []
 
@@ -160,7 +160,7 @@ def test_rx_side_toast_uses_user_facing_label():
 
 def test_seq_waiting_mbm_feed_uses_mbm_channel():
     import inspect
-    from main_window import CommTool  # noqa: WPS433
+    from main_window import CommTool
 
     src = inspect.getsource(CommTool._feed_session_engines)
     assert 'route == "seq_mbm"' in src
@@ -173,7 +173,7 @@ def test_seq_waiting_mbm_feed_uses_mbm_channel():
 
 
 def test_ar_kill_worker_continues_after_conn_close_fails():
-    from main_window import CommTool  # noqa: WPS433
+    from main_window import CommTool
 
     conn = mock.Mock()
     conn.close.side_effect = RuntimeError("pipe closed")

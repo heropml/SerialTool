@@ -37,6 +37,8 @@ CFG_KEYS = (
     # 数值仪表盘
     "dash_mode", "dash_sep", "dash_regex", "dash_fields", "dash_header", "dash_thresholds",
     "dash_widget",
+    # 可复用操作面板（仪表盘配置 + 后续安全动作按钮）
+    "operator_panels", "operator_panel_active",
     # 脚本控制台
     "script_lib", "script_active",
     # 自动应答
@@ -53,6 +55,7 @@ CFG_KEYS = (
     "triggers",
     # 帧构造器
     "frame_builder_fields", "frame_builder_split",
+    "frame_templates", "frame_template_active",
     # 终端模式
     "terminal_mode", "terminal_echo", "terminal_enter",
     # 杂项

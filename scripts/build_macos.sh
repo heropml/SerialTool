@@ -17,23 +17,63 @@ echo " Building $APP_NAME.app (macOS) with PyInstaller"
 echo "============================================"
 echo
 
-# [1/4] 选虚拟环境：优先复用已有 .venv，否则建独立的 .venv-macos
-if [ -d ".venv" ]; then
+# [1/4] 选虚拟环境：只复用版本与本次构建解释器一致的 venv。
+python_supported() {
+    command -v "$1" >/dev/null 2>&1 \
+        && "$1" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)'
+}
+BUILD_PYTHON="${COMMTOOL_BUILD_PYTHON:-}"
+VENV=""
+if [ -n "$BUILD_PYTHON" ]; then
+    if ! python_supported "$BUILD_PYTHON"; then
+        echo "Unsupported COMMTOOL_BUILD_PYTHON=$BUILD_PYTHON; need Python 3.11..3.13."
+        exit 1
+    fi
+elif [ -x ".venv/bin/python" ] && python_supported ".venv/bin/python"; then
+    BUILD_PYTHON=".venv/bin/python"
     VENV=".venv"
-else
+elif [ -x ".venv-macos/bin/python" ] && python_supported ".venv-macos/bin/python"; then
+    BUILD_PYTHON=".venv-macos/bin/python"
     VENV=".venv-macos"
-    [ -d "$VENV" ] || { echo "[1/4] 创建 venv $VENV ..."; python3 -m venv "$VENV"; }
+else
+    for cand in python3.13 python3.12 python3.11; do
+        if python_supported "$cand"; then
+            BUILD_PYTHON="$cand"
+            break
+        fi
+    done
+fi
+if [ -z "$BUILD_PYTHON" ]; then
+    echo "Need Python 3.11..3.13 (3.13 is the release target)."
+    exit 1
+fi
+SELECTED_PYTHON_MM="$($BUILD_PYTHON -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+
+if [ -z "$VENV" ]; then
+    VENV=".venv-macos"
+fi
+if [ -x ".venv/bin/python" ] \
+        && [ "$(.venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = "$SELECTED_PYTHON_MM" ]; then
+    VENV=".venv"
+elif [ ! -d "$VENV" ]; then
+    echo "[1/4] 创建 venv $VENV ..."
+    "$BUILD_PYTHON" -m venv "$VENV"
 fi
 echo "[1/4] 使用虚拟环境: $VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
+VENV_PYTHON_MM="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [ "$VENV_PYTHON_MM" != "$SELECTED_PYTHON_MM" ]; then
+    echo "$VENV uses Python $VENV_PYTHON_MM but this build selected $SELECTED_PYTHON_MM; recreate it."
+    exit 1
+fi
 
 # [2/4] 安装依赖（requirements-dev：运行时 + pyinstaller/Pillow；避免漏装 pyqtgraph/numpy）
 #       国内可用清华镜像加速；海外可 export PIP_INDEX=https://pypi.org/simple
 echo "[2/4] 安装依赖 ..."
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 python -m pip install --upgrade pip -i "$PIP_INDEX" >/dev/null
-python -m pip install -i "$PIP_INDEX" -r requirements-dev.txt >/dev/null
+python -m pip install -i "$PIP_INDEX" -r requirements-dev.txt -c constraints-runtime.txt >/dev/null
 
 # [3/4] 生成 .icns 图标
 echo "[3/4] 生成 .icns 图标 ..."
@@ -46,6 +86,7 @@ pyinstaller \
     --clean \
     --windowed \
     --name "$APP_NAME" \
+    --add-data "examples:examples" \
     --icon "$ICNS" \
     --osx-bundle-identifier "$BUNDLE_ID" \
     --paths src \

@@ -50,6 +50,8 @@
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
 
+On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
+
 ---
 
 ## What's New in v1.7.3

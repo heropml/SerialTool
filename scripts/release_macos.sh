@@ -46,7 +46,7 @@ PY
 
 # ---- 2. 打包(.app + .dmg) ----
 echo "[2/4] 打包 .app + .dmg ..."
-bash scripts/build_macos.sh --dmg
+COMMTOOL_BUILD_PYTHON=python3.13 bash scripts/build_macos.sh --dmg
 
 [ -f "dist/$APP_NAME.dmg" ] || { echo "❌ 未找到 dist/$APP_NAME.dmg,打包失败"; exit 1; }
 REL_DMG="dist/${APP_NAME}_v${VERSION}.dmg"
@@ -113,6 +113,8 @@ else:
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("  ✅ latest.json 已启用 macOS v%s 下载" % version)
 PY
+python3 scripts/update_manifest_integrity.py \
+    latest.json "$REL_DMG" mac --version "$VERSION"
 git add latest.json
 if git diff --cached --quiet -- latest.json; then
     echo "  (latest.json 无变化)"

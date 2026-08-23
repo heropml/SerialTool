@@ -20,21 +20,33 @@ echo " Building CommTool (Linux) with PyInstaller"
 echo "============================================"
 echo
 
-# Prefer a 3.8+ interpreter (Ubuntu 18.04's python3 is 3.6).
-if [ -z "${PYTHON:-}" ]; then
+# Tested source builds support Python 3.11..3.13; prefer the release target first.
+python_supported() {
+    command -v "$1" >/dev/null 2>&1 \
+        && "$1" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)'
+}
+if [ -n "${PYTHON:-}" ]; then
+    if ! python_supported "$PYTHON"; then
+        echo "Unsupported PYTHON=$PYTHON; need Python 3.11..3.13."
+        exit 1
+    fi
+elif [ -x ".venv-linux/bin/python" ] && python_supported ".venv-linux/bin/python"; then
+    PYTHON=".venv-linux/bin/python"
+else
     PYTHON=""
-    for cand in python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
-        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)'; then
+    for cand in python3.13 python3.12 python3.11; do
+        if python_supported "$cand"; then
             PYTHON="$cand"
             break
         fi
     done
 fi
 if [ -z "$PYTHON" ]; then
-    echo "Need Python 3.8+ (this host's python3 is too old for PyInstaller 6 / PyQt5 wheels)."
+    echo "Need Python 3.11..3.13 (3.13 is the release target)."
     exit 1
 fi
 echo "Using $($PYTHON --version 2>&1) [$PYTHON]"
+SELECTED_PYTHON_MM="$($PYTHON -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 
 # 优先用 venv，避免污染系统 Python
 if [ ! -d ".venv-linux" ]; then
@@ -44,12 +56,21 @@ fi
 
 # shellcheck disable=SC1091
 source .venv-linux/bin/activate
+if ! python -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)'; then
+    echo ".venv-linux uses an unsupported Python; recreate it with Python 3.11..3.13."
+    exit 1
+fi
+VENV_PYTHON_MM="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [ "$VENV_PYTHON_MM" != "$SELECTED_PYTHON_MM" ]; then
+    echo ".venv-linux uses Python $VENV_PYTHON_MM but this build selected $SELECTED_PYTHON_MM; recreate it."
+    exit 1
+fi
 
 echo "[2/4] Installing deps ..."
 # 国内用户可用清华镜像加速；海外/已配 pip.conf 的话删掉 -i 参数即可
 PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 pip install --upgrade pip -i "$PIP_INDEX"
-pip install -i "$PIP_INDEX" -r requirements.txt pyinstaller
+pip install -i "$PIP_INDEX" -r requirements.txt -c constraints-runtime.txt pyinstaller
 
 echo "[3/4] Running PyInstaller ..."
 pyinstaller \
@@ -57,6 +78,7 @@ pyinstaller \
     --clean \
     --windowed \
     --name CommTool \
+    --add-data "examples:examples" \
     --exclude-module PyQt5.QtBluetooth \
     --exclude-module PyQt5.QtDBus \
     --exclude-module PyQt5.QtDesigner \
@@ -84,7 +106,7 @@ pyinstaller \
     src/main.py
 
 echo "[4/5] Bundling X11/xcb libs into dist (no apt on target) ..."
-python3 scripts/bundle_linux_syslibs.py ./dist/CommTool
+python scripts/bundle_linux_syslibs.py ./dist/CommTool
 
 echo "[5/5] Packaging Linux installer ..."
 bash scripts/package_linux.sh

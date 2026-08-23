@@ -60,7 +60,9 @@
           "hex": true
         }
       ],
-      "groups": []
+      "groups": [],
+      "frame_templates": [],
+      "frame_template_active": ""
     },
     "connection": {
       "presets": [
@@ -106,6 +108,23 @@
       "dash_regex": "",
       "dash_fields": "数值=4:u16be",
       "dash_header": "AA 55"
+    },
+    "operator_panels": {
+      "items": [
+        {
+          "id": "dashboard-main",
+          "name": "Main panel",
+          "dashboard": {
+            "dash_mode": 2,
+            "dash_sep": 0,
+            "dash_regex": "",
+            "dash_fields": "数值=4:u16be",
+            "dash_header": "AA 55"
+          },
+          "actions": []
+        }
+      ],
+      "active": "dashboard-main"
     },
     "plot": {
       "plot_mode": 2,

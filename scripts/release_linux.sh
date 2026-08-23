@@ -33,7 +33,7 @@ echo " 发布 CommTool Linux x86_64 v$VERSION  (tag: $TAG)"
 echo "==================================================="
 
 echo "[1/3] 打包 ..."
-bash scripts/build.sh
+PYTHON=python3.13 bash scripts/build.sh
 [ -f "$RUN_PATH" ] || { echo "未找到 $RUN_PATH"; exit 1; }
 
 echo "[2/3] 上传 GitHub Release $TAG ..."
@@ -69,6 +69,8 @@ else:
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("  latest.json 已启用 Linux v%s 下载" % version)
 PY
+python3 scripts/update_manifest_integrity.py \
+    latest.json "$RUN_PATH" linux --version "$VERSION"
 git add latest.json
 if git diff --cached --quiet -- latest.json; then
     echo "  (latest.json 无变化)"

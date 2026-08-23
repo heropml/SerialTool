@@ -13,6 +13,7 @@ import time
 import traceback
 import types
 import multiprocessing
+import zipfile
 from collections import deque
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, QSettings, QEvent
@@ -36,6 +37,7 @@ from app_icon import get_app_icon
 from ui.fonts import ui_font, mono_font, localize_qss
 from ui.widgets import (make_label, IOSSwitch, TitleBar, Card, CollapsibleSection,
                      SuffixLineEdit, find_combo_ancestor, should_block_combo_wheel)
+from diagnostics import create_diagnostic_bundle
 
 _log = logging.getLogger(__name__)
 
@@ -5798,7 +5800,14 @@ class CommTool(SessionHostMixin, QMainWindow):
     # ---------------- 触发告警：命中规则 → 响铃 / 托盘通知 / 数据区打标 ----------------
     def _load_triggers(self):
         items = _cfg_parse_json_list(self.settings.value("triggers", ""))
-        return triggers.sanitize_list(items or [])
+        items, migrated = triggers.migrate_legacy_webhook_permissions(items or [])
+        clean = triggers.sanitize_list(items)
+        if migrated:
+            # 旧版允许 HTTP / 局域网 webhook，升级后不能静默停发。只迁移本机已有配置；
+            # 当前版新建规则始终显式写入 False，仍保持“公网 HTTPS”安全默认。
+            self.settings.setValue("triggers", json.dumps(clean, ensure_ascii=False))
+            self.settings.sync()
+        return clean
 
     def _save_triggers(self):
         """落盘 + 让引擎换上新规则（换规则会清命中统计，故调用方已做编辑去抖）。"""
@@ -8508,7 +8517,14 @@ class CommTool(SessionHostMixin, QMainWindow):
             return data
         if self._ar_confirm(self._t("trg_import_title"),
                             self._t("trg_import_warn", n=n)):
-            return data
+            # 用户已明确选择保留外部动作：兼容旧版中尚无权限字段的 webhook。
+            # 显式的 False 必须保留，不能把新版安全选择改回去。
+            rules, migrated = triggers.migrate_legacy_webhook_permissions(rules)
+            if not migrated:
+                return data
+            new = dict(data)
+            new["triggers"] = _cfg_dumps_list(rules)
+            return new
         new = dict(data)
         new["triggers"] = _cfg_dumps_list(_cfg_strip_trigger_ext(rules))
         return new
@@ -10920,6 +10936,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.btn_to_bottom.hide()
         self._reset_stats()
         self._reset_recv_state(reset_dashboard=True)
+        self._refresh_quick_start()
 
     # ----- 工具 -----
     @staticmethod
@@ -11698,6 +11715,72 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._closing_real = True
         self.close()
 
+    @staticmethod
+    def _bundled_example_path(name="fixed_header_demo.ctproj"):
+        roots = []
+        bundle = getattr(sys, "_MEIPASS", "")
+        if bundle:
+            roots.append(bundle)
+        roots.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for root in roots:
+            path = os.path.join(root, "examples", name)
+            if os.path.isfile(path):
+                return path
+        return ""
+
+    def _refresh_quick_start(self):
+        bar = getattr(self, "quick_start_bar", None)
+        if bar is None:
+            return
+        view = getattr(self, "txt_recv", None)
+        empty = bool(view is not None and view.document().characterCount() <= 1)
+        bar.setVisible(empty)
+        if not empty:
+            return
+        recent = self._recent_projects() if hasattr(self, "settings") else []
+        button = getattr(self, "btn_quick_recent", None)
+        if button is not None:
+            button.setVisible(bool(recent))
+            if recent:
+                button.setToolTip(recent[0])
+        example = getattr(self, "btn_quick_example", None)
+        if example is not None:
+            example.setVisible(bool(self._bundled_example_path()))
+        virtual = getattr(self, "btn_quick_virtual", None)
+        if virtual is not None:
+            virtual.setEnabled(not self._is_open())
+
+    def _quick_start_virtual(self):
+        # Never overwrite the visible connection fields while a real link is
+        # active; doing so would make the form say Virtual while the session
+        # still owns its original serial/network connection.
+        if self._is_open():
+            return False
+        self._switch_workspace("terminal")
+        self.cb_proto.setCurrentText(PROTO_VIRTUAL)
+        self.sw_vconn_loop.setChecked(True, animate=False)
+        self._update_net_fields()
+        if not self._is_open():
+            self.open_conn()
+        self.txt_send.setFocus()
+        self._refresh_quick_start()
+        return True
+
+    def _quick_start_example(self):
+        path = self._bundled_example_path()
+        if path:
+            # Bundled files live in the read-only app bundle. Load one as an
+            # unsaved template so Ctrl+S asks for a user path instead of trying
+            # to overwrite _MEIPASS / the source-tree example.
+            return self._open_project_path(
+                path, notify=False, as_template=True)
+        return False
+
+    def _quick_start_recent(self):
+        recent = self._recent_projects()
+        if recent:
+            self._open_project_path(recent[0])
+
 
     def _workspace_specs(self, key):
         """Workspace card entries; titles reuse existing i18n keys."""
@@ -12264,7 +12347,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         self._open_project_path(path)
 
-    def _open_project_path(self, path, confirm=True, notify=True, notify_errors=True):
+    def _open_project_path(self, path, confirm=True, notify=True, notify_errors=True,
+                           as_template=False):
         try:
             from project.project_model import load_project
             payload = load_project(path)
@@ -12290,17 +12374,23 @@ class CommTool(SessionHostMixin, QMainWindow):
                                    self._t("project_open_fail", err=str(e)), is_error=True)
                 return False
             self._commit_project_switch_sessions()
-            self._project_path = os.path.abspath(path)
             self._project_name = str(payload.get("name") or "")
             self._project_meta = dict(payload.get("metadata") or {})
-            self._project_baseline = self._project_fingerprint(
-                self._collect_project_settings())
-            self.settings.setValue("last_project_path", self._project_path)
-            self._add_recent_project(self._project_path)
-            self._update_project_label()
+            if as_template:
+                self._project_path = None
+                self._project_baseline = None
+                self._update_project_label(True)
+            else:
+                self._project_path = os.path.abspath(path)
+                self._project_baseline = self._project_fingerprint(
+                    self._collect_project_settings())
+                self.settings.setValue("last_project_path", self._project_path)
+                self._add_recent_project(self._project_path)
+                self._update_project_label()
         if notify:
             self._info_dlg(self._t("project_open"),
-                           self._t("project_opened", path=self._project_path))
+                           self._t("project_opened", path=(
+                               self._project_path or os.path.abspath(path))))
         return True
 
     def save_project(self, save_as=False):
@@ -12426,12 +12516,41 @@ class CommTool(SessionHostMixin, QMainWindow):
                 sub_del.addAction(self._t("profile_n", n=_p)).triggered.connect(
                     lambda *_a, prof=_p: self._delete_profile(prof))
         menu.addSeparator()
+        diag = menu.addAction(self._t("diagnostics_export") + "…")
+        diag.triggered.connect(self.export_diagnostics)
         act = menu.addAction(self._t("about") + "…")
         act.triggered.connect(self.open_about)
         # 弹在按钮正下方
         from PyQt5.QtCore import QPoint
         self._exec_transient_menu(menu, self.btn_titlebar_help.mapToGlobal(
             QPoint(0, self.btn_titlebar_help.height())))
+
+    def export_diagnostics(self):
+        """Export redacted environment/settings plus rolling application logs."""
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = "CommTool_diagnostics_%s.zip" % stamp
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._t("diagnostics_export"), name, "ZIP (*.zip)")
+        if not path:
+            return False
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+        try:
+            log_dir = getattr(QApplication.instance(), "_diagnostics_log_dir", "")
+            if not log_dir:
+                log_dir = os.path.join(
+                    os.path.dirname(self._settings_file(self._profile)), "logs")
+            log_name = getattr(
+                QApplication.instance(), "_diagnostics_log_name", "commtool.log")
+            create_diagnostic_bundle(
+                path, APP_VERSION, log_dir, settings=self.settings,
+                log_name=log_name)
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            _log.debug("diagnostic bundle export failed", exc_info=True)
+            self.toast(self._t("diagnostics_failed", e=exc), error=True)
+            return False
+        self.toast(self._t("diagnostics_exported", path=path))
+        return True
 
     @staticmethod
     def _profile_in_use(profile):

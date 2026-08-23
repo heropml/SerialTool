@@ -1,0 +1,14 @@
+# Reproducible runtime set used by CI and release builds.
+# Refresh deliberately after running the full cross-platform suite.
+PyQt5==5.15.11
+# 5.15.19 has no Windows wheel; 5.15.2 has no Apple Silicon macOS wheel.
+# Both satisfy PyQt5 5.15.11's declared range, so pin the wheel that exists
+# for each CI platform.
+PyQt5-Qt5==5.15.2; sys_platform == "win32"
+PyQt5-Qt5==5.15.19; sys_platform != "win32"
+PyQt5-sip==12.17.1
+pyserial==3.5
+bleak==1.1.1
+pyqtgraph==0.13.7
+numpy==2.2.6
+openpyxl==3.1.5

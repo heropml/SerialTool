@@ -21,6 +21,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual((r["mode"], r["scope"], r["hex"]), (tg.MODE_CONTAINS, "rx", False))
         self.assertTrue(r["on"] and r["beep"] and r["notify"])
         self.assertEqual(r["cooldown"], tg.DEFAULT_COOLDOWN_MS)
+        self.assertFalse(r["webhook_allow_insecure"])
 
     def test_bad_types_are_safe(self):
         r = tg.normalize({"mode": "x", "scope": "sideways", "cooldown": "abc", "on": "false"})
@@ -42,6 +43,18 @@ class NormalizeTests(unittest.TestCase):
         self.assertLessEqual(r["cooldown"], 3600000)
         self.assertEqual(len(tg.sanitize_list([{}] * (tg.MAX_RULES + 50))), tg.MAX_RULES)
         self.assertEqual(tg.sanitize_list("nope"), [])
+
+    def test_legacy_webhook_permission_migration_is_explicit_and_narrow(self):
+        items, count = tg.migrate_legacy_webhook_permissions([
+            {"name": "lan", "webhook": True, "webhook_url": "http://192.168.1.2/h"},
+            {"name": "disabled", "webhook": False, "webhook_url": "http://host/h"},
+            {"name": "safe", "webhook": True, "webhook_url": "https://example.com/h",
+             "webhook_allow_insecure": False},
+        ])
+        self.assertEqual(count, 2)
+        self.assertTrue(items[0]["webhook_allow_insecure"])
+        self.assertTrue(items[1]["webhook_allow_insecure"])
+        self.assertFalse(items[2]["webhook_allow_insecure"])
 
 
 class MatchTests(unittest.TestCase):
@@ -269,9 +282,11 @@ class ActionGateTests(unittest.TestCase):
         self.assertEqual(eng.hits(0), 3)
 
     def test_normalize_action_fields(self):
-        r = tg.normalize({"webhook": True, "webhook_url": "https://x", "run_cmd_on": 1,
+        r = tg.normalize({"webhook": True, "webhook_url": "https://x",
+                          "webhook_allow_insecure": "true", "run_cmd_on": 1,
                           "run_cmd": "echo {name}", "min_hits": 0, "every_n": -3})
         self.assertTrue(r["webhook"] and r["run_cmd_on"])
+        self.assertTrue(r["webhook_allow_insecure"])
         self.assertEqual(r["webhook_url"], "https://x")
         self.assertEqual(r["min_hits"], 1)
         self.assertEqual(r["every_n"], 1)

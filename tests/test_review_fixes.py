@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Regressions for the gateway / multi-view / trigger-action review fixes."""
+import json
 import os
 import signal
 import subprocess
@@ -10,7 +11,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QSettings, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -367,7 +368,6 @@ def test_deleting_a_view_asks_first(tmp_path, monkeypatch):
 # --------------------------------------------------------- trigger actions ---
 
 def test_trigger_action_import_gate_strips_external_actions(tmp_path, monkeypatch):
-    import json
     _patch_window_runtime(monkeypatch, tmp_path / "gate.ini")
     window = CommTool("trg-gate")
     try:
@@ -386,6 +386,38 @@ def test_trigger_action_import_gate_strips_external_actions(tmp_path, monkeypatc
         window._ar_confirm = lambda title, body: True
         kept = json.loads(window._gate_imported_trigger_actions(data)["triggers"])
         assert kept[0]["run_cmd"] == "calc.exe"
+        assert kept[1]["webhook_allow_insecure"] is True
+
+        rules[1]["webhook_allow_insecure"] = False
+        kept = json.loads(window._gate_imported_trigger_actions(
+            {"triggers": json.dumps(rules)})["triggers"])
+        assert kept[1]["webhook_allow_insecure"] is False
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_local_legacy_webhook_is_migrated_once_without_weakening_new_rules(
+        tmp_path, monkeypatch):
+    settings_path = tmp_path / "legacy-webhook.ini"
+    _patch_window_runtime(monkeypatch, settings_path)
+    seeded = QSettings(str(settings_path), QSettings.IniFormat)
+    seeded.setValue("triggers", json.dumps([
+        {"name": "old LAN", "pattern": "ERR", "webhook": True,
+         "webhook_url": "http://192.168.1.20/hook"},
+        {"name": "new safe", "pattern": "WARN", "webhook": True,
+         "webhook_url": "https://example.com/hook",
+         "webhook_allow_insecure": False},
+    ]))
+    seeded.sync()
+
+    window = CommTool("legacy-webhook")
+    try:
+        assert window._triggers[0]["webhook_allow_insecure"] is True
+        assert window._triggers[1]["webhook_allow_insecure"] is False
+        stored = json.loads(window.settings.value("triggers"))
+        assert stored[0]["webhook_allow_insecure"] is True
+        assert stored[1]["webhook_allow_insecure"] is False
     finally:
         window.deleteLater()
         _APP.processEvents()

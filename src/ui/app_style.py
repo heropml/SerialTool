@@ -143,6 +143,27 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
             color: {t['fg']};
             selection-background-color: {c['accent']};
         }}
+        QFrame#QuickStartBar {{
+            background-color: {c['ghost_bg']};
+            border: 1px solid {c['separator']};
+            border-radius: 8px;
+        }}
+        QLabel#QuickStartTitle {{
+            color: {c['text_sec']};
+            font-family: 'Segoe UI';
+            font-size: 11px;
+            font-weight: 600;
+        }}
+        QPushButton#QuickStartBtn {{
+            background-color: {c['card_bg']};
+            color: {c['accent']};
+            border: 1px solid {c['separator']};
+            border-radius: 6px;
+            padding: 4px 9px;
+            font-family: 'Segoe UI';
+            font-size: 11px;
+        }}
+        QPushButton#QuickStartBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QTextEdit#SendBox {{
             background-color: {c['input_bg']};
             border: 1px solid {c['separator']};

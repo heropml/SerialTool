@@ -355,7 +355,8 @@ def load(path):
                 # Keep scanning until _MAGIC; a corrupt first content line must
                 # not permanently disable header detection.
                 if isinstance(obj, dict) and obj.get("_") == _MAGIC:
-                    if obj.get("v") != _VERSION:
+                    version = obj.get("v")
+                    if type(version) is not int or version != _VERSION:
                         raise RecordError("不支持的录制文件版本：%s" % obj.get("v"))
                     header = obj
                     header_found = True

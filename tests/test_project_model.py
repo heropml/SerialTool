@@ -8,7 +8,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project.project_model import (
-    PROJECT_FORMAT, PROJECT_VERSION, ProjectError, collect_project_resources,
+    MAX_PROJECT_BYTES, PROJECT_FORMAT, PROJECT_VERSION, ProjectError,
+    collect_project_resources,
     load_project, make_project, merge_project_resources, prepare_project_settings,
     save_project,
 )
@@ -41,6 +42,15 @@ def test_project_rejects_other_json(tmp_path):
         load_project(str(path))
 
 
+def test_project_rejects_oversized_file_before_json_parse(tmp_path):
+    path = tmp_path / "oversized.ctproj"
+    with path.open("wb") as stream:
+        stream.seek(MAX_PROJECT_BYTES)
+        stream.write(b"x")
+    with pytest.raises(ProjectError, match="project too large"):
+        load_project(str(path))
+
+
 def test_project_rejects_unknown_version(tmp_path):
     path = tmp_path / "future.ctproj"
     path.write_text(json.dumps({
@@ -48,6 +58,21 @@ def test_project_rejects_unknown_version(tmp_path):
         "format_version": PROJECT_VERSION + 1,
         "metadata": {},
         "settings": {},
+    }), encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="unsupported project version"):
+        load_project(str(path))
+
+
+@pytest.mark.parametrize("bad_version", [True, 2.0, "2"])
+def test_project_rejects_non_integer_version(tmp_path, bad_version):
+    path = tmp_path / "bad-version.ctproj"
+    path.write_text(json.dumps({
+        "format": PROJECT_FORMAT,
+        "format_version": bad_version,
+        "metadata": {},
+        "settings": {},
+        "resources": {},
     }), encoding="utf-8")
 
     with pytest.raises(ProjectError, match="unsupported project version"):

@@ -6,6 +6,8 @@
   - 默认：注入 VirtualConn.inject（RX），未连虚拟连接会明确拒绝；
   - 驱动真实 TX：经当前打开连接原样发出录制的 TX（危险确认，非默认）。
 """
+import os
+
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QComboBox, QCheckBox, QFileDialog, QProgressBar,
@@ -13,6 +15,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
 
 from record import rec_replay
 from record import pcap_export
+from record import session_catalog
 from ui.theme import chrome_for
 from ui.fonts import localize_qss, mono_font
 from ui.dialogs import _dialog_list_qss, _set_win_titlebar_dark, _style_combo_popups
@@ -40,6 +43,9 @@ class RecReplayDialog(QDialog):
         self._player = None
         self._link = None            # TCP/UDP 端点快照（PCAP 导出用）
         self._wall_t0 = None         # 录制墙钟锚点（写入 pcap 时间戳）
+        self._catalog_path = os.path.join(
+            os.path.dirname(os.path.abspath(self.app.settings.fileName())),
+            "session-catalog.json")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -74,6 +80,9 @@ class RecReplayDialog(QDialog):
         self.btn_load = QPushButton()
         self.btn_load.setObjectName("PlotGhostBtn")
         self.btn_load.clicked.connect(self._on_load)
+        self.cb_recent = QComboBox()
+        self.cb_recent.setMinimumWidth(150)
+        self.cb_recent.activated.connect(self._on_recent)
         self.lbl_speed = QLabel()
         self.cb_speed = QComboBox()
         self.cb_speed.setFocusPolicy(Qt.NoFocus)
@@ -115,6 +124,7 @@ class RecReplayDialog(QDialog):
         self.btn_help.clicked.connect(self._show_help_dlg)
         rep.addWidget(self.lbl_rep)
         rep.addWidget(self.btn_load)
+        rep.addWidget(self.cb_recent)
         rep.addWidget(self.lbl_speed)
         rep.addWidget(self.cb_speed)
         rep.addWidget(self.chk_loop)
@@ -153,6 +163,7 @@ class RecReplayDialog(QDialog):
         self._timer.timeout.connect(self._tick)
 
         self.retranslate()
+        self._refresh_catalog()
         self.refresh_theme()
         self._refresh_stat()
 
@@ -279,6 +290,7 @@ class RecReplayDialog(QDialog):
             rec._wall_t0 = self._wall_t0
             rec.link = dict(self._link) if isinstance(self._link, dict) else None
             n = rec.save(path)
+            self._remember_recording(path)
             self.app.toast(self.app._t("saved_to", path=path))
             self._log(self.app._t("rr_saved", n=n))
         except Exception as e:
@@ -321,6 +333,9 @@ class RecReplayDialog(QDialog):
                                               "CommTool 录制 (*.ctrec);;All Files (*)")
         if not path:
             return
+        self._load_recording_path(path)
+
+    def _load_recording_path(self, path):
         try:
             events, header = rec_replay.load(path)
         except Exception as e:
@@ -330,7 +345,6 @@ class RecReplayDialog(QDialog):
             self.app.toast(self.app._t("rr_nothing"), error=True)
             return
         self._events = events
-        import os
         self._src_name = os.path.basename(path)
         self._link = dict(header["link"]) if isinstance(header.get("link"), dict) else None
         self._wall_t0 = header.get("wall_t0")
@@ -339,7 +353,39 @@ class RecReplayDialog(QDialog):
         self._log(self.app._t("rr_loaded", name=self._src_name, n=len(events)))
         if bad:
             self._log(self.app._t("rr_load_skipped", n=bad))
+        self._remember_recording(path)
         self._refresh_stat()
+        return True
+
+    def _remember_recording(self, path):
+        try:
+            session_catalog.remember(self._catalog_path, path)
+        except (OSError, ValueError, TypeError):
+            return
+        self._refresh_catalog(select_path=path)
+
+    def _refresh_catalog(self, select_path=""):
+        items = session_catalog.load_catalog(self._catalog_path)
+        target = os.path.normcase(os.path.abspath(select_path)) if select_path else ""
+        self.cb_recent.blockSignals(True)
+        self.cb_recent.clear()
+        self.cb_recent.addItem(self.app._t("rr_recent"), "")
+        selected = 0
+        for index, item in enumerate(items, start=1):
+            label = item.get("name") or os.path.basename(item.get("path") or "")
+            proto = item.get("proto") or ""
+            if proto:
+                label = "%s · %s" % (label, proto)
+            self.cb_recent.addItem(label, item.get("path") or "")
+            if target and os.path.normcase(os.path.abspath(item.get("path") or "")) == target:
+                selected = index
+        self.cb_recent.setCurrentIndex(selected)
+        self.cb_recent.blockSignals(False)
+
+    def _on_recent(self, _index):
+        path = str(self.cb_recent.currentData() or "")
+        if path:
+            self._load_recording_path(path)
 
     def is_playing(self):
         p = self._player
@@ -587,7 +633,7 @@ class RecReplayDialog(QDialog):
         recording = self.app._recorder.recording
         playing = self.is_playing()
         self.btn_rec.setEnabled(not playing)
-        for w in (self.btn_load, self.btn_save, self.btn_pcap,
+        for w in (self.btn_load, self.cb_recent, self.btn_save, self.btn_pcap,
                   self.cb_speed, self.chk_loop, self.chk_tx, self.chk_drive_tx):
             w.setEnabled(not recording and not playing)
         if (not recording and not playing) and self.chk_drive_tx.isChecked():
@@ -727,6 +773,7 @@ class RecReplayDialog(QDialog):
         set_tooltip(self.btn_pcap, t("rr_export_pcap_tip"))
         self.lbl_rep.setText(t("rr_replay"))
         self.btn_load.setText(t("rr_load"))
+        self._refresh_catalog(select_path=str(self.cb_recent.currentData() or ""))
         self.lbl_speed.setText(t("rr_speed"))
         self.chk_loop.setText(t("rr_loop"))
         paused = bool(self._player and getattr(self._player, "paused", False))

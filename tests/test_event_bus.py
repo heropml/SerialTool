@@ -56,11 +56,11 @@ def test_runner_posts_webhook_on_trigger_hit(monkeypatch):
         def read(self, _n):
             return b"ok"
 
-    def fake_urlopen(req, timeout=5):
-        seen.append((req.full_url, req.get_method(), timeout))
-        return _Resp()
+    def fake_post(url, data, allow_insecure=False, timeout=5):
+        seen.append((url, "POST", timeout))
+        return True
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("automation.trigger_actions._post_webhook", fake_post)
     runner = TriggerActionRunner()
     runner.spawn = lambda worker: (worker(), True)[1]
     runner.on_trigger_hit({
@@ -90,6 +90,24 @@ def test_runner_skips_private_webhook(monkeypatch):
         "hits": 1,
     })
     assert called == []
+
+
+def test_webhook_connects_only_to_resolved_pinned_addresses(monkeypatch):
+    from automation import trigger_actions as actions
+    target = {
+        "scheme": "https", "host": "example.com", "port": 443,
+        "path": "/hook", "addresses": ("8.8.8.8", "9.9.9.9"),
+    }
+    monkeypatch.setattr(actions, "resolve_webhook_target", lambda *a, **k: target)
+    seen = []
+
+    def send(resolved, address, data, timeout=5):
+        seen.append((resolved["host"], address, data, timeout))
+        return address == "9.9.9.9"
+
+    monkeypatch.setattr(actions, "_send_pinned", send)
+    assert actions._post_webhook("https://example.com/hook", b"{}") is True
+    assert [row[1] for row in seen] == ["8.8.8.8", "9.9.9.9"]
 
 
 def test_runner_run_cmd_uses_spawn():

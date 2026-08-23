@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,6 +8,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from record import rec_replay  # noqa: E402
+
+
+class RecordingFormatTests(unittest.TestCase):
+    def test_boolean_version_is_not_accepted_as_version_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bad.ctrec"
+            path.write_text(
+                json.dumps({"_": "ctrec", "v": True}) + "\n",
+                encoding="utf-8")
+            with self.assertRaises(rec_replay.RecordError):
+                rec_replay.load(path)
 
 
 class PlayerControlTests(unittest.TestCase):

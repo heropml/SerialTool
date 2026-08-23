@@ -117,7 +117,7 @@ def _install_session_proxies(cls):
                 if s is not None:
                     setattr(s, _a, value)
                 else:
-                    _log.debug("session proxy dropped write %s (no session context)", _a)
+                    _log.debug("session proxy dropped write (no session context)")
 
             return property(getter, setter)
 
@@ -142,7 +142,7 @@ def _install_session_proxies(cls):
                 if s is not None:
                     setattr(s, _a, value)
                 else:
-                    _log.debug("session proxy dropped write %s (no session context)", _a)
+                    _log.debug("session proxy dropped write (no session context)")
 
             return property(getter, setter)
 
@@ -618,6 +618,8 @@ class SessionHostMixin:
         te.installEventFilter(self)
         if hasattr(self, "_sel_chk_timer"):
             te.selectionChanged.connect(self._sel_chk_timer.start)
+        if hasattr(self, "_refresh_quick_start"):
+            te.textChanged.connect(self._refresh_quick_start)
         if hasattr(self, "_on_recv_scroll"):
             te.verticalScrollBar().valueChanged.connect(
                 lambda value, _s=session: self._on_session_recv_scroll(_s, value))
@@ -852,6 +854,9 @@ class SessionHostMixin:
             if callable(plot_changed):
                 plot_changed()
             self._sync_open_button_from_session(target)
+            refresh_quick = getattr(self, "_refresh_quick_start", None)
+            if callable(refresh_quick):
+                refresh_quick()
             seq_notify = getattr(self, "_seq_notify", None)
             if callable(seq_notify):
                 seq_notify()

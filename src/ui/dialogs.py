@@ -203,6 +203,9 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         self._dl_url = ""          # Windows 下载直链(也用于推 releases 页 tag)
         self._dl_cands = []        # 本平台下载候选(逐个试)：Win=[url]，mac=url_mac 列表
         self._dl_idx = 0
+        self._dl_sha256 = ""
+        self._dl_size = 0
+        self._manual_update = False
         _flags = Qt.Dialog | Qt.FramelessWindowHint
         if sys.platform == "darwin":
             _flags |= Qt.NoDropShadowWindowHint  # 关掉 macOS 给无边框窗口的矩形系统阴影（与圆角卡片冲突）
@@ -334,9 +337,13 @@ class AboutDialog(_DragFramelessMixin, QDialog):
         if sys.platform == "darwin":
             from updater import mac_download_candidates
             self._dl_cands = mac_download_candidates(info.get("url_mac", ""))
+            self._dl_sha256 = info.get("sha256_mac", "")
+            self._dl_size = info.get("size_mac", 0)
         elif sys.platform.startswith("linux"):
             from updater import linux_download_candidates
             self._dl_cands = linux_download_candidates(info.get("url_linux", ""))
+            self._dl_sha256 = info.get("sha256_linux", "")
+            self._dl_size = info.get("size_linux", 0)
         else:
             raw = self._dl_url
             raw = [raw] if isinstance(raw, str) else (
@@ -344,6 +351,9 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             self._dl_cands = [
                 u for u in raw
                 if isinstance(u, str) and u.lower().startswith("https://")]
+            self._dl_sha256 = info.get("sha256", "")
+            self._dl_size = info.get("size", 0)
+        self._manual_update = bool(self._dl_cands and not self._dl_sha256)
         txt = self._tr("update_found", ver=info["version"])
         if info.get("notes"):
             txt += "\n" + info["notes"]
@@ -351,9 +361,13 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             txt += "\n" + self._tr("update_platform_unavailable")
         elif sys.platform.startswith("linux") and not self._dl_cands:
             txt += "\n" + self._tr("update_linux_unavailable")
+        elif self._manual_update:
+            txt += "\n" + self._tr("update_unverified_manual")
         self._set_status(txt)
         if self._dl_cands:
             self.btn_check.hide()
+            self.btn_action.setText(self._tr(
+                "update_manual_download" if self._manual_update else "update_download"))
             self.btn_action.show()
         else:
             self.btn_action.hide()
@@ -362,9 +376,13 @@ class AboutDialog(_DragFramelessMixin, QDialog):
     def _download(self):
         # Windows: 下载 Setup.exe → 跑安装向导；macOS: 下载 dmg → 打开挂载(拖入应用程序)。
         # 下载地址按候选逐个试(mac 多源：GitHub 优先 + 其它源兜底)。
+        if self._manual_update:
+            QDesktopServices.openUrl(QUrl(self._releases_page_url()))
+            self._set_status(self._tr("update_open_page"))
+            return
         if not self._dl_cands:
             # 无平台专用直链(如老清单缺 url_mac) → 打开 releases 页兜底
-            if sys.platform != "win32" and self._dl_url:
+            if self._dl_url:
                 QDesktopServices.openUrl(QUrl(self._releases_page_url()))
                 self._set_status(self._tr("update_open_page"))
             return
@@ -374,7 +392,10 @@ class AboutDialog(_DragFramelessMixin, QDialog):
     def _start_download(self):
         self.btn_action.setEnabled(False)
         self._set_status(self._tr("update_downloading", pct=0))
-        self._downloader = UpdateDownloader(self._dl_cands[self._dl_idx], self)
+        self._downloader = UpdateDownloader(
+            self._dl_cands[self._dl_idx], self,
+            expected_sha256=self._dl_sha256,
+            expected_size=self._dl_size)
         self._downloader.progress.connect(self._on_progress)
         self._downloader.finished.connect(self._on_downloaded)
         self._downloader.start()
@@ -399,7 +420,7 @@ class AboutDialog(_DragFramelessMixin, QDialog):
             if self._dl_idx < len(self._dl_cands):
                 self._start_download()          # 换下一个源重试(如 Gitee 失败→GitHub)
                 return
-            if sys.platform != "win32" and self._dl_url:
+            if self._dl_url:
                 # 所有直链都下载失败 → 打开 releases 页让用户手动下
                 QDesktopServices.openUrl(QUrl(self._releases_page_url()))
                 self._set_status(self._tr("update_open_page"))

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """CommTool 入口。"""
 import sys
+import os
+import logging
 import multiprocessing
 from PyQt5.QtCore import Qt, QLockFile, QSettings
 from PyQt5.QtNetwork import QNetworkProxy
@@ -11,6 +13,7 @@ from ui.i18n import TR
 from main_window import CommTool
 from sessions.session import MAX_SESSIONS
 from updater import cleanup_temp_installers, set_translator
+from diagnostics import configure_logging, install_exception_logging
 
 
 _VALID_PROFILES = {""} | {str(n) for n in range(2, MAX_SESSIONS + 1)}  # ""=主配置 / "2"..MAX_SESSIONS
@@ -110,6 +113,15 @@ def main():
                                 tr.get("max_windows", "最多同时打开 8 个窗口。"))
         return
     app._profile_lock = profile_lock
+    settings_path = CommTool._settings_file(profile)
+    log_dir = os.path.join(os.path.dirname(settings_path), "logs")
+    log_name = "commtool.log" if not profile else "commtool-profile-%s.log" % profile
+    app._diagnostics_log_dir = log_dir
+    app._diagnostics_log_name = log_name
+    configure_logging(log_dir, log_name=log_name)
+    install_exception_logging()
+    logging.getLogger(__name__).info(
+        "CommTool starting (profile=%s)", profile or "main")
     w = CommTool(profile)
     set_translator(w._t)   # 把 updater 的用户可见错误文案接入主窗口多语言
     w.setWindowIcon(get_app_icon())

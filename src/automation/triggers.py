@@ -80,6 +80,8 @@ def normalize(rule):
         "mark": _as_bool(rule.get("mark", False)),
         "webhook": _as_bool(rule.get("webhook", False)),
         "webhook_url": str(rule.get("webhook_url", "") or "")[:MAX_WEBHOOK_URL],
+        # 默认只允许 HTTPS 公网地址；局域网/HTTP 必须逐条规则显式放行。
+        "webhook_allow_insecure": _as_bool(rule.get("webhook_allow_insecure", False)),
         "run_cmd_on": _as_bool(rule.get("run_cmd_on", False)),
         "run_cmd": str(rule.get("run_cmd", "") or "")[:MAX_RUN_CMD],
         "min_hits": max(1, min(1000000, _to_int(rule.get("min_hits", 1), 1))),
@@ -94,6 +96,36 @@ def sanitize_list(items):
         return []
     out = [normalize(x) for x in items if isinstance(x, dict)]
     return out[:MAX_RULES]
+
+
+def migrate_legacy_webhook_permissions(items):
+    """Give configured legacy webhooks their old network permission explicitly.
+
+    Before ``webhook_allow_insecure`` existed, configured webhooks could target
+    HTTP and private/LAN endpoints. The safe default must remain False for new
+    rules, so this migration is separate from :func:`normalize` and only fills
+    a missing field on a rule that already has a webhook URL. Disabled legacy
+    rules are included so re-enabling one later does not silently change its
+    behavior. Callers must restrict this to trusted local settings or imported
+    external actions the user explicitly chose to keep.
+
+    Returns a copied list and the number of migrated rules.
+    """
+    if not isinstance(items, list):
+        return [], 0
+    out = []
+    migrated = 0
+    for raw in items:
+        if not isinstance(raw, dict):
+            out.append(raw)
+            continue
+        rule = dict(raw)
+        if ("webhook_allow_insecure" not in rule
+                and str(rule.get("webhook_url") or "").strip()):
+            rule["webhook_allow_insecure"] = True
+            migrated += 1
+        out.append(rule)
+    return out, migrated
 
 
 def parse_hex_pattern(text):

@@ -4,16 +4,18 @@
 是「帧解析」(frame_dialog)的镜像：复用 binproto 的类型词汇(HEX_FMT)与新增的 pack_field/build_frame，
 校验字段复用 CommTool.compute_checksum。每行一个字段：名称 / 类型 / 值；校验、长度为「自动字段」(值由
 其他字段算出)。内置 Modbus/AT/NMEA 模板一键填充。单实例非模态，随主窗刷新主题/语言，字段定义持久化。
-MVP 不含：位域、范围可配置、模板保存、剪贴板、插入序列（见计划二期）。
+MVP 不含：位域、范围可配置、剪贴板、插入序列（见计划二期）。
 """
 import json
 
 from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint, QMimeData
 from PyQt5.QtGui import QDrag, QFont, QFontMetrics
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
-                             QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea, QSplitter)
+                             QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea, QSplitter,
+                             QInputDialog)
 
 from protocol import binproto
+from protocol import frame_templates
 from ui.theme import chrome_for
 from ui.fonts import localize_qss
 from ui.i18n import CHECKSUM_KEYS
@@ -61,6 +63,7 @@ class FrameBuilderDialog(QDialog):
         self._split_sizes = self._load_split_sizes()     # 上次拖好的列宽（列数不符则 None → 用默认）
         self._syncing_split = False              # 防止同步分隔条时递归
         self._fields_cfg = self._load_fields()
+        self._templates = self._load_saved_templates()
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._commit)
@@ -100,6 +103,26 @@ class FrameBuilderDialog(QDialog):
         top.addWidget(self.btn_send)
         top.addWidget(self.btn_help)
         root.addLayout(top)
+
+        saved = QHBoxLayout()
+        saved.setSpacing(8)
+        self.lbl_saved = QLabel()
+        self.cb_saved = QComboBox()
+        self.cb_saved.setMinimumWidth(180)
+        self.cb_saved.activated.connect(self._on_saved_template)
+        self.btn_save_tmpl = QPushButton()
+        self.btn_save_tmpl.setObjectName("PlotGhostBtn")
+        self.btn_save_tmpl.clicked.connect(self._save_current_template)
+        self.btn_del_tmpl = QPushButton()
+        self.btn_del_tmpl.setObjectName("PlotGhostBtn")
+        self.btn_del_tmpl.clicked.connect(self._delete_saved_template)
+        saved.addWidget(self.lbl_saved)
+        saved.addWidget(self.cb_saved)
+        saved.addWidget(self.btn_save_tmpl)
+        saved.addWidget(self.btn_del_tmpl)
+        saved.addStretch(1)
+        root.addLayout(saved)
+        self._reload_saved_combo()
 
         self.lbl_hint = QLabel()
         self.lbl_hint.setObjectName("ArDesc")
@@ -426,6 +449,113 @@ class FrameBuilderDialog(QDialog):
             self.app.toast(self.app._t("fb_sent"))
 
     # ---------------- 模板 ----------------
+    def _load_saved_templates(self):
+        raw = self.app.settings.value("frame_templates", "[]")
+        try:
+            if isinstance(raw, str) and len(raw) > self._MAX_CFG_CHARS:
+                self.app.toast(self.app._t("fb_config_too_large"), error=True)
+                return []
+            items = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except (TypeError, ValueError):
+            items = []
+        return frame_templates.normalize_templates(items)
+
+    def _persist_saved_templates(self, active=""):
+        self.app.settings.setValue(
+            "frame_templates", json.dumps(self._templates, ensure_ascii=False))
+        self.app.settings.setValue("frame_template_active", str(active or ""))
+        self.app.settings.sync()
+
+    def _reload_saved_combo(self, select_id=""):
+        selected = str(select_id or self.app.settings.value(
+            "frame_template_active", "") or "")
+        self.cb_saved.blockSignals(True)
+        self.cb_saved.clear()
+        self.cb_saved.addItem(self.app._t("fb_saved_choose"), "")
+        for item in self._templates:
+            self.cb_saved.addItem(item["name"], item["id"])
+        index = self.cb_saved.findData(selected)
+        self.cb_saved.setCurrentIndex(index if index >= 0 else 0)
+        self.cb_saved.blockSignals(False)
+        self.btn_del_tmpl.setEnabled(self.cb_saved.currentIndex() > 0)
+
+    def _replace_rows(self, fields):
+        self._loading = True
+        for row in list(self._rows):
+            row["frame"].setParent(None)
+            row["frame"].deleteLater()
+        self._rows = []
+        for field in fields:
+            self._add_row(field)
+        self._loading = False
+        self._schedule()
+
+    def _on_saved_template(self, _index):
+        template_id = str(self.cb_saved.currentData() or "")
+        self.btn_del_tmpl.setEnabled(bool(template_id))
+        if not template_id:
+            self._persist_saved_templates(active="")
+            return
+        item = next((row for row in self._templates
+                     if row["id"] == template_id), None)
+        if item is None:
+            return
+        if self._rows and not self.app._confirm_dlg(
+                self.app._t("fb_tmpl_apply"),
+                self.app._t("fb_tmpl_apply_confirm", name=item["name"]),
+                danger=False):
+            previous = str(self.app.settings.value(
+                "frame_template_active", "") or "")
+            old_index = self.cb_saved.findData(previous)
+            self.cb_saved.setCurrentIndex(old_index if old_index >= 0 else 0)
+            return
+        self._replace_rows(item["fields"])
+        self._persist_saved_templates(active=template_id)
+
+    def _save_current_template(self):
+        fields = self._all_fields()
+        if not fields:
+            return
+        current_id = str(self.cb_saved.currentData() or "")
+        current = next((item for item in self._templates
+                        if item["id"] == current_id), None)
+        name, ok = QInputDialog.getText(
+            self, self.app._t("fb_saved_save"), self.app._t("fb_saved_name"),
+            text=(current or {}).get("name", ""))
+        if not ok or not name.strip():
+            return
+        try:
+            self._templates, template_id = frame_templates.upsert(
+                self._templates, name, fields, template_id=current_id)
+        except frame_templates.DuplicateTemplateName as exc:
+            if not self.app._confirm_dlg(
+                    self.app._t("fb_saved_overwrite"),
+                    self.app._t("fb_saved_overwrite_confirm", name=exc.name),
+                    danger=False):
+                return
+            self._templates, template_id = frame_templates.upsert(
+                self._templates, name, fields, template_id=current_id,
+                replace_name_conflict=True)
+        except ValueError as exc:
+            self.app.toast(str(exc), error=True)
+            return
+        self._persist_saved_templates(active=template_id)
+        self._reload_saved_combo(template_id)
+        self.app.toast(self.app._t("fb_saved_done", name=name.strip()))
+
+    def _delete_saved_template(self):
+        template_id = str(self.cb_saved.currentData() or "")
+        if not template_id:
+            return
+        name = self.cb_saved.currentText()
+        if not self.app._confirm_dlg(
+                self.app._t("fb_saved_delete"),
+                self.app._t("fb_saved_delete_confirm", name=name), danger=True):
+            return
+        self._templates = frame_templates.remove(self._templates, template_id)
+        self._persist_saved_templates(active="")
+        self._reload_saved_combo()
+
     def _on_template(self, _idx):
         key = self.cb_tmpl.currentData()
         if key == "custom" or key not in _TEMPLATES:
@@ -489,6 +619,8 @@ class FrameBuilderDialog(QDialog):
             if not discard_pending:
                 self._commit()
         self._fields_cfg = self._load_fields()
+        self._templates = self._load_saved_templates()
+        self._reload_saved_combo()
         self._split_sizes = self._load_split_sizes()
         self._hdr_split.setSizes(self._split_sizes or self._DEFAULT_SPLIT)
         self._loading = True
@@ -513,6 +645,10 @@ class FrameBuilderDialog(QDialog):
         t = self.app._t
         self.setWindowTitle(t("fb_title"))
         self.lbl_tmpl.setText(t("fb_template"))
+        self.lbl_saved.setText(t("fb_saved"))
+        self.btn_save_tmpl.setText(t("fb_saved_save"))
+        self.btn_del_tmpl.setText(t("fb_saved_delete"))
+        self._reload_saved_combo(self.cb_saved.currentData())
         self.btn_add.setText(t("fb_add"))
         self.btn_fill.setText(t("fb_fill"))
         self.btn_send.setText(t("fb_send"))
@@ -528,9 +664,8 @@ class FrameBuilderDialog(QDialog):
         items = self._type_items()
         for d in self._rows:
             cb = d["type"]
-            cur = cb.currentData()
             cb.blockSignals(True)
-            for n, (k, ty, label) in enumerate(items):
+            for n, (_kind, _typ, label) in enumerate(items):
                 if n < cb.count():
                     cb.setItemText(n, label)
             cb.blockSignals(False)
@@ -564,7 +699,7 @@ class FrameBuilderDialog(QDialog):
         """.format(sec=c["text_sec"], acc=c["accent"], sep=c["separator"], gb=c["ghost_bg"],
                    gh=c["ghost_hover"], txt=c["text"])))
         # 下拉弹出是独立顶层窗，QSS 罩不到窗框 → 单独上色，避免深色主题露白边（含顶部模板下拉）
-        for cb in [self.cb_tmpl] + [d["type"] for d in self._rows]:
+        for cb in [self.cb_tmpl, self.cb_saved] + [d["type"] for d in self._rows]:
             cb.view().window().setStyleSheet("background-color: %s;" % c["combo_dropdown_bg"])
         self._rebuild()
 

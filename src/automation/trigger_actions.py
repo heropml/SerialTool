@@ -5,19 +5,77 @@ Qt-free: the GUI publishes ``trigger.hit``; this runner owns concurrency,
 subprocess tracking, and HTTP POST. Beep / tray / mark stay in the GUI.
 """
 import json
+import http.client
 import logging
 import os
+import socket
+import ssl
 import sys
 import threading
 import time
-
-from automation.trigger_safe import is_private_url, shell_value
+from automation.trigger_safe import resolve_webhook_target, shell_value
 
 _log = logging.getLogger("commtool.trigger_actions")
 
 MAX_ACTIONS = 8
 CMD_TIMEOUT = 30.0
 STOP_WAIT = 2.0
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connect to a validated IP while retaining the original Host header."""
+
+    def __init__(self, host, port, pinned_address, timeout=5):
+        self._pinned_address = pinned_address
+        super().__init__(host, port=port, timeout=timeout)
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_address, self.port), self.timeout, self.source_address)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Pinned TCP destination + original hostname for certificate/SNI checks."""
+
+    def __init__(self, host, port, pinned_address, timeout=5):
+        self._pinned_address = pinned_address
+        super().__init__(host, port=port, timeout=timeout,
+                         context=ssl.create_default_context())
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_address, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _send_pinned(target, address, data, timeout=5):
+    cls = (_PinnedHTTPSConnection if target["scheme"] == "https"
+           else _PinnedHTTPConnection)
+    conn = cls(target["host"], target["port"], address, timeout=timeout)
+    try:
+        conn.request(
+            "POST", target["path"], body=data,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "CommTool-Trigger/1.0"})
+        response = conn.getresponse()
+        response.read(256)
+        # http.client never follows redirects; a 3xx is just a failed action.
+        return 200 <= int(response.status) < 300
+    finally:
+        conn.close()
+
+
+def _post_webhook(url, data, allow_insecure=False, timeout=5):
+    target = resolve_webhook_target(url, allow_insecure=allow_insecure)
+    if target is None:
+        return False
+    for address in target["addresses"]:
+        try:
+            if _send_pinned(target, address, data, timeout=timeout):
+                return True
+        except (OSError, ssl.SSLError, http.client.HTTPException, ValueError):
+            continue
+    return False
 
 
 def kill_proc(proc):
@@ -102,9 +160,10 @@ class TriggerActionRunner:
 
     def run_webhook(self, rule, name, direction, hits):
         url = (rule.get("webhook_url") or "").strip()
-        if not url.lower().startswith(("http://", "https://")):
-            return
-        if is_private_url(url):
+        allow_insecure = bool(rule.get("webhook_allow_insecure"))
+        lower = url.lower()
+        if not (lower.startswith("https://")
+                or (allow_insecure and lower.startswith("http://"))):
             return
         payload = {
             "name": name,
@@ -116,13 +175,9 @@ class TriggerActionRunner:
 
         def _worker():
             try:
-                import urllib.request
                 data = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(
-                    url, data=data, method="POST",
-                    headers={"Content-Type": "application/json",
-                             "User-Agent": "CommTool-Trigger/1.0"})
-                urllib.request.urlopen(req, timeout=5).read(256)
+                _post_webhook(
+                    url, data, allow_insecure=allow_insecure, timeout=5)
             except Exception:
                 _log.debug("trigger webhook failed", exc_info=True)
 

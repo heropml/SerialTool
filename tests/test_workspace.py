@@ -89,6 +89,71 @@ def test_workspace_pages_and_tool_icons_initialize(tmp_path, monkeypatch):
         _APP.processEvents()
 
 
+def test_quick_start_tracks_active_receive_empty_state(tmp_path, monkeypatch):
+    notices = []
+    _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
+    window = CommTool("quick-start-test")
+    try:
+        _APP.processEvents()
+        assert not window.quick_start_bar.isHidden()
+        assert window._bundled_example_path().endswith("fixed_header_demo.ctproj")
+        assert window.txt_recv.receivers(window.txt_recv.textChanged) == 1
+
+        window.txt_recv.setPlainText("device data")
+        _APP.processEvents()
+        assert window.quick_start_bar.isHidden()
+
+        window.txt_recv.clear()
+        _APP.processEvents()
+        assert not window.quick_start_bar.isHidden()
+
+        before = window.cb_proto.currentText()
+        monkeypatch.setattr(window, "_is_open", lambda: True)
+        window._refresh_quick_start()
+        assert not window.btn_quick_virtual.isEnabled()
+        assert window._quick_start_virtual() is False
+        assert window.cb_proto.currentText() == before
+
+        opened = []
+        monkeypatch.setattr(
+            window, "_open_project_path",
+            lambda path, **kwargs: opened.append((path, kwargs)) or True)
+        assert window._quick_start_example() is True
+        assert opened[0][1] == {"notify": False, "as_template": True}
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
+def test_open_project_as_template_never_targets_bundled_path_for_save(
+        tmp_path, monkeypatch):
+    project_path = tmp_path / "example.ctproj"
+    save_project(str(project_path), make_project(
+        "Example", {}, {"net_proto": "Virtual"}, "test"))
+    notices = []
+    settings_path = tmp_path / "settings.ini"
+    _patch_window_runtime(monkeypatch, settings_path, notices)
+    previous_project = tmp_path / "previous.ctproj"
+    save_project(str(previous_project), make_project(
+        "Previous", {}, {"net_proto": "Virtual"}, "test"))
+    seeded = QSettings(str(settings_path), QSettings.IniFormat)
+    seeded.setValue("last_project_path", str(previous_project))
+    seeded.sync()
+    window = CommTool("project-template-test")
+    try:
+        _APP.processEvents()
+        assert window._open_project_path(
+            str(project_path), notify=False, as_template=True)
+        assert window._project_name == "Example"
+        assert window._project_path is None
+        assert window._project_baseline is None
+        assert window.settings.value("last_project_path", "") == str(previous_project)
+        assert str(project_path) not in window._recent_projects()
+    finally:
+        window.deleteLater()
+        _APP.processEvents()
+
+
 def test_switch_workspace_ignores_missing_page_index(tmp_path, monkeypatch):
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)

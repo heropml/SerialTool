@@ -87,7 +87,15 @@ def cooldown_blocks(now, last, cooldown_ms):
     cd = int(cooldown_ms or 0)
     if cd <= 0:
         return False
-    return (float(now) - float(last or 0.0)) * 1000.0 < cd
+    # 0/None 是“该会话从未命中过”的哨兵，不是 monotonic() 的真实时间点。
+    # 在进程启动后的前 cooldown_ms 内把 0 当时间戳，会错误吞掉第一次自动应答。
+    try:
+        previous = float(last or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if previous <= 0.0:
+        return False
+    return (float(now) - previous) * 1000.0 < cd
 
 
 def reply_path(rule):
