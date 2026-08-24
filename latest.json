@@ -2,12 +2,14 @@
   "version": "1.7.4",
   "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.7.4/CommTool_Setup_v1.7.4.exe",
   "url_mac": [],
-  "url_linux": [],
+  "url_linux": [
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.7.4/CommTool_Setup_v1.7.4_linux_x86_64.run"
+  ],
   "sha256": "7e0aa27edee53b3270d4d2a6a28cb29036fd49da2d6d51038d2974ef92334b1c",
   "size": 48111332,
   "sha256_mac": "",
   "size_mac": 0,
-  "sha256_linux": "",
-  "size_linux": 0,
+  "sha256_linux": "e57f912591ff6c0f0432b026ca89633a487917788a60cad8ce5ac3b0d16ca901",
+  "size_linux": 129683674,
   "notes": "串口调试助手 / 网络调试工具：更新校验 SHA-256、Webhook 默认公网 HTTPS、诊断包与首屏快速开始"
 }
