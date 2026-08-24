@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.7.4](#whats-new-in-v174)
 - [What's New in v1.7.3](#whats-new-in-v173)
 - [What's New in v1.7.2](#whats-new-in-v172)
 - [What's New in v1.7.1](#whats-new-in-v171)
@@ -51,6 +52,19 @@
 4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
 
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
+
+---
+
+## What's New in v1.7.4
+
+Update integrity, webhook boundary, diagnostics, and first-run workflow on the v1.7.3 baseline:
+
+- **Updates** — each platform artifact in `latest.json` carries SHA-256 and size. A missing or invalid digest opens the manual download page only; the installer is never auto-run.
+- **Webhooks** — default is public HTTPS with DNS answers pinned to IP (no redirects). LAN / HTTP needs an explicit per-rule override. Existing local rules without that field keep their previous permission.
+- **Auto-reply** — cooldown no longer swallows the first legal hit after process start; cooldown stays per-session.
+- **Diagnostics** — rolling error logs; **Help → Export diagnostics** builds a redacted ZIP (no user traffic payloads).
+- **Workflow** — empty-terminal Quick start (Virtual / example / recent project); Frame Builder can save personal templates; Record / Replay indexes recent `.ctrec`; projects carry frame templates and operator-panel resources.
+- **Boundary** — Windows / macOS / Linux x86_64 packages are on the same `comm-v1.7.4` tag.
 
 ---
 
@@ -933,7 +947,7 @@ Right-click the tray icon and choose **About** to open the **About** dialog. It 
     - **Linux**: the `.run` installer starts after the app quits and overwrites `~/.local/opt/CommTool`.
   - **Already up to date** → the dialog simply tells you you're on the latest version.
 - **Update sources** — the version manifest tries **Gitee first**, then **GitHub**; each source has an **8-second timeout**. Windows Setup is on Gitee; macOS `.dmg` and Linux `.run` are on GitHub (Gitee quota only holds Windows Setup).
-- **Integrity check** — the downloaded file is verified before the installer runs.
+- **Integrity check** — the downloaded file is verified with SHA-256 (and size when present) before the installer runs. A manifest without a digest only offers the manual download page.
 - **Cancel anytime** — closing the dialog while a download is in progress cancels the download automatically.
 
 ### Auto-saved Configuration
@@ -980,7 +994,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.7.3`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.7.4`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1014,17 +1028,17 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.3); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.4**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.4); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.7.3.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.7.3.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.7.4.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.7.4.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.7.3.dmg`
+- **Apple Silicon** (arm64) only: `CommTool_v1.7.4.dmg`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1035,11 +1049,11 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.7.3_linux_x86_64.run`
+- File: `CommTool_Setup_v1.7.4_linux_x86_64.run`
 
 ```bash
-chmod +x CommTool_Setup_v1.7.3_linux_x86_64.run
-./CommTool_Setup_v1.7.3_linux_x86_64.run
+chmod +x CommTool_Setup_v1.7.4_linux_x86_64.run
+./CommTool_Setup_v1.7.4_linux_x86_64.run
 ```
 
 - Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon

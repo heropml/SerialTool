@@ -19,8 +19,8 @@ LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 3
 _HANDLER_MARK = "_commtool_rotating_file"
 _SAFE_SETTING_VALUES = {
-    "language", "theme", "protocol", "encoding", "recv_hex", "send_hex",
-    "timestamp", "timestamp_format", "line_split", "auto_check_update",
+    "language", "theme", "net_proto", "encoding", "rx_hex", "tx_hex",
+    "show_timestamp", "ts_format", "line_split", "auto_update_check",
 }
 _DEPENDENCIES = ("PyQt5", "pyserial", "bleak", "pyqtgraph", "numpy", "openpyxl")
 

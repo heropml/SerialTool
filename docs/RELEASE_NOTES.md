@@ -1,41 +1,39 @@
-**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.7.3 正式版**：运行时配置迁入 `config/`，触发 Webhook/外部程序改走事件总线；对话框与绘图误报 toast 收窄。
+**CommTool** — 开源串口调试助手 / 网络调试工具（UART + TCP/UDP）。**v1.7.4 正式版**：更新清单校验 SHA-256/大小，Webhook 默认仅公网 HTTPS，补齐诊断包与首屏快速开始。
 
-## v1.7.3 正式版
+## v1.7.4 正式版
 
-### 配置目录
-- 设置落到 `<可写基目录>/config/settings.ini`（多窗口 `settings-2.ini` …）；锁文件 `.mwlock` 跟着走
-- 打包版优先 exe 同级 `config\`（绿色版可连目录拷走）；写不进则 `%APPDATA%\CommTool\config\`
-- macOS 固定 `~/Library/Application Support/CommTool/config/`，不写进 `.app`
-- 首次启动把旧版同级 `settings.ini` / `settings-*.ini` 迁入 `config\`：复制成功才删源文件；目标已有则保留旧文件，下次再试
-- 开发模式写 `src/config/`（已 gitignore）
-- 安装脚本建 `{app}\config`；升级时新旧路径都没有 `settings.ini` 才按安装语言 seed
+### 在线更新
+- `latest.json` 为每个平台写 SHA-256 与文件大小；三套发版脚本调用 `update_manifest_integrity.py` 自动写入
+- 缺摘要或摘要无效时，客户端只打开人工下载页，不会自动运行安装包
+- 下载后再核对照摘要与大小；Windows 仍验 MZ、Linux 仍验 shebang
 
-### 事件总线
-- 触发器命中只发 `trigger.hit`；响铃 / 托盘 / 打标仍在界面
-- Webhook POST 与外部程序由 `TriggerActionRunner` 消费：并发上限 8、子进程回收、私有地址拦截不变
-- 导入含 `run_cmd` / `webhook_url` 仍走原信任确认
+### 触发 Webhook
+- 默认只允许公网 HTTPS；解析全部地址后钉死 IP 连接，证书/SNI 仍用原主机名，不跟随跳转
+- 局域网 / 明文 HTTP 必须在该条规则上勾选「允许局域网 / HTTP」
+- 本机已有、且尚未带权限字段的旧规则会显式补上兼容开关，避免升级后静默停发
 
-### 对话框 / 绘图
-- 波形图恢复已存的非法正则 / 帧头 / 字段不再弹错误；当场改错仍提示
-- 序列 CSV 加载与报告导出补上 `csv.Error`；xlsx 非法字符走 `ValueError`
-- 保存失败不再把程序内部异常包装成文件错误
+### 自动应答
+- 冷却把 `0` 当「从未命中」哨兵，不再在进程启动后的前一段冷却窗口里吞掉第一次合法命中
+- 冷却仍按会话隔离
+
+### 诊断与工作流
+- 滚动错误日志（按配置档分文件）；「帮助 → 导出诊断包」生成脱敏 ZIP，不收录通信载荷
+- 空白终端提供快速开始：Virtual 回环、内置示例、最近工程
+- 帧构造器可保存个人帧模板；录制回放索引最近 `.ctrec`；工程文件可携带帧模板与操作面板资源
 
 ### 产品边界
 - 本版不做会话树、拖拽分屏、标签拖出成窗；P2 继续暂缓
-- **本轮已发 Windows / macOS / Linux x86_64**；同一 tag `comm-v1.7.3`
+- **本轮发 Windows / macOS / Linux x86_64**；同一 tag `comm-v1.7.4`
 - Linux 不提供 ARM 官方包
-
-### 测试
-- 全量测试：1668 passed，11 skipped，295 subtests passed
 
 ## 下载
 
 | 形式 | 文件 | 说明 |
 |------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.7.3.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.7.3.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon）| `CommTool_v1.7.3.dmg` | arm64；拖入「应用程序」 |
-| Linux（x86_64） | `CommTool_Setup_v1.7.3_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
+| Windows 安装版 | `CommTool_Setup_v1.7.4.exe` | 推荐，向导安装 + 桌面快捷方式 |
+| Windows 单文件版 | `CommTool_v1.7.4.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
+| macOS（Apple Silicon）| `CommTool_v1.7.4.dmg` | arm64；拖入「应用程序」 |
+| Linux（x86_64） | `CommTool_Setup_v1.7.4_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。
 

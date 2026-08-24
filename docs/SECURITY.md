@@ -22,8 +22,9 @@ one of those validated addresses. HTTPS certificate validation and SNI still use
 original hostname. Redirects are not followed.
 
 A rule can explicitly enable **Allow LAN / HTTP (unsafe)** for a trusted local
-integration. This permission is stripped when external trigger actions are removed
-during an untrusted config/project import.
+integration. On an untrusted config/project import, declining to keep external
+actions strips this permission. Keeping them only backfills a missing field on a
+legacy rule; an explicit Off is left alone.
 
 ## Diagnostics and payload privacy
 

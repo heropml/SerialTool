@@ -60,6 +60,13 @@ def test_bundle_redacts_setting_values_and_includes_logs(tmp_path):
     settings = {
         "language": "zh",
         "theme": "dark",
+        "net_proto": "Serial",
+        "rx_hex": True,
+        "tx_hex": False,
+        "show_timestamp": True,
+        "ts_format": "hms",
+        "line_split": True,
+        "auto_update_check": True,
         "send_history": "TOP-SECRET-PAYLOAD",
         "webhook_url": "https://secret.example/hook",
     }
@@ -68,7 +75,17 @@ def test_bundle_redacts_setting_values_and_includes_logs(tmp_path):
         assert set(zf.namelist()) >= {
             "system.json", "settings-redacted.json", "logs/commtool.log"}
         report = json.loads(zf.read("settings-redacted.json"))
-        assert report["safe_values"] == {"language": "zh", "theme": "dark"}
+        assert report["safe_values"] == {
+            "language": "zh",
+            "theme": "dark",
+            "net_proto": "Serial",
+            "rx_hex": True,
+            "tx_hex": False,
+            "show_timestamp": True,
+            "ts_format": "hms",
+            "line_split": True,
+            "auto_update_check": True,
+        }
         raw = zf.read("settings-redacted.json").decode("utf-8")
         assert "TOP-SECRET-PAYLOAD" not in raw
         assert "secret.example" not in raw
