@@ -144,24 +144,25 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
             selection-background-color: {c['accent']};
         }}
         QFrame#QuickStartBar {{
-            background-color: {c['ghost_bg']};
-            border: 1px solid {c['separator']};
-            border-radius: 8px;
+            background-color: transparent;
+            border: 0px;
         }}
         QLabel#QuickStartTitle {{
             color: {c['text_sec']};
             font-family: 'Segoe UI';
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 600;
         }}
         QPushButton#QuickStartBtn {{
-            background-color: {c['card_bg']};
+            background-color: {c['ghost_bg']};
             color: {c['accent']};
-            border: 1px solid {c['separator']};
-            border-radius: 6px;
-            padding: 4px 9px;
+            border: 0px;
+            border-radius: 7px;
             font-family: 'Segoe UI';
-            font-size: 11px;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 5px 12px;
+            min-height: 18px;
         }}
         QPushButton#QuickStartBtn:hover {{ background-color: {c['ghost_hover']}; }}
         QTextEdit#SendBox {{
@@ -267,7 +268,8 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
             font-size: 11px;
             font-weight: 500;
         }}
-        QFrame#SessionSeparator {{
+        QFrame#SessionSeparator,
+        QFrame#TitleSeparator {{
             color: {c['separator']};
             background-color: {c['separator']};
             max-width: 1px;

@@ -113,6 +113,43 @@ def build(app):
     app.legend_label.setFont(ui_font(10))
     app.legend_label.setStyleSheet("background: transparent;")
     title_row.addWidget(app.legend_label)
+    title_row.addSpacing(6)
+
+    # 竖分隔线：把「一收 → 发」图例与后面的快速开始区分开（样式同标题栏分隔线）
+    title_sep = QFrame()
+    title_sep.setObjectName("TitleSeparator")
+    title_sep.setFrameShape(QFrame.VLine)
+    title_row.addWidget(title_sep)
+    title_row.addSpacing(6)
+
+    # Empty-state onboarding: real actions, kept compact so it does not cover
+    # the receive view. It disappears as soon as the active session has data.
+    # 位置在标题行中间的空白处（图例与右侧控件之间），不再单独占一行；
+    # 样式上不自带底板，按钮与右侧 GhostBtn 同款，避免标题行里出现两层贴片。
+    app.quick_start_bar = QFrame()
+    app.quick_start_bar.setObjectName("QuickStartBar")
+    quick = QHBoxLayout(app.quick_start_bar)
+    quick.setContentsMargins(0, 0, 0, 0)
+    quick.setSpacing(6)
+    quick_title = QLabel(app._t("quick_start"))
+    quick_title.setObjectName("QuickStartTitle")
+    quick_title.setProperty("tr_text", "quick_start")
+    quick.addWidget(quick_title)
+    for key, callback, attr in (
+            ("quick_virtual", app._quick_start_virtual, "btn_quick_virtual"),
+            ("quick_example", app._quick_start_example, "btn_quick_example"),
+            ("project_new", app.new_project, "btn_quick_new"),
+            ("quick_recent", app._quick_start_recent, "btn_quick_recent")):
+        button = QPushButton(app._t(key))
+        button.setObjectName("QuickStartBtn")
+        button.setProperty("tr_text", key)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(callback)
+        setattr(app, attr, button)
+        quick.addWidget(button)
+    quick.addStretch(1)
+    title_row.addWidget(app.quick_start_bar)
+
     title_row.addStretch(1)
 
     # 生效分组下拉（顶部「（关闭）」+ 各分组）—— 选哪个分组就按哪个分组高亮
@@ -159,32 +196,6 @@ def build(app):
     title_row.addWidget(app.btn_font_inc)
 
     layout.addLayout(title_row)
-
-    # Empty-state onboarding: real actions, kept compact so it does not cover
-    # the receive view. It disappears as soon as the active session has data.
-    app.quick_start_bar = QFrame()
-    app.quick_start_bar.setObjectName("QuickStartBar")
-    quick = QHBoxLayout(app.quick_start_bar)
-    quick.setContentsMargins(12, 7, 12, 7)
-    quick.setSpacing(8)
-    quick_title = QLabel(app._t("quick_start"))
-    quick_title.setObjectName("QuickStartTitle")
-    quick_title.setProperty("tr_text", "quick_start")
-    quick.addWidget(quick_title)
-    for key, callback, attr in (
-            ("quick_virtual", app._quick_start_virtual, "btn_quick_virtual"),
-            ("quick_example", app._quick_start_example, "btn_quick_example"),
-            ("project_new", app.new_project, "btn_quick_new"),
-            ("quick_recent", app._quick_start_recent, "btn_quick_recent")):
-        button = QPushButton(app._t(key))
-        button.setObjectName("QuickStartBtn")
-        button.setProperty("tr_text", key)
-        button.setCursor(Qt.PointingHandCursor)
-        button.clicked.connect(callback)
-        setattr(app, attr, button)
-        quick.addWidget(button)
-    quick.addStretch(1)
-    layout.addWidget(app.quick_start_bar)
 
     # Per-session receive views in a stack (multi-tab concurrent sessions).
     app.recv_stack = QStackedWidget()
