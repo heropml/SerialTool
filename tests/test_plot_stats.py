@@ -20,6 +20,18 @@ class PlotStatsTests(unittest.TestCase):
         self.assertEqual(s["max"], 4)
         self.assertEqual(s["mean"], 2.5)
 
+    def test_series_stats_std(self):
+        # 总体标准差（÷n，与 rtt_t2 波形统计口径一致）
+        s = plot_stats.series_stats([1, 2, 3, 4])
+        self.assertAlmostEqual(s["std"], math.sqrt(1.25))
+        self.assertAlmostEqual(plot_stats.series_stats([5, 5, 5])["std"], 0.0)
+        self.assertAlmostEqual(plot_stats.series_stats([7.0])["std"], 0.0)
+        self.assertIsNone(plot_stats.series_stats([])["std"])
+        # 大数值不溢出：1e308 量级方差先在归一化域算再放大
+        big = plot_stats.series_stats([1e308, -1e308])
+        self.assertTrue(math.isfinite(big["std"]))
+        self.assertAlmostEqual(big["std"], 1e308, delta=1e294)
+
     def test_xy_pairs_aligns_by_shared_x(self):
         # CH0 has samples 0,1,2; CH1 skipped sample 1 (missing field) → xs [0,2]
         xs, ys = plot_stats.xy_pairs(

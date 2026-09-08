@@ -20,6 +20,8 @@ CONN_FIELD_KEYS = (
     "ble_address", "ble_name", "ble_profile",
     "ble_service_uuid", "ble_write_uuid", "ble_notify_uuid",
     "ble_write_mode",
+    "rtt_device", "rtt_interface", "rtt_speed", "rtt_address", "rtt_channel",
+    "rtt_probe", "rtt_reset",
 )
 
 _DEFAULTS = {
@@ -47,6 +49,13 @@ _DEFAULTS = {
     "ble_write_uuid": "FFF2",
     "ble_notify_uuid": "FFF1",
     "ble_write_mode": "auto",
+    "rtt_device": "",
+    "rtt_interface": "SWD",
+    "rtt_speed": "4000",
+    "rtt_address": "",
+    "rtt_channel": "0",
+    "rtt_probe": "",
+    "rtt_reset": False,
 }
 
 
@@ -228,6 +237,8 @@ def summary(preset):
         detail = "loopback" if p.get("vconn_loopback") else "sink"
     elif proto == "BLE":
         detail = p.get("ble_name") or p.get("ble_address") or "?"
+    elif proto == "RTT":
+        detail = p.get("rtt_device") or "?"
     else:
         detail = proto
     return "%s | %s" % (proto, detail)
@@ -247,6 +258,7 @@ def match(preset, query):
         p.get("name", ""), p.get("note", ""), summary(p),
         p.get("ser_port", ""), p.get("net_remote_ip", ""), p.get("net_local_ip", ""),
         p.get("ble_address", ""), p.get("ble_name", ""),
+        p.get("rtt_device", ""), p.get("rtt_probe", ""),
     ]).lower()
     return q in blob
 
@@ -307,6 +319,28 @@ def ble_signature(proto, address, service_uuid, write_uuid, notify_uuid,
         ble_uuid.normalize_uuid(write_uuid),
         ble_uuid.normalize_uuid(notify_uuid),
         ble_uuid.normalize_write_mode(write_mode),
+    )
+
+
+def rtt_signature(proto, device, speed, interface, address, channel,
+                  probe="", reset=False):
+    """RTT connection config signature tuple (normalized values).
+
+    ``address`` accepts the "start+size" search form too, so the search
+    range takes part in the signature (changing it must force a reopen).
+    """
+    from transport import rtt_io
+    spec = rtt_io.parse_address_spec(address) or (0, 0)
+    return (
+        proto,
+        str(device or "").strip(),
+        rtt_io.clamp_speed(speed),
+        rtt_io.normalize_interface(interface),
+        spec[0] or 0,
+        rtt_io.normalize_channel(channel) or 0,
+        spec[1] or 0,
+        rtt_io.normalize_probe(probe),
+        bool(_bool(reset, False)),
     )
 
 
@@ -419,6 +453,41 @@ def validate_open(proto, fields, *, is_valid_ip, is_local_ipv4, is_multicast_ipv
             return _toast_err("err_not_multicast")
         return {"ok": True, "local_ip": local_ip, "group": group, "port": port}
 
+    if proto == "RTT":
+        from transport import rtt_io
+        device = str(fields.get("device") or fields.get("rtt_device") or "").strip()
+        if not device:
+            return _toast_err("rtt_err_no_device")
+        speed = rtt_io.parse_speed(fields.get("speed") or fields.get("rtt_speed"))
+        if speed is None:
+            return _toast_err("rtt_err_bad_speed")
+        spec = rtt_io.parse_address_spec(
+            fields.get("address") or fields.get("rtt_address"))
+        if spec is None:
+            return _toast_err("rtt_err_bad_address")
+        addr, search_size = spec
+        ch = rtt_io.normalize_channel(
+            fields.get("channel") if fields.get("channel") is not None
+            else fields.get("rtt_channel"))
+        if ch is None:
+            return _toast_err("rtt_err_bad_channel")
+        return {
+            "ok": True,
+            "device": device,
+            "speed": speed,
+            "interface": rtt_io.normalize_interface(
+                fields.get("interface") or fields.get("rtt_interface")),
+            "address": addr,
+            "search_size": search_size,
+            "channel": ch,
+            "probe": rtt_io.normalize_probe(
+                fields.get("probe") if fields.get("probe") is not None
+                else fields.get("rtt_probe")),
+            "reset": _bool(
+                fields.get("reset") if fields.get("reset") is not None
+                else fields.get("rtt_reset"), False),
+        }
+
     # UDP (default / else)
     local_ip = str(fields.get("local_ip") or "").strip()
     if not is_local_ipv4(local_ip):
@@ -463,6 +532,19 @@ def open_fields_from_ui(proto, ui):
             "notify_uuid": u.get("ble_notify_uuid") or u.get("notify_uuid"),
             "write_mode": u.get("ble_write_mode") or u.get("write_mode") or "auto",
         }
+    if proto == "RTT":
+        return {
+            "device": u.get("rtt_device") or u.get("device"),
+            "speed": u.get("rtt_speed") or u.get("speed"),
+            "interface": u.get("rtt_interface") or u.get("interface"),
+            "address": u.get("rtt_address") or u.get("address"),
+            "channel": (u.get("rtt_channel") if u.get("rtt_channel") is not None
+                        else u.get("channel")),
+            "probe": (u.get("rtt_probe") if u.get("rtt_probe") is not None
+                      else u.get("probe")),
+            "reset": (u.get("rtt_reset") if u.get("rtt_reset") is not None
+                      else u.get("reset")),
+        }
     return {
         "local_ip": u.get("local_ip"), "local_port": u.get("local_port"),
         "use_remote": u.get("use_remote"),
@@ -478,6 +560,18 @@ def open_fields_from_reconnect(reconnect_cfg):
     proto = cfg[0]
     if proto == "Serial" and len(cfg) >= 3:
         return proto, {"port": cfg[1], "baud": cfg[2]}
+    if proto == "RTT" and len(cfg) >= 6:
+        # 老快照只有 6 项（无搜索范围 / 探针 / 复位），按默认值补齐。
+        size = cfg[6] if len(cfg) > 6 else 0
+        addr = cfg[4]
+        if size:
+            addr = "%#x+%#x" % (int(addr or 0), int(size))
+        return proto, {
+            "device": cfg[1], "speed": cfg[2], "interface": cfg[3],
+            "address": addr, "channel": cfg[5],
+            "probe": cfg[7] if len(cfg) > 7 else "",
+            "reset": cfg[8] if len(cfg) > 8 else False,
+        }
     return proto, {}
 
 

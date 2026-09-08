@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.7.4",
+  "app_version": "1.8.0",
   "name": "Sensor CSV Demo",
   "metadata": {
     "device_type": "sensor",
@@ -40,7 +40,7 @@
     "show_timestamp": true,
     "snippets": "[{\"name\": \"Sample CSV\", \"text\": \"36.5,72,3.30\", \"hex\": false}, {\"name\": \"Sample CSV 2\", \"text\": \"37.1,68,3.28\", \"hex\": false}]",
     "multi_send_groups": "[{\"name\": \"Sensor CSV\", \"items\": [{\"checked\": true, \"name\": \"row1\", \"data\": \"36.5,72,3.30\", \"hex\": false, \"nl\": 1, \"delay\": 200}, {\"checked\": true, \"name\": \"row2\", \"data\": \"37.1,68,3.28\", \"hex\": false, \"nl\": 1, \"delay\": 200}]}]",
-    "connection_presets": "[{\"id\": \"example-sensor-csv-virtual\", \"name\": \"Sensor CSV loopback\", \"note\": \"Delimiter plot: temp,humidity,voltage\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\"}]"
+    "connection_presets": "[{\"id\": \"example-sensor-csv-virtual\", \"name\": \"Sensor CSV loopback\", \"note\": \"Delimiter plot: temp,humidity,voltage\", \"last_used\": 0.0, \"net_proto\": \"Virtual\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"\", \"net_remote_port\": \"\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": true, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\", \"rtt_device\": \"\", \"rtt_interface\": \"SWD\", \"rtt_speed\": \"4000\", \"rtt_address\": \"\", \"rtt_channel\": \"0\", \"rtt_probe\": \"\", \"rtt_reset\": false}]"
   },
   "resources": {
     "device": {
@@ -117,7 +117,14 @@
           "ble_service_uuid": "FFF0",
           "ble_write_uuid": "FFF2",
           "ble_notify_uuid": "FFF1",
-          "ble_write_mode": "auto"
+          "ble_write_mode": "auto",
+          "rtt_device": "",
+          "rtt_interface": "SWD",
+          "rtt_speed": "4000",
+          "rtt_address": "",
+          "rtt_channel": "0",
+          "rtt_probe": "",
+          "rtt_reset": false
         }
       ]
     },

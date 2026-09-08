@@ -15,6 +15,7 @@ py -3 -m PyInstaller ^
   --icon assets\icon.ico ^
   --exclude-module PyQt5.QtBluetooth ^
   --collect-all bleak ^
+  --collect-all pylink ^
   --exclude-module PyQt5.QtDBus ^
   --exclude-module PyQt5.QtDesigner ^
   --exclude-module PyQt5.QtHelp ^

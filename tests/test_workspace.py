@@ -89,7 +89,8 @@ def test_workspace_pages_and_tool_icons_initialize(tmp_path, monkeypatch):
         _APP.processEvents()
 
 
-def test_quick_start_tracks_active_receive_empty_state(tmp_path, monkeypatch):
+def test_quick_start_bar_stays_visible_with_data(tmp_path, monkeypatch):
+    """快速开始常显：数据刷出来也不收起（用户反馈原「空页面才显示」像消失）。"""
     notices = []
     _patch_window_runtime(monkeypatch, tmp_path / "settings.ini", notices)
     window = CommTool("quick-start-test")
@@ -101,7 +102,7 @@ def test_quick_start_tracks_active_receive_empty_state(tmp_path, monkeypatch):
 
         window.txt_recv.setPlainText("device data")
         _APP.processEvents()
-        assert window.quick_start_bar.isHidden()
+        assert not window.quick_start_bar.isHidden()
 
         window.txt_recv.clear()
         _APP.processEvents()

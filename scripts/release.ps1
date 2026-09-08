@@ -55,9 +55,21 @@ Set-Location $Root
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "版本号格式应为 X.Y.Z（如 1.1.4），你给的是 '$Version'"
 }
-& py -3.13 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)"
-if ($LASTEXITCODE -ne 0) {
-    throw "发布构建需要 Python 3.13（请安装后确认 py -3.13 可用）"
+$Python = $null
+$PythonArgs = @()
+$PyLauncher = (Get-Command py -ErrorAction SilentlyContinue).Source
+if ($PyLauncher) {
+    & $PyLauncher -3.13 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)"
+    if ($LASTEXITCODE -eq 0) {
+        $Python = $PyLauncher
+        $PythonArgs = @('-3.13')
+    }
+}
+if (-not $Python) {
+    $Python = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (-not $Python) { throw "找不到 Python 3.13（请安装 Python 或 py 启动器）" }
+    & $Python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)"
+    if ($LASTEXITCODE -ne 0) { throw "发布构建需要 Python 3.13" }
 }
 $Tag         = "comm-v$Version"
 $SetupName   = "CommTool_Setup_v$Version.exe"
@@ -186,7 +198,7 @@ $vtxt = [regex]::Replace($vtxt, '__version__\s*=\s*"[^"]*"', "__version__ = `"$V
 [IO.File]::WriteAllText($vp, $vtxt)
 # 示例工程带 app_version，须与 version.py 同步，否则 CI 字节比对会红
 Write-Host "①b 重生 examples/*.ctproj（同步 app_version）"
-& py -3.13 (Join-Path $Root 'scripts\build_example_projects.py')
+& $Python @PythonArgs (Join-Path $Root 'scripts\build_example_projects.py')
 if ($LASTEXITCODE -ne 0) { throw "examples 重生失败" }
 
 # ---- 2. 更新 latest.json（url 指向 Gitee Release）----
@@ -220,13 +232,14 @@ $excludes = @(
 
 # ---- 3. PyInstaller 打包 folder 版（含 pyserial 串口 + pyqtgraph 波形图，靠各自 hook 自动收集）----
 Write-Host "③ PyInstaller 打包 folder 版（约 1~2 分钟）…"
-$pyargs = @('-3.13','-m','PyInstaller','--noconfirm','--clean','--windowed',
+$pyargs = @('-m','PyInstaller','--noconfirm','--clean','--windowed',
             '--name','CommTool','--icon','assets/icon.ico')
 foreach ($e in $excludes) { $pyargs += '--exclude-module'; $pyargs += $e }
 $pyargs += '--collect-all'; $pyargs += 'bleak'
+$pyargs += '--collect-all'; $pyargs += 'pylink'
 $pyargs += '--add-data'; $pyargs += 'examples;examples'
 $pyargs += 'src/main.py'
-& py @pyargs
+& $Python @PythonArgs @pyargs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(folder) 打包失败" }
 
 # ---- 4. Inno Setup 编译安装包 ----
@@ -234,29 +247,34 @@ Write-Host "④ Inno Setup 编译安装包…"
 & $Iscc "/DMyAppVersion=$Version" "scripts\CommTool.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
 if (-not (Test-Path $SetupPath)) { throw "未生成安装包：$SetupPath" }
-& py -3.13 (Join-Path $Root 'scripts\update_manifest_integrity.py') `
+& $Python @PythonArgs (Join-Path $Root 'scripts\update_manifest_integrity.py') `
     (Join-Path $Root 'latest.json') $SetupPath windows --version $Version
 if ($LASTEXITCODE -ne 0) { throw "latest.json SHA-256 写入失败" }
 
 # ---- 5. PyInstaller 打包 onefile 版（免安装单文件，含 pyqtgraph/numpy）----
 #      命令行 --onefile，与 folder 版同一套 Analysis/excludes，输出到 dist_onefile（与 .gitignore 一致）。
 Write-Host "⑤ PyInstaller 打包 onefile 版（约 2 分钟）…"
-$onef = @('-3.13','-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
+$onef = @('-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
           '--name',"CommTool_v$Version",'--icon','assets/icon.ico',
           '--distpath','dist_onefile','--workpath','build_onefile')
 foreach ($e in $excludes) { $onef += '--exclude-module'; $onef += $e }
 $onef += '--collect-all'; $onef += 'bleak'
+$onef += '--collect-all'; $onef += 'pylink'
 $onef += '--add-data'; $onef += 'examples;examples'
 $onef += 'src/main.py'
-& py @onef
+& $Python @PythonArgs @onef
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller(onefile) 打包失败" }
 if (-not (Test-Path $OnefilePath)) { throw "未生成 onefile：$OnefilePath" }
 
 # ---- 6. git 提交 ----
 Write-Host "⑥ git 提交…"
 git add -A
-# docs/TODO.md 与本地工具残留不进发版提交（见 RELEASE.md §8.1）
-git reset -q -- docs/TODO.md 2>$null
+if ($LASTEXITCODE -ne 0) { throw "git add 失败，未创建 release commit" }
+# docs/TODO.md 与本地提交消息辅助文件不进发版提交（见 RELEASE.md §8.1）
+git reset -q -- docs/TODO.md scripts/_release_commit_body.txt scripts/_release_commit_msg.txt 2>$null
+if ($LASTEXITCODE -ne 0) { throw "git reset 失败，未创建 release commit" }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw "暂存区存在空白或格式错误，请修正后重试。" }
 # 提交说明统一走一个 UTF-8 文件：标题 + 可选详细正文。
 # 不要同时用 -m 与 -F（部分环境下正文会被丢掉，只剩标题一行）。
 $CommitTitle = "release: $Tag — $Notes"
@@ -322,7 +340,7 @@ if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 Write-Host "⑨ 发 Gitee Release $Tag（国内下载源 + 在线升级）…"
 $env:PYTHONIOENCODING = 'utf-8'
 $env:HTTPS_PROXY = ''; $env:HTTP_PROXY = ''; $env:ALL_PROXY = ''   # Gitee 直连，别绕代理
-& py -3.13 (Join-Path $Root 'scripts\release_gitee.py') $Version
+& $Python @PythonArgs (Join-Path $Root 'scripts\release_gitee.py') $Version
 if ($LASTEXITCODE -ne 0) { throw "Gitee Release 失败（检查 scripts/.gitee_token 与网络）" }
 
 Write-Host "==== 发版完成 CommTool $Tag ====" -ForegroundColor Green

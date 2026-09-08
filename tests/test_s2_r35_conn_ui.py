@@ -19,7 +19,7 @@ def test_conn_types_match_historical_order():
     ]
     assert cu.CONN_TYPES == [
         "Serial", "UDP", "UDP Multicast", "TCP Server", "TCP Client", "Virtual",
-        "BLE",
+        "BLE", "RTT",
     ]
 
 

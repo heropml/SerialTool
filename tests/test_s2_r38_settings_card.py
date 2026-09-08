@@ -63,6 +63,9 @@ class _FakeHost(QObject):
     def _on_ble_scan_clicked(self):
         pass
 
+    def _on_rtt_device_pick(self):
+        self._calls.append("rtt_device_pick")
+
     def _on_ble_profile_changed(self, *_a):
         pass
 
@@ -115,3 +118,20 @@ def test_build_serial_catalogs_and_conn_types():
     assert not hasattr(host, "btn_ble_stop")
     assert host.cb_ble_profile.count() == 5
     assert host.cb_ble_write_mode.count() == 3
+
+
+def test_build_rtt_rows():
+    from transport import rtt_io
+
+    host = _FakeHost()
+    card = sc.build(host)
+    assert card is not None
+    assert host.cb_rtt_device.isEditable() is True
+    assert host.cb_rtt_device.count() == len(rtt_io.COMMON_DEVICES)
+    assert [host.cb_rtt_interface.itemText(i)
+            for i in range(host.cb_rtt_interface.count())] == ["SWD", "JTAG"]
+    assert host.cb_rtt_speed.currentText() == "4000 kHz"
+    assert host.cb_rtt_speed.count() == len(rtt_io.SPEED_PRESETS_KHZ)
+    assert host.cb_rtt_channel.count() == 16
+    assert host.cb_rtt_channel.itemData(2) == 2
+    assert host.cb_rtt_channel.currentIndex() == 0

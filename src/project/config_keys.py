@@ -13,6 +13,9 @@ CFG_KEYS = (
     # BLE（Windows 主机 UART 管道）
     "ble_address", "ble_name", "ble_profile",
     "ble_service_uuid", "ble_write_uuid", "ble_notify_uuid", "ble_write_mode",
+    # RTT（SEGGER RTT，经 J-Link 调试器）
+    "rtt_device", "rtt_interface", "rtt_speed", "rtt_address", "rtt_channel",
+    "rtt_probe", "rtt_reset",
     # 串口连接
     "ser_port", "ser_baud", "ser_databits", "ser_parity", "ser_stopbits",
     "ser_flow", "serial_dtr", "serial_rts",

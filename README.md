@@ -1,8 +1,8 @@
 # CommTool — 串口调试助手 + 网络调试工具
 
-开源 **串口调试助手 / 网络调试工具**，把 UART 串口终端与 TCP/UDP 调试合在同一界面。面向嵌入式开发、设备联调、Modbus / 自定义协议测试与通信日志分析；正式发行包支持 **Windows**、**macOS** 与 **Linux x86_64**。
+开源 **串口调试助手 / 网络调试工具**，把 UART 串口、SEGGER J-Link RTT 与 TCP/UDP 调试合在同一界面。面向嵌入式开发、设备联调、Modbus / 自定义协议测试与通信日志分析；正式发行包支持 **Windows**、**macOS** 与 **Linux x86_64**。
 
-> Serial / UART terminal and TCP/UDP network debugger in one desktop app — HEX, logging, Modbus, scripting, and automated tests.
+> Serial / RTT terminal and TCP/UDP network debugger in one desktop app — HEX, logging, Modbus, scripting, and automated tests.
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%E2%80%933.13-3776AB?logo=python&logoColor=white)
@@ -13,13 +13,13 @@
 
 ![CommTool](./assets/icon_preview.png)
 
-CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / UDP / UDP Multicast / TCP Server / TCP Client / Virtual / BLE**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口和网络各装一个工具。**产品与发行包名：CommTool**；Git 仓库路径仍为 `heropml/SerialTool`（不改仓名，避免更新链接断裂）。
+CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左上角切换 **Serial / RTT / UDP / UDP Multicast / TCP Server / TCP Client / Virtual / BLE**，收发区、关键字高亮、批量发送、录制回放与自动化能力一套通用，不必再为串口、RTT 和网络各装一个工具。**产品与发行包名：CommTool**；Git 仓库路径仍为 `heropml/SerialTool`（不改仓名，避免更新链接断裂）。
 
 **适合：** MCU / USB 转串口调试 · TCP/UDP 服务联调 · Modbus 主从与扫描 · 周期/批量指令 · 会话日志与（有限范围）PCAP 导出 · 无硬件时用 Virtual 回环复现问题
 
 ## 为什么选择 CommTool
 
-- **串口 + 网络 + 虚拟一体**：串口参数、TCP/UDP、组播、多客户端 TCP Server，以及无硬件 Virtual 回环；Windows 上还可选 BLE 主机 UART 管道。同一套操作习惯。
+- **串口 + RTT + 网络 + 虚拟一体**：串口参数、J-Link RTT、TCP/UDP、组播、多客户端 TCP Server，以及无硬件 Virtual 回环；Windows 上还可选 BLE 主机 UART 管道。同一套操作习惯。
 - **数据看得清、留得住**：文本 / HEX / HEX 转储 / 数值视图，可选终端模式；时间分包、关键字与协议高亮、搜索与书签；实时日志与 `.ctrec` 录制回放。
 - **从手工到自动化**：多条命令、定时发送、命令 DSL、自动应答、触发告警、脚本控制台、宏录制、序列测试与 JUnit 报告。
 - **面向设备协议**：多种校验（含 CRC / Modbus 等）、Modbus 主从机 / 扫描 / TCP↔RTU 网关、寄存器与位域、结构化记录、波形图与 I/O Graph。
@@ -30,7 +30,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 | 能力 | 说明 |
 |------|------|
-| 连接类型 | Serial、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环）、BLE（Windows） |
+| 连接类型 | Serial、RTT（SEGGER J-Link）、UDP、UDP 组播、TCP Server / Client、Virtual（无硬件回环）、BLE（Windows） |
 | 显示与检索 | 文本 / HEX / HEX 转储 / 数值；终端模式；关键字与协议高亮；搜索、书签 |
 | 协议与校验 | Modbus 主从 / 扫描 / TCP↔RTU 网关；CRC 等校验选项；寄存器 / 位域 |
 | 日志与取证 | 实时日志、`.ctrec` 录制回放；**TCP Client / TCP Server（含多客户端）**、**UDP（指定远程）**、**UDP 组播** 可导出 `.pcap` / `.pcapng`（合成报文，非网卡抓包；串口等仍用 `.ctrec`） |
@@ -41,7 +41,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 1. 打开 [Releases](https://github.com/heropml/SerialTool/releases)，下载 Windows 安装包 / 便携版、macOS `.dmg` 或 Linux `.run`。
 2. Windows：启动 `CommTool.exe`（便携版请保留整个 `dist\CommTool\` 目录）。
-3. 在「类型」选择 **Serial**、目标网络协议、**Virtual** 或 **BLE**，填参数后连接。
+3. 在「类型」选择 **Serial**、**RTT**、目标网络协议、**Virtual** 或 **BLE**，填参数后连接。
 4. 在右侧收发区查看数据；HEX、校验、定时发送、日志等在左侧对应开关中开启。
 
 首次进入终端时也可直接点数据区上方的“虚拟回环演示 / 打开示例工程 / 继续最近工程”。帧构造器支持保存自己的帧模板，录制回放下拉会索引最近 `.ctrec`，工程文件会携带帧模板与操作面板资源。
@@ -55,7 +55,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 ## 目录
 
 - **1. [功能总览](#1-功能总览)**
-  - 1.1 [连接设置（串口 / 网络）](#11-连接设置串口--网络)
+  - 1.1 [连接设置（串口 / RTT / 网络）](#11-连接设置串口--rtt--网络)
   - 1.2 [数据区](#12-数据区接收--发送日志)
   - 1.3 [发送区](#13-发送区)
   - 1.4 [界面](#14-界面)
@@ -96,9 +96,9 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 
 ## 1. 功能总览
 
-### 1.1 连接设置（串口 / 网络）
+### 1.1 连接设置（串口 / RTT / 网络）
 
-- **类型**下拉：**Serial（串口）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client / Virtual（虚拟）/ BLE（Windows）**（新装默认 Serial）
+- **类型**下拉：**Serial（串口）/ RTT（SEGGER J-Link）/ UDP / UDP Multicast（组播）/ TCP Server / TCP Client / Virtual（虚拟）/ BLE（Windows）**（新装默认 Serial）
 - **串口（Serial）**：端口（下拉本机串口 + ⟳ 刷新）+ 波特率（可编辑，1200~2000000）+ 数据位（5/6/7/8）+ 校验位（None/Even/Odd/Mark/Space）+ 停止位（1/1.5/2）→「打开串口」；后台线程定时扫描串口热插拔
 - 网络类型字段随协议动态显隐：
   - **UDP**：本地IP（下拉本机网卡，0.0.0.0=所有）+ 本地端口 +「指定远程」开关（关=回复最近对端，开=固定发往远程IP/端口）；关闭时收到数据自动把灰显的远程框刷成最近对端地址（显示当前对端，打开开关即预填）
@@ -106,9 +106,10 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - **TCP Server**：本地IP + 本地端口 →「开始监听」；连入后「目标」下拉可选某客户端或「全部」广播
   - **TCP Client**：远程IP + 远程端口 →「连接」
 - **Virtual（虚拟）**：不接硬件即可开连接；可开「回环」；用于无设备验证规则/脚本，以及 `.ctrec` 回放注入
+- **RTT（SEGGER J-Link）**：选择目标器件、SWD/JTAG、速度（kHz）和通道；可填控制块精确地址，或用 `起点+范围` 搜索 RAM。器件侧栏只保留常用项，点「…」可在完整 J-Link 目录中筛选、排序并回填。多把探针时可填序列号；「自动」优先重试上次成功探针，失败才选系统默认探针；显式序列号绝不改选其他探针。需安装 `pylink-square` 与 SEGGER J-Link 驱动；连接后若控制块尚未出现会提示等待而不会断开。
 - **BLE（Windows）**：点「扫描」弹出窗口选择附近低功耗设备，按 UART 风格 Notify/Write 收发（FFF0 / FFE0 / Nordic UART / Microchip UART / Custom 模板，可对调写入与通知 UUID）。经典蓝牙 SPP 仍走 Serial COM。不支持 macOS/Linux BLE，也无 BLE PCAP
 - 动作按钮随协议/状态：打开/关闭、开始监听/停止监听、连接/断开；连接后整卡片锁定变灰
-- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，BLE 走 Bleak，Virtual 为进程内注入
+- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，RTT 走 pylink-square + SEGGER J-Link 驱动，BLE 走 Bleak，Virtual 为进程内注入
 
 ### 1.2 数据区（接收 + 发送日志）
 
@@ -187,7 +188,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
   - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-  - 右下：版本号 `v1.7.4`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+- 右下：版本号 `v1.8.0`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -287,11 +288,11 @@ CommTool/
 ├── src/                    Python 源码（领域分包，import 形如 from transport.serial_io import …）
 │   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
 │   ├── main_window.py      主窗口 CommTool 主体类（最大模块，仍留在 src 根）
-│   ├── version.py          版本号单点真源 (__version__ = "1.7.4")
+│   ├── version.py          版本号单点真源 (__version__ = "1.8.0")
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标）
-│   ├── transport/          连接层：serial_io / net_io / ble_io / virtual_io
+│   ├── transport/          连接层：serial_io / rtt_io / net_io / ble_io / virtual_io
 │   ├── protocol/           组帧与显示：binproto / convert / ansi / frame_stream
 │   ├── modbus/             Modbus 主从/网关 + 字节桥接引擎
 │   ├── sessions/           多会话模型与 host（包名 sessions，避免挡住模块 session）
@@ -370,6 +371,7 @@ scripts\build.bat
 py -3 -m PyInstaller --noconfirm --clean --windowed ^
     --name CommTool --icon assets\icon.ico ^
     --collect-all bleak ^
+    --collect-all pylink ^
     src\main.py
 ```
 
@@ -377,7 +379,7 @@ py -3 -m PyInstaller --noconfirm --clean --windowed ^
 
 > ⚠️ **没有 `--add-data icon.ico`**：图标已经 base64 编码在 `src\icon_data.py` 里（被 `app_icon.py` import），运行时不读取外部文件。`--icon assets\icon.ico` 是 PyInstaller 把图标嵌入 exe 文件本身的 Windows 资源段（让资源管理器里 exe 显示图标），跟运行时窗口图标是两回事。
 
-`build.bat` 加了 20+ 个 `--exclude-module` 排除不用的 Qt 模块（WebEngine、Multimedia、QtBluetooth、Quick/QML、Sql 等），把打包体积从默认 ~150 MB 砍到 **~98 MB**。BLE 走运行时动态导入的 Bleak，Windows 包必须带 `--collect-all bleak`；这与排除 QtBluetooth 不冲突。
+`build.bat` 加了 20+ 个 `--exclude-module` 排除不用的 Qt 模块（WebEngine、Multimedia、QtBluetooth、Quick/QML、Sql 等），把打包体积从默认 ~150 MB 砍到 **~98 MB**。BLE 走运行时动态导入的 Bleak，RTT 走 pylink-square，Windows 包必须带 `--collect-all bleak` 和 `--collect-all pylink`；这与排除 QtBluetooth 不冲突。
 
 ### 5.2 单文件版（onefile）
 
@@ -394,6 +396,7 @@ py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
     --name CommTool_onefile_v1.4.2 --icon assets\icon.ico ^
     --distpath dist_onefile --workpath build_onefile ^
     --collect-all bleak ^
+    --collect-all pylink ^
     src\main.py
 ```
 
@@ -418,8 +421,8 @@ scripts\build_installer.bat
 官方安装包（x86_64，建议在 Ubuntu 18.04 或同级 glibc 上构建，以便 20.04/22.04/麒麟也能跑）：
 
 ```bash
-chmod +x CommTool_Setup_v1.7.4_linux_x86_64.run
-./CommTool_Setup_v1.7.4_linux_x86_64.run
+chmod +x CommTool_Setup_v<version>_linux_x86_64.run
+./CommTool_Setup_v<version>_linux_x86_64.run
 ```
 
 默认装到 `~/.local/opt/CommTool`（无需 sudo），并写入应用菜单与桌面图标。卸载：`~/.local/opt/CommTool/uninstall.sh`。用户向安装步骤见 [`docs/使用说明.md` §9](docs/使用说明.md#9-安装与系统要求) / [USAGE](docs/USAGE.md#install-windows--macos--linux) / [`docs/使用說明.md` §6](docs/使用說明.md#6-安裝與系統需求)。
@@ -473,6 +476,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 |----|------|------|
 | PyQt5 | ≥ 5.15 | GUI 框架 + 网络（QtNetwork，随 PyQt5 自带，无需单独装） |
 | pyserial | ≥ 3.5 | 串口收发（Serial 连接类型） |
+| pylink-square | ≥ 1.2 | SEGGER J-Link RTT（另需安装 J-Link 驱动） |
 | pyinstaller | ≥ 6.0 | 打包 exe（仅开发时需要） |
 | Pillow | ≥ 10.0 | 图标转换（仅 `icon_convert.py` 用）|
 
@@ -662,6 +666,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
 - **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。Windows / macOS / Linux x86_64 已发。1668 passed / 11 skipped / 295 subtests。
 - **v67 (v1.7.4)**: **正式版** — **更新清单校验 SHA-256/大小**（缺摘要只给人工下载）；**Webhook 默认仅公网 HTTPS 并钉死解析 IP**；自动应答冷却不再误吞首次命中；滚动诊断日志与脱敏诊断包；空白终端快速开始、帧模板与录制会话索引。Windows / macOS / Linux x86_64。
+- **v68 (v1.8.0)**: **正式版** — **SEGGER J-Link RTT**（器件目录选择窗、SWD/JTAG、速度/通道/控制块搜索、可选复位、探针 SN 选择与安全自动回退）；DLL 访问串行化、控制块等待提示、RTT 运行期错误反馈；三语文档与示例工程同步。Windows 安装版/单文件版先发，macOS/Linux 资产后续追加同一 tag。
 
 ---
 

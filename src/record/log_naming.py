@@ -122,6 +122,8 @@ def conn_token(proto, cfg, serial_name="Serial", tcp_client_name="TCP Client"):
         return "%s_%s" % (cfg[1], cfg[2])
     if proto == "BLE" and cfg and len(cfg) > 1 and cfg[1]:
         return str(cfg[1])
+    if proto == "RTT" and cfg and len(cfg) > 1 and cfg[1]:
+        return str(cfg[1])
     if proto:
         return str(proto)
     return ""

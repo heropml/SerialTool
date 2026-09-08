@@ -258,6 +258,57 @@ TR = {
         "ble_scan_stopped": "已停止扫描",
         "ble_scan_left_page": "已停止扫描（离开本页）",
         "ble_cancelled": "已取消连接",
+        "rtt_device": "目标器件",
+        "rtt_device_tip": "J-Link 器件名（如 nRF52840_xxAA、STM32F103C8），也可用内核通配名（Cortex-M4）。列表来自已安装的 J-Link 驱动，与 J-Link RTT Viewer 同源；可直接输入关键字过滤。RTT 经 J-Link 调试器读写目标内存收发数据，不占用串口。",
+        "rtt_dev_pick_tip": "浏览 J-Link 驱动里的完整器件表（上万项，可搜索）。",
+        "rtt_dev_title": "选择目标器件",
+        "rtt_dev_need_close": "请先关闭连接，再更换目标器件",
+        "rtt_dev_search_ph": "搜索 厂商 / 器件 / 内核，空格分隔多个关键字（如：st h743）",
+        "rtt_dev_col_name": "器件",
+        "rtt_dev_col_vendor": "厂商",
+        "rtt_dev_col_core": "内核",
+        "rtt_dev_col_flash": "Flash",
+        "rtt_dev_col_ram": "RAM",
+        "rtt_dev_all_vendors": "全部厂商",
+        "rtt_dev_all_cores": "全部内核",
+        "rtt_dev_reset": "重置筛选",
+        "rtt_dev_use": "使用",
+        "rtt_dev_count": "显示 {shown} / 共 {total} 项",
+        "rtt_dev_driver": "驱动：{path}",
+        "rtt_dev_driver_missing": "未找到 J-Link 驱动（JLinkARM DLL）——列表为内置候选。点右侧指定安装目录。",
+        "rtt_dev_driver_change": "更改驱动…",
+        "rtt_dev_driver_pick": "选择 J-Link 安装目录",
+        "rtt_dev_driver_bad": "该目录里没找到 J-Link 驱动（JLinkARM DLL）",
+        "rtt_probe": "调试器",
+        "rtt_probe_auto": "自动",
+        "rtt_probe_tip": "插了多把 J-Link 时按序列号指定用哪一把；「自动」= 用系统枚举到的第一把。",
+        "rtt_reset": "连接复位",
+        "rtt_reset_tip": "打开连接时复位目标并让它继续运行（不 halt）。目标停在调试暂停状态、或上一次调试会话留下的断点里收不到 RTT 数据时打开。默认关，避免打断正在运行的程序。",
+        "rtt_interface": "调试接口",
+        "rtt_speed": "速率",
+        "rtt_speed_tip": "J-Link 与目标之间的调试接口速率。下拉里是 J-Link 真正生效的档位（48000 kHz 的整数分频），也可以直接输入 5~50000 之间的值。连不稳、线长或目标主频低时调低。",
+        "rtt_address": "地址",
+        "rtt_address_ph": "留空自动，0x… 或 0x…+范围",
+        "rtt_address_tip": "三种写法：留空 = J-Link 自动在 RAM 里搜索 RTT 控制块；填 0x20000000 = 控制块的精确地址（最快）；填 0x20000000+0x40000（或 0x20000000..0x20040000）= 在这段 RAM 里自己搜 SEGGER RTT 标志，和 RTT 类工具「填 RAM 起点」的习惯一致。",
+        "rtt_channel": "通道",
+        "rtt_channel_tip": "RTT 通道号（与固件里 SEGGER_RTT_ConfigUpBuffer / ConfigDownBuffer 的编号对应，通常为 0）。",
+        "rtt_connected": "● RTT {dev} · 通道 {ch}",
+        "rtt_waiting_cb": "● RTT {dev} · 等待控制块…",
+        "rtt_cancelled": "已取消连接",
+        "rtt_notice_waiting_cb": "已连上目标，但还没找到 RTT 控制块：固件要跑到 SEGGER_RTT 初始化之后才会出现，仍在等待（可在「RTT 地址」填地址或搜索范围加快）",
+        "rtt_err_no_device": "请填写 J-Link 器件名（如 nRF52840_xxAA / Cortex-M4）",
+        "rtt_err_bad_speed": "速率无效 (5-50000 kHz)",
+        "rtt_err_bad_address": "RTT 地址无效（十进制或 0x 十六进制）",
+        "rtt_err_bad_channel": "通道号无效 (0-15)",
+        "rtt_err_no_pylink": "未安装 RTT 组件（pylink）",
+        "rtt_err_no_jlink": "未检测到 J-Link 驱动，请先安装 SEGGER J-Link 软件包；若已安装在非默认位置，点「目标器件」右侧的「…」进选择窗指定安装目录",
+        "rtt_err_no_probe": "未找到 J-Link 调试器，或调试器被其它程序占用",
+        "rtt_err_bad_device": "J-Link 不认识该器件名，请核对后重试",
+        "rtt_err_no_rtt": "未找到 RTT 控制块：请确认固件已启用 SEGGER_RTT 输出，或在「RTT 地址」手动填写",
+        "rtt_err_no_target": "目标无应答：请检查是否上电、调试接口（SWD/JTAG）与接线是否正确、复位脚是否被拉住",
+        "rtt_err_busy": "上一个 RTT 连接还在收尾（J-Link 驱动同一时刻只能被一个连接使用），请稍候重试",
+        "rtt_err_gone": "J-Link 调试器连接已断开",
+        "rtt_err_timeout": "连接超时（20s 无响应）：J-Link 可能被其它程序占用（如 J-Link RTT Viewer / IDE 调试会话），请全部关闭后重试；或目标未上电 / 接口模式不对",
         "net_connecting": "● 连接中…",
         "net_listening": "● {proto} 监听 {addr}",
         "net_connected": "● 已连接 {addr}",
@@ -1458,10 +1509,11 @@ TR = {
         "plot_help_btn": "使用说明",
         "plot_help_title": "数据波形图 — 使用说明",
         "plot_help": (
-            "<b>用法</b>：从 RX 数据里解析数值，按通道实时绘曲线。三种解析模式按设备协议选——文本流走「分隔符/正则」，二进制 HEX 帧走「HEX 字节字段」。<br>"
+            "<b>用法</b>：从 RX 数据里解析数值，按通道实时绘曲线。四种解析模式按设备协议选——文本流走「分隔符/正则」，二进制 HEX 帧走「HEX 字节字段」，RTT 调波走「DLOG」。<br>"
             "<b>分隔符模式</b>：逐行按选定分隔符切，每列 = 一条曲线。<br>"
             "<b>正则模式</b>：每行用正则匹配，每个 <b>捕获组</b> = 一条曲线（非捕获组用 <code>(?:…)</code>）。<br>"
             "<b>HEX 字节字段模式</b>：把每个收到包视作一帧（按数据区「时间分包」切），按「<code>名称=偏移:类型</code>」从指定偏移取数。可选「帧头」过滤：填 hex 帧头只解析以它开头的帧。<br>"
+            "<b>DLOG 模式</b>（rtt_t2 兼容）：只解析 <code>TAG=DLOG M*<i>n</i>(v1,v2,…)</code> 行，括号内每个数 = 一条曲线（DLOG1/DLOG2/…），其余行（普通日志）全部忽略——固件边打日志边吐波形数据时零配置直接用。<br>"
             "<br><b>例 1（分隔符模式 — CSV 文本流）：</b>"
             "<pre style='margin:2px 0 2px 16px'>设备输出：<code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
             "模式 = 分隔符   分隔符 = 逗号\n"
@@ -1483,15 +1535,20 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>每帧 12 字节：3 个 f32le 浮点（X/Y/Z 加速度）\n"
             "模式 = HEX 字节字段   字段 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 条加速度曲线，每帧一个采样点</pre>"
+            "<b>例 6（DLOG 模式 — rtt_t2 波形协议，RTT 常用）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>固件输出：<code>TAG=DLOG M*1(12,34,56)\\n</code>（SEGGER_RTT_printf(0,\"TAG=DLOG M*1(%d,%d,%d)\\n\",a,b,c)）\n"
+            "模式 = DLOG（无需任何配置）\n"
+            "→ 3 条曲线（DLOG1/DLOG2/DLOG3）；同一行里混着的普通日志行不会被画进去</pre>"
             "<br><b>X 轴</b>可切「样本序号」或「时间」；<b>窗口</b>下拉控制最多保留点数（超出滚动丢弃，长跑不爆内存）；"
             "<b>视图</b>可切波形 / XY（需 ≥2 勾选通道）/ 直方图；勾选<b>双 Y 轴</b>时 CH1 走左轴、其余勾选通道走右轴；"
-            "鼠标十字光标下方显示各可见通道的 count/min/max/mean。右上角<b>暂停/清空/导出 CSV</b>。<br>"
+            "鼠标十字光标下方显示各可见通道的 count/min/max/mean/std（标准差）。右上角<b>暂停/清空/导出 CSV</b>。<br>"
             "<b>⚠️ HEX 字节字段模式按接收块分帧</b>（一块=一帧，不拆粘包）。串口/TCP 请配合数据区<b>「时间分包」</b>让每帧单独成块。"
         ),
         "plot_mode": "解析",
         "plot_mode_delim": "分隔符",
         "plot_mode_regex": "正则",
         "plot_mode_hex": "HEX 字节",
+        "plot_mode_dlog": "DLOG",
         "plot_fields_ph": "二进制字段 偏移:类型，如 3:u8, 9:i16le（每包当一帧）",
         "plot_fields_bad": "字段格式错误，应为 偏移:类型，如 3:u8,9:i16le",
         "plot_header_ph": "帧头 hex 可空，如 54",
@@ -1661,7 +1718,7 @@ TR = {
         "plot_export": "导出 CSV",
         "plot_export_title": "导出波形数据",
         "plot_no_data": "暂无数据可导出",
-        "plot_hint": "逐行解析 RX 文本里的数值：分隔符模式每列一条曲线，正则模式每个捕获组一条曲线；绘图 1Hz 之上 ~30FPS 刷新，不随收包频率。\n⚠️ HEX 字节字段模式按接收块分帧（一块=一帧，不拆粘包），串口/TCP 请配合数据区「时间分包」。",
+        "plot_hint": "逐行解析 RX 文本里的数值：分隔符模式每列一条曲线，正则模式每个捕获组一条曲线，DLOG 模式只画 TAG=DLOG M*n(…) 行（rtt_t2 协议）；绘图 1Hz 之上 ~30FPS 刷新，不随收包频率。\n⚠️ HEX 字节字段模式按接收块分帧（一块=一帧，不拆粘包），串口/TCP 请配合数据区「时间分包」。",
         "dlg_save_data": "保存接收数据",
         "dlg_log_path": "选择日志保存路径（文件名可用 %date %time %port 等变量）",
         "log_vars_tip": "文件名可用变量（大小写不限）：\n  %date 日期 20260723 · %time 时刻 143005 · %datetime 两者\n  %port 连接标识（COM3 / IP_端口） · %n 分包序号 001\n含日期变量时跨过午夜会自动开新文件，按天归档；序号归零重新计。",
@@ -2047,6 +2104,57 @@ TR = {
         "ble_scan_stopped": "Scan stopped",
         "ble_scan_left_page": "Scan stopped (left this page)",
         "ble_cancelled": "Connect cancelled",
+        "rtt_device": "Device",
+        "rtt_device_tip": "J-Link device name (e.g. nRF52840_xxAA, STM32F103C8) or a core wildcard (Cortex-M4). The list comes from the installed J-Link driver (same source as J-Link RTT Viewer); type to filter. RTT exchanges data through the J-Link probe by reading/writing target memory — no serial port used.",
+        "rtt_dev_pick_tip": "Browse the J-Link driver's full device table (thousands of entries, searchable).",
+        "rtt_dev_title": "Select target device",
+        "rtt_dev_need_close": "Close the connection before changing the target device",
+        "rtt_dev_search_ph": "Search vendor / device / core, space-separated terms (e.g. st h743)",
+        "rtt_dev_col_name": "Device",
+        "rtt_dev_col_vendor": "Vendor",
+        "rtt_dev_col_core": "Core",
+        "rtt_dev_col_flash": "Flash",
+        "rtt_dev_col_ram": "RAM",
+        "rtt_dev_all_vendors": "All vendors",
+        "rtt_dev_all_cores": "All cores",
+        "rtt_dev_reset": "Reset filters",
+        "rtt_dev_use": "Use",
+        "rtt_dev_count": "Showing {shown} of {total}",
+        "rtt_dev_driver": "Driver: {path}",
+        "rtt_dev_driver_missing": "No J-Link driver (JLinkARM DLL) found - showing the built-in fallback list. Point at the install directory on the right.",
+        "rtt_dev_driver_change": "Change driver...",
+        "rtt_dev_driver_pick": "Select the J-Link installation directory",
+        "rtt_dev_driver_bad": "No J-Link driver (JLinkARM DLL) in that directory",
+        "rtt_probe": "Probe",
+        "rtt_probe_auto": "Auto",
+        "rtt_probe_tip": "Pick a specific J-Link by serial number when several are plugged in; Auto uses the first one enumerated.",
+        "rtt_reset": "Reset",
+        "rtt_reset_tip": "Reset the target and let it run (no halt) when opening. Turn on if the target is sitting halted from a previous debug session and no RTT data arrives. Off by default so a running program is not interrupted.",
+        "rtt_interface": "Interface",
+        "rtt_speed": "Speed",
+        "rtt_speed_tip": "Debug interface speed between J-Link and the target. The dropdown lists the steps J-Link actually uses (integer divisions of 48000 kHz); any value from 5 to 50000 can be typed in. Lower it for long wires, a slow target clock, or an unstable link.",
+        "rtt_address": "RTT addr",
+        "rtt_address_ph": "Auto, 0x… or 0x…+size",
+        "rtt_address_tip": "Three forms: empty = let J-Link scan RAM for the RTT control block; 0x20000000 = the exact control-block address (fastest); 0x20000000+0x40000 (or 0x20000000..0x20040000) = search that RAM range for the SEGGER RTT marker, matching tools where the address means a RAM start.",
+        "rtt_channel": "Channel",
+        "rtt_channel_tip": "RTT channel number (matches SEGGER_RTT_ConfigUpBuffer / ConfigDownBuffer IDs in firmware; usually 0).",
+        "rtt_connected": "● RTT {dev} · ch{ch}",
+        "rtt_waiting_cb": "● RTT {dev} · waiting for control block…",
+        "rtt_cancelled": "Connection cancelled",
+        "rtt_notice_waiting_cb": "Target connected, RTT control block not found yet: it only appears once the firmware runs SEGGER_RTT init. Still waiting (set an address or a search range under RTT address to speed this up).",
+        "rtt_err_no_device": "Enter the J-Link device name (e.g. nRF52840_xxAA / Cortex-M4)",
+        "rtt_err_bad_speed": "Invalid speed (5-50000 kHz)",
+        "rtt_err_bad_address": "Invalid RTT address (decimal or 0x hex)",
+        "rtt_err_bad_channel": "Invalid channel (0-15)",
+        "rtt_err_no_pylink": "RTT component (pylink) not installed",
+        "rtt_err_no_jlink": "J-Link driver not found. Install the SEGGER J-Link software package, or if it is already installed elsewhere, open the device picker (the … button next to Device) and point at its install directory",
+        "rtt_err_no_probe": "No J-Link probe found, or it is in use by another program",
+        "rtt_err_bad_device": "Device name not recognized by J-Link; check and retry",
+        "rtt_err_no_rtt": "RTT control block not found: make sure firmware uses SEGGER_RTT, or fill in the RTT address manually",
+        "rtt_err_no_target": "No response from target: check power, the debug interface (SWD/JTAG) and wiring, and whether reset is held low",
+        "rtt_err_busy": "The previous RTT connection is still shutting down (the J-Link driver serves one connection at a time) — retry in a moment",
+        "rtt_err_gone": "J-Link probe disconnected",
+        "rtt_err_timeout": "Connect timeout (no response in 20s): the J-Link may be held by another program (e.g. J-Link RTT Viewer / an IDE debug session) — close them and retry; or the target is unpowered / wrong interface mode",
         "net_connecting": "● Connecting…",
         "net_listening": "● {proto} listening {addr}",
         "net_connected": "● Connected {addr}",
@@ -3260,10 +3368,11 @@ TR = {
         "plot_help_btn": "Help",
         "plot_help_title": "Data Plot — Help",
         "plot_help": (
-            "<b>How it works</b>: parse numbers out of RX data and plot per-channel curves in real-time. Three parse modes — pick by protocol: text streams → delimiter/regex, binary HEX frames → HEX byte field.<br>"
+            "<b>How it works</b>: parse numbers out of RX data and plot per-channel curves in real-time. Four parse modes — pick by protocol: text streams → delimiter/regex, binary HEX frames → HEX byte field, RTT wave streams → DLOG.<br>"
             "<b>Delimiter mode</b>: split each line by the chosen separator; one column = one curve.<br>"
             "<b>Regex mode</b>: match each line; each <b>capture group</b> = one curve (use <code>(?:…)</code> for non-capturing).<br>"
             "<b>HEX byte field mode</b>: each received block = one frame (split by data area 'Packet Split'); fields use <code>name=offset:type</code>. Optional <b>Header</b> filter: fill hex header to only parse frames starting with it.<br>"
+            "<b>DLOG mode</b> (rtt_t2 compatible): only lines of the form <code>TAG=DLOG M*<i>n</i>(v1,v2,…)</code> are parsed; each value in the parentheses = one curve (DLOG1/DLOG2/…). All other lines (plain logs) are ignored — zero-config when firmware interleaves logs with wave data.<br>"
             "<br><b>Example 1 (Delimiter — CSV text stream):</b>"
             "<pre style='margin:2px 0 2px 16px'>Device output: <code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
             "Mode = Delimiter   Sep = comma\n"
@@ -3285,15 +3394,20 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>12-byte frame: 3× f32le (X/Y/Z accel)\n"
             "Mode = HEX byte field   Fields = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 acceleration curves, one sample per frame</pre>"
+            "<b>Example 6 (DLOG — rtt_t2 wave protocol, common over RTT):</b>"
+            "<pre style='margin:2px 0 2px 16px'>Firmware output: <code>TAG=DLOG M*1(12,34,56)\\n</code> (SEGGER_RTT_printf(0,\"TAG=DLOG M*1(%d,%d,%d)\\n\",a,b,c))\n"
+            "Mode = DLOG (no configuration needed)\n"
+            "→ 3 curves (DLOG1/DLOG2/DLOG3); interleaved plain-log lines are not plotted</pre>"
             "<br><b>X axis</b> can switch to 'sample index' or 'time'; <b>Window</b> caps max points (older drops, prevents memory blow-up); "
             "<b>View</b> switches Waveform / XY (≥2 checked channels) / Histogram; <b>Dual Y</b> keeps CH1 on the left axis and later checked channels on the right; "
-            "crosshair cursor shows count/min/max/mean for visible channels. <b>Pause/Clear/Export CSV</b> on the top-right.<br>"
+            "crosshair cursor shows count/min/max/mean/std for visible channels. <b>Pause/Clear/Export CSV</b> on the top-right.<br>"
             "<b>⚠️ HEX byte field mode splits per received block</b> (one block = one frame, no de-framing). For serial/TCP, pair with data area's <b>'Packet Split'</b>."
         ),
         "plot_mode": "Parse",
         "plot_mode_delim": "Delimiter",
         "plot_mode_regex": "Regex",
         "plot_mode_hex": "HEX bytes",
+        "plot_mode_dlog": "DLOG",
         "plot_fields_ph": "binary fields offset:type, e.g. 3:u8, 9:i16le (one frame per packet)",
         "plot_fields_bad": "Bad field spec; use offset:type, e.g. 3:u8,9:i16le",
         "plot_header_ph": "frame header hex, opt., e.g. 54",
@@ -3463,7 +3577,7 @@ TR = {
         "plot_export": "Export CSV",
         "plot_export_title": "Export plot data",
         "plot_no_data": "No data to export",
-        "plot_hint": "Parses numbers from RX text line by line: delimiter mode = one curve per column, regex mode = one curve per capture group; redraws at ~30 FPS independent of packet rate.\n⚠️ HEX byte-field mode splits frames per received block (one block = one frame, no de-framing); for serial/TCP, pair it with 'Packet Split' in the data area.",
+        "plot_hint": "Parses numbers from RX text line by line: delimiter mode = one curve per column, regex mode = one curve per capture group, DLOG mode plots only TAG=DLOG M*n(…) lines (rtt_t2 protocol); redraws at ~30 FPS independent of packet rate.\n⚠️ HEX byte-field mode splits frames per received block (one block = one frame, no de-framing); for serial/TCP, pair it with 'Packet Split' in the data area.",
         "dlg_save_data": "Save received data",
         "dlg_log_path": "Choose log file path (name may use %date %time %port)",
         "log_vars_tip": "Variables usable in the file name (case-insensitive):\n  %date 20260723 · %time 143005 · %datetime both\n  %port connection id (COM3 / IP_port) · %n split index 001\nWith a date variable the log rolls over at midnight, one file per day; the index restarts.",
@@ -3848,6 +3962,57 @@ TR = {
         "ble_scan_stopped": "已停止掃描",
         "ble_scan_left_page": "已停止掃描（離開本頁）",
         "ble_cancelled": "已取消連線",
+        "rtt_device": "目標器件",
+        "rtt_device_tip": "J-Link 器件名（如 nRF52840_xxAA、STM32F103C8），也可用核心通配名（Cortex-M4）。清單來自已安裝的 J-Link 驅動，與 J-Link RTT Viewer 同源；可直接輸入關鍵字過濾。RTT 經 J-Link 除錯器讀寫目標記憶體收發資料，不占用串口。",
+        "rtt_dev_pick_tip": "瀏覽 J-Link 驅動裡的完整器件表（上萬項，可搜尋）。",
+        "rtt_dev_title": "選擇目標器件",
+        "rtt_dev_need_close": "請先關閉連線，再更換目標器件",
+        "rtt_dev_search_ph": "搜尋 廠商 / 器件 / 核心，空格分隔多個關鍵字（如：st h743）",
+        "rtt_dev_col_name": "器件",
+        "rtt_dev_col_vendor": "廠商",
+        "rtt_dev_col_core": "核心",
+        "rtt_dev_col_flash": "Flash",
+        "rtt_dev_col_ram": "RAM",
+        "rtt_dev_all_vendors": "全部廠商",
+        "rtt_dev_all_cores": "全部核心",
+        "rtt_dev_reset": "重置篩選",
+        "rtt_dev_use": "使用",
+        "rtt_dev_count": "顯示 {shown} / 共 {total} 項",
+        "rtt_dev_driver": "驅動：{path}",
+        "rtt_dev_driver_missing": "未找到 J-Link 驅動（JLinkARM DLL）——清單為內建候選。點右側指定安裝目錄。",
+        "rtt_dev_driver_change": "更改驅動…",
+        "rtt_dev_driver_pick": "選擇 J-Link 安裝目錄",
+        "rtt_dev_driver_bad": "該目錄裡沒找到 J-Link 驅動（JLinkARM DLL）",
+        "rtt_probe": "除錯器",
+        "rtt_probe_auto": "自動",
+        "rtt_probe_tip": "插了多把 J-Link 時依序號指定用哪一把；「自動」= 用系統列舉到的第一把。",
+        "rtt_reset": "連線重置",
+        "rtt_reset_tip": "開啟連線時重置目標並讓它繼續執行（不 halt）。目標停在除錯暫停狀態、或上一次除錯階段留下的中斷點裡收不到 RTT 資料時開啟。預設關閉，避免打斷正在執行的程式。",
+        "rtt_interface": "除錯介面",
+        "rtt_speed": "速率",
+        "rtt_speed_tip": "J-Link 與目標之間的除錯介面速率。下拉裡是 J-Link 真正生效的檔位（48000 kHz 的整數分頻），也可以直接輸入 5~50000 之間的值。連不穩、線長或目標主頻低時調低。",
+        "rtt_address": "位址",
+        "rtt_address_ph": "留空自動，0x… 或 0x…+範圍",
+        "rtt_address_tip": "三種寫法：留空 = J-Link 自動在 RAM 裡搜尋 RTT 控制塊；填 0x20000000 = 控制塊的精確位址（最快）；填 0x20000000+0x40000（或 0x20000000..0x20040000）= 在這段 RAM 裡自行搜尋 SEGGER RTT 標誌，與 RTT 類工具「填 RAM 起點」的習慣一致。",
+        "rtt_channel": "通道",
+        "rtt_channel_tip": "RTT 通道號（與韌體裡 SEGGER_RTT_ConfigUpBuffer / ConfigDownBuffer 的編號對應，通常為 0）。",
+        "rtt_connected": "● RTT {dev} · 通道 {ch}",
+        "rtt_waiting_cb": "● RTT {dev} · 等待控制塊…",
+        "rtt_cancelled": "已取消連線",
+        "rtt_notice_waiting_cb": "已連上目標，但還沒找到 RTT 控制塊：韌體要跑到 SEGGER_RTT 初始化之後才會出現，仍在等待（可在「RTT 位址」填位址或搜尋範圍加快）",
+        "rtt_err_no_device": "請填寫 J-Link 器件名（如 nRF52840_xxAA / Cortex-M4）",
+        "rtt_err_bad_speed": "速率無效 (5-50000 kHz)",
+        "rtt_err_bad_address": "RTT 位址無效（十進制或 0x 十六進制）",
+        "rtt_err_bad_channel": "通道號無效 (0-15)",
+        "rtt_err_no_pylink": "未安裝 RTT 元件（pylink）",
+        "rtt_err_no_jlink": "未偵測到 J-Link 驅動，請先安裝 SEGGER J-Link 軟體套件；若已安裝在非預設位置，點「目標器件」右側的「…」進選擇窗指定安裝目錄",
+        "rtt_err_no_probe": "未找到 J-Link 除錯器，或除錯器被其它程式占用",
+        "rtt_err_bad_device": "J-Link 不認識該器件名，請核對後重試",
+        "rtt_err_no_rtt": "未找到 RTT 控制塊：請確認韌體已啟用 SEGGER_RTT 輸出，或在「RTT 位址」手動填寫",
+        "rtt_err_no_target": "目標無回應：請檢查是否上電、除錯介面（SWD/JTAG）與接線是否正確、重置腳是否被拉住",
+        "rtt_err_busy": "上一個 RTT 連線還在收尾（J-Link 驅動同一時刻只能被一個連線使用），請稍候重試",
+        "rtt_err_gone": "J-Link 除錯器連線已斷開",
+        "rtt_err_timeout": "連線逾時（20s 無回應）：J-Link 可能被其它程式占用（如 J-Link RTT Viewer / IDE 除錯會話），請全部關閉後重試；或目標未上電 / 介面模式不對",
         "net_connecting": "● 連線中…",
         "net_listening": "● {proto} 監聽 {addr}",
         "net_connected": "● 已連線 {addr}",
@@ -5048,10 +5213,11 @@ TR = {
         "plot_help_btn": "使用說明",
         "plot_help_title": "數據波形圖 — 使用說明",
         "plot_help": (
-            "<b>用法</b>：從 RX 資料裡解析數值，按通道即時繪曲線。三種解析模式按裝置協議選——文字流走「分隔符/正則」，二進位 HEX 幀走「HEX 位元組欄位」。<br>"
+            "<b>用法</b>：從 RX 資料裡解析數值，按通道即時繪曲線。四種解析模式按裝置協議選——文字流走「分隔符/正則」，二進位 HEX 幀走「HEX 位元組欄位」，RTT 調波走「DLOG」。<br>"
             "<b>分隔符模式</b>：逐行按選定分隔符切，每列 = 一條曲線。<br>"
             "<b>正則模式</b>：每行用正則匹配，每個 <b>捕獲組</b> = 一條曲線（非捕獲組用 <code>(?:…)</code>）。<br>"
             "<b>HEX 位元組欄位模式</b>：把每個收到包視作一幀（按資料區「時間分包」切），按「<code>名稱=偏移:類型</code>」從指定偏移取數。可選「幀頭」過濾：填 hex 幀頭只解析以它開頭的幀。<br>"
+            "<b>DLOG 模式</b>（rtt_t2 相容）：只解析 <code>TAG=DLOG M*<i>n</i>(v1,v2,…)</code> 行，括號內每個數 = 一條曲線（DLOG1/DLOG2/…），其餘行（一般日誌）全部忽略——韌體邊打日誌邊吐波形資料時零配置直接用。<br>"
             "<br><b>例 1（分隔符模式 — CSV 文字流）：</b>"
             "<pre style='margin:2px 0 2px 16px'>裝置輸出：<code>1.23,4.56,7.89\\n2.34,5.67,8.90\\n…</code>\n"
             "模式 = 分隔符   分隔符 = 逗號\n"
@@ -5073,15 +5239,20 @@ TR = {
             "<pre style='margin:2px 0 2px 16px'>每幀 12 位元組：3 個 f32le 浮點（X/Y/Z 加速度）\n"
             "模式 = HEX 位元組欄位   欄位 = <code>aX=0:f32le, aY=4:f32le, aZ=8:f32le</code>\n"
             "→ 3 條加速度曲線，每幀一個取樣點</pre>"
+            "<b>例 6（DLOG 模式 — rtt_t2 波形協議，RTT 常用）：</b>"
+            "<pre style='margin:2px 0 2px 16px'>韌體輸出：<code>TAG=DLOG M*1(12,34,56)\\n</code>（SEGGER_RTT_printf(0,\"TAG=DLOG M*1(%d,%d,%d)\\n\",a,b,c)）\n"
+            "模式 = DLOG（無需任何配置）\n"
+            "→ 3 條曲線（DLOG1/DLOG2/DLOG3）；同一行裡混著的一般日誌行不會被畫進去</pre>"
             "<br><b>X 軸</b>可切「樣本序號」或「時間」；<b>視窗</b>下拉控制最多保留點數（超出捲動丟棄，長跑不爆記憶體）；"
             "<b>視圖</b>可切波形 / XY（需 ≥2 勾選通道）/ 直方圖；勾選<b>雙 Y 軸</b>時 CH1 走左軸、其餘勾選通道走右軸；"
-            "滑鼠十字游標下方顯示各可見通道的 count/min/max/mean。右上角<b>暫停/清空/匯出 CSV</b>。<br>"
+            "滑鼠十字游標下方顯示各可見通道的 count/min/max/mean/std（標準差）。右上角<b>暫停/清空/匯出 CSV</b>。<br>"
             "<b>⚠️ HEX 位元組欄位模式按接收區塊分幀</b>（一塊=一幀，不拆黏包）。串口/TCP 請配合資料區<b>「時間分包」</b>讓每幀單獨成塊。"
         ),
         "plot_mode": "解析",
         "plot_mode_delim": "分隔符",
         "plot_mode_regex": "正則",
         "plot_mode_hex": "HEX 位元組",
+        "plot_mode_dlog": "DLOG",
         "plot_fields_ph": "二進制欄位 偏移:類型，如 3:u8, 9:i16le（每包當一幀）",
         "plot_fields_bad": "欄位格式錯誤，應為 偏移:類型，如 3:u8,9:i16le",
         "plot_header_ph": "幀頭 hex 可空，如 54",
@@ -5251,7 +5422,7 @@ TR = {
         "plot_export": "匯出 CSV",
         "plot_export_title": "匯出波形數據",
         "plot_no_data": "暫無數據可匯出",
-        "plot_hint": "逐行解析 RX 文字裡的數值：分隔符模式每列一條曲線，正則模式每個擷取群組一條曲線；繪圖 ~30FPS 刷新，不隨收包頻率。\n⚠️ HEX 位元組欄位模式按接收區塊分幀（一塊=一幀，不拆黏包），串口/TCP 請配合資料區「時間分包」。",
+        "plot_hint": "逐行解析 RX 文字裡的數值：分隔符模式每列一條曲線，正則模式每個擷取群組一條曲線，DLOG 模式只畫 TAG=DLOG M*n(…) 行（rtt_t2 協議）；繪圖 ~30FPS 刷新，不隨收包頻率。\n⚠️ HEX 位元組欄位模式按接收區塊分幀（一塊=一幀，不拆黏包），串口/TCP 請配合資料區「時間分包」。",
         "dlg_save_data": "儲存接收資料",
         "dlg_log_path": "選擇日誌儲存路徑（檔名可用 %date %time %port 等變數）",
         "log_vars_tip": "檔名可用變數（不分大小寫）：\n  %date 日期 20260723 · %time 時刻 143005 · %datetime 兩者\n  %port 連線識別（COM3 / IP_連接埠） · %n 分包序號 001\n含日期變數時跨過午夜會自動開新檔，按天歸檔；序號歸零重新計。",

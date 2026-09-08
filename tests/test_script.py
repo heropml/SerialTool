@@ -5606,6 +5606,9 @@ class OfflineIntegrationTests(unittest.TestCase):
     def _virtual(self, loopback=False):
         from transport.virtual_io import PROTO_VIRTUAL
         w = _win()
+        # _win() 的 CommTool 构造先读本机 settings.ini（源码运行=仓库 src/config/），
+        # 「追加换行」等发送设置随机器状态漂移；发送路径断言前统一关掉，保证确定性。
+        w.sw_append_newline.setChecked(False)
         w.cb_proto.setCurrentText(PROTO_VIRTUAL)
         w._update_net_fields()
         w.sw_vconn_loop.setChecked(loopback, animate=False)

@@ -630,3 +630,26 @@ def test_fail_open_link_errors_only_when_was_open():
         assert len(errs) == n
     finally:
         _cleanup(conn, old)
+
+
+def test_replaced_loops_tracked_and_stopped_at_exit():
+    """get_loop() 替换掉的旧循环也必须被 _loops 跟踪，atexit 兜底能全部停掉。
+
+    回归：解释器退出时残留的 BLE daemon 线程若还阻塞在 IOCP poll，主线程
+    终结期访问已释放的完成端口 → 全量套件 100% 通过后段错误（faulthandler
+    实锤）。"""
+    from transport import ble_io
+    first = ble_io.get_loop()
+    ble_io.shutdown_loop()               # 停掉当前 → 下次 get_loop 换新
+    second = ble_io.get_loop()
+    try:
+        assert first is not second
+        assert first in ble_io._loops and second in ble_io._loops
+        ble_io._stop_all_loops_at_exit()
+        # stop() 只 join 3s；线程退出前还要排空任务+close，放宽等待
+        _wait_until(lambda: not first.is_alive() and not second.is_alive(),
+                   timeout=8.0)
+        assert not first.is_alive() and not second.is_alive()
+        assert ble_io._loops == set()
+    finally:
+        ble_io.shutdown_loop()

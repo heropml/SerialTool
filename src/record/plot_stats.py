@@ -21,27 +21,35 @@ def _finite_floats(values: Optional[Iterable]) -> List[float]:
 
 
 def series_stats(ys: Optional[Iterable]) -> dict:
-    """Return count / min / max / mean for a numeric series (empty-safe).
+    """Return count / min / max / mean / std for a numeric series (empty-safe).
 
     NaN / ±inf and non-numeric values are skipped.
-    Mean is accumulated in a normalized range so large finite samples do not
-    overflow, even when positive and negative values cancel each other.
+    Mean and variance are accumulated in a normalized range so large finite
+    samples do not overflow, even when positive and negative values cancel
+    each other. ``std`` is the population standard deviation (σ, ÷n) to match
+    rtt_t2-style wave viewers.
     """
     vals = _finite_floats(ys)
     if not vals:
-        return {"count": 0, "min": None, "max": None, "mean": None}
+        return {"count": 0, "min": None, "max": None, "mean": None, "std": None}
     scale = max(abs(v) for v in vals)
     if scale == 0.0:
         mean = 0.0
+        std = 0.0
     else:
-        mean_scaled = math.fsum(v / scale for v in vals) / len(vals)
-        # A rounding ulp must not push the final multiply above ``scale``.
+        scaled = [v / scale for v in vals]
+        mean_scaled = math.fsum(scaled) / len(vals)
         mean = max(-1.0, min(1.0, mean_scaled)) * scale
+        var_scaled = math.fsum(
+            (v - mean_scaled) * (v - mean_scaled) for v in scaled) / len(vals)
+        # 在归一化域开方后再放大：var_scaled * scale² 会先于开方溢出
+        std = math.sqrt(var_scaled) * scale
     return {
         "count": len(vals),
         "min": min(vals),
         "max": max(vals),
         "mean": mean,
+        "std": std,
     }
 
 

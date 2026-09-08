@@ -6,7 +6,7 @@ domain package that owns it and remain Qt-free whenever practical.
 
 | Area | Package | Boundary |
 |---|---|---|
-| transports | `transport/` | serial, TCP/UDP, BLE, Virtual; emits bytes/events |
+| transports | `transport/` | serial, SEGGER J-Link RTT, TCP/UDP, BLE, Virtual; emits bytes/events |
 | protocol | `protocol/` | framing, parsing, checksums, reusable frame templates |
 | automation | `automation/` | replies, triggers, sequences, scripts, action safety |
 | record | `record/` | `.ctrec`, replay, PCAP export, local session catalog |
@@ -33,6 +33,8 @@ domain package that owns it and remain Qt-free whenever practical.
 - Compatibility CI: Python 3.11 and 3.13; primary Windows tests: Python 3.12.
 - Runtime dependencies are bounded in `requirements.txt` and reproduced in CI/release
   builds through `constraints-runtime.txt`.
+- RTT uses `pylink-square`; the Python package is bundled, while the vendor J-Link
+  driver remains an explicit host prerequisite. DLL access is process-serialized.
 - Ruff, compileall, pure-logic tests, platform smoke suites, full Windows tests, and
   nightly soak/disconnect churn form the delivery gate.
 

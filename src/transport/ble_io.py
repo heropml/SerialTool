@@ -7,6 +7,7 @@ state and errors are emitted on the Qt thread that owns the QObject.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import sys
 import threading
@@ -298,7 +299,11 @@ class _BleLoop(threading.Thread):
 
     def stop(self):
         self._stopped = True
-        if self.loop is None:
+        # 等 run() 把 self.loop 建好（_ready 在赋值之后才 set）再投递 stop：
+        # start() 后立刻 stop() 时 loop 可能还没赋值，早退会留下一个
+        # 「已标记停止却永远 run_forever」的僵尸线程——解释器退出时它还卡在
+        # IOCP poll，主线程终结期访问已释放的完成端口 → 退出时段错误。
+        if not self._ready.wait(timeout=2.0) or self.loop is None:
             return
         try:
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -309,6 +314,11 @@ class _BleLoop(threading.Thread):
 
 _loop = None
 _loop_lock = threading.Lock()
+# 所有曾启动的循环：atexit 兜底用。get_loop() 会替换"已停/已死"的循环，
+# 被替换的旧线程若没能及时退出（stop() join 3s 超时），不再被任何全局引用
+# 盯着——解释器退出时这类 daemon 线程若还阻塞在 IOCP poll 里，主线程终结
+# 期会访问已释放的完成端口 → 退出时段错误（faulthandler 实锤过两次）。
+_loops = set()
 
 
 def get_loop():
@@ -317,6 +327,7 @@ def get_loop():
         inst = _loop
         if inst is None or inst._stopped or not inst.is_alive():
             _loop = _BleLoop()
+            _loops.add(_loop)
             _loop.start()
         return _loop
 
@@ -328,6 +339,19 @@ def shutdown_loop():
         _loop = None
     if inst is not None:
         inst.stop()
+
+
+def _stop_all_loops_at_exit():
+    """atexit：daemon 线程被硬杀之前，优雅停掉全部（含被替换的）BLE 循环。"""
+    for inst in list(_loops):
+        try:
+            inst.stop()
+        except Exception:
+            _log.debug("ble loop atexit stop failed", exc_info=True)
+    _loops.clear()
+
+
+atexit.register(_stop_all_loops_at_exit)
 
 
 def _import_bleak():

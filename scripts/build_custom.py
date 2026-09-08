@@ -79,13 +79,14 @@ def main():
         # exe 文件图标：多尺寸 .ico
         sq.save(ico, "ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
-        # 与 build_onefile.bat / release.ps1 一致：bleak 必须 --collect-all，
+        # 与 build_onefile.bat / release.ps1 一致：bleak / pylink 必须 --collect-all，
         # 否则定制 exe 会提示「未安装 BLE 组件」。QtBluetooth 仍在 EXCLUDES 里。
         args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                 "--windowed", "--onefile", "--name", name, "--icon", ico,
                 "--distpath", os.path.join(ROOT, "dist_onefile"),
                 "--workpath", os.path.join(ROOT, "build_onefile"),
-                "--collect-all", "bleak"]
+                "--collect-all", "bleak",
+                "--collect-all", "pylink"]
         for e in EXCLUDES:
             args += ["--exclude-module", e]
         args.append(os.path.join(SRC, "main.py"))

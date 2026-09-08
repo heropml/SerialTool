@@ -373,17 +373,20 @@ class Session:
             return None
         try:
             from transport.virtual_io import PROTO_VIRTUAL
-            from ui.conn_ui import PROTO_SERIAL, PROTO_BLE
+            from ui.conn_ui import PROTO_SERIAL, PROTO_BLE, PROTO_RTT
         except Exception:
             PROTO_VIRTUAL = "Virtual"
             PROTO_SERIAL = "Serial"
             PROTO_BLE = "BLE"
+            PROTO_RTT = "RTT"
         if proto == PROTO_SERIAL and len(cfg) > 1 and cfg[1]:
             return ("serial", str(cfg[1]).upper())
         if proto == PROTO_VIRTUAL:
             return None
         if proto == PROTO_BLE and len(cfg) > 1 and cfg[1]:
             return ("ble", str(cfg[1]).upper())
+        if proto == PROTO_RTT and len(cfg) > 1 and cfg[1]:
+            return ("rtt", str(cfg[1]).lower())
         if len(cfg) >= 1:
             return ("net", proto, tuple(cfg))
         return ("net", proto, tuple(cfg) if cfg else ())
@@ -411,6 +414,9 @@ class Session:
             ble_addr = self.conn_fields.get("ble_address") or ""
             if proto == "BLE" and ble_addr:
                 return str(ble_addr)
+            rtt_dev = self.conn_fields.get("rtt_device") or ""
+            if proto == "RTT" and rtt_dev:
+                return str(rtt_dev)
             if proto and proto != PROTO_SERIAL:
                 if proto == PROTO_TCP_CLIENT and rip and rport:
                     return "%s_%s" % (rip, rport)

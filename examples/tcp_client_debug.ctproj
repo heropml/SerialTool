@@ -1,7 +1,7 @@
 {
   "format": "commtool-project",
   "format_version": 2,
-  "app_version": "1.7.4",
+  "app_version": "1.8.0",
   "name": "TCP Client Debug",
   "metadata": {
     "device_type": "network",
@@ -40,7 +40,7 @@
     "net_remote_port": "9000",
     "show_timestamp": true,
     "snippets": "[{\"name\": \"Ping\", \"text\": \"ping\", \"hex\": false}, {\"name\": \"Hex ping\", \"text\": \"70 69 6E 67\", \"hex\": true}]",
-    "connection_presets": "[{\"id\": \"example-tcp-client-9000\", \"name\": \"Local echo :9000\", \"note\": \"TCP Client to localhost:9000\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"127.0.0.1\", \"net_remote_port\": \"9000\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\"}, {\"id\": \"example-tcp-client-9001\", \"name\": \"Alt port :9001\", \"note\": \"Optional alternate debug port\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"127.0.0.1\", \"net_remote_port\": \"9001\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\"}]"
+    "connection_presets": "[{\"id\": \"example-tcp-client-9000\", \"name\": \"Local echo :9000\", \"note\": \"TCP Client to localhost:9000\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"127.0.0.1\", \"net_remote_port\": \"9000\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\", \"rtt_device\": \"\", \"rtt_interface\": \"SWD\", \"rtt_speed\": \"4000\", \"rtt_address\": \"\", \"rtt_channel\": \"0\", \"rtt_probe\": \"\", \"rtt_reset\": false}, {\"id\": \"example-tcp-client-9001\", \"name\": \"Alt port :9001\", \"note\": \"Optional alternate debug port\", \"last_used\": 0.0, \"net_proto\": \"TCP Client\", \"ser_port\": \"\", \"ser_baud\": \"115200\", \"ser_databits\": \"8\", \"ser_parity\": \"None\", \"ser_stopbits\": \"1\", \"ser_flow\": \"None\", \"serial_dtr\": true, \"serial_rts\": true, \"net_local_ip\": \"0.0.0.0\", \"net_local_port\": \"8080\", \"net_remote_ip\": \"127.0.0.1\", \"net_remote_port\": \"9001\", \"net_use_remote\": false, \"net_group_addr\": \"239.0.0.1\", \"vconn_loopback\": false, \"auto_reconnect\": true, \"ble_address\": \"\", \"ble_name\": \"\", \"ble_profile\": \"fff0\", \"ble_service_uuid\": \"FFF0\", \"ble_write_uuid\": \"FFF2\", \"ble_notify_uuid\": \"FFF1\", \"ble_write_mode\": \"auto\", \"rtt_device\": \"\", \"rtt_interface\": \"SWD\", \"rtt_speed\": \"4000\", \"rtt_address\": \"\", \"rtt_channel\": \"0\", \"rtt_probe\": \"\", \"rtt_reset\": false}]"
   },
   "resources": {
     "device": {
@@ -95,7 +95,14 @@
           "ble_service_uuid": "FFF0",
           "ble_write_uuid": "FFF2",
           "ble_notify_uuid": "FFF1",
-          "ble_write_mode": "auto"
+          "ble_write_mode": "auto",
+          "rtt_device": "",
+          "rtt_interface": "SWD",
+          "rtt_speed": "4000",
+          "rtt_address": "",
+          "rtt_channel": "0",
+          "rtt_probe": "",
+          "rtt_reset": false
         },
         {
           "id": "example-tcp-client-9001",
@@ -125,7 +132,14 @@
           "ble_service_uuid": "FFF0",
           "ble_write_uuid": "FFF2",
           "ble_notify_uuid": "FFF1",
-          "ble_write_mode": "auto"
+          "ble_write_mode": "auto",
+          "rtt_device": "",
+          "rtt_interface": "SWD",
+          "rtt_speed": "4000",
+          "rtt_address": "",
+          "rtt_channel": "0",
+          "rtt_probe": "",
+          "rtt_reset": false
         }
       ]
     },

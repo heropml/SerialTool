@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.0](#whats-new-in-v180)
 - [What's New in v1.7.4](#whats-new-in-v174)
 - [What's New in v1.7.3](#whats-new-in-v173)
 - [What's New in v1.7.2](#whats-new-in-v172)
@@ -47,11 +48,24 @@
 ## Quick Start
 
 1. Install from [Releases](https://github.com/heropml/SerialTool/releases) (see [Install](#install-windows--macos--linux)), then double-click the **CommTool** icon
-2. In the left **Connection** panel, pick a **Type** (serial / network / Virtual / BLE), fill in the parameters, then click **Open Serial** / **Open** / **Connect** / **Listen** / **Start Virtual** (depending on type)
+2. In the left **Connection** panel, pick a **Type** (serial / RTT / network / Virtual / BLE), fill in the parameters, then click **Open Serial** / **Connect** / **Listen** / **Start Virtual** (depending on type)
 3. Received and sent data appear in the right-hand **Data** area; type what you want to send into the **Send** box below
-4. Use **New Session** for multi-tab concurrent connections (serial / TCP / UDP / Virtual / BLE)
+4. Use **New Session** for multi-tab concurrent connections (serial / RTT / TCP / UDP / Virtual / BLE)
 
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
+
+---
+
+## What's New in v1.8.0
+
+SEGGER J-Link RTT support and transport hardening:
+
+- **RTT connection** — select a target device, SWD/JTAG, speed, channel, an exact control-block address or a RAM search range, and optional reset. RTT uses the existing RX/TX, logging, recording, automation, and analysis flow.
+- **Device picker** — the sidebar keeps a short common-device list plus free input; the **…** picker owns the full J-Link catalog with filtering, numeric sorting, and write-back.
+- **Probe ownership** — choose a J-Link serial number when several probes are attached. Auto mode retries the most recently successful probe first, then falls back to the default probe only when it is unavailable; an explicit serial number never falls back to another probe.
+- **Connection feedback** — J-Link DLL access is serialized. A target that has not yet created its RTT control block shows a waiting notice instead of a false disconnect; runtime loss and failed downstream writes are surfaced clearly.
+- **Prerequisite** — install the SEGGER J-Link driver in addition to the bundled `pylink-square` Python package.
+- **Availability** — this tag first ships Windows Setup and onefile assets. macOS and Linux artifacts are appended to the same tag after their platform builds complete.
 
 ---
 
@@ -728,9 +742,10 @@ Merged from the serial-only SerialTool and the network-only NetworkTool — one 
 
 ### Connection
 
-The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with **7** options (**Serial** is the default on a fresh install):
+The top-left **Connection** card configures the connection. The first row is a **Type** dropdown with **8** options on Windows, or **7** where BLE is unavailable (**Serial** is the default on a fresh install):
 
 - **Serial**
+- **RTT** — SEGGER J-Link Real-Time Transfer
 - **UDP**
 - **UDP Multicast**
 - **TCP Server**
@@ -763,6 +778,11 @@ The fields below change to match the selected type:
 - **Virtual**
   - Start without hardware; optional **Loopback**
   - Used to verify auto-reply / scripts / sequences, and as the sink for session replay
+- **RTT (SEGGER J-Link)**
+  - Pick a **Device**, **Probe** (Auto or serial number), **Interface** (SWD/JTAG), **Speed** in kHz, and **Channel**. Auto keeps the previous successful probe when possible; an explicit serial number is never silently replaced.
+  - Use **…** beside Device to search and sort the complete J-Link device catalog. The sidebar list intentionally contains only common shortcuts and accepts free text.
+  - **RTT address** accepts Auto, an exact address, or `start+size` / `start..end` to search an aligned RAM range. **Reset on open** is optional.
+  - Requires the SEGGER J-Link driver. After J-Link starts RTT, a missing firmware control block is reported as a waiting state rather than a disconnect.
 - **BLE (Windows)**
   - **Scan** opens a window with name / address / advertised **UUID** / RSSI (with bars) / **TX** / **connectable** / **observed interval (estimate)** / **manufacturer** (deduped by address). The interval column is this PC’s smoothed time between scan callbacks (Windows / Bleak batching, scan responses, and missed packets all affect it) — not the peripheral’s real Advertising Interval. **Filter** is on by default with selectable rules (hide empty unnamed packets; optionally named only / connectable / has UUID / has manufacturer data / hide stale / used before); turn it off to list every device. Turn on **RSSI filter** and drag the −100 to −30 dBm slider to hide weaker devices. Select a row for the advertisement pane (type, Flags, appearance name, manufacturer name, advertised service count, last connected time, service data, copyable RAW). Rows with no recent advertisements gray out. Search by name, address, UUID, or manufacturer. Double-click or **Use this device** to fill the sidebar
   - Then pick a **preset** (FFF0 / FFE0 / Nordic UART / Microchip UART / Custom) and edit Service / **Write (PC→device)** / **Notify (device→PC)** UUIDs; **Swap** if the direction is reversed. **Write mode** Auto follows the characteristic (Write vs Write Without Response)
@@ -775,6 +795,7 @@ The fields below change to match the selected type:
 | Type | Button |
 |----------|--------|
 | Serial | Open Serial / Close Serial |
+| RTT | Connect / Disconnect |
 | UDP | Open / Close |
 | UDP Multicast | Open / Close |
 | TCP Server | Listen / Stop |
@@ -994,7 +1015,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.7.4`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1012,6 +1033,9 @@ A: "Use remote" is off and no peer has sent to you yet. Turn on **Use remote** a
 **Q: UDP multicast receives nothing?**
 A: Check the firewall, that sender and receiver use the same group address and port, and that they're on the same subnet / NIC.
 
+**Q: RTT cannot find a J-Link or its control block?**
+A: Install the official SEGGER J-Link driver, then confirm the selected probe, interface, target device, and speed. “Waiting for control block” means the probe is connected but firmware has not yet initialized RTT; verify the firmware’s RTT setup or use the address/range supplied by the target.
+
 **Q: Timed send not working?**
 A: The minimum period is 10 ms and you must stay connected. It pauses automatically on disconnect.
 
@@ -1028,17 +1052,17 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.7.4**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.7.4); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. macOS and Linux assets are added to the same tag after their platform builds finish.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.7.4.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.7.4.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.8.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.8.0.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: `CommTool_v1.7.4.dmg`
+- **Apple Silicon** (arm64) only: download the `.dmg` asset once it appears on `comm-v1.8.0`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1049,11 +1073,11 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.7.4_linux_x86_64.run`
+- File: download the x86_64 `.run` asset once it appears on `comm-v1.8.0`
 
 ```bash
-chmod +x CommTool_Setup_v1.7.4_linux_x86_64.run
-./CommTool_Setup_v1.7.4_linux_x86_64.run
+chmod +x CommTool_Setup_v<version>_linux_x86_64.run
+./CommTool_Setup_v<version>_linux_x86_64.run
 ```
 
 - Installs to `~/.local/opt/CommTool` (**no sudo**), with an application-menu entry and a desktop icon
@@ -1067,6 +1091,7 @@ chmod +x CommTool_Setup_v1.7.4_linux_x86_64.run
 
 - Windows 10 / 11 (64-bit); macOS Apple Silicon; Linux x86_64 with glibc ≥ 2.27
 - About 100–200 MB disk
+- RTT additionally requires the official SEGGER J-Link driver; the application bundles the Python wrapper.
 
 ---
 

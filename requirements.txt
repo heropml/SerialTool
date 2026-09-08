@@ -4,6 +4,10 @@ PyQt5>=5.15.11,<5.16
 pyserial>=3.5
 # Windows BLE 主机（UART 风格 Notify/Write）；macOS/Linux 界面可选但连接会提示不支持
 bleak>=1.1,<2
+# SEGGER RTT（连接类型「RTT」）：pylink-square 为纯 Python ctypes 封装
+# （会连带安装 psutil / six），运行时还需安装 SEGGER J-Link 驱动包
+# （pylink 自动查找 JLinkARM DLL/.so/.dylib，无驱动时连接会明确提示）
+pylink-square>=1.2,<2
 # 波形图：pyqtgraph 实时绘曲线（依赖 numpy）
 pyqtgraph>=0.13.7,<0.14
 numpy>=1.24,<3

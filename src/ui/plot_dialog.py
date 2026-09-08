@@ -4,11 +4,12 @@
 从 RX 数据解析数值，实时绘多通道滚动曲线。与显示区**解耦**：自持缓冲，feed(bytes)
 → 解析 → 各通道环形缓冲；由独立 ~30FPS 定时器统一重绘（不随收包频率），高吞吐不卡 GUI。
 
-三种解析模式：
+四种解析模式：
 - 分隔符：每行按 逗号/空白/Tab/分号/自动 拆，每列一条曲线（ASCII 数字流，如 "1.2,3.4"）
 - 正则：每行用正则，每个捕获组一条曲线（如 temp=(\\d+).*hum=(\\d+)）
 - HEX 字节：**二进制协议**用——按 binproto 的「帧头 + 偏移:类型」从字节里取数值，每字段一条曲线
   （字段定义与帧解析表 frame_dialog 共用 binproto，语义一致）
+- DLOG：rtt_t2 风格的 TAG=DLOG M*n(x,y,z) 文本协议，零配置只解析 DLOG 行（RTT 调波常用）
 
 单实例非模态，复用时刷新主题/语言。pyqtgraph 为可选依赖，main_window 懒导入 + try/except。
 """
@@ -47,10 +48,16 @@ _MAXPTS = [200, 500, 1000, 2000, 5000]
 _SEP_RX = [r",", r"\s+", r"\t", r";", r"[,\s;]+"]
 
 # 模式索引
-_MODE_DELIM, _MODE_REGEX, _MODE_HEX = 0, 1, 2
+_MODE_DELIM, _MODE_REGEX, _MODE_HEX, _MODE_DLOG = 0, 1, 2, 3
 _VIEW_WAVE, _VIEW_XY, _VIEW_HIST = 0, 1, 2
 _IO_GRAPH_TAGS = ("rx_Bps", "tx_Bps", "rx_pps", "tx_pps")
 _NO_JUMP_TAGS = frozenset(_IO_GRAPH_TAGS)
+
+# rtt_t2 波形协议行：TAG=DLOG [SN(n)]M*n(x,y,z)。n 是小数位数，
+# 括号里的整数需除以 10**n；TAG 前可带 BDSCOL 颜色标签等日志前缀。
+_DLOG_RX = re.compile(
+    r"tag=dlog(?:\s+sn\s*\([^)]*\))?\s*m\*(\d+)\s*\(([^)]*)\)",
+    re.IGNORECASE)
 
 
 class PlotDialog(QDialog):
@@ -101,8 +108,8 @@ class PlotDialog(QDialog):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.lbl_mode = QLabel()
-        self.cb_mode = QComboBox()           # 0=分隔符 1=正则 2=HEX字节
-        self.cb_mode.addItems(["", "", ""])
+        self.cb_mode = QComboBox()           # 0=分隔符 1=正则 2=HEX字节 3=DLOG
+        self.cb_mode.addItems(["", "", "", ""])
         self.cb_mode.currentIndexChanged.connect(self._on_mode_changed)
         self.cb_sep = QComboBox()            # 分隔符（5 项，仅分隔符模式）
         self.cb_sep.addItems(["", "", "", "", ""])
@@ -219,7 +226,7 @@ class PlotDialog(QDialog):
         s = self.app.settings
         self._loading_cfg = True
         try:
-            self.cb_mode.setCurrentIndex(_to_int(s.value("plot_mode", 0), 0, 2))
+            self.cb_mode.setCurrentIndex(_to_int(s.value("plot_mode", 0), 0, 3))
             self.cb_sep.setCurrentIndex(_to_int(s.value("plot_sep", 0), 0, 4))
             self.ed_regex.setText(s.value("plot_regex", "") or "")
             self._on_regex_changed(save=False)
@@ -297,7 +304,29 @@ class PlotDialog(QDialog):
 
     # ---------------- 解析 ----------------
     def _parse_line(self, line):
-        if self.cb_mode.currentIndex() == _MODE_REGEX:
+        mode = self.cb_mode.currentIndex()
+        if mode == _MODE_DLOG:
+            m = _DLOG_RX.search(line)
+            if not m:
+                return          # 只认 TAG=DLOG 行，其余（日志/其它报文）整行忽略
+            precision = int(m.group(1))
+            if precision > 308:  # 防止畸形外部输入令浮点缩放溢出
+                return
+            scale = 10.0 ** precision
+            vals = []
+            for tok in re.split(r"[,\s]+", m.group(2).strip()):
+                if not tok:
+                    continue
+                try:
+                    vals.append(float(tok) / scale)
+                except ValueError:
+                    vals.append(None)
+            if not vals:
+                return
+            self._append_vals(
+                vals, names=["DLOG%d" % (i + 1) for i in range(len(vals))])
+            return
+        if mode == _MODE_REGEX:
             if self._regex is None:
                 return
             m = self._regex.search(line)
@@ -846,8 +875,9 @@ class PlotDialog(QDialog):
             if st["count"] <= 0:
                 continue
             parts.append(
-                "%s: n=%d min=%.4g max=%.4g mean=%.4g" % (
-                    ch["name"], st["count"], st["min"], st["max"], st["mean"]))
+                "%s: n=%d min=%.4g max=%.4g mean=%.4g std=%.4g" % (
+                    ch["name"], st["count"], st["min"], st["max"],
+                    st["mean"], st["std"]))
         self._cursor_stats_extra = (
             ("  |  " + "  ".join(parts)) if parts else "")
 
@@ -1183,6 +1213,7 @@ class PlotDialog(QDialog):
         self.cb_mode.setItemText(_MODE_DELIM, t("plot_mode_delim"))
         self.cb_mode.setItemText(_MODE_REGEX, t("plot_mode_regex"))
         self.cb_mode.setItemText(_MODE_HEX, t("plot_mode_hex"))
+        self.cb_mode.setItemText(_MODE_DLOG, t("plot_mode_dlog"))
         for i, key in enumerate(("plot_sep_comma", "plot_sep_space", "plot_sep_tab",
                                  "plot_sep_semicolon", "plot_sep_auto")):
             self.cb_sep.setItemText(i, t(key))

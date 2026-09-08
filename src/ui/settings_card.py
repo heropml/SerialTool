@@ -4,9 +4,10 @@
 S-2 R38: move CommTool.build_settings_card body here so main_window
 stays a thin wrapper. Widgets are attached onto the host `app`.
 """
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QCompleter, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from ui.theme import COLOR_TEXT_SECONDARY
@@ -15,6 +16,7 @@ from ui.widgets import Card, IOSSwitch
 from ui.conn_ui import visible_conn_types
 from transport.net_io import local_ipv4_list
 from transport import ble_uuid
+from transport import rtt_io
 from transport.serial_params import (
     BAUD_RATES,
     DATABITS_OPTIONS,
@@ -269,6 +271,96 @@ def build(app):
     app.ed_ble_service.setText(ble_uuid.short_uuid(_ble_preset["service_uuid"]))
     app.ed_ble_write.setText(ble_uuid.short_uuid(_ble_preset["write_uuid"]))
     app.ed_ble_notify.setText(ble_uuid.short_uuid(_ble_preset["notify_uuid"]))
+
+    # ===== RTT（SEGGER RTT，经 J-Link 调试器读写目标内存，不占串口）=====
+    # 器件名：可编辑 + 内置候选补全。DLL 的完整器件表有上万项，只放进
+    # “…”选择窗的轻量表模型，不灌进侧栏 QComboBox。
+    app.cb_rtt_device = QComboBox()
+    app.cb_rtt_device.setEditable(True)
+    app.cb_rtt_device.setInsertPolicy(QComboBox.NoInsert)
+    app.cb_rtt_device.setMaxVisibleItems(20)
+    app.cb_rtt_device.addItems(list(rtt_io.COMMON_DEVICES))
+    app.cb_rtt_device.setCurrentText("")
+    _rtt_dev_completer = QCompleter(list(rtt_io.COMMON_DEVICES), app.cb_rtt_device)
+    _rtt_dev_completer.setCaseSensitivity(Qt.CaseInsensitive)
+    _rtt_dev_completer.setFilterMode(Qt.MatchContains)
+    _rtt_dev_completer.setMaxVisibleItems(20)
+    app.cb_rtt_device.setCompleter(_rtt_dev_completer)
+    app.cb_rtt_device.setProperty("tr_tooltip", "rtt_device_tip")
+    set_tooltip(app.cb_rtt_device, app._t("rtt_device_tip"))
+    # 驱动里有上万个器件，下拉翻不动 —— 「…」开带搜索的选择窗
+    app.btn_rtt_device_pick = QPushButton("…")
+    app.btn_rtt_device_pick.setObjectName("GhostBtnSm")
+    app.btn_rtt_device_pick.setFixedWidth(28)
+    app.btn_rtt_device_pick.setProperty("tr_tooltip", "rtt_dev_pick_tip")
+    set_tooltip(app.btn_rtt_device_pick, app._t("rtt_dev_pick_tip"))
+    app.btn_rtt_device_pick.clicked.connect(app._on_rtt_device_pick)
+    _dev_box = QWidget()
+    _dev_l = QHBoxLayout(_dev_box)
+    _dev_l.setContentsMargins(0, 0, 0, 0)
+    _dev_l.setSpacing(4)
+    _dev_l.addWidget(app.cb_rtt_device, 1)
+    _dev_l.addWidget(app.btn_rtt_device_pick)
+    app.row_rtt_device = make_row("rtt_device", _dev_box)
+
+    # 调试器：空 = 自动选第一个；插多把 J-Link 时按序列号指定
+    app.cb_rtt_probe = QComboBox()
+    app.cb_rtt_probe.setEditable(True)
+    app.cb_rtt_probe.setInsertPolicy(QComboBox.NoInsert)
+    app.cb_rtt_probe.addItem(app._t("rtt_probe_auto"), "")
+    app.cb_rtt_probe.setCurrentIndex(0)
+    app.cb_rtt_probe.setProperty("tr_tooltip", "rtt_probe_tip")
+    set_tooltip(app.cb_rtt_probe, app._t("rtt_probe_tip"))
+    app.row_rtt_probe = make_row("rtt_probe", app.cb_rtt_probe)
+
+    app.cb_rtt_interface = QComboBox()
+    app.cb_rtt_interface.addItems(list(rtt_io.INTERFACES))
+    app.row_rtt_interface = make_row("rtt_interface", app.cb_rtt_interface)
+
+    # 速率：J-Link 只认 48000kHz 的整数分频，给固定档位下拉（同 RTT
+    # Viewer）；仍可编辑，手填任意 5~50000 一样接受。
+    app.cb_rtt_speed = QComboBox()
+    app.cb_rtt_speed.setEditable(True)
+    app.cb_rtt_speed.setInsertPolicy(QComboBox.NoInsert)
+    app.cb_rtt_speed.setMaxVisibleItems(16)
+    app.cb_rtt_speed.addItems(
+        [rtt_io.format_speed(v) for v in rtt_io.SPEED_PRESETS_KHZ])
+    app.cb_rtt_speed.setCurrentText(
+        rtt_io.format_speed(rtt_io.DEFAULT_SPEED_KHZ))
+    app.cb_rtt_speed.setProperty("tr_tooltip", "rtt_speed_tip")
+    set_tooltip(app.cb_rtt_speed, app._t("rtt_speed_tip"))
+    app.row_rtt_speed = make_row("rtt_speed", app.cb_rtt_speed)
+
+    app.ed_rtt_address = QLineEdit()
+    app.ed_rtt_address.setProperty("tr_placeholder", "rtt_address_ph")
+    app.ed_rtt_address.setPlaceholderText(app._t("rtt_address_ph"))
+    app.ed_rtt_address.setProperty("tr_tooltip", "rtt_address_tip")
+    set_tooltip(app.ed_rtt_address, app._t("rtt_address_tip"))
+    app.row_rtt_address = make_row("rtt_address", app.ed_rtt_address)
+
+    app.cb_rtt_channel = QComboBox()
+    for _ch in range(rtt_io.MAX_CHANNEL + 1):
+        app.cb_rtt_channel.addItem(str(_ch), _ch)
+    app.cb_rtt_channel.setProperty("tr_tooltip", "rtt_channel_tip")
+    set_tooltip(app.cb_rtt_channel, app._t("rtt_channel_tip"))
+    app.row_rtt_channel = make_row("rtt_channel", app.cb_rtt_channel)
+
+    # 连接时复位（rtt_t2 默认开）：默认关，避免打断正在跑的目标
+    app.sw_rtt_reset = IOSSwitch(False)
+    _rst_row = QWidget()
+    _rst_l = QHBoxLayout(_rst_row)
+    _rst_l.setContentsMargins(0, 0, 0, 0)
+    _rst_l.setSpacing(6)
+    _rst_lbl = app._tr_label("rtt_reset", color=COLOR_TEXT_SECONDARY)
+    _rst_lbl.setFixedWidth(app._label_col_width())
+    _rst_lbl.setProperty("tr_fixedw", True)
+    _rst_lbl.setProperty("tr_tooltip", "rtt_reset_tip")
+    set_tooltip(_rst_lbl, app._t("rtt_reset_tip"))
+    _rst_l.addWidget(_rst_lbl)
+    _rst_l.addWidget(app.sw_rtt_reset)
+    _rst_l.addStretch(1)
+    layout.addWidget(_rst_row)
+    app.row_rtt_reset = _rst_row
 
     # 动作按钮（文案随协议/状态变化）
     app.btn_open = QPushButton(app._t("btn_listen"))

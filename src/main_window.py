@@ -41,6 +41,18 @@ from diagnostics import create_diagnostic_bundle
 
 _log = logging.getLogger(__name__)
 
+# 目录枚举是 daemon Python 线程。窗口关闭时若它仍卡在第三方 DLL 中，不能
+# 继续让 QObject 挂在窗口父子树上；保留到 worker 自己结束，再延迟销毁。
+_RTT_CATALOG_REAPERS = set()
+
+
+def _reap_rtt_catalog(catalog):
+    _RTT_CATALOG_REAPERS.discard(catalog)
+    try:
+        catalog.deleteLater()
+    except RuntimeError:
+        pass
+
 # Connect/send/live-log: OS and runtime IO. Do not use bare Exception here —
 # unexpected bugs should still surface rather than look like a wire failure.
 _TX_IO_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
@@ -75,6 +87,11 @@ from transport.serial_io import SerialConn, PortScannerThread, OneShotPortScanne
 from transport import conn_error_tips
 from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 from transport.ble_io import BleConn, BleScanner, ERROR_I18N as _BLE_ERROR_I18N
+from transport import rtt_io as rtt_io_mod
+from transport.rtt_io import (
+    RttConn, RttCatalog,
+    ERROR_I18N as _RTT_ERROR_I18N, NOTICE_I18N as _RTT_NOTICE_I18N,
+)
 from sessions.session_host import SessionHostMixin, _install_session_proxies
 from automation import send_dsl
 from protocol import ansi
@@ -143,6 +160,7 @@ from project.connection_presets import (
     serial_signature as _conn_serial_sig,
     tcp_client_signature as _conn_tcp_sig,
     ble_signature as _conn_ble_sig,
+    rtt_signature as _conn_rtt_sig,
     proto_only_signature as _conn_proto_sig,
 )
 from automation import seq_context
@@ -169,6 +187,7 @@ from ui.ui_tips import set_tooltip
 from ui.conn_ui import (
     PROTO_SERIAL,
     PROTO_BLE,
+    PROTO_RTT,
     visible_conn_types,
     field_visibility as _conn_field_vis,
 )
@@ -938,7 +957,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         避免英文单词(如 Remote Port)被输入框遮挡。"""
         keys = ("protocol_type", "cpreset_label", "local_ip", "local_port", "group_addr",
                 "remote_ip", "remote_port", "target_client", "use_remote",
-                "port", "baud_rate", "data_bits", "parity", "stop_bits")
+                "port", "baud_rate", "data_bits", "parity", "stop_bits",
+                # 每种连接类型的字段标签都要算进来，否则新标签一长就被
+                # setFixedWidth 裁掉半个字（RTT 的「速率 (kHz)」「连接时复位」
+                # 就这么被裁过）。文案本身仍应尽量短，说明放 tooltip。
+                "vconn_loopback", "ble_profile", "ble_write_mode",
+                "rtt_device", "rtt_probe", "rtt_interface", "rtt_speed",
+                "rtt_address", "rtt_channel", "rtt_reset")
         fm = QFontMetrics(ui_font(11))
         w = max(fm.horizontalAdvance(self._t(k)) for k in keys)
         return max(44, w + 9)  # +9 右边距；中文下至少 44 保持原观感
@@ -1237,7 +1262,226 @@ class CommTool(SessionHostMixin, QMainWindow):
                 row.setVisible(ble_on)
         if (not ble_on) and getattr(self, "_ble_scanner", None) is not None:
             self._stop_ble_scan("leave")
+        rtt_on = vis.get("rtt_rows", False)
+        for row in (
+                getattr(self, "row_rtt_device", None),
+                getattr(self, "row_rtt_probe", None),
+                getattr(self, "row_rtt_interface", None),
+                getattr(self, "row_rtt_speed", None),
+                getattr(self, "row_rtt_address", None),
+                getattr(self, "row_rtt_channel", None),
+                getattr(self, "row_rtt_reset", None)):
+            if row is not None:
+                row.setVisible(rtt_on)
+        if rtt_on:
+            self._ensure_rtt_catalog()
         self.btn_open.setText(self._t(vis["open_btn_key"]))
+
+    # ---- RTT：器件表 / 调试器发现 ----
+
+    def _rtt_speed_text(self):
+        """速率下拉 -> 纯数字文本（下拉项显示带 kHz，存盘/签名不带）。"""
+        cb = getattr(self, "cb_rtt_speed", None)
+        if cb is None:
+            return ""
+        from transport import rtt_io
+        return rtt_io.strip_speed_unit(cb.currentText())
+
+    def _set_rtt_speed_text(self, value):
+        cb = getattr(self, "cb_rtt_speed", None)
+        if cb is None:
+            return
+        from transport import rtt_io
+        text = rtt_io.strip_speed_unit(value)
+        cb.blockSignals(True)
+        try:
+            idx = cb.findText(rtt_io.format_speed(int(text)))
+        except (TypeError, ValueError):
+            idx = -1
+        if idx >= 0:
+            cb.setCurrentIndex(idx)      # 命中档位就选中它
+        else:
+            cb.setCurrentText(text)      # 手填的非档位值原样留着
+        cb.blockSignals(False)
+
+    def _rtt_probe_text(self):
+        """调试器下拉 -> 序列号字符串（第 0 项「自动」= 空串）。"""
+        cb = getattr(self, "cb_rtt_probe", None)
+        if cb is None:
+            return ""
+        if cb.currentIndex() == 0 and cb.currentText() == self._t("rtt_probe_auto"):
+            return ""
+        from transport import rtt_io
+        return rtt_io.normalize_probe(cb.currentText())
+
+    def _set_rtt_probe_text(self, value):
+        cb = getattr(self, "cb_rtt_probe", None)
+        if cb is None:
+            return
+        from transport import rtt_io
+        sn = rtt_io.normalize_probe(value)
+        cb.blockSignals(True)
+        if not sn:
+            cb.setCurrentIndex(0)
+        else:
+            idx = cb.findText(sn)
+            if idx >= 0:
+                cb.setCurrentIndex(idx)
+            else:
+                cb.setCurrentText(sn)
+        cb.blockSignals(False)
+
+    def _ensure_rtt_catalog(self):
+        """首次进 RTT 页时后台取一次器件表 + 已插调试器。
+
+        枚举走 JLinkARM DLL（数千项，几百 ms 到数秒），必须离开 UI 线程；
+        没装驱动时线程内部退回内置候选，界面照常可用。
+        """
+        if getattr(self, "_rtt_catalog_thread", None) is not None:
+            return
+        if getattr(self, "_rtt_catalog_done", False):
+            return
+        if not hasattr(self, "cb_rtt_device"):
+            return
+        th = RttCatalog()
+        th.ready.connect(self._on_rtt_catalog)
+        th.finished.connect(self._on_rtt_catalog_finished)
+        self._rtt_catalog_thread = th
+        th.start()
+
+    def _on_rtt_catalog(self, devices, probes):
+        self._rtt_catalog_done = True
+        self._rtt_devices = list(devices or [])
+        cb = getattr(self, "cb_rtt_device", None)
+        th = getattr(self, "_rtt_catalog_thread", None)
+        self._rtt_driver_path = getattr(th, "driver_path", "") if th else ""
+        dlg = getattr(self, "_rtt_dev_dlg", None)
+        if dlg is not None:
+            dlg.set_devices(self._rtt_devices)
+            dlg.set_driver(self._rtt_driver_path)
+            dlg.select_device(cb.currentText() if cb is not None else "")
+        pcb = getattr(self, "cb_rtt_probe", None)
+        if pcb is not None:
+            keep = self._rtt_probe_text()
+            pcb.blockSignals(True)
+            while pcb.count() > 1:
+                pcb.removeItem(1)
+            for sn in probes:
+                pcb.addItem(str(sn), str(sn))
+            pcb.blockSignals(False)
+            self._set_rtt_probe_text(keep)
+
+    def _on_rtt_catalog_finished(self):
+        current = getattr(self, "_rtt_catalog_thread", None)
+        th = self.sender() or current
+        if th is current:
+            self._rtt_catalog_thread = None
+        if th is not None:
+            th.deleteLater()
+
+    def _stop_rtt_catalog(self):
+        th = getattr(self, "_rtt_catalog_thread", None)
+        if th is None:
+            return
+        try:
+            th.ready.disconnect()
+            th.finished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        stopped = True
+        if th.isRunning():
+            # DLL 枚举不可中断，只能短暂等它自己跑完。
+            stopped = bool(th.wait(5000))
+        if not stopped:
+            # 仍在 DLL 内：脱离窗口所有权，daemon worker 结束后自行销毁。
+            _RTT_CATALOG_REAPERS.add(th)
+            th.finished.connect(lambda _th=th: _reap_rtt_catalog(_th))
+            self._rtt_catalog_thread = None
+            return
+        self._rtt_catalog_thread = None
+        th.deleteLater()
+
+    def _rtt_device_dialog(self):
+        dlg = getattr(self, "_rtt_dev_dlg", None)
+        if dlg is None:
+            from ui.rtt_device_dialog import RttDeviceDialog
+            dlg = RttDeviceDialog(self)
+            self._rtt_dev_dlg = dlg
+        return dlg
+
+    def _on_rtt_device_pick(self):
+        """「…」：在驱动的完整器件表里搜着选（下拉塞不下上万项）。"""
+        self._ensure_rtt_catalog()
+        dlg = self._rtt_device_dialog()
+        dlg.set_devices(getattr(self, "_rtt_devices", None) or [])
+        dlg.set_driver(getattr(self, "_rtt_driver_path", ""))
+        dlg.retranslate()
+        dlg.refresh_theme()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        if hasattr(self, "cb_rtt_device"):
+            dlg.select_device(self.cb_rtt_device.currentText())
+
+    def _apply_rtt_device(self, name):
+        cb = getattr(self, "cb_rtt_device", None)
+        if cb is None or not name:
+            return
+        if self.conn is not None:
+            # 连接期间其它连接字段都被禁用了，弹窗是独立顶层窗禁不到
+            self.toast(self._t("rtt_dev_need_close"), error=True)
+            return
+        cb.setCurrentText(str(name))
+        self.settings.setValue("rtt_device", str(name))
+
+    def _reload_rtt_catalog(self, dll_hint=None):
+        """换 J-Link 驱动目录后重新枚举（pylink 自己只会扫 C 盘）。"""
+        if dll_hint is not None:
+            hint = str(dll_hint or "").strip()
+            # 目录里确实有 DLL 才落地：选错了不能把原来能用的配置顶掉，
+            # 也不能被全盘兜底搜到的另一份驱动掩盖成「看起来成功了」。
+            if hint and not rtt_io_mod.dll_in_directory(hint):
+                self.toast(self._t("rtt_dev_driver_bad"), error=True)
+                return
+            rtt_io_mod.set_dll_hint(hint)
+            self.settings.setValue("rtt_dll_path", hint)
+        previous = getattr(self, "_rtt_catalog_thread", None)
+        if previous is not None:
+            # 用户可能在首次枚举尚未完成时换驱动。旧结果必须丢弃；新 worker
+            # 会在 DLL 互斥锁后排队，旧 worker 结束后自动回收。
+            try:
+                previous.ready.disconnect()
+                previous.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            if previous.isRunning():
+                _RTT_CATALOG_REAPERS.add(previous)
+                previous.finished.connect(
+                    lambda _th=previous: _reap_rtt_catalog(_th))
+            else:
+                previous.deleteLater()
+            self._rtt_catalog_thread = None
+        rtt_io_mod.clear_device_cache()
+        self._rtt_catalog_done = False
+        self._rtt_devices = []
+        self._rtt_driver_path = ""
+        self._ensure_rtt_catalog()
+
+    def _route_session_notice(self, session_id, msg):
+        """连接层的非致命提示（如 RTT 控制块还没出现）：只 toast，不断连。"""
+        session = self.find_session(session_id)
+        if session is None or session.id != self._active_session_id:
+            return
+        key = _RTT_NOTICE_I18N.get(msg)
+        self.toast(self._t(key) if key else str(msg))
+
+    def _route_session_rtt_ready(self, session_id, source_conn):
+        """控制块首次命中后，把活动 RTT 会话从“等待”刷新为“已连接”。"""
+        session = self.find_session(session_id)
+        if (session is None or session.conn is not source_conn
+                or session.id != self._active_session_id):
+            return
+        self._update_conn_status()
 
     def _ensure_ble_scanner(self):
         scanner = getattr(self, "_ble_scanner", None)
@@ -2680,16 +2924,19 @@ class CommTool(SessionHostMixin, QMainWindow):
             else:
                 self._user_closing = True
             try:
-                cancelling_ble = (
-                    getattr(self, "_conn_proto", None) == PROTO_BLE
+                _closing_proto = getattr(self, "_conn_proto", None)
+                cancelling_async = (
+                    _closing_proto in (PROTO_BLE, PROTO_RTT)
                     and self.conn is not None
                     and not getattr(self.conn, "is_open", False)
                     and not getattr(self, "_conn_engaged", False))
                 self._cancel_reconnect()        # 也取消已排队的重连
                 self._serial_reconnect_cfg = None
                 self.close_conn()
-                if cancelling_ble:
-                    self.toast(self._t("ble_cancelled"))
+                if cancelling_async:
+                    self.toast(self._t(
+                        "rtt_cancelled" if _closing_proto == PROTO_RTT
+                        else "ble_cancelled"))
             finally:
                 if session is not None:
                     session._user_closing = False
@@ -3048,6 +3295,20 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.ed_ble_notify.text() if hasattr(self, "ed_ble_notify") else "",
                 self.cb_ble_write_mode.currentData()
                 if hasattr(self, "cb_ble_write_mode") else "auto")
+        if proto == PROTO_RTT:
+            return _conn_rtt_sig(
+                proto,
+                self.cb_rtt_device.currentText()
+                if hasattr(self, "cb_rtt_device") else "",
+                self._rtt_speed_text(),
+                self.cb_rtt_interface.currentText()
+                if hasattr(self, "cb_rtt_interface") else "",
+                self.ed_rtt_address.text() if hasattr(self, "ed_rtt_address") else "",
+                self.cb_rtt_channel.currentData()
+                if hasattr(self, "cb_rtt_channel") else 0,
+                self._rtt_probe_text(),
+                self.sw_rtt_reset.isChecked()
+                if hasattr(self, "sw_rtt_reset") else False)
         return _conn_proto_sig(proto)
 
     def open_conn(self, reconnect_cfg=None, reconnect_snapshot=None):
@@ -3077,6 +3338,18 @@ class CommTool(SessionHostMixin, QMainWindow):
                 "ble_write_mode": (
                     self.cb_ble_write_mode.currentData() or "auto"
                     if hasattr(self, "cb_ble_write_mode") else "auto"),
+                "rtt_device": (self.cb_rtt_device.currentText()
+                               if hasattr(self, "cb_rtt_device") else ""),
+                "rtt_interface": (self.cb_rtt_interface.currentText()
+                                  if hasattr(self, "cb_rtt_interface") else ""),
+                "rtt_speed": self._rtt_speed_text(),
+                "rtt_address": (self.ed_rtt_address.text()
+                                if hasattr(self, "ed_rtt_address") else ""),
+                "rtt_channel": (self.cb_rtt_channel.currentData()
+                                if hasattr(self, "cb_rtt_channel") else 0),
+                "rtt_probe": self._rtt_probe_text(),
+                "rtt_reset": (self.sw_rtt_reset.isChecked()
+                              if hasattr(self, "sw_rtt_reset") else False),
             }
             if reconnect_cfg:
                 proto, fields = _conn_open_fields_from_reconnect(reconnect_cfg)
@@ -3152,6 +3425,14 @@ class CommTool(SessionHostMixin, QMainWindow):
                 checked["address"], checked.get("service_uuid", ""),
                 checked["write_uuid"], checked["notify_uuid"],
                 write_mode=checked.get("write_mode", "auto"))
+        elif proto == PROTO_RTT:
+            conn = RttConn(
+                checked["device"], checked.get("speed", 4000),
+                checked.get("interface", "SWD"),
+                checked.get("address", 0), checked.get("channel", 0),
+                serial_no=checked.get("probe", ""),
+                reset_on_open=checked.get("reset", False),
+                search_size=checked.get("search_size", 0))
         else:
             conn = UdpConn(
                 checked["local_ip"], checked["lport"],
@@ -3420,13 +3701,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 不能拿新值解释旧连接(见 __init__ 处 _conn_proto 注释)。在此处一次性取，早于下面
         # close_conn() 把它清空；失败/无连接时回退读下拉框。
         proto = self._conn_proto or (self.cb_proto.currentText() if hasattr(self, "cb_proto") else "")
-        ble_key = _BLE_ERROR_I18N.get(msg)
+        ble_key = _BLE_ERROR_I18N.get(msg) or _RTT_ERROR_I18N.get(msg)
         key = {PROTO_SERIAL: "err_open_failed",
                PROTO_TCP_SERVER: "err_listen_failed",
                PROTO_TCP_CLIENT: "err_connect_failed",
                PROTO_UDP: "err_bind_failed",
                PROTO_UDP_MULTICAST: "err_bind_failed",
-               PROTO_BLE: "err_connect_failed"}.get(proto, "err_connect_failed")
+               PROTO_BLE: "err_connect_failed",
+               PROTO_RTT: "err_connect_failed"}.get(proto, "err_connect_failed")
         # 串口已打开成功后 reader 运行时报错(拔出/掉线等)：文案用"连接中断"而非"打开失败"
         if proto == PROTO_SERIAL and self._conn_engaged:
             key = "err_serial_runtime"
@@ -3509,7 +3791,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             serial_limit=self._serial_reconnect_limit,
             attempt_limit=(
                 _reconnect_policy.BLE_RECONNECT_LIMIT
-                if proto == PROTO_BLE else None),
+                if proto == PROTO_BLE else (
+                    _reconnect_policy.RTT_RECONNECT_LIMIT
+                    if proto == PROTO_RTT else None)),
         )
         action = plan.get("action")
         if action == "skip":
@@ -3759,6 +4043,23 @@ class CommTool(SessionHostMixin, QMainWindow):
                 mtu = getattr(self.conn, "mtu", None) or 23
                 self.lbl_state.setText(self._t(
                     "ble_connected", name=label, addr=addr, mtu=mtu))
+                self._set_state_color(opened=True)
+            else:
+                self.lbl_state.setText(self._t("net_connecting"))
+                self._set_state_color(opened=False)
+        elif proto == PROTO_RTT:
+            dev = (self.cb_rtt_device.currentText().strip()
+                   if hasattr(self, "cb_rtt_device") else "")
+            ch = (self.cb_rtt_channel.currentData()
+                  if hasattr(self, "cb_rtt_channel") else 0)
+            if getattr(self.conn, "is_open", False):
+                # 链路已通但控制块还没出现时说清楚在等什么，别让用户
+                # 对着「已连接 + 一直没数据」猜。
+                key = ("rtt_connected"
+                       if getattr(self.conn, "control_block_seen", True)
+                       else "rtt_waiting_cb")
+                self.lbl_state.setText(self._t(
+                    key, dev=dev or "RTT", ch=ch))
                 self._set_state_color(opened=True)
             else:
                 self.lbl_state.setText(self._t("net_connecting"))
@@ -4197,7 +4498,15 @@ class CommTool(SessionHostMixin, QMainWindow):
                 getattr(self, "ed_ble_write", None),
                 getattr(self, "ed_ble_notify", None),
                 getattr(self, "cb_ble_write_mode", None),
-                getattr(self, "btn_ble_swap", None)):
+                getattr(self, "btn_ble_swap", None),
+                getattr(self, "cb_rtt_device", None),
+                getattr(self, "cb_rtt_interface", None),
+                getattr(self, "cb_rtt_speed", None),
+                getattr(self, "ed_rtt_address", None),
+                getattr(self, "cb_rtt_channel", None),
+                getattr(self, "cb_rtt_probe", None),
+                getattr(self, "sw_rtt_reset", None),
+                getattr(self, "btn_rtt_device_pick", None)):
             if w is not None:
                 w.setEnabled(enabled)
 
@@ -4281,6 +4590,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._cpreset_dlg.refresh_theme()
         if getattr(self, "_ble_scan_dlg", None) is not None:
             self._ble_scan_dlg.refresh_theme()
+        if getattr(self, "_rtt_dev_dlg", None) is not None:
+            self._rtt_dev_dlg.refresh_theme()
         if getattr(self, "_triggers_dlg", None) is not None:
             self._triggers_dlg.refresh_theme()
         if getattr(self, "_frame_dlg", None) is not None:
@@ -6145,7 +6456,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             port = ""
             if hasattr(self, "cb_port"):
                 port = (self.cb_port.currentText() or "").strip()
-            return "%s %s" % (proto, port or "?").strip()
+            return ("%s %s" % (proto, port or "?")).strip()
         if proto == PROTO_TCP_CLIENT:
             return "%s %s:%s" % (
                 proto,
@@ -6175,7 +6486,12 @@ class CommTool(SessionHostMixin, QMainWindow):
                 name = (self.ed_ble_name.text() or "").strip()
             if hasattr(self, "ed_ble_address"):
                 addr = (self.ed_ble_address.text() or "").strip()
-            return "%s %s" % (proto, name or addr or "?").strip()
+            return ("%s %s" % (proto, name or addr or "?")).strip()
+        if proto == PROTO_RTT:
+            dev = ""
+            if hasattr(self, "cb_rtt_device"):
+                dev = (self.cb_rtt_device.currentText() or "").strip()
+            return ("%s %s" % (proto, dev or "?")).strip()
         return str(proto or "?")
 
     def _recorder_link_snapshot(self):
@@ -6434,6 +6750,18 @@ class CommTool(SessionHostMixin, QMainWindow):
             "ble_write_mode": (
                 self.cb_ble_write_mode.currentData() or "auto"
                 if hasattr(self, "cb_ble_write_mode") else "auto"),
+            "rtt_device": (self.cb_rtt_device.currentText()
+                           if hasattr(self, "cb_rtt_device") else ""),
+            "rtt_interface": (self.cb_rtt_interface.currentText()
+                              if hasattr(self, "cb_rtt_interface") else ""),
+            "rtt_speed": self._rtt_speed_text(),
+            "rtt_address": (self.ed_rtt_address.text()
+                            if hasattr(self, "ed_rtt_address") else ""),
+            "rtt_channel": (self.cb_rtt_channel.currentData()
+                            if hasattr(self, "cb_rtt_channel") else 0),
+            "rtt_probe": self._rtt_probe_text(),
+            "rtt_reset": (self.sw_rtt_reset.isChecked()
+                          if hasattr(self, "sw_rtt_reset") else False),
         })
 
     def _apply_connection_fields(self, fields, persist_defaults=False):
@@ -6502,6 +6830,34 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.cb_ble_profile.setCurrentIndex(idx if idx >= 0 else self.cb_ble_profile.findData(
                 ble_uuid.PROFILE_CUSTOM))
             self.cb_ble_profile.blockSignals(False)
+        if hasattr(self, "cb_rtt_device"):
+            from transport import rtt_io
+            self.cb_rtt_device.blockSignals(True)
+            self.cb_rtt_device.setCurrentText(str(fields.get("rtt_device") or ""))
+            self.cb_rtt_device.blockSignals(False)
+            if hasattr(self, "cb_rtt_interface"):
+                self.cb_rtt_interface.setCurrentText(rtt_io.normalize_interface(
+                    fields.get("rtt_interface")))
+            speed = rtt_io.parse_speed(fields.get("rtt_speed"))
+            if speed is not None:
+                self._set_rtt_speed_text(speed)
+            if hasattr(self, "ed_rtt_address"):
+                # 地址框支持“起点+范围”；预设回填必须保留完整表达式。
+                self.ed_rtt_address.setText(str(fields.get("rtt_address") or ""))
+            if hasattr(self, "cb_rtt_channel"):
+                ch = rtt_io.normalize_channel(fields.get("rtt_channel"))
+                cidx = self.cb_rtt_channel.findData(ch if ch is not None else 0)
+                self.cb_rtt_channel.blockSignals(True)
+                self.cb_rtt_channel.setCurrentIndex(cidx if cidx >= 0 else 0)
+                self.cb_rtt_channel.blockSignals(False)
+            if hasattr(self, "cb_rtt_probe"):
+                self._set_rtt_probe_text(fields.get("rtt_probe"))
+            if hasattr(self, "sw_rtt_reset"):
+                self.sw_rtt_reset.blockSignals(True)
+                self.sw_rtt_reset.setChecked(
+                    str(fields.get("rtt_reset", "")).lower()
+                    not in ("", "0", "false", "no", "none"))
+                self.sw_rtt_reset.blockSignals(False)
         dtr = bool(fields["serial_dtr"] if "serial_dtr" in provided_fields else
                    self.settings.value("serial_dtr", True, type=bool))
         rts = bool(fields["serial_rts"] if "serial_rts" in provided_fields else
@@ -9131,9 +9487,19 @@ class CommTool(SessionHostMixin, QMainWindow):
                     fields.get("ble_write_uuid"),
                     fields.get("ble_notify_uuid"),
                     fields.get("ble_write_mode"))
+            elif configured == PROTO_RTT:
+                expected = _conn_rtt_sig(
+                    configured,
+                    fields.get("rtt_device"),
+                    fields.get("rtt_speed"),
+                    fields.get("rtt_interface"),
+                    fields.get("rtt_address"),
+                    fields.get("rtt_channel"),
+                    fields.get("rtt_probe"),
+                    fields.get("rtt_reset"))
             else:
                 expected = _conn_proto_sig(configured)
-        return bool(actual in (PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE)
+        return bool(actual in (PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE, PROTO_RTT)
                     and configured == actual  # 导入改了协议但旧连接未重连：暂停，禁止发错制式
                     and getattr(self, "_conn_cfg", None) == expected)
 
@@ -10088,7 +10454,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                     e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
                     error=True)
             return False
-        strict_full_write = getattr(self, "_conn_proto", None) in (PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE)
+        strict_full_write = getattr(self, "_conn_proto", None) in (
+            PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE, PROTO_RTT)
         outcome = _ar_core_classify_send(
             sent=sent, payload_len=len(data),
             no_target_sentinel=SEND_NO_TARGET,
@@ -10299,7 +10666,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._refresh_stat_labels(with_tooltip=False)
             return
         strict_full_write = getattr(self, "_conn_proto", None) in (
-            PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE)
+            PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE, PROTO_RTT)
         if strict_full_write and sent != len(data):
             # 与普通发送/文件传输保持一致：短写只统计实际交付的前缀，不能把
             # 整块登记到宏录制、数据录制或 PCAP。TCP 流还需断开重建。
@@ -11196,6 +11563,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 「目标」下拉里的「全部」项随语言刷新
         if hasattr(self, "cb_target") and self.cb_target.count() > 0:
             self.cb_target.setItemText(0, self._t("client_all"))
+        # RTT 调试器下拉的「自动」项随语言刷新
+        if hasattr(self, "cb_rtt_probe") and self.cb_rtt_probe.count() > 0:
+            was_auto = not self._rtt_probe_text()
+            self.cb_rtt_probe.blockSignals(True)
+            self.cb_rtt_probe.setItemText(0, self._t("rtt_probe_auto"))
+            if was_auto:
+                self.cb_rtt_probe.setCurrentIndex(0)
+            self.cb_rtt_probe.blockSignals(False)
 
         if self._tray:
             self._tray.setToolTip(self._t("app_title") + self._title_suffix)
@@ -11229,6 +11604,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         i18n_ui.retranslate_dialogs(self)
         if getattr(self, "_ble_scan_dlg", None) is not None:
             self._ble_scan_dlg.retranslate()
+        if getattr(self, "_rtt_dev_dlg", None) is not None:
+            self._rtt_dev_dlg.retranslate()
         self._rebuild_connection_preset_combo()
         # 选中即算校验和的状态栏文案是算出来的（含「选中」「选区过大」等译词），
         # tr_text 机制刷不到 —— 重算一次，让它跟着切语言
@@ -11440,6 +11817,17 @@ class CommTool(SessionHostMixin, QMainWindow):
                 s.setValue(
                     "ble_write_mode",
                     self.cb_ble_write_mode.currentData() or "auto")
+            if hasattr(self, "cb_rtt_device"):
+                s.setValue("rtt_device", self.cb_rtt_device.currentText())
+                s.setValue("rtt_interface", self.cb_rtt_interface.currentText())
+                s.setValue("rtt_speed", self._rtt_speed_text())
+                s.setValue("rtt_address", self.ed_rtt_address.text())
+                s.setValue("rtt_channel", self.cb_rtt_channel.currentData()
+                           if self.cb_rtt_channel.currentData() is not None else 0)
+                s.setValue("rtt_probe", self._rtt_probe_text())
+                s.setValue("rtt_reset", bool(
+                    self.sw_rtt_reset.isChecked()
+                    if hasattr(self, "sw_rtt_reset") else False))
             # 串口设置
             s.setValue("ser_port", self.cb_port.currentData() or "")
             s.setValue("ser_baud", self.cb_baud.currentText())
@@ -11667,6 +12055,39 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.cb_ble_profile.blockSignals(True)
                 self.cb_ble_profile.setCurrentIndex(idx)
                 self.cb_ble_profile.blockSignals(False)
+        if hasattr(self, "cb_rtt_device"):
+            from transport import rtt_io
+            v = s.value("rtt_device", None)
+            if v is not None:
+                self.cb_rtt_device.setCurrentText(str(v))
+            v = s.value("rtt_interface", None)
+            if v is not None:
+                self.cb_rtt_interface.setCurrentText(rtt_io.normalize_interface(v))
+            v = s.value("rtt_speed", None)
+            if v is not None and rtt_io.parse_speed(v) is not None:
+                self._set_rtt_speed_text(v)
+            v = s.value("rtt_address", None)
+            if v is not None:
+                self.ed_rtt_address.setText(str(v))
+            v = s.value("rtt_channel", None)
+            ch = rtt_io.normalize_channel(v)
+            if ch is not None:
+                cidx = self.cb_rtt_channel.findData(ch)
+                if cidx >= 0:
+                    self.cb_rtt_channel.blockSignals(True)
+                    self.cb_rtt_channel.setCurrentIndex(cidx)
+                    self.cb_rtt_channel.blockSignals(False)
+            v = s.value("rtt_dll_path", None)
+            if v is not None:
+                rtt_io_mod.set_dll_hint(str(v))
+            v = s.value("rtt_probe", None)
+            if v is not None:
+                self._set_rtt_probe_text(v)
+            if hasattr(self, "sw_rtt_reset"):
+                self.sw_rtt_reset.blockSignals(True)
+                self.sw_rtt_reset.setChecked(
+                    s.value("rtt_reset", False, type=bool))
+                self.sw_rtt_reset.blockSignals(False)
         # 串口设置恢复
         restore_combo(self.cb_baud, "ser_baud")
         restore_combo(self.cb_databits, "ser_databits")
@@ -11732,9 +12153,13 @@ class CommTool(SessionHostMixin, QMainWindow):
         bar = getattr(self, "quick_start_bar", None)
         if bar is None:
             return
+        # 常显：数据刷出来也不收起（此前是「空页面才显示、有数据即隐藏」，
+        # 用户反馈数据一来按钮就没了，改回一直可见）。空态才计算最近/示例按钮
+        # 的可见性，数据态提前返回，保证高频 RX 下这个 textChanged 槽足够轻。
+        if not bar.isVisible():
+            bar.setVisible(True)
         view = getattr(self, "txt_recv", None)
         empty = bool(view is not None and view.document().characterCount() <= 1)
-        bar.setVisible(empty)
         if not empty:
             return
         recent = self._recent_projects() if hasattr(self, "settings") else []
@@ -13059,6 +13484,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._save_settings()
         self._close_all_sessions(update_active_ui=True)
         self._stop_ble_scan()
+        self._stop_rtt_catalog()
         try:
             from transport import ble_io
             ble_io.shutdown_loop()
@@ -13088,7 +13514,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         for attr in ("_ar_dlg", "_multi_send_dlg", "_keyword_dlg", "_plot_dlg", "_frame_dlg",
                      "_mbm_dlg", "_seq_dlg", "_frame_builder_dlg", "_toolbox_dlg", "_xfer_dlg",
                      "_bridge_dlg", "_dash_dlg", "_script_dlg", "_rr_dlg", "_rd_dlg",
-                     "_snip_dlg", "_send_hist_dlg", "_cpreset_dlg", "_ble_scan_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg"):
+                     "_snip_dlg", "_send_hist_dlg", "_cpreset_dlg", "_ble_scan_dlg", "_triggers_dlg", "_device_center_dlg", "_structured_dlg", "_rtt_dev_dlg"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 try:
