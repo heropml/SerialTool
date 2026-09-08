@@ -15,7 +15,7 @@ import pytest
 from PyQt5.QtCore import Qt
 
 from ui import rtt_device_dialog as rdd
-from ui.conn_ui import PROTO_BLE, PROTO_RTT
+from ui.conn_ui import PROTO_BLE, PROTO_RTT, PROTO_SERIAL, visible_conn_types
 from transport.rtt_io import RttCatalog, RttConn
 
 _APP = QApplication.instance() or QApplication([])
@@ -66,13 +66,23 @@ def _pump(seconds=1.0, dt=0.02):
         time.sleep(dt)
 
 
-def test_rtt_type_shows_rows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_rtt_type_shows_rows(tmp_path, monkeypatch, platform):
+    from ui import settings_card
+
+    monkeypatch.setattr(settings_card, "visible_conn_types",
+                        lambda: visible_conn_types(platform))
     w = _make_window(tmp_path, monkeypatch)
-    w.cb_proto.setCurrentText(PROTO_BLE)
+    has_ble = platform == "win32"
+    assert (w.cb_proto.findText(PROTO_BLE) >= 0) == has_ble
+    initial = PROTO_BLE if has_ble else PROTO_SERIAL
+    w.cb_proto.setCurrentText(initial)
+    assert w.cb_proto.currentText() == initial
     w._update_net_fields()
-    assert w.row_ble_address.isHidden() is False
+    assert w.row_ble_address.isHidden() is not has_ble
     assert w.row_rtt_device.isHidden() is True
     w.cb_proto.setCurrentText(PROTO_RTT)
+    assert w.cb_proto.currentText() == PROTO_RTT
     w._update_net_fields()
     assert w.row_rtt_device.isHidden() is False
     assert w.row_rtt_interface.isHidden() is False
@@ -84,6 +94,12 @@ def test_rtt_type_shows_rows(tmp_path, monkeypatch):
     assert w.row_port.isHidden() is True
     assert w.row_local_ip.isHidden() is True
     assert w.row_ble_address.isHidden() is True
+
+    w.cb_proto.setCurrentText(initial)
+    w._update_net_fields()
+    assert w.row_rtt_device.isHidden() is True
+    assert w.row_ble_address.isHidden() is not has_ble
+    assert w.row_port.isHidden() is has_ble
 
 
 def test_rtt_capture_apply_roundtrip(tmp_path, monkeypatch):

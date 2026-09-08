@@ -1029,7 +1029,20 @@ def test_new_conn_rejected_while_previous_worker_stuck(monkeypatch):
         conn2.close()
 
 
-# ----- J-Link 驱动发现（pylink 自带的只扫 C:\Program Files*） -----
+# ----- J-Link 驱动发现（Windows DLL / macOS dylib / Linux so） -----
+
+@pytest.fixture(params=[
+    ("win32", "JLink_x64.dll"),
+    ("darwin", "libjlinkarm.dylib"),
+    ("linux", "libjlinkarm.so"),
+], ids=["windows", "macos", "linux"])
+def driver_name(request, monkeypatch):
+    platform, name = request.param
+    # 只替换被测模块的 sys 引用，避免影响 pytest / pathlib / Qt 的宿主平台。
+    monkeypatch.setattr(rtt_io, "sys", types.SimpleNamespace(platform=platform))
+    _isolate_discovery(monkeypatch)
+    return name
+
 
 def _fake_install(tmp_path, name="JLink_V926", dll="JLink_x64.dll"):
     d = tmp_path / "Program Files" / "SEGGER" / name
@@ -1047,24 +1060,28 @@ def _isolate_discovery(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_find_jlink_dll_from_hint_dir(tmp_path, monkeypatch):
-    _isolate_discovery(monkeypatch)
-    install = _fake_install(tmp_path)
+def test_find_jlink_dll_from_hint_dir(tmp_path, driver_name):
+    install = _fake_install(tmp_path, dll=driver_name)
     assert rtt_io.find_jlink_dll() is None          # 隔离后确实找不到
     found = rtt_io.find_jlink_dll(hint=install)
-    assert found == os.path.join(install, "JLink_x64.dll")
+    assert found == os.path.join(install, driver_name)
     # 直接给 DLL 文件路径也认
     assert rtt_io.find_jlink_dll(hint=found) == found
 
 
-def test_find_jlink_dll_from_env_and_registry(tmp_path, monkeypatch):
-    _isolate_discovery(monkeypatch)
-    install = _fake_install(tmp_path)
+def test_find_jlink_dll_from_env(tmp_path, monkeypatch, driver_name):
+    install = _fake_install(tmp_path, dll=driver_name)
     monkeypatch.setenv(rtt_io.JLINK_ENV_VARS[0], install)
-    assert rtt_io.find_jlink_dll() == os.path.join(install, "JLink_x64.dll")
+    assert rtt_io.find_jlink_dll() == os.path.join(install, driver_name)
     monkeypatch.delenv(rtt_io.JLINK_ENV_VARS[0])
     assert rtt_io.find_jlink_dll() is None
-    # 注册表（SEGGER 装在哪个盘都会写）
+
+
+def test_find_jlink_dll_from_registry(tmp_path, monkeypatch):
+    _isolate_discovery(monkeypatch)
+    monkeypatch.setattr(rtt_io, "sys", types.SimpleNamespace(platform="win32"))
+    install = _fake_install(tmp_path)
+    # 注册表（SEGGER 装在哪个盘都会写）。
     monkeypatch.setattr(rtt_io, "_registry_jlink_dirs", lambda: [install])
     assert rtt_io.find_jlink_dll() == os.path.join(install, "JLink_x64.dll")
 
@@ -1083,10 +1100,9 @@ def test_scan_covers_green_copy_roots(tmp_path):
     assert rtt_io._scan_roots_under(str(tmp_path / "nope")) == []
 
 
-def test_find_jlink_dll_prefers_newest_version(tmp_path, monkeypatch):
-    _isolate_discovery(monkeypatch)
-    old = _fake_install(tmp_path / "a", "JLink_V794")
-    new = _fake_install(tmp_path / "b", "JLink_V926")
+def test_find_jlink_dll_prefers_newest_version(tmp_path, monkeypatch, driver_name):
+    old = _fake_install(tmp_path / "a", "JLink_V794", dll=driver_name)
+    new = _fake_install(tmp_path / "b", "JLink_V926", dll=driver_name)
     monkeypatch.setattr(rtt_io, "_scan_jlink_dirs",
                         lambda: sorted([old, new],
                                        key=lambda d: os.path.basename(d),
@@ -1094,33 +1110,31 @@ def test_find_jlink_dll_prefers_newest_version(tmp_path, monkeypatch):
     assert rtt_io.find_jlink_dll().startswith(new)
 
 
-def test_dll_in_directory_does_not_fall_back(tmp_path, monkeypatch):
+def test_dll_in_directory_does_not_fall_back(tmp_path, monkeypatch, driver_name):
     """手指的目录没有驱动就得如实说没有，不能被兜底搜索掩盖。"""
-    install = _fake_install(tmp_path)
-    monkeypatch.setattr(rtt_io, "_registry_jlink_dirs", lambda: [install])
+    install = _fake_install(tmp_path, dll=driver_name)
+    monkeypatch.setattr(rtt_io, "_scan_jlink_dirs", lambda: [install])
     empty = tmp_path / "empty"
     empty.mkdir()
     assert rtt_io.find_jlink_dll() is not None      # 兜底能找到
     assert rtt_io.dll_in_directory(str(empty)) is None
     assert rtt_io.dll_in_directory("") is None
-    assert rtt_io.dll_in_directory(install) == os.path.join(install, "JLink_x64.dll")
+    assert rtt_io.dll_in_directory(install) == os.path.join(install, driver_name)
 
 
-def test_set_dll_hint_roundtrip(tmp_path, monkeypatch):
-    _isolate_discovery(monkeypatch)
-    install = _fake_install(tmp_path)
+def test_set_dll_hint_roundtrip(tmp_path, driver_name):
+    install = _fake_install(tmp_path, dll=driver_name)
     try:
         rtt_io.set_dll_hint(install)
         assert rtt_io.get_dll_hint() == install
-        assert rtt_io.find_jlink_dll() == os.path.join(install, "JLink_x64.dll")
+        assert rtt_io.find_jlink_dll() == os.path.join(install, driver_name)
     finally:
         rtt_io.set_dll_hint("")
     assert rtt_io.find_jlink_dll() is None
 
 
-def test_make_jlink_uses_found_dll(tmp_path, monkeypatch):
-    _isolate_discovery(monkeypatch)
-    install = _fake_install(tmp_path)
+def test_make_jlink_uses_found_dll(tmp_path, driver_name):
+    install = _fake_install(tmp_path, dll=driver_name)
     seen = {}
 
     class _Lib:
@@ -1133,7 +1147,7 @@ def test_make_jlink_uses_found_dll(tmp_path, monkeypatch):
 
     mod = types.SimpleNamespace(Library=_Lib, JLink=_JL, enums=_FakeEnums())
     rtt_io.make_jlink(mod, hint=install)
-    assert seen["dllpath"] == os.path.join(install, "JLink_x64.dll")
+    assert seen["dllpath"] == os.path.join(install, driver_name)
     assert isinstance(seen["lib"], _Lib)
     # 找不到就退回 pylink 自己的查找（不传 lib）
     seen.clear()
