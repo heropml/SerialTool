@@ -21,7 +21,7 @@
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 发布版 | `comm-v1.8.0` | Windows Setup/onefile 与 macOS DMG 已发布；Linux x86_64 `.run` 完成后追加同一 tag；清单带各平台 `sha256` / `size` |
+| 发布版 | `comm-v1.8.0` | Windows Setup/onefile、macOS DMG 与 Linux x86_64 `.run` 已发布；清单带各平台 `sha256` / `size` |
 | 测试 | **1799 collected** | 全量 pytest、RTT 专项、Ruff 与编译检查已通过 |
 | `main_window.py` | ~11944 行 | S-2 55 knives **已收口**；壳层有意保留 |
 | 最长函数 | `__init__` / 连接侧 | `apply_style` / `_apply_language` 已薄拆到 `app_style` / `i18n_ui` |

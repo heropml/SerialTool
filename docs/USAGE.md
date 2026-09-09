@@ -65,7 +65,7 @@ SEGGER J-Link RTT support and transport hardening:
 - **Probe ownership** — choose a J-Link serial number when several probes are attached. Auto mode retries the most recently successful probe first, then falls back to the default probe only when it is unavailable; an explicit serial number never falls back to another probe.
 - **Connection feedback** — J-Link DLL access is serialized. A target that has not yet created its RTT control block shows a waiting notice instead of a false disconnect; runtime loss and failed downstream writes are surfaced clearly.
 - **Prerequisite** — install the SEGGER J-Link driver in addition to the bundled `pylink-square` Python package.
-- **Availability** — Windows Setup, onefile, and the macOS Apple Silicon DMG are published on this tag. The Linux artifact will be appended after its platform build completes.
+- **Availability** — Windows Setup, onefile, the macOS Apple Silicon DMG, and the Linux x86_64 `.run` are all published on the `comm-v1.8.0` tag.
 
 ---
 
@@ -1052,7 +1052,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows and macOS release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. The Linux asset is added to the same tag after its platform build finishes.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
 
 ### Windows
 
@@ -1073,7 +1073,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: download the x86_64 `.run` asset once it appears on `comm-v1.8.0`
+- File: `CommTool_Setup_v1.8.0_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run
