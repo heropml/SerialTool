@@ -4,12 +4,14 @@
   "url_mac": [
     "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.0/CommTool_v1.8.0.dmg"
   ],
-  "url_linux": [],
+  "url_linux": [
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.0/CommTool_Setup_v1.8.0_linux_x86_64.run"
+  ],
   "sha256": "989b8bc60cbcf76c513283a9702021b6b87892d1c2988d6393fa9b7cd8e15c94",
   "size": 49001016,
   "sha256_mac": "d19541d97948746c1ab9f9d6480ab0b77d33c6962ab1b18f21c2f8de04f37cde",
   "size_mac": 49468557,
-  "sha256_linux": "",
-  "size_linux": 0,
+  "sha256_linux": "9da6b9b16eafc4852eb6e0556c47c24eb8264fc2919a1ab98ae7414e9a5649f5",
+  "size_linux": 130050223,
   "notes": "串口调试助手 / 网络调试工具：新增 SEGGER J-Link RTT、多探针选择与器件目录"
 }
