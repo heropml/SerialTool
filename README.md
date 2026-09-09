@@ -666,7 +666,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
 - **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。Windows / macOS / Linux x86_64 已发。1668 passed / 11 skipped / 295 subtests。
 - **v67 (v1.7.4)**: **正式版** — **更新清单校验 SHA-256/大小**（缺摘要只给人工下载）；**Webhook 默认仅公网 HTTPS 并钉死解析 IP**；自动应答冷却不再误吞首次命中；滚动诊断日志与脱敏诊断包；空白终端快速开始、帧模板与录制会话索引。Windows / macOS / Linux x86_64。
-- **v68 (v1.8.0)**: **正式版** — **SEGGER J-Link RTT**（器件目录选择窗、SWD/JTAG、速度/通道/控制块搜索、可选复位、探针 SN 选择与安全自动回退）；DLL 访问串行化、控制块等待提示、RTT 运行期错误反馈；三语文档与示例工程同步。Windows 安装版/单文件版先发，macOS/Linux 资产后续追加同一 tag。
+- **v68 (v1.8.0)**: **正式版** — **SEGGER J-Link RTT**（器件目录选择窗、SWD/JTAG、速度/通道/控制块搜索、可选复位、探针 SN 选择与安全自动回退）；DLL 访问串行化、控制块等待提示、RTT 运行期错误反馈；三语文档与示例工程同步。Windows 安装版/单文件版与 macOS Apple Silicon DMG 已发布，Linux 资产后续追加同一 tag。
 
 ---
 

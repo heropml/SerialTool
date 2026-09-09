@@ -22,8 +22,8 @@
 
 ### 发布范围
 
-- 本轮先发布 **Windows** 安装版与单文件版，tag 为 `comm-v1.8.0`。
-- macOS（Apple Silicon）与 Linux x86_64 安装包将在构建完成后追加到同一 tag；在资产出现前，应用只提供该平台的手动 Release 页面。
+- **Windows** 安装版、单文件版与 **macOS（Apple Silicon）** DMG 已发布，tag 为 `comm-v1.8.0`。
+- Linux x86_64 安装包将在构建完成后追加到同一 tag；在资产出现前，应用只提供该平台的手动 Release 页面。
 
 ## 下载
 
@@ -31,7 +31,7 @@
 |------|------|------|
 | Windows 安装版 | `CommTool_Setup_v1.8.0.exe` | 推荐，向导安装 + 桌面快捷方式 |
 | Windows 单文件版 | `CommTool_v1.8.0.exe` | 免安装，双击直接运行（首启自解压稍慢 1~2s） |
-| macOS（Apple Silicon） | 待追加至 `comm-v1.8.0` | arm64 `.dmg` |
+| macOS（Apple Silicon） | `CommTool_v1.8.0.dmg` | arm64 `.dmg`，拖入“应用程序”安装 |
 | Linux（x86_64） | 待追加至 `comm-v1.8.0` | `.run`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
 
 > Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。RTT 功能需额外安装 SEGGER J-Link 驱动。

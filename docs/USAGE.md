@@ -65,7 +65,7 @@ SEGGER J-Link RTT support and transport hardening:
 - **Probe ownership** — choose a J-Link serial number when several probes are attached. Auto mode retries the most recently successful probe first, then falls back to the default probe only when it is unavailable; an explicit serial number never falls back to another probe.
 - **Connection feedback** — J-Link DLL access is serialized. A target that has not yet created its RTT control block shows a waiting notice instead of a false disconnect; runtime loss and failed downstream writes are surfaced clearly.
 - **Prerequisite** — install the SEGGER J-Link driver in addition to the bundled `pylink-square` Python package.
-- **Availability** — this tag first ships Windows Setup and onefile assets. macOS and Linux artifacts are appended to the same tag after their platform builds complete.
+- **Availability** — Windows Setup, onefile, and the macOS Apple Silicon DMG are published on this tag. The Linux artifact will be appended after its platform build completes.
 
 ---
 
@@ -1052,7 +1052,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. macOS and Linux assets are added to the same tag after their platform builds finish.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows and macOS release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. The Linux asset is added to the same tag after its platform build finishes.
 
 ### Windows
 
@@ -1062,7 +1062,7 @@ Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases).
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download the `.dmg` asset once it appears on `comm-v1.8.0`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.0.dmg` from `comm-v1.8.0`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
