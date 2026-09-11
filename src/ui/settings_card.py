@@ -4,7 +4,7 @@
 S-2 R38: move CommTool.build_settings_card body here so main_window
 stays a thin wrapper. Widgets are attached onto the host `app`.
 """
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtWidgets import (
     QComboBox, QCompleter, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QWidget,
@@ -37,7 +37,22 @@ def build(app):
     layout = QVBoxLayout(card)
     layout.setContentsMargins(14, 10, 14, 10)
     layout.setSpacing(6)
-    layout.addWidget(app._tr_label("conn_settings", 12, bold=True))
+    # 标题行：标题 + 右上角图钉（图钉管的是整条侧栏的自动隐藏，
+    # 借这里的标题行是为了不额外占一行高度 —— 侧栏顶端就是这张卡）
+    title_row = QWidget()
+    trl = QHBoxLayout(title_row)
+    trl.setContentsMargins(0, 0, 0, 0)
+    trl.setSpacing(6)
+    trl.addWidget(app._tr_label("conn_settings", 12, bold=True))
+    trl.addStretch(1)
+    app.btn_sidebar_pin = QPushButton()
+    app.btn_sidebar_pin.setObjectName("SidebarPinBtn")
+    app.btn_sidebar_pin.setFixedSize(20, 20)
+    app.btn_sidebar_pin.setIconSize(QSize(14, 14))
+    app.btn_sidebar_pin.setCursor(Qt.PointingHandCursor)
+    app.btn_sidebar_pin.setFocusPolicy(Qt.NoFocus)
+    trl.addWidget(app.btn_sidebar_pin)
+    layout.addWidget(title_row)
 
     def make_row(label_key, field):
         """一行：固定宽标签 + 字段，整行包成 QWidget 便于按协议显隐。"""

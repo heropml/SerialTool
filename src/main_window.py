@@ -29,6 +29,7 @@ try:
 except ImportError:
     APP_VERSION = "0.0.0"
 from ui import app_style
+from ui.sidebar_dock import SidebarDock
 from ui import i18n_ui
 from ui.theme import (ROLE_PROP, ROLE_TS, ROLE_RX, ROLE_TX, THEMES, THEME_DEFAULT, _mix,
                    chrome_for, COLOR_TEXT, COLOR_TEXT_SECONDARY, COLOR_BLUE)
@@ -1059,7 +1060,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         self.h_splitter = QSplitter(Qt.Horizontal)
         self.h_splitter.setChildrenCollapsible(False)
         self.h_splitter.setHandleWidth(8)
-        self.h_splitter.addWidget(self.build_sidebar())
+        self.sidebar = self.build_sidebar()
+        self.h_splitter.addWidget(self.sidebar)
         self.h_splitter.addWidget(right_container)
         self.h_splitter.setStretchFactor(0, 0)
         self.h_splitter.setStretchFactor(1, 1)
@@ -1067,7 +1069,21 @@ class CommTool(SessionHostMixin, QMainWindow):
         # （原来那一列只放 40px 的开关），280 会差十几像素、逼出横向滚动条。上限仍 380、可拖。
         self.h_splitter.setSizes([300, 840])
 
-        content_layout.addWidget(self.h_splitter, 1)
+        # 侧栏自动隐藏：竖标签贴工作区最左边，分隔条占其余；浮层也挂在这一行里，
+        # 这样切换工作台分类时跟着整页一起隐藏（见 ui/sidebar_dock.py）。
+        sidebar_row = QWidget()
+        sidebar_row.setObjectName("SidebarRow")
+        row_l = QHBoxLayout(sidebar_row)
+        row_l.setContentsMargins(0, 0, 0, 0)
+        row_l.setSpacing(0)
+        self._sidebar_dock = SidebarDock(
+            self, self.sidebar, self.h_splitter, sidebar_row)
+        row_l.addWidget(self._sidebar_dock.strip)
+        row_l.addWidget(self.h_splitter, 1)
+        self._sidebar_dock.bind_pin_button(getattr(self, "btn_sidebar_pin", None))
+        self._sidebar_dock.retranslate()
+
+        content_layout.addWidget(sidebar_row, 1)
 
         for workspace_key in ("protocol", "simulation", "automation", "data", "bridge"):
             page = self._build_workspace_page(workspace_key)
@@ -2913,6 +2929,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 深色主题下圆角/边框处会露白边。这里把每个下拉的弹出容器背景刷成下拉色，彻底消除白边。
         for combo in self.findChildren(QComboBox):
             _style_one_combo_popup(combo, c)
+
+        # 侧栏竖标签是自绘的、浮层用自己的 QSS，全局表刷不到它们
+        if getattr(self, "_sidebar_dock", None) is not None:
+            self._sidebar_dock.apply_theme(c)
 
     # ----- 连接 打开/关闭 -----
     def toggle_conn(self):
@@ -11499,6 +11519,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.findChildren(QWidget), self._t, set_tooltip,
             label_col_width=self._label_col_width, log=_log)
 
+        if getattr(self, "_sidebar_dock", None) is not None:
+            self._sidebar_dock.retranslate()   # 竖标签文字自绘，tr_text 刷不到
+
         self._apply_theme_label_styles()
         self._update_legend_label()
         if hasattr(self, "_refresh_session_tab_styles"):
@@ -11772,7 +11795,12 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._save_device_link()
             s = self.settings
             s.setValue("geometry", self.saveGeometry())
-            s.setValue("h_splitter", self.h_splitter.saveState())
+            dock = getattr(self, "_sidebar_dock", None)
+            s.setValue("h_splitter",
+                       dock.split_state() if dock is not None
+                       else self.h_splitter.saveState())
+            s.setValue("sidebar_autohide",
+                       dock is not None and not dock.is_pinned())
             s.setValue("recv_font_size", self._recv_font_size)
             s.setValue("rx_hex", self.sw_rx_hex.isChecked())
             s.setValue("hexdump_view", self.sw_hexdump.isChecked())
@@ -11889,6 +11917,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             h_state = s.value("h_splitter")
             if h_state:
                 self.h_splitter.restoreState(h_state)
+            # 先还原左右比例再摘出：侧栏宽度取自分隔条，顺序反了浮层宽度就成兜底值
+            if getattr(self, "_sidebar_dock", None) is not None:
+                self._sidebar_dock.set_pinned(
+                    not to_bool(s.value("sidebar_autohide", False)))
         except (TypeError, ValueError, RuntimeError):
             _log.debug("_load_settings geometry failed", exc_info=True)
 

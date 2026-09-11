@@ -413,8 +413,20 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
         QScrollArea#Sidebar > QWidget > QWidget {{
             background: transparent;
         }}
-        QWidget#SidebarHost {{
+        QWidget#SidebarHost, QWidget#SidebarRow {{
             background: transparent;
+        }}
+        QPushButton#SidebarPinBtn {{
+            background: transparent;
+            border: 0px;
+            border-radius: 4px;
+            padding: 0px;
+        }}
+        QPushButton#SidebarPinBtn:hover {{
+            background-color: {c['ghost_hover']};
+        }}
+        QPushButton#SidebarPinBtn:pressed {{
+            background-color: {c['ghost_pressed']};
         }}
         """
 

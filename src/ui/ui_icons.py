@@ -66,3 +66,24 @@ def folder_icon(color, size=16):
     painter.drawLine(QLineF(7.0, 3.5, 8.3, 5.0))
     painter.end()
     return QIcon(pixmap)
+
+
+def pin_icon(color, size=14, pinned=True):
+    """图钉：``pinned`` 竖着=已固定，横着=自动隐藏（同 IDE 停靠面板的习惯）。"""
+    pixmap = _canvas(size)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color), 1.3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    center = size / 2.0
+    painter.translate(center, center)
+    if not pinned:
+        painter.rotate(90)
+    painter.drawLine(QLineF(-3.2, -4.2, 3.2, -4.2))   # 钉帽
+    painter.drawLine(QLineF(-2.2, -4.2, -2.2, 0.6))   # 左肩
+    painter.drawLine(QLineF(2.2, -4.2, 2.2, 0.6))     # 右肩
+    painter.drawLine(QLineF(-4.0, 0.6, 4.0, 0.6))     # 托盘
+    painter.drawLine(QLineF(0.0, 0.6, 0.0, 4.6))      # 针
+    painter.end()
+    return QIcon(pixmap)

@@ -46,3 +46,11 @@ tests. The migration should be a separate release track: introduce one `qt_compa
 surface, move imports package-by-package, validate high-DPI/tray/network behavior on
 all three platforms, then switch packaging. Mixing that migration into protocol or
 transport feature work would make regression attribution unreliable.
+
+## Sidebar presentation state (v1.8.1)
+
+`ui/sidebar_dock.py` owns pin/unpin, hover delay, flyout animation and dismissal.
+The flyout belongs to the terminal workspace row, and is explicitly hidden when
+that workspace hides. Its logical visibility is checked relative to the row so
+ancestor hiding cannot bypass cleanup. `main_window.py` persists the auto-hide
+preference and the two-widget splitter state captured before undocking.

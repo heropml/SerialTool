@@ -185,10 +185,11 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **左侧 sidebar + 右侧数据区**
   - 左：连接设置 / 数据区设置 / 发送区设置 三张卡片，`QGridLayout` 让所有右侧控件右对齐
   - 右：数据日志区 + 发送输入框（垂直可拖）
-  - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 240–360 px）
+  - 左右用 `QSplitter` 分隔，宽度可调（侧边栏 305–380 px）
+- **侧栏自动隐藏**：点连接设置右上角图钉收成竖标签；悬停或点击展开，移开约半秒收回，再点图钉恢复固定。快速扫过不展开，切换工作台会关闭浮层；输入框编辑、下拉或模态框交互期间保持展开。自动隐藏状态与固定宽度随配置保存。
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-- 右下：版本号 `v1.8.0`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+- 右下：版本号 `v1.8.1`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**9 个终端风配色方案**：
 
@@ -288,7 +289,7 @@ CommTool/
 ├── src/                    Python 源码（领域分包，import 形如 from transport.serial_io import …）
 │   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
 │   ├── main_window.py      主窗口 CommTool 主体类（最大模块，仍留在 src 根）
-│   ├── version.py          版本号单点真源 (__version__ = "1.8.0")
+│   ├── version.py          版本号单点真源 (__version__ = "1.8.1")
 │   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标）
@@ -666,6 +667,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v65 (v1.7.2)**: **正式版** — **源码按领域分包**（transport / protocol / modbus / sessions 等）；**B6-3 连接/发送/日志异常收窄**；RX 失败 toast 用界面标题。Windows / macOS / Linux x86_64 已发。1654 passed / 11 skipped / 295 subtests。
 - **v66 (v1.7.3)**: **正式版** — **运行时配置迁入 `config/`**（exe 同级或 `%APPDATA%\CommTool\config\`；旧 ini 首次启动迁入）；**触发 Webhook/外部程序走事件总线**；对话框/绘图误报 toast 收窄。Windows / macOS / Linux x86_64 已发。1668 passed / 11 skipped / 295 subtests。
 - **v67 (v1.7.4)**: **正式版** — **更新清单校验 SHA-256/大小**（缺摘要只给人工下载）；**Webhook 默认仅公网 HTTPS 并钉死解析 IP**；自动应答冷却不再误吞首次命中；滚动诊断日志与脱敏诊断包；空白终端快速开始、帧模板与录制会话索引。Windows / macOS / Linux x86_64。
+- **v69 (v1.8.1)**: 侧栏图钉自动隐藏、悬停浮层与布局记忆；修复快速扫过误展开和切换工作台后浮层回弹。Windows Setup / onefile 发布，macOS / Linux 新版待补包。
 - **v68 (v1.8.0)**: **正式版** — **SEGGER J-Link RTT**（器件目录选择窗、SWD/JTAG、速度/通道/控制块搜索、可选复位、探针 SN 选择与安全自动回退）；DLL 访问串行化、控制块等待提示、RTT 运行期错误反馈；三语文档与示例工程同步。Windows / macOS / Linux x86_64 已发。
 
 ---

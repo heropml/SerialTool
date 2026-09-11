@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.1](#whats-new-in-v181)
 - [What's New in v1.8.0](#whats-new-in-v180)
 - [What's New in v1.7.4](#whats-new-in-v174)
 - [What's New in v1.7.3](#whats-new-in-v173)
@@ -55,6 +56,13 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.1
+
+- **Auto-hide sidebar** — click the pin in the Connection header to collapse the sidebar into a vertical tab. Hover or click the tab to open it; move away to hide it after about half a second, or pin it again to keep it docked.
+- Brief passes over the tab do not open it. Switching workspaces closes the flyout and returning to Terminal keeps it closed. Editing an input or interacting with a popup/modal dialog keeps it open.
+- Auto-hide preference and docked width are saved; the tab and pin follow language and theme changes.
+- Windows Setup and onefile are the release scope; macOS / Linux packages for this version are pending.
 
 ## What's New in v1.8.0
 
@@ -1015,7 +1023,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.0`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.1`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1052,13 +1060,13 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current release is **v1.8.0**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.0); Gitee does not host the Mac or Linux packages. Windows / macOS / Linux x86_64 packages are on the same Release.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.1**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.1); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.8.0.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.8.1.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.8.1.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 

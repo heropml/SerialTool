@@ -52,7 +52,7 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 ## 二、标准双平台发版（推荐顺序）
 
 > **先 Windows 后 macOS**。原因：`latest.json` 由 Windows 脚本统一维护。
-> macOS 端只往同一个 Release 追加 `.dmg`，不动 `latest.json`。
+> macOS 端往同一个 Release 追加 `.dmg`，上传并校验后回写 `latest.json` 的 Mac URL、SHA-256 和大小。
 
 ### 1. Windows 机器上
 ```powershell
@@ -83,12 +83,12 @@ bash scripts/release_macos.sh 1.1.2
 `latest.json` 是 **Win/Mac 共用**的，它的 `version` 决定两个平台的「有新版」提示，
 `url` 指向 Windows 的 `.exe`。因此：
 
-- **只发 macOS 时**：`release_macos.sh` **故意不改** `latest.json`。
+- **只发 macOS 时**：应先确认 Windows 同版本已发布；Mac 脚本在资产校验后会更新 `latest.json` 的平台字段。
   若此时手动把 `latest.json` 版本号改新，Windows 用户会被导向**还不存在**的 `.exe`。
   所以：要么等 Windows 同版本也发布后再改 `latest.json`，要么本次先不通知用户
   （Release 里有 `.dmg`，知道的人可自取）。
 - **只发 Windows 时**：`release.ps1` 会正常更新 `latest.json`，Windows 用户照常升级；
-  macOS 用户点检查更新会跳到 Release 页，但页面上可能还没有该版本的 `.dmg`——
+  macOS 用户检查更新时尚无本版本 `.dmg` 下载地址，需等待补包——
   如需 macOS 也升级，补跑一次 `release_macos.sh <同版本号>` 即可。
 
 ---
@@ -179,7 +179,7 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
       （重传同版本用 `gh release upload comm-v<版本> --clobber <两个 exe>`）
 - [ ] Gitee Release：`py -3 scripts/release_gitee.py`（见 6.2）
 - [ ] 验证两源 latest.json + Gitee 下载链接（见 6.3）
-- [ ] （有 Mac 时）补 `.dmg` 到两个 Release
+- [ ] （有 Mac 时）补 `.dmg` 到 GitHub Release；Linux `.run` 同样只发 GitHub
 
 ---
 
