@@ -12,9 +12,22 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QCoreApplication, QEvent, QSettings
 
 _APP = QApplication.instance() or QApplication([])
+_TEST_WINDOWS = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_test_windows(monkeypatch):
+    """Release native windows while the test's patches and Qt loop still exist."""
+    yield
+    for window in reversed(_TEST_WINDOWS):
+        window._shutdown()
+        _APP.processEvents()
+        window.deleteLater()
+    _TEST_WINDOWS.clear()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def _quiet(monkeypatch):
@@ -34,6 +47,7 @@ def _window(monkeypatch, tmp_path, profile="link-snap"):
         CommTool, "_settings_file",
         staticmethod(lambda profile="": str(ini)))
     w = CommTool(profile)
+    _TEST_WINDOWS.append(w)
     w.settings = QSettings(str(ini), QSettings.IniFormat)
     return w
 
@@ -156,7 +170,6 @@ def test_record_stream_tx_tracks_tcp_server_target(monkeypatch, tmp_path):
 def test_record_stream_broadcast_uses_successful_clients(monkeypatch, tmp_path):
     from main_window import PROTO_TCP_SERVER
     w = _window(monkeypatch, tmp_path, "srv-tx-broadcast")
-    old_conn = w.conn
 
     class _Conn:
         def last_send_client_keys(self):
@@ -165,14 +178,14 @@ def test_record_stream_broadcast_uses_successful_clients(monkeypatch, tmp_path):
         def client_keys(self):
             raise AssertionError("must not record all connected clients")
 
-    w.conn = _Conn()
     w._conn_proto = PROTO_TCP_SERVER
     w._recorder.start(link={
         "proto": PROTO_TCP_SERVER,
         "local_ip": "10.0.0.1", "local_port": 9000,
     })
-    w._record_stream_tx(b"broadcast", source="__all__")
-    assert w._recorder.events.pcap_peers == [
-        [("192.168.1.50", 50123)]]
-    w.conn = old_conn
+    with monkeypatch.context() as patch:
+        patch.setattr(w, "conn", _Conn())
+        w._record_stream_tx(b"broadcast", source="__all__")
+        assert w._recorder.events.pcap_peers == [
+            [("192.168.1.50", 50123)]]
     w._close_all_sessions()
