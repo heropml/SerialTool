@@ -6,7 +6,7 @@ Data lives in app._connection_presets; this dialog is only the editor UI.
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QLineEdit, QListWidget, QListWidgetItem, QCheckBox,
-                             QPlainTextEdit, QFileDialog, QWidget, QMessageBox)
+                             QPlainTextEdit, QFileDialog, QWidget)
 
 from project import connection_presets as cp
 from ui.theme import chrome_for
@@ -325,11 +325,11 @@ class ConnectionPresetsDialog(QDialog):
             return
         self.flush_pending()
         name = self._items[self._cur].get("name", "")
-        reply = QMessageBox.question(
-            self, self.app._t("cpreset_del_title"),
-            self.app._t("cpreset_del_confirm", name=name),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply != QMessageBox.Yes:
+        # 统一用主题化确认框（_confirm_dlg），别用原生 QMessageBox：后者不跟主题、
+        # 按钮还是系统语言的 Yes/No，和其余对话框风格不一致。
+        if not self.app._confirm_dlg(self.app._t("cpreset_del_title"),
+                                     self.app._t("cpreset_del_confirm", name=name),
+                                     ok_text=self.app._t("cpreset_del"), danger=True):
             return
         items, _ = cp.delete_by_id(self._items, self._items[self._cur]["id"])
         self.app._connection_presets = items

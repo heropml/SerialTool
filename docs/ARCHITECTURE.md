@@ -54,3 +54,15 @@ The flyout belongs to the terminal workspace row, and is explicitly hidden when
 that workspace hides. Its logical visibility is checked relative to the row so
 ancestor hiding cannot bypass cleanup. `main_window.py` persists the auto-hide
 preference and the two-widget splitter state captured before undocking.
+
+## Themed dialog policy (v1.8.2)
+
+User-facing popups go through the themed dialog set only: `InfoDialog`
+(`ui/dialogs.py`) for info/error, `CommTool._confirm_dlg` for two-way
+confirmation, and `CommTool._build_themed_text_input_dialog` for single-line
+prompts. Native `QMessageBox` and `QInputDialog` are no longer called anywhere
+in `src/`. The pre-window "max sessions" notice in `main.py` builds an
+`InfoDialog` directly and reads language/theme from the profile ini because no
+main window exists yet. The send box sets `setAcceptRichText(False)` so paste
+and drag-drop insert plain text; all other editable text widgets are
+`QPlainTextEdit` / `QLineEdit`, which never accept rich text.

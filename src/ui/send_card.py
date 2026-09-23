@@ -83,6 +83,10 @@ def build(app):
     app.txt_send = QTextEdit()
     app.txt_send.setObjectName("SendBox")
     app.txt_send.setFont(mono_font(10))
+    # 粘贴只取纯文本：从网页/Word/其他工具复制的 HEX 常带底色、字体、超链接等富文本格式，
+    # 直接粘进来会在发送框里留一块带背景色的文字（内容其实没错，只是难看）。
+    # setAcceptRichText(False) 让 QTextEdit 的 insertFromMimeData 只认 text/plain，粘贴和拖放都走这条路。
+    app.txt_send.setAcceptRichText(False)
     # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
     app.txt_send.setFixedHeight(64)
     # 占位文案随终端模式而定（启动恢复 terminal_mode=True 时也用对的那句）；

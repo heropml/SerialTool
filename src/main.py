@@ -6,10 +6,12 @@ import logging
 import multiprocessing
 from PyQt5.QtCore import Qt, QLockFile, QSettings
 from PyQt5.QtNetwork import QNetworkProxy
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication
 from app_icon import get_app_icon
+from ui.dialogs import InfoDialog
 from ui.fonts import install_font_substitutions, ui_font
 from ui.i18n import TR
+from ui.theme import THEME_DEFAULT
 from main_window import CommTool
 from sessions.session import MAX_SESSIONS
 from updater import cleanup_temp_installers, set_translator
@@ -103,14 +105,21 @@ def main():
     preferred = _parse_profile_arg(sys.argv)
     profile, profile_lock = _acquire_profile(preferred=preferred)
     if profile is None:
-        # 8 个配置槽位都被占用（已开满 8 个窗口）→ 提示并退出，不再开第 9 个
+        # 8 个配置槽位都被占用（已开满 8 个窗口）→ 提示并退出，不再开第 9 个。
+        # 此刻主窗口还没建、没有 _info_dlg 可用，直接用 ui.dialogs.InfoDialog（同
+        # _confirm_dlg 的 parent=None 套路）；语言/主题自己从主配置 ini 读。
+        lang, theme = "zh", THEME_DEFAULT
         try:
-            lang = QSettings(CommTool._settings_file(""), QSettings.IniFormat).value("language", "zh")
+            s = QSettings(CommTool._settings_file(""), QSettings.IniFormat)
+            lang = s.value("language", "zh")
+            theme = s.value("theme", THEME_DEFAULT) or THEME_DEFAULT
             tr = TR.get(lang if lang in TR else "zh", TR["zh"])
         except Exception:
             tr = TR["zh"]
-        QMessageBox.information(None, tr.get("app_title", "CommTool"),
-                                tr.get("max_windows", "最多同时打开 8 个窗口。"))
+        ok_text = {"zh": "确定", "en": "OK", "zh_tw": "確定"}.get(lang, "OK")
+        InfoDialog(tr.get("app_title", "CommTool"),
+                   tr.get("max_windows", "最多同时打开 8 个窗口。"),
+                   ok_text=ok_text, theme_id=theme, parent=None).exec_()
         return
     app._profile_lock = profile_lock
     settings_path = CommTool._settings_file(profile)

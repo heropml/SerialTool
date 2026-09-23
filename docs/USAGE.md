@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.2](#whats-new-in-v182)
 - [What's New in v1.8.1](#whats-new-in-v181)
 - [What's New in v1.8.0](#whats-new-in-v180)
 - [What's New in v1.7.4](#whats-new-in-v174)
@@ -56,6 +57,13 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.2
+
+- **Themed dialogs everywhere** — the last native popups are gone: the delete-preset confirmation, the name prompts for saving frame-builder templates / adding Modbus master poll views / renaming script-console scripts, and the "8 windows max" notice all use the themed dialogs now; button labels follow the UI language and colors follow the theme.
+- **Plain-text paste** — pasting or dropping into the send box keeps plain text only: HEX copied from web pages or Word no longer carries background colors, fonts, or other rich-text formatting.
+- **Compatibility** — no changes to connection protocols, RX/TX behavior, or the configuration format; no new dependencies.
+- Windows Setup and onefile are the release scope; macOS / Linux packages for this version are pending.
 
 ## What's New in v1.8.1
 
@@ -1023,7 +1031,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.1`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.2`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1060,13 +1068,13 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.1**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.1); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.2**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.2); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.1.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.8.1.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.8.2.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.8.2.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 

@@ -11,7 +11,7 @@ import logging
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QWidget,
                              QPushButton, QCheckBox, QComboBox, QScrollArea, QFrame,
-                             QSplitter, QTabBar, QInputDialog)
+                             QSplitter, QTabBar)
 
 from ui.theme import chrome_for
 from ui.fonts import localize_qss
@@ -450,11 +450,12 @@ class ModbusMasterDialog(QDialog):
         self.reload_rows()
 
     def _add_view(self):
-        text, ok = QInputDialog.getText(
-            self, self.app._t("mbm_view_add"), self.app._t("mbm_view_name"))
+        dlg = self.app._build_themed_text_input_dialog(
+            self.app._t("mbm_view_add"), self.app._t("mbm_view_name"))
+        ok = dlg.exec_() == QDialog.Accepted
         if not ok:
             return
-        name = (text or "").strip()[:40]
+        name = (dlg.textValue() or "").strip()[:40]
         if not name:
             return
         views = [str(v) for v in (getattr(self.app, "_mbm_views", None) or []) if v]

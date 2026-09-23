@@ -11,8 +11,7 @@ import json
 from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint, QMimeData
 from PyQt5.QtGui import QDrag, QFont, QFontMetrics
 from PyQt5.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QFrame, QLineEdit,
-                             QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea, QSplitter,
-                             QInputDialog)
+                             QComboBox, QHBoxLayout, QVBoxLayout, QScrollArea, QSplitter)
 
 from protocol import binproto
 from protocol import frame_templates
@@ -519,9 +518,11 @@ class FrameBuilderDialog(QDialog):
         current_id = str(self.cb_saved.currentData() or "")
         current = next((item for item in self._templates
                         if item["id"] == current_id), None)
-        name, ok = QInputDialog.getText(
-            self, self.app._t("fb_saved_save"), self.app._t("fb_saved_name"),
-            text=(current or {}).get("name", ""))
+        dlg = self.app._build_themed_text_input_dialog(
+            self.app._t("fb_saved_save"), self.app._t("fb_saved_name"),
+            (current or {}).get("name", ""))
+        ok = dlg.exec_() == QDialog.Accepted
+        name = dlg.textValue()
         if not ok or not name.strip():
             return
         try:

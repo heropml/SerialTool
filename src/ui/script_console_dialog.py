@@ -11,7 +11,7 @@ import logging
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
                              QPushButton, QPlainTextEdit, QSplitter, QScrollArea,
-                             QFrame, QInputDialog, QFileDialog)
+                             QFrame, QFileDialog)
 
 from automation.script_console import ScriptWorker
 from ui.theme import chrome_for
@@ -289,9 +289,10 @@ class ScriptConsoleDialog(QDialog):
         if not self._scripts:
             return
         cur = self._scripts[self._active]["name"]
-        name, ok = QInputDialog.getText(self, self.app._t("sc_rename"),
-                                        self.app._t("sc_name_prompt"), text=cur)
-        name = (name or "").strip()[:80]
+        dlg = self.app._build_themed_text_input_dialog(
+            self.app._t("sc_rename"), self.app._t("sc_name_prompt"), cur)
+        ok = dlg.exec_() == QDialog.Accepted
+        name = (dlg.textValue() or "").strip()[:80]
         if not ok or not name or name == cur:
             return
         self._scripts[self._active]["name"] = self._uniq_name(name)
