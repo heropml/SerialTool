@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Linux 一键发布：打包 .run 并挂到已有 comm-v<版本> GitHub Release，再写入 latest.json url_linux。
+# Linux 一键发布：打包 .run 并挂到已有 comm-v<版本> GitHub Release，再写入 latest.json url_linux，
+# 最后尝试补传 Gitee（.run 超过 Gitee 单文件 100MB 上限时自动跳过）并同步两站 Release 正文。
 # 必须在 Linux 上跑（glibc 下限 = 本机构建环境；建议 Ubuntu 18.04+）。
 # 用法: bash scripts/release_linux.sh [版本号]
 # 省略版本号时读 src/version.py。不改版本号、不发 Windows/macOS。
@@ -77,6 +78,21 @@ if git diff --cached --quiet -- latest.json; then
 else
     git commit -m "release: enable Linux v$VERSION download"
     echo "  请 git push github CommTool && git push gitee CommTool"
+fi
+
+# ---- Gitee 镜像：安装包两站都放（RELEASE.md「零」）。超 100MB 的包脚本会自动跳过；
+#      发行说明已列出本包时，顺带把 GitHub / Gitee 正文同步成最新。失败只告警，不影响 GitHub 结果。
+echo "  同步 .run 与 Release 正文到 Gitee ..."
+if python3 scripts/release_gitee_asset.py --version "$VERSION" "$RUN_PATH"; then
+    if grep -Fq "$RUN_NAME" docs/RELEASE_NOTES.md; then
+        gh release edit "$TAG" --notes-file docs/RELEASE_NOTES.md >/dev/null 2>&1 \
+            || echo "  ⚠️ GitHub Release 正文同步失败，稍后手动：gh release edit $TAG --notes-file docs/RELEASE_NOTES.md"
+        python3 scripts/release_gitee.py "$VERSION" --notes-only \
+            || echo "  ⚠️ Gitee 正文同步失败，稍后手动：python3 scripts/release_gitee.py $VERSION --notes-only"
+    fi
+else
+    echo "  ⚠️ 未能传到 Gitee（检查令牌 GITEE_TOKEN / scripts/.gitee_token），稍后手动："
+    echo "     python3 scripts/release_gitee_asset.py --version $VERSION $RUN_PATH"
 fi
 
 echo "Linux 发布完成: $RUN_PATH"

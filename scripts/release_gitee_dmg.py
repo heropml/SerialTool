@@ -1,69 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把 macOS .dmg 补传到 Gitee 的 comm-v<版本> Release（只动 .dmg，不碰已有 .exe）。
+"""把 dist/CommTool_v<版本>.dmg 补传到 Gitee 的 comm-v<版本> Release（只替换同名 dmg）。
 
-⚠️ 自 v1.2.0 起**不再用于标准发版流程**：Gitee 附件配额仅 1GB，已改为「Gitee 只放
-Setup.exe」（见 release_gitee.py），dmg 与 onefile 只发 GitHub。仅在确需手动给某版
-往 Gitee 补一个 dmg 时才用本脚本（会消耗 Gitee 配额，慎用）。
+两站都要放 dmg（RELEASE.md「零」）。本脚本是 release_gitee_asset.py 的快捷方式，
+.run 等其它文件直接用 release_gitee_asset.py。
 
-本脚本只针对 dist/CommTool_v<版本>.dmg —— 同名旧附件先删再传（Gitee 无 clobber），
-其余附件（.exe / 源码包）原样保留。
-
-令牌 / 版本号来源同 release_gitee.py（环境变量 GITEE_TOKEN 或 scripts/.gitee_token；
-版本号取 argv，否则读 src/version.py）。
 用法：python3 scripts/release_gitee_dmg.py [版本号]
-前置：dist/CommTool_v<版本>.dmg 已打好（bash scripts/release_macos.sh 或 build_macos.sh --dmg）。
+前置：dist/CommTool_v<版本>.dmg 已就绪（release_macos.sh / build_macos.sh --dmg，
+或云端打包后 gh release download 下来）。
 """
 import os
 import sys
-from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from release_gitee import OWNER, REPO, get_token, get_version, api, upload, die  # noqa: E402
+from release_gitee import get_version, die  # noqa: E402
+from release_gitee_asset import publish  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():
-    token = get_token()
     ver = get_version()
-    tag = f"comm-v{ver}"
     dmg = os.path.join(ROOT, "dist", f"CommTool_v{ver}.dmg")
     if not os.path.exists(dmg):
         die(f"找不到 {dmg}\n  先打包：bash scripts/build_macos.sh --dmg")
-    fname = os.path.basename(dmg)
-    print(f">> Gitee 补传 macOS 包到 {tag}：{fname}")
-
-    # 1. 按 tag 精确查询已有 release。Release 列表会分页，不能只扫描首页。
-    st, rel = api("GET", f"/releases/tags/{quote(tag, safe='')}",
-                  {"access_token": token})
-    if st == 404 or (st == 200 and rel is None):
-        rel = None
-    elif st != 200 or not isinstance(rel, dict):
-        die(f"按 tag 查询 release 失败：HTTP {st} {rel}")
-    if not rel:
-        die(f"Gitee 上没有 Release {tag}（请先发 Windows 版 / 建好该 Release）")
-    rid = rel["id"]
-    print(f"  复用 Release id={rid}")
-
-    # 2. 只删同名旧 .dmg（保留 .exe / 源码包等其它附件）
-    st, atts = api("GET", f"/releases/{rid}/attach_files", {"access_token": token})
-    if st == 200 and isinstance(atts, list):
-        for a in atts:
-            if a.get("name") == fname:
-                api("DELETE", f"/releases/{rid}/attach_files/{a['id']}",
-                    {"access_token": token})
-                print(f"  删同名旧附件 {fname}")
-
-    # 3. 传 .dmg
-    st, res = upload(rid, dmg, token)
-    if st in (200, 201) and isinstance(res, dict):
-        print(f"  [OK] 已传 {res.get('name')}")
-    else:
-        die(f"传 .dmg 失败：HTTP {st} {res}")
-
-    dl = f"https://gitee.com/{OWNER}/{REPO}/releases/download/{tag}/{fname}"
-    print(f"\n[OK] 完成。下载链接：\n  {dl}")
+    publish(ver, [dmg])
 
 
 if __name__ == "__main__":

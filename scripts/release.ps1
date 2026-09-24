@@ -1,13 +1,14 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    CommTool 一键发版脚本（Windows 双包 + 双远程 + 双 Release）。
+    CommTool 一键发版脚本（Windows 安装包 + 双远程 + 双 Release）。
 
-    一条命令完成：改版本号 → 改 latest.json(url 指 Gitee) → 打包(folder 安装包 + onefile) →
+    一条命令完成：改版本号 → 改 latest.json(url 指 Gitee) → 打包 folder 安装包 →
     git 提交 → push github + gitee → 建 GitHub Release(--latest) → 发 Gitee Release。
     两个 Release 的正文同用 docs/RELEASE_NOTES.md 全文，标题：CommTool vX.Y.Z。
     app「关于 → 检查更新」随后即可检测到新版本（国内走 Gitee、海外回退 GitHub）。
-    macOS .dmg 仍由协作者在 Mac 上跑 release_macos.sh 补到同一 Release。
+    macOS .dmg / Linux .run 之后由 release_macos.sh（或云端 workflow）/ release_linux.sh 补到同一 Release，
+    两站附件规则见 RELEASE.md「零」。v1.8.4 起不再发免安装单文件版（onefile）。
 
 .PARAMETER Version
     新版本号，格式 X.Y.Z（如 1.1.4）。
@@ -74,8 +75,6 @@ if (-not $Python) {
 $Tag         = "comm-v$Version"
 $SetupName   = "CommTool_Setup_v$Version.exe"
 $SetupPath   = Join-Path $Root "installer\$SetupName"
-$OnefileName = "CommTool_v$Version.exe"
-$OnefilePath = Join-Path $Root "dist_onefile\$OnefileName"
 $MacName     = "CommTool_v$Version.dmg"
 # 下载源走 Gitee（全球可达；updater 第一源为 Gitee raw latest.json）
 $DownloadUrl = "https://gitee.com/$Repo/releases/download/$Tag/$SetupName"
@@ -190,6 +189,12 @@ function Invoke-Gh([string[]]$GhArgs) {
     }
 }
 
+# 发版前先查发行说明：v1.8.4 起不再发 onefile（RELEASE.md「零」）。放在改文件 / 提交之前，免得半截中止
+$NotesPath = Join-Path $Root 'docs\RELEASE_NOTES.md'
+if ((Test-Path $NotesPath) -and ([IO.File]::ReadAllText($NotesPath) -match '(?m)^\| Windows 单文件版 \|')) {
+    throw "docs/RELEASE_NOTES.md 下载表仍列出「Windows 单文件版」；v1.8.4 起不再发 onefile，先删掉该行"
+}
+
 # ---- 1. 写版本号 ----
 Write-Host "① 写入版本号 $Version → src/version.py"
 $vp   = Join-Path $Root 'src\version.py'
@@ -221,7 +226,7 @@ $json = $manifest | ConvertTo-Json -Depth 3
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $Root 'latest.json'), $json + "`n", $utf8NoBom)
 
-# ---- PyQt5 裁剪（folder 与 onefile 共用，去掉用不到的 Qt 模块缩小体积）----
+# ---- PyQt5 裁剪（去掉用不到的 Qt 模块缩小体积；build_onefile.bat / build_custom.py 同一套）----
 $excludes = @(
     'PyQt5.QtBluetooth','PyQt5.QtDBus','PyQt5.QtDesigner','PyQt5.QtHelp','PyQt5.QtLocation',
     'PyQt5.QtMultimedia','PyQt5.QtMultimediaWidgets','PyQt5.QtNfc','PyQt5.QtOpenGL','PyQt5.QtPositioning',
@@ -251,23 +256,8 @@ if (-not (Test-Path $SetupPath)) { throw "未生成安装包：$SetupPath" }
     (Join-Path $Root 'latest.json') $SetupPath windows --version $Version
 if ($LASTEXITCODE -ne 0) { throw "latest.json SHA-256 写入失败" }
 
-# ---- 5. PyInstaller 打包 onefile 版（免安装单文件，含 pyqtgraph/numpy）----
-#      命令行 --onefile，与 folder 版同一套 Analysis/excludes，输出到 dist_onefile（与 .gitignore 一致）。
-Write-Host "⑤ PyInstaller 打包 onefile 版（约 2 分钟）…"
-$onef = @('-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
-          '--name',"CommTool_v$Version",'--icon','assets/icon.ico',
-          '--distpath','dist_onefile','--workpath','build_onefile')
-foreach ($e in $excludes) { $onef += '--exclude-module'; $onef += $e }
-$onef += '--collect-all'; $onef += 'bleak'
-$onef += '--collect-all'; $onef += 'pylink'
-$onef += '--add-data'; $onef += 'examples;examples'
-$onef += 'src/main.py'
-& $Python @PythonArgs @onef
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller(onefile) 打包失败" }
-if (-not (Test-Path $OnefilePath)) { throw "未生成 onefile：$OnefilePath" }
-
-# ---- 6. git 提交 ----
-Write-Host "⑥ git 提交…"
+# ---- 5. git 提交 ----
+Write-Host "⑤ git 提交…"
 git add -A
 if ($LASTEXITCODE -ne 0) { throw "git add 失败，未创建 release commit" }
 # docs/TODO.md 与本地提交消息辅助文件不进发版提交（见 RELEASE.md §8.1）
@@ -297,13 +287,12 @@ Remove-Item $MsgFile -Force -ErrorAction SilentlyContinue
 
 if ($Local) {
     Write-Host "已指定 -Local：跳过 push 和 Release。" -ForegroundColor Yellow
-    Write-Host "  安装包 ：$SetupPath"
-    Write-Host "  onefile：$OnefilePath"
+    Write-Host "  安装包：$SetupPath"
     return
 }
 
-# ---- 7. push 双远程（github 走代理、gitee 走 SSH）----
-Write-Host "⑦ push 到 github + gitee 的 $Branch…"
+# ---- 6. push 双远程（github 走代理、gitee 走 SSH）----
+Write-Host "⑥ push 到 github + gitee 的 $Branch…"
 git -c http.proxy=$GhProxy -c https.proxy=$GhProxy push github $Branch
 if ($LASTEXITCODE -ne 0) {
     throw "git push github 失败（国内直连常被阻断，可显式指定 -GithubProxy http://127.0.0.1:7897 或 socks5://127.0.0.1:10808）"
@@ -311,10 +300,10 @@ if ($LASTEXITCODE -ne 0) {
 git push gitee $Branch
 if ($LASTEXITCODE -ne 0) { throw "git push gitee 失败" }
 
-# ---- 8. GitHub Release（--latest，传 安装包 + onefile）----
+# ---- 7. GitHub Release（--latest，传安装包）----
 #      文案沿用 v1.3.5 / v1.3.6 已发布的约定：标题 CommTool vX.Y.Z，正文用 docs/RELEASE_NOTES.md
 #      全文（与 Gitee 同一真源），不是 $Notes 那句摘要，否则 Release 页上只剩一行字。
-Write-Host "⑧ 创建 / 更新 GitHub Release $Tag（含两个 exe）…"
+Write-Host "⑦ 创建 / 更新 GitHub Release $Tag（含安装包）…"
 $NotesFile = Join-Path $Root 'docs\RELEASE_NOTES.md'
 if (-not (Test-Path $NotesFile)) { throw "缺少 docs/RELEASE_NOTES.md，无法生成 Release 正文" }
 if ([IO.File]::ReadAllText($NotesFile) -notlike "*$Version*") {
@@ -328,16 +317,16 @@ if ($LASTEXITCODE -eq 0) {
                 '--title', $RelTitle, '--notes-file', $NotesFile)
     if ($LASTEXITCODE -ne 0) { throw "GitHub Release 文案更新失败" }
     Invoke-Gh @('release', 'upload', $Tag, '--repo', $Repo, '--clobber',
-                $SetupPath, $OnefilePath)
+                $SetupPath)
 } else {
     Invoke-Gh @('release', 'create', $Tag, '--repo', $Repo, '--target', $Branch,
                 '--title', $RelTitle, '--notes-file', $NotesFile, '--latest',
-                $SetupPath, $OnefilePath)
+                $SetupPath)
 }
 if ($LASTEXITCODE -ne 0) { throw "GitHub Release 操作失败" }
 
-# ---- 9. Gitee Release（国内下载源；走 release_gitee.py，令牌读 scripts/.gitee_token）----
-Write-Host "⑨ 发 Gitee Release $Tag（国内下载源 + 在线升级）…"
+# ---- 8. Gitee Release（国内下载源；走 release_gitee.py，令牌读 scripts/.gitee_token）----
+Write-Host "⑧ 发 Gitee Release $Tag（国内下载源 + 在线升级）…"
 $env:PYTHONIOENCODING = 'utf-8'
 $env:HTTPS_PROXY = ''; $env:HTTP_PROXY = ''; $env:ALL_PROXY = ''   # Gitee 直连，别绕代理
 & $Python @PythonArgs (Join-Path $Root 'scripts\release_gitee.py') $Version

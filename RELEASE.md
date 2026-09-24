@@ -11,29 +11,37 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 
 ## 零、上传规则速查（新会话先读这一节）
 
-**原则：GitHub 和 Gitee 两站保持一致**——同一分支内容、同一 tag、同一 Release 标题/正文、同一套附件。
+**原则：GitHub 和 Gitee 两站保持一致**——同一分支内容、同一 tag、同一 Release 标题/正文、同一套附件
+（唯一例外：Gitee 单个附件上限 **100MB**，超限的包只放 GitHub，Gitee 正文自动提示去 GitHub 下载）。
 **自 v1.8.4 起不再发布免安装单文件版（`CommTool_v<版本>.exe`；v1.8.3 是最后一个带单文件版的版本，只在 GitHub）**，每个版本只发三个安装包：
 
 | 平台 | 文件 | GitHub Release | Gitee Release | 谁来传 |
 |------|------|:---:|:---:|------|
-| Windows | `CommTool_Setup_v<版本>.exe` | ✅ | ✅ | Windows 机 `release.ps1`（自动传两站） |
-| macOS（Apple Silicon） | `CommTool_v<版本>.dmg` | ✅ | ✅ | GitHub：云端 workflow 或 Mac 上 `release_macos.sh`；Gitee：Mac 上 `release_gitee_dmg.py` 补传 |
-| Linux x86_64 | `CommTool_Setup_v<版本>_linux_x86_64.run` | ✅ | ✅ | GitHub：`release_linux.sh`；Gitee：需手动补传（见下方「脚本待对齐」） |
+| Windows | `CommTool_Setup_v<版本>.exe`（约 49MB） | ✅ | ✅ | Windows 机 `release.ps1`（自动传两站） |
+| macOS（Apple Silicon） | `CommTool_v<版本>.dmg`（约 50MB） | ✅ | ✅ | Mac 上 `release_macos.sh`（自动传两站）；或云端 workflow（配了 secret `GITEE_TOKEN` 时自动传两站，否则 Mac 上补跑 `release_gitee_dmg.py`） |
+| Linux x86_64 | `CommTool_Setup_v<版本>_linux_x86_64.run`（约 124MB） | ✅ | ❌ 超 100MB | `release_linux.sh`：传 GitHub；Gitee 自动尝试，超限跳过 |
 
-- 历史上 Gitee 很多版本缺 dmg / .run，是**当时漏传**，不是规则；以本表为准。
+- 历史上 Gitee 很多版本缺 dmg，是**当时漏传**，不是规则；以本表为准。
+- Linux `.run` 若将来压到 100MB 以下，脚本会自动传上 Gitee，不用改规则。
 - **Gitee 附件配额 1GB**（2026-09-24 实测约用 705MB，含 v1.8.3 的 exe + dmg）。满了上传会报 HTTP 400「超出配额」，**不自动清理旧版**，满了再人工决定删哪些。
 - `latest.json`：`url` 指 **Gitee** 的 Setup.exe；`url_mac` / `url_linux` **只填 GitHub 直链**（历史惯例，不改）。
 - 顺序：**先 Windows**（建两站 Release + 传 Setup.exe + 写 `latest.json`）→ 再 macOS / Linux 往**同一个** `comm-v<版本>` 追加。
-  ⚠️ `release_gitee.py`（非 `--notes-only`）会**删掉 Gitee 该版全部附件**再传 Setup.exe——dmg / .run 传完后**不要再跑它**，只改正文用 `--notes-only`。
+  各脚本只替换**同名**附件，互不删除；追加后会用 `docs/RELEASE_NOTES.md` 同步两站正文。
 - 一个版本发完后，用本文「九、两站一致性核对」确认两边一致。
 
-### 脚本待对齐（规则已定、脚本尚未改）
+### 相关脚本
 
-- `scripts/release.ps1` 仍会打包并上传 onefile → 需去掉 onefile 的打包与上传。
-- `scripts/release_gitee.py` 生成的 Gitee 正文仍带「单文件版请去 GitHub 下载」提示，并在 `--notes-only` 时也要求本地有 Setup.exe（Mac 上跑不了）。
-- `scripts/release_gitee_dmg.py` 头部注释仍写「dmg 只发 GitHub」（已过时）；且只能传 dmg，Linux `.run` 暂无 Gitee 上传脚本。
-- `scripts/release_macos.sh` / `release_linux.sh` / `.github/workflows/release-macos.yml` 只传 GitHub，Gitee 需另补。
-- `docs/RELEASE_NOTES.md` 下载表仍有「Windows 单文件版」一行，下个版本起去掉。
+| 脚本 | 作用 |
+|------|------|
+| `scripts/release.ps1` | Windows 一键发版：打 Setup.exe → 推两站代码 → 建两站 Release。发行说明仍列「Windows 单文件版」时开头就中止 |
+| `scripts/release_gitee.py <版本> [--notes-only]` | 建 / 复用 Gitee Release，只替换同名 Setup.exe；`--notes-only` 只同步标题 / 正文（任何机器都能跑） |
+| `scripts/release_gitee_asset.py [--version X] [--skip-existing] <文件>...` | 往 Gitee 已有 Release 追加 / 替换 dmg、.run；超 100MB 自动跳过 |
+| `scripts/release_gitee_dmg.py [版本]` | 上一条的快捷方式，传 `dist/CommTool_v<版本>.dmg` |
+| `scripts/release_macos.sh` / `release_linux.sh` | 打包 → 传 GitHub → 回写 `latest.json` → 补传 Gitee + 同步两站正文 |
+| `.github/workflows/release-macos.yml` | 云端打 dmg → 传 GitHub → 同步 GitHub 正文 →（有 secret `GITEE_TOKEN` 时）补传 Gitee + 同步 Gitee 正文 |
+
+Gitee 令牌读取顺序：环境变量 `GITEE_TOKEN` → `scripts/.gitee_token` → `~/doc/token/gitee_token.txt`（Mac）。
+下个版本写 `docs/RELEASE_NOTES.md` 时，下载表去掉「Windows 单文件版」一行（`release.ps1` 会检查）。
 
 > ⚠️ **双 remote 必须都推**：每次发版**代码和 Release 都要推两边**，否则国内用户（走 Gitee）拿不到新版。
 > remote 名各机器不同：Windows 机叫 `github` / `gitee`；**Mac 上 GitHub 叫 `origin`**，Gitee 叫 `gitee`。
@@ -106,15 +114,15 @@ bash scripts/release_macos.sh 1.1.2
 ```
 自动完成：版本号对齐 → 打包 `.dmg` → 把 `.dmg` 上传到**同一个** GitHub Release `comm-v1.1.2`。
 
-**然后在 Mac 上补传 Gitee**（两种打包方式都要做）：
+**Gitee**：`release_macos.sh` 最后会自动补传 dmg 并同步两站正文；云端 workflow 在仓库配了 secret `GITEE_TOKEN` 时也会自动做。
+云端没配 secret、或自动那步失败时，在 Mac 上手动补：
 ```bash
-# (a) 云端打包时 dist/ 里没有 dmg，先从 GitHub 下载，并核对 sha256 与 latest.json 的 sha256_mac 一致
+# 云端打包时 dist/ 里没有 dmg，先从 GitHub 下载，并核对 sha256 与 latest.json 的 sha256_mac 一致
 gh release download comm-v<版本> --repo heropml/SerialTool --pattern 'CommTool_v<版本>.dmg' --dir dist --clobber
 shasum -a 256 dist/CommTool_v<版本>.dmg
-# 只追加 / 替换 dmg，不动 Setup.exe
-GITEE_TOKEN="$(cat ~/doc/token/gitee_token.txt)" python3 scripts/release_gitee_dmg.py <版本>
+python3 scripts/release_gitee_dmg.py <版本>                 # 只追加 / 替换 dmg，不动 Setup.exe
+python3 scripts/release_gitee.py <版本> --notes-only        # Gitee 正文同步成「均已发布」
 ```
-Gitee 正文也要同步成「均已发布」的最新文案（同 `release_gitee.py --notes-only` 的效果，见「零」的待对齐项）。
 
 完成后该 Release 同时挂着 `.exe` 和 `.dmg`，`latest.json` 也已是新版，
 两平台用户在 app 内「帮助 → 关于 → 检查更新」都能收到提示：
@@ -192,13 +200,13 @@ git push gitee CommTool       # 走 SSH，免令牌
 ```
 
 ### 6.2 发 Gitee Release（一键脚本）
-前置：`installer/CommTool_Setup_v<版本>.exe` 已打好（只在 Windows 机上跑；Mac 补 dmg 用 `release_gitee_dmg.py`）。
+前置：`installer/CommTool_Setup_v<版本>.exe` 已打好（完整发版只在 Windows 机上跑；`--notes-only` 哪台都能跑）。
 ```bash
 py -3 scripts/release_gitee.py            # 版本号自动从 src/version.py 读
 py -3 scripts/release_gitee.py 1.1.3      # 或指定版本号
 ```
-脚本自动：读令牌 → 建/复用 Release `comm-v<版本>` → **删掉该版全部旧附件再传 Setup.exe**（Gitee 无 clobber，
-改 bug 重传同版本也能直接跑；⚠️ 会连带删掉已补传的 dmg / .run，补传后只能用 `--notes-only`）→ 打印下载链接。中文 UTF-8、multipart 都已处理好。
+脚本自动：读令牌 → 建/复用 Release `comm-v<版本>` → 同步标题 / 正文 → **只替换同名 Setup.exe**（Gitee 无 clobber，
+先删同名再传；已补传的 dmg 等其它附件保留，改 bug 重传同版本也能直接跑）→ 打印下载链接。中文 UTF-8、multipart 都已处理好。
 
 > Gitee 附件下载 URL 固定格式：
 > `https://gitee.com/heropml/SerialTool/releases/download/comm-v<版本>/<文件名>`
@@ -228,8 +236,8 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
       （重传同版本用 `gh release upload comm-v<版本> --clobber <文件>`）
 - [ ] Gitee Release：`py -3 scripts/release_gitee.py`（见 6.2）
 - [ ] 验证两源 latest.json + Gitee 下载链接（见 6.3）
-- [ ] macOS `.dmg`：GitHub（云端 workflow 或 `release_macos.sh`）+ **Gitee（`release_gitee_dmg.py`）**
-- [ ] Linux `.run`：GitHub（`release_linux.sh`）+ **Gitee（手动补传）**
+- [ ] macOS `.dmg`：GitHub + **Gitee**（`release_macos.sh` 自动；云端 workflow 没配 secret 时 Mac 上补 `release_gitee_dmg.py`）
+- [ ] Linux `.run`：GitHub（`release_linux.sh`；超 100MB 不传 Gitee，Gitee 正文自动提示去 GitHub）
 - [ ] `latest.json` 的 `url_mac` / `url_linux` + sha256 / size 回写并推两站
 - [ ] 两站 Release 正文都同步成「均已发布」的最终文案
 - [ ] 跑「九、两站一致性核对」
@@ -268,7 +276,7 @@ Mac 上 GitHub remote 叫 `origin`，Windows 上叫 `github`，下面按 Mac 写
 git fetch origin --prune && git fetch gitee --prune
 git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin refs/remotes/gitee
 
-# 2. 本版 Release 附件：两边都应是 Setup.exe + dmg + .run（Gitee 另有自动生成的源码包 zip / tar.gz）
+# 2. 本版 Release 附件：GitHub = Setup.exe + dmg + .run；Gitee = Setup.exe + dmg（.run 超 100MB）+ 自动生成的源码包 zip / tar.gz
 gh release view comm-v<版本> --repo heropml/SerialTool --json assets -q '.assets[].name'
 curl -s "https://gitee.com/api/v5/repos/heropml/SerialTool/releases/tags/comm-v<版本>?access_token=$(cat ~/doc/token/gitee_token.txt)" \
   | python3 -c 'import json,sys;[print(a["name"]) for a in json.load(sys.stdin)["assets"]]'

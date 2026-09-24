@@ -101,6 +101,28 @@ jobs:
           gh release edit "${{ steps.meta.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
             --notes-file docs/RELEASE_NOTES.md
 
+      # 两站附件一致（RELEASE.md「零」）：dmg 也补到 Gitee 并同步 Gitee 正文。
+      # 需要仓库 secret GITEE_TOKEN；没配只提示不失败。Gitee 已有同名 dmg 不重传。
+      - name: Mirror DMG + notes to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "::notice::未配置 secret GITEE_TOKEN，跳过 Gitee；请在 Mac 上跑 scripts/release_gitee_dmg.py 补传"
+            exit 0
+          fi
+          DMG="dist/${{ steps.meta.outputs.dmg }}"
+          if [ ! -f "$DMG" ]; then
+            mkdir -p dist
+            gh release download "${{ steps.meta.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+              --pattern "${{ steps.meta.outputs.dmg }}" --dir dist --clobber
+          fi
+          python3 scripts/release_gitee_asset.py --skip-existing \
+            --version "${{ steps.meta.outputs.version }}" "$DMG"
+          if grep -Fq "${{ steps.meta.outputs.dmg }}" docs/RELEASE_NOTES.md; then
+            python3 scripts/release_gitee.py "${{ steps.meta.outputs.version }}" --notes-only
+          fi
+
       - name: Keep DMG as workflow artifact
         if: steps.meta.outputs.skip != 'true'
         uses: actions/upload-artifact@v4

@@ -123,6 +123,21 @@ else
     git push
 fi
 
+# ---- Gitee 镜像：安装包两站都放（RELEASE.md「零」）。超 100MB 的包脚本会自动跳过；
+#      发行说明已列出本包时，顺带把 GitHub / Gitee 正文同步成最新。失败只告警，不影响 GitHub 结果。
+echo "  同步 dmg 与 Release 正文到 Gitee ..."
+if python3 scripts/release_gitee_asset.py --version "$VERSION" "$REL_DMG"; then
+    if grep -Fq "${APP_NAME}_v${VERSION}.dmg" docs/RELEASE_NOTES.md; then
+        gh release edit "$TAG" --notes-file docs/RELEASE_NOTES.md >/dev/null 2>&1 \
+            || echo "  ⚠️ GitHub Release 正文同步失败，稍后手动：gh release edit $TAG --notes-file docs/RELEASE_NOTES.md"
+        python3 scripts/release_gitee.py "$VERSION" --notes-only \
+            || echo "  ⚠️ Gitee 正文同步失败，稍后手动：python3 scripts/release_gitee.py $VERSION --notes-only"
+    fi
+else
+    echo "  ⚠️ 未能传到 Gitee（检查令牌 GITEE_TOKEN / scripts/.gitee_token），稍后手动："
+    echo "     python3 scripts/release_gitee_asset.py --version $VERSION $REL_DMG"
+fi
+
 echo ""
 echo "==================================================="
 echo " 完成!v$VERSION"
@@ -132,5 +147,5 @@ echo " 📌 app 内 macOS 下载仅在 GitHub DMG 校验通过且 latest.json �
 echo "     若上面提示版本不一致，先等 Windows 同版本发布，再重跑本脚本或手动补 url_mac。"
 echo "     ⚠️ latest.json 是 Win/Mac 共用 —— 若 Windows 的 v$VERSION .exe 还没发,"
 echo "        先别改它,否则 Windows 用户会被导向不存在的安装包。"
-echo "     Mac url_mac 只指向已通过门禁的 GitHub DMG（Gitee 标准流程不传 dmg）。"
+echo "     Mac url_mac 只指向已通过门禁的 GitHub DMG；dmg 同时补传 Gitee（见上方 Gitee 步骤）。"
 echo "==================================================="
