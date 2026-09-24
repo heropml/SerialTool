@@ -66,7 +66,7 @@ On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bund
 - **RTT catalog after first paint** — when the last session was on RTT, the J-Link device catalog is enumerated only after the main window's first frame is drawn. If startup does not end on RTT, it is not enumerated; clicking **…** or changing the driver folder still enumerates immediately.
 - **Measured** — installed build, launch to first frame drawn: about 1.35 s → 1.03 s typically, 1.69 s → 1.03 s when the last session was on RTT.
 - **Compatibility** — the UI looks the same; no changes to connection protocols, RX/TX behavior, or the configuration format; no new dependencies.
-- Windows Setup and onefile are the release scope; macOS / Linux packages for this version are pending.
+- Windows Setup, onefile, and the Linux x86_64 `.run` are published; the macOS package for this version is pending.
 
 ## What's New in v1.8.2
 
@@ -1078,7 +1078,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows and Linux release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages. macOS remains on v1.8.0 until a new package is published.
 
 ### Windows
 
@@ -1099,7 +1099,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.0_linux_x86_64.run`
+- File: `CommTool_Setup_v1.8.3_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run
