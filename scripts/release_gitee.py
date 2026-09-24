@@ -90,7 +90,14 @@ def get_release_body(ver):
         f"\n\n> 免安装单文件版（`CommTool_v{ver}.exe`）受 Gitee 附件配额所限未上传，请到\n"
         f"> [GitHub Release]({github_url}) 下载。"
     )
-    body = body[:mac_row.end()] + mirror_note + body[mac_row.end():]
+    # 提示插在整张下载表之后：macOS 行后面还有 Linux 行，插在 macOS 行后会把表格截断
+    table_end = mac_row.end()
+    while True:
+        nxt = re.match(r"\n\|[^\n]*", body[table_end:])
+        if not nxt:
+            break
+        table_end += nxt.end()
+    body = body[:table_end] + mirror_note + body[table_end:]
     return body
 
 
