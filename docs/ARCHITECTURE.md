@@ -66,3 +66,25 @@ in `src/`. The pre-window "max sessions" notice in `main.py` builds an
 main window exists yet. The send box sets `setAcceptRichText(False)` so paste
 and drag-drop insert plain text; all other editable text widgets are
 `QPlainTextEdit` / `QLineEdit`, which never accept rich text.
+
+## Startup path (v1.8.3)
+
+`CommTool.__init__` applies the global stylesheet once, using the theme saved in
+the profile ini (`cb_theme` is only restored later by `_load_settings`).
+`apply_style` remembers the last stylesheet it set and skips `setStyleSheet` plus
+the full `polish_widget_tree` pass when the stylesheet is unchanged, so the
+deferred `_on_theme_changed` after the event loop starts only refreshes the
+inline-styled pieces. A real runtime theme switch still re-polishes the tree.
+
+The QApplication-wide `eventFilter` returns early unless the event type is in
+`_ef_types` (the types it actually dispatches on; mouse move/release only when
+Linux manual resizing is active). New event types handled there must be added
+to that set.
+
+The J-Link RTT catalog (`RttCatalog`, thousands of DLL calls that hold the GIL)
+is held back while `_rtt_catalog_hold` is set: from construction until the main
+window's first `paintEvent` (plus one event-loop turn), with a 2 s fallback for a
+window that is never shown. Requests during the hold only set
+`_rtt_catalog_wanted`; `_release_rtt_catalog_hold` enumerates only if the
+connection type is still RTT. The device picker and driver-folder reload clear
+the hold and enumerate immediately.

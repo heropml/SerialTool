@@ -655,6 +655,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         # 边缘缩放：Windows 走下面的 nativeEvent(WM_NCHITTEST)；macOS 由原生边框处理；
         # 其它（Linux）无边框又无原生缩放 → 应用级事件过滤器手动实现（悬停光标 + 拖拽改几何）。
         self._manual_resize = sys.platform not in ("win32", "darwin")
+        # app 级过滤器每个事件都会进 Python；只有这些类型需要看，其余在入口直接放行
+        # （启动期就有上万次 Polish/ChildAdded/LayoutRequest 等事件）。改 eventFilter 用到新事件类型时同步这里。
+        ef_types = {QEvent.Wheel, QEvent.ToolTip, QEvent.Leave, QEvent.MouseButtonPress,
+                    QEvent.MouseButtonDblClick, QEvent.KeyPress, QEvent.ShortcutOverride,
+                    QEvent.Resize, QEvent.ContextMenu}
+        if self._manual_resize:
+            ef_types |= {QEvent.MouseMove, QEvent.MouseButtonRelease}
+        self._ef_types = frozenset(ef_types)
         self._resize_edges = Qt.Edges()
         self._resize_start_geo = None
         self._resize_start_mouse = None
@@ -870,6 +878,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._L = TR[self._lang]
 
         self._closing_real = False
+        # 构造期间（恢复上次停在 RTT 的会话）先不起器件表枚举：它在后台线程里跑几千次
+        # DLL 调用、长时间占着 GIL，会拖慢首屏。保持到主窗口首次绘制之后（见 _on_rtt_catalog_start_timer）。
+        self._rtt_catalog_hold = True
+        self._rtt_catalog_wanted = False
+        self._first_painted = False
         self._tray = None
         self._project_path = None
         self._project_meta = {}
@@ -885,7 +898,12 @@ class CommTool(SessionHostMixin, QMainWindow):
             if hasattr(self, "title_bar"):
                 self.title_bar.setMouseTracking(True)
         self.refresh_ports()       # 启动即扫一次串口，cb_port 立刻有内容供恢复上次选择
-        self.apply_style()
+        # 直接按配置里保存的主题出 QSS（cb_theme 要到 _load_settings 才恢复）：否则先刷一遍默认主题、
+        # 显示后 _on_theme_changed 再整树刷一遍已存主题，启动多做一整轮样式计算。
+        saved_theme = self.settings.value("theme", THEME_DEFAULT)
+        if not isinstance(saved_theme, str) or saved_theme not in THEMES:
+            saved_theme = THEME_DEFAULT
+        self.apply_style(saved_theme)
         self._refresh_session_tab_styles()
         _workspace_ui.refresh_top_bar_icons(self)
         self._capture_field_defaults()   # 记录字段构建默认值（在 _load_settings 覆盖前）供切换配置复位用
@@ -897,6 +915,14 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._io_reconcile_session_owners()
         if getattr(self, "_mbm_on", False):
             self._io_bind_owner("modbus")
+        # 保持到主窗口首次绘制之后（paintEvent 里把本定时器改成 0ms、画完下一拍解除）：
+        # 事件循环起来后的 0ms「恢复上次工程」也可能切到 RTT、甚至卡住 UI，固定延时保证不了先画。
+        # 这里的 2s 只是兜底——窗口一直没显示（托盘 / 最小化启动）时照常解除。
+        # 保持期内用户点「…」/ 换驱动目录会直接解除保持、立即枚举，不受影响。
+        self._rtt_catalog_start_timer = QTimer(self)
+        self._rtt_catalog_start_timer.setSingleShot(True)
+        self._rtt_catalog_start_timer.timeout.connect(self._on_rtt_catalog_start_timer)
+        self._rtt_catalog_start_timer.start(2000)
         self._autosave_suppress = 0
         self._autosave_resume_pending = False
         self._autosave_ready = False
@@ -1359,11 +1385,31 @@ class CommTool(SessionHostMixin, QMainWindow):
             return
         if not hasattr(self, "cb_rtt_device"):
             return
+        if getattr(self, "_rtt_catalog_hold", False):
+            self._rtt_catalog_wanted = True
+            return
         th = RttCatalog()
         th.ready.connect(self._on_rtt_catalog)
         th.finished.connect(self._on_rtt_catalog_finished)
         self._rtt_catalog_thread = th
         th.start()
+
+    def _on_rtt_catalog_start_timer(self):
+        if not getattr(self, "_rtt_catalog_hold", False):
+            return
+        if self._first_painted or not self.isVisible() or self.isMinimized():
+            self._release_rtt_catalog_hold()
+        # 否则：窗口已显示但还没画出首帧（如恢复工程卡住 UI）→ 继续等，paintEvent 会再启动本定时器
+
+    def _release_rtt_catalog_hold(self):
+        """启动保持期结束：期间有人要过器件表、且最终仍停在 RTT 才枚举。
+        中途切过 RTT 又切走（如先恢复会话再恢复工程）的不起——之后再切回 RTT 时
+        _update_net_fields 会照常触发。"""
+        self._rtt_catalog_hold = False
+        wanted, self._rtt_catalog_wanted = self._rtt_catalog_wanted, False
+        cb = getattr(self, "cb_proto", None)
+        if wanted and cb is not None and cb.currentText() == PROTO_RTT:
+            self._ensure_rtt_catalog()
 
     def _on_rtt_catalog(self, devices, probes):
         self._rtt_catalog_done = True
@@ -1427,6 +1473,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _on_rtt_device_pick(self):
         """「…」：在驱动的完整器件表里搜着选（下拉塞不下上万项）。"""
+        self._rtt_catalog_hold = False    # 用户主动要器件表：不等启动保持期
         self._ensure_rtt_catalog()
         dlg = self._rtt_device_dialog()
         dlg.set_devices(getattr(self, "_rtt_devices", None) or [])
@@ -1481,6 +1528,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._rtt_catalog_done = False
         self._rtt_devices = []
         self._rtt_driver_path = ""
+        self._rtt_catalog_hold = False    # 用户换了驱动：不等启动保持期
         self._ensure_rtt_catalog()
 
     def _route_session_notice(self, session_id, msg):
@@ -1727,6 +1775,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         # _mac_tooltip 是 __init__ 里最早设的那批之一（且早于 installEventFilter），
         # 用它当「实例是否可用」的哨兵：没有就直接放行，别处理。
         if not hasattr(self, "_mac_tooltip"):
+            return False
+        if event.type() not in self._ef_types:
             return False
         # 主界面下拉框：未展开时吞滚轮，防止侧栏/发送区悬停滚动误改波特率等。
         if event.type() == QEvent.Wheel:
@@ -2911,19 +2961,28 @@ class CommTool(SessionHostMixin, QMainWindow):
     def build_send_card(self):
         return _send_card.build(self)
 
-    def apply_style(self):
-        """根据当前主题构建全局 QSS — light/dark 模式整体切换"""
-        tid = self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT
+    def apply_style(self, theme_id=None):
+        """根据当前主题构建全局 QSS — light/dark 模式整体切换。
+        theme_id：显式指定主题（启动时 cb_theme 还没从配置恢复，直接按已存主题出 QSS）；
+        None=读 cb_theme 当前选项。"""
+        if theme_id is not None:
+            tid = theme_id
+        else:
+            tid = self.cb_theme.currentData() if hasattr(self, "cb_theme") else THEME_DEFAULT
         c = chrome_for(tid)
         t = THEMES.get(tid, THEMES[THEME_DEFAULT])
 
         # Tooltip 在 dark mode 用浅色 (反差)，light 用深色
         tooltip_bg, tooltip_fg = _term_vt.tooltip_colors(t.get("mode"))
-        qss = app_style.build_app_qss(c, t, tooltip_bg, tooltip_fg)
-        self.setStyleSheet(localize_qss(qss))
-        # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
-        # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
-        app_style.polish_widget_tree(self)
+        qss = localize_qss(app_style.build_app_qss(c, t, tooltip_bg, tooltip_fg))
+        # 同一份 QSS 已经设过就不再整树重刷：启动时构造里按已存主题设一次，事件循环起来后
+        # _on_theme_changed 还会再进来一次，那次 QSS 不变，重设 + 上千个控件 unpolish/polish 纯属白费。
+        if qss != getattr(self, "_applied_qss", None):
+            self.setStyleSheet(qss)
+            self._applied_qss = qss
+            # 强制所有子 widget 重新评估样式 —— Qt 有时 setStyleSheet 后旧子组件保留缓存样式
+            # 典型表现：重启后从设置里恢复主题，title bar 变了但中间数据区还是旧色
+            app_style.polish_widget_tree(self)
 
         # 下拉弹出容器(QComboBoxPrivateContainer)是独立顶层窗口，其底色走系统调色板默认白，
         # 深色主题下圆角/边框处会露白边。这里把每个下拉的弹出容器背景刷成下拉色，彻底消除白边。
@@ -13307,6 +13366,16 @@ class CommTool(SessionHostMixin, QMainWindow):
             except Exception:
                 pass
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if getattr(self, "_first_painted", True):
+            return
+        self._first_painted = True
+        # 首帧画完的下一拍再放行 RTT 器件表枚举（见构造里的 _rtt_catalog_start_timer）
+        timer = getattr(self, "_rtt_catalog_start_timer", None)
+        if timer is not None and getattr(self, "_rtt_catalog_hold", False):
+            timer.start(0)
+
     def _on_screen_changed(self, _screen):
         # 窗口移到另一个显示器后强制重绘（含底部状态栏），
         # 修复多屏 backing store 不刷新导致状态栏显示空白的问题。
@@ -13498,7 +13567,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._ms_stop_all_cycles()       # 先停各会话循环定时器，避免销毁中触发 toast
         for timer_name in ("_theme_apply_timer", "_restore_project_timer",
                            "_update_start_timer", "_update_timer",
-                           "_log_sync_timer"):
+                           "_log_sync_timer", "_rtt_catalog_start_timer"):
             timer = getattr(self, timer_name, None)
             if timer is not None:
                 timer.stop()

@@ -698,7 +698,8 @@ class EventFilterLifetimeTests(unittest.TestCase):
         try:
             session.txt_recv = None
             w._txt_recv_fallback = None
-            self.assertFalse(w.eventFilter(w, QEvent(QEvent.None_)))
+            # 用会走到接收视图分支的事件类型（None_ 之类在入口就被快速放行，测不到这里）
+            self.assertFalse(w.eventFilter(w, QEvent(QEvent.Resize)))
         finally:
             session.txt_recv = old_recv
             w._txt_recv_fallback = old_fallback

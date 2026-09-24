@@ -398,6 +398,7 @@ def test_rtt_driver_dir_must_contain_dll(tmp_path, monkeypatch):
     from transport import rtt_io
 
     w = _make_window(tmp_path, monkeypatch)
+    w._release_rtt_catalog_hold()   # 无事件循环：手动结束启动保持期（见 test_startup_perf）
     w.cb_proto.setCurrentText(PROTO_RTT)
     w._update_net_fields()
     toasts = []

@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.3](#whats-new-in-v183)
 - [What's New in v1.8.2](#whats-new-in-v182)
 - [What's New in v1.8.1](#whats-new-in-v181)
 - [What's New in v1.8.0](#whats-new-in-v180)
@@ -57,6 +58,15 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.3
+
+- **Theme applied once** — startup applies the saved theme's stylesheet directly, instead of styling with the default theme first and re-styling the whole window after it appears.
+- **Lighter event handling** — the app-wide event filter lets unrelated events straight through, so the tens of thousands of layout / paint events at startup no longer each run the full checks; mouse movement and RX refreshes at runtime get cheaper too.
+- **RTT catalog after first paint** — when the last session was on RTT, the J-Link device catalog is enumerated only after the main window's first frame is drawn. If startup does not end on RTT, it is not enumerated; clicking **…** or changing the driver folder still enumerates immediately.
+- **Measured** — installed build, launch to first frame drawn: about 1.35 s → 1.03 s typically, 1.69 s → 1.03 s when the last session was on RTT.
+- **Compatibility** — the UI looks the same; no changes to connection protocols, RX/TX behavior, or the configuration format; no new dependencies.
+- Windows Setup and onefile are the release scope; macOS / Linux packages for this version are pending.
 
 ## What's New in v1.8.2
 
@@ -1031,7 +1041,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.2`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.3`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1068,13 +1078,13 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.2**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.2); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages. macOS / Linux remain on v1.8.0 until new packages are published.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.2.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.8.2.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.8.3.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Portable: `CommTool_v1.8.3.exe` — no installer; first launch unpacks for about 1–2 seconds
 
 ### macOS
 
