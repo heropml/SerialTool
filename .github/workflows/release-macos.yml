@@ -90,6 +90,17 @@ jobs:
           python3 scripts/check_mac_asset.py "${{ steps.meta.outputs.version }}" \
             --repo "$GITHUB_REPOSITORY"
 
+      # Release 正文与 release.ps1 同源：docs/RELEASE_NOTES.md 全文。DMG 挂上后正文里的
+      # macOS 行随之变成下载文件名；只在发行说明确属当前版本时才同步。
+      - name: Sync release notes
+        run: |
+          if ! grep -Fq "${{ steps.meta.outputs.dmg }}" docs/RELEASE_NOTES.md; then
+            echo "::notice::docs/RELEASE_NOTES.md 未列出 ${{ steps.meta.outputs.dmg }}，不改 Release 正文"
+            exit 0
+          fi
+          gh release edit "${{ steps.meta.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --notes-file docs/RELEASE_NOTES.md
+
       - name: Keep DMG as workflow artifact
         if: steps.meta.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
