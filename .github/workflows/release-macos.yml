@@ -1,0 +1,99 @@
+name: Release macOS DMG
+
+# 在 GitHub 的 Apple Silicon runner 上打 CommTool_v<版本>.dmg，并挂到已有的
+# comm-v<版本> Release（Release 由 Windows 发版脚本先建好）。
+# 幂等：Release 上已有同名 DMG 时直接跳过，不会 clobber，避免已写入
+# latest.json 的 sha256_mac / size_mac 失效。latest.json 回写仍走人工提交。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/release-macos.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos
+  cancel-in-progress: false
+
+jobs:
+  build-dmg:
+    name: Build + upload macOS DMG
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version / release state
+        id: meta
+        run: |
+          VER=$(python3 -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/version.py',encoding='utf-8').read()).group(1))")
+          TAG="comm-v$VER"
+          DMG="CommTool_v$VER.dmg"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null; then
+            echo "::error::Release $TAG 不存在；先跑 Windows 发版建 Release"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | grep -Fxq "$DMG"; then
+            echo "::notice::$TAG 已有 $DMG，跳过打包与上传"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.meta.outputs.skip != 'true'
+        id: py
+        with:
+          python-version: "3.13"
+
+      - name: Build .app + .dmg
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          COMMTOOL_BUILD_PYTHON: ${{ steps.py.outputs.python-path }}
+          PIP_INDEX: https://pypi.org/simple
+        run: bash scripts/build_macos.sh --dmg
+
+      - name: Smoke launch (offscreen)
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          file dist/CommTool.app/Contents/MacOS/CommTool
+          dist/CommTool.app/Contents/MacOS/CommTool > smoke.log 2>&1 &
+          PID=$!
+          sleep 20
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "::error::CommTool 启动 20 s 内退出"
+            cat smoke.log
+            exit 1
+          fi
+          kill "$PID" || true
+          wait "$PID" 2>/dev/null || true
+          cat smoke.log
+
+      - name: Upload DMG to release
+        if: steps.meta.outputs.skip != 'true'
+        run: |
+          cp dist/CommTool.dmg "dist/${{ steps.meta.outputs.dmg }}"
+          shasum -a 256 "dist/${{ steps.meta.outputs.dmg }}"
+          stat -f '%z bytes' "dist/${{ steps.meta.outputs.dmg }}"
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "dist/${{ steps.meta.outputs.dmg }}" --repo "$GITHUB_REPOSITORY"
+          python3 scripts/check_mac_asset.py "${{ steps.meta.outputs.version }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Keep DMG as workflow artifact
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.dmg }}
+          path: dist/${{ steps.meta.outputs.dmg }}
+          retention-days: 14
