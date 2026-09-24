@@ -66,7 +66,7 @@ On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bund
 - **RTT catalog after first paint** — when the last session was on RTT, the J-Link device catalog is enumerated only after the main window's first frame is drawn. If startup does not end on RTT, it is not enumerated; clicking **…** or changing the driver folder still enumerates immediately.
 - **Measured** — installed build, launch to first frame drawn: about 1.35 s → 1.03 s typically, 1.69 s → 1.03 s when the last session was on RTT.
 - **Compatibility** — the UI looks the same; no changes to connection protocols, RX/TX behavior, or the configuration format; no new dependencies.
-- Windows Setup, onefile, and the Linux x86_64 `.run` are published; the macOS package for this version is pending.
+- Windows Setup, onefile, the macOS Apple Silicon DMG, and the Linux x86_64 `.run` are all published.
 
 ## What's New in v1.8.2
 
@@ -1078,7 +1078,7 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows and Linux release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages. macOS remains on v1.8.0 until a new package is published.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages.
 
 ### Windows
 
@@ -1088,7 +1088,7 @@ Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases).
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.0.dmg` from `comm-v1.8.0`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.3.dmg` from `comm-v1.8.3`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
