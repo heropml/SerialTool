@@ -13,6 +13,22 @@ ROLE_TS, ROLE_RX, ROLE_TX = 1, 2, 3
 # bg/fg = 数据区背景 + 默认文字; tx = 发送(→)颜色; ts = 时间戳颜色
 THEMES = {
     "default":     {"label": "Default",         "mode": "light", "bg": "#FAFAFC", "fg": "#1C1C1E", "tx": "#007AFF", "ts": "#6E6E73"},
+    "mist": {
+        "label": "Mist", "mode": "light",
+        "bg": "#FFFFFF", "fg": "#29292E", "tx": "#6865AC", "ts": "#8C8C98",
+        # 冷灰窗口、白色卡片与炭黑操作色，数据区保持纯白。
+        "chrome": {
+            "window_bg": "#F4F4F6", "card_bg": "#FFFFFF",
+            "card_border": "1px solid #E4E4EA", "text_sec": "#787884",
+            "separator": "#E4E4EA", "input_bg": "#F0F0F3",
+            "input_focus_bg": "#FFFFFF", "ghost_bg": "#F0F0F3",
+            "ghost_hover": "#E8E8ED", "ghost_pressed": "#DDDDE4",
+            "combo_dropdown_bg": "#FFFFFF", "scrollbar": "#BDBDC7",
+            "scrollbar_hover": "#9696A3", "accent": "#29292E",
+            "accent_hover": "#414147", "accent_pressed": "#1E1E23",
+            "title_btn_hover": "#E8E8ED", "title_combo_hover": "#EBEBF0",
+        },
+    },
     "dark":        {"label": "Dark",            "mode": "dark",  "bg": "#1E1E1E", "fg": "#D4D4D4", "tx": "#569CD6", "ts": "#808080"},
     "one_half_lt": {"label": "One Half Light",  "mode": "light", "bg": "#FAFAFA", "fg": "#383A42", "tx": "#0184BC", "ts": "#A0A1A7"},
     "one_half_dk": {"label": "One Half Dark",   "mode": "dark",  "bg": "#282C34", "fg": "#DCDFE4", "tx": "#61AFEF", "ts": "#5C6370"},
@@ -76,7 +92,7 @@ def chrome_for(theme_id: str) -> dict:
         title_btn_hover = "rgba(0, 0, 0, 18)"
         title_combo_hover = "rgba(0, 0, 0, 14)"
 
-    return {
+    chrome = {
         "window_bg":         window_bg,
         "card_bg":           card_bg,
         "text":              fg,
@@ -99,6 +115,8 @@ def chrome_for(theme_id: str) -> dict:
         "title_btn_hover":   title_btn_hover,
         "title_combo_hover": title_combo_hover,
     }
+    chrome.update(t.get("chrome", {}))
+    return chrome
 
 COLOR_BG = "#F2F2F7"
 COLOR_CARD = "#FFFFFF"

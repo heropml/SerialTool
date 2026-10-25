@@ -1,30 +1,29 @@
-**CommTool** — 开源串口调试助手 / 网络调试工具（UART + RTT + TCP/UDP）。**v1.8.3 正式版**：启动提速，窗口首帧更快画出。
+**CommTool** 串口调试助手 / 网络调试工具（UART + RTT + TCP/UDP）。**v1.8.4**：新增「雾白」浅色皮肤。
 
-## v1.8.3 正式版
+## v1.8.4 更新内容
 
-### 启动提速
+### 雾白皮肤
 
-- 启动时直接按配置里保存的主题应用一次界面样式；不再先刷默认主题、窗口显示后再整体重刷一遍。
-- 全局事件过滤器对无关事件直接放行：启动期上万次布局 / 绘制事件不再逐个进判断，运行中鼠标移动、收数据刷新也更省。
-- 上次停在 RTT 时，J-Link 器件表枚举推迟到主窗口首帧画完之后再开始，不再与首屏争抢；启动结束时没停在 RTT 则不枚举，点「…」选器件或更换驱动目录仍立即枚举。
-- 安装版实测（启动到首帧画完，文件已缓存时）：常规场景约 1.35 s → 1.03 s；上次停在 RTT 约 1.69 s → 1.03 s。
+- 在顶部主题下拉框选择「雾白 / Mist / 霧白」，立即切换整套界面配色。
+- 冷灰窗口背景、纯白卡片、浅灰输入框与细边框，搭配炭黑操作按钮和低饱和文字，主界面与弹窗保持一致。
+- 接收区使用纯白背景，发送文字保留独立的柔和紫色；连接状态、警告和错误仍使用各自的状态色。
+- 原有 9 套主题的配色与样式保持一致；继续支持主题即时切换、历史文字重绘及重启恢复。
 
-### 文档与兼容性
+### 兼容性与安装包
 
-- README、简体中文 / 繁體中文 / English 用户说明、架构与排期同步。
-- 界面外观不变（9 套主题与各工作台逐像素比对一致）；不涉及连接协议、收发行为与配置格式；无新依赖。
+- 通信协议、收发逻辑与配置格式保持不变，无新增运行时依赖；随包示例工程版本同步为 v1.8.4。
+- 自本版本起，Windows 仅提供 Setup 安装包，停止发布免安装单文件版。
+- Windows、macOS Apple Silicon 与 Linux x86_64 安装包对应同一版本和源代码。
 
-### 发布范围
+## 下载与安装
 
-- **Windows** 安装版、单文件版、**macOS（Apple Silicon）** DMG 与 **Linux x86_64** 安装包均已发布，tag 为 `comm-v1.8.3`。
+| 平台 | 文件 | 安装方式 |
+|------|------|----------|
+| Windows 10/11（64 位） | `CommTool_Setup_v1.8.4.exe` | 向导安装，可创建桌面快捷方式 |
+| macOS（Apple Silicon） | `CommTool_v1.8.4.dmg` | 打开 `.dmg`，拖入“应用程序”安装 |
 
-## 下载
+Linux x86_64：`CommTool_Setup_v1.8.4_linux_x86_64.run`，执行后安装到 `~/.local/opt/CommTool`，无需 sudo，要求 glibc ≥ 2.27（Ubuntu 18.04+）。
 
-| 形式 | 文件 | 说明 |
-|------|------|------|
-| Windows 安装版 | `CommTool_Setup_v1.8.3.exe` | 推荐，向导安装 + 桌面快捷方式 |
-| Windows 单文件版 | `CommTool_v1.8.3.exe` | 免安装，首次启动需要自解压 |
-| macOS（Apple Silicon） | `CommTool_v1.8.3.dmg` | arm64 `.dmg`，拖入“应用程序”安装 |
-| Linux（x86_64） | `CommTool_Setup_v1.8.3_linux_x86_64.run` | 免 sudo，默认 `~/.local/opt/CommTool`；glibc ≥ 2.27（Ubuntu 18.04+ / 多数麒麟） |
+> Linux `.run` 按仓库发布渠道约定，仅在 [GitHub Release](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.4) 提供；Windows Setup 和 macOS DMG 在 GitHub、Gitee 均提供。
 
-> Windows 10/11（64 位）无需安装 Python。旧版用户可通过「帮助 → 关于 → 检查更新」升级（国内优先走 Gitee，海外回退 GitHub）。RTT 功能仍需额外安装 SEGGER J-Link 驱动。
+RTT 需另装 SEGGER J-Link 驱动。首次使用新皮肤时，在顶部主题下拉框选择「雾白」。

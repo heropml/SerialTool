@@ -20,7 +20,7 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
         QFrame#Card {{
             background-color: {c['card_bg']};
             border-radius: 14px;
-            border: 0px;
+            border: {c.get('card_border', '0px')};
         }}
         QLabel {{ color: {c['text']}; background: transparent; }}
         QComboBox, QLineEdit {{

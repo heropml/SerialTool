@@ -1,17 +1,17 @@
 {
-  "version": "1.8.3",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.3/CommTool_Setup_v1.8.3.exe",
+  "version": "1.8.4",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.4/CommTool_Setup_v1.8.4.exe",
   "url_mac": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.3/CommTool_v1.8.3.dmg"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.4/CommTool_v1.8.4.dmg"
   ],
   "url_linux": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.3/CommTool_Setup_v1.8.3_linux_x86_64.run"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.4/CommTool_Setup_v1.8.4_linux_x86_64.run"
   ],
-  "sha256": "8e0a5957ed2a4b584788b2e2a648d9482ac77632bdac3c0471439f080954d717",
-  "size": 48744602,
-  "sha256_mac": "6b46baa6ab9ca8d7b5cf351234a4b4cc34468f06c97396264e7f74166a2cb49d",
-  "size_mac": 50024267,
-  "sha256_linux": "2a0c87ec5f7e6cfbb263965b7fb4afa748774400c160ff83ac7e08ed886d0c39",
-  "size_linux": 130058405,
-  "notes": "串口调试助手 / 网络调试工具：启动提速，窗口首帧更快画出"
+  "sha256": "e26773d1d6ee3768179fdc80077e8d70eb713091e9cd91143bc743f5685945f1",
+  "size": 46940641,
+  "sha256_mac": "d4650295aadeb79ac69297c63bd6433c465cc124f7fbc7ddcaa92123e5ad69b5",
+  "size_mac": 49584553,
+  "sha256_linux": "17b71f57657a83bb9f55e00fafb495dd313d52c90956d17b6623a1d1a2311a9e",
+  "size_linux": 86366964,
+  "notes": "新增雾白浅色皮肤：冷灰背景、纯白卡片、细边框与炭黑按钮；支持三语主题切换。"
 }

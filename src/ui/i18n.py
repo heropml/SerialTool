@@ -44,6 +44,7 @@ TR = {
         "theme": "主题",
         # 主题名 — 国际通用术语（Solarized/Tango/Campbell/Ubuntu）保留原名，仅翻译 Light/Dark 后缀
         "theme_default": "默认",
+        "theme_mist": "雾白",
         "theme_dark": "暗色",
         "theme_one_half_lt": "One Half 浅色",
         "theme_one_half_dk": "One Half 深色",
@@ -1894,6 +1895,7 @@ TR = {
         "theme": "Theme",
         # English: keep original recognized theme names
         "theme_default": "Default",
+        "theme_mist": "Mist",
         "theme_dark": "Dark",
         "theme_one_half_lt": "One Half Light",
         "theme_one_half_dk": "One Half Dark",
@@ -3756,6 +3758,7 @@ TR = {
         "encoding_auto": "自動",
         "theme": "主題",
         "theme_default": "預設",
+        "theme_mist": "霧白",
         "theme_dark": "暗色",
         "theme_one_half_lt": "One Half 淺色",
         "theme_one_half_dk": "One Half 深色",

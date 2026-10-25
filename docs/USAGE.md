@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.4](#whats-new-in-v184)
 - [What's New in v1.8.3](#whats-new-in-v183)
 - [What's New in v1.8.2](#whats-new-in-v182)
 - [What's New in v1.8.1](#whats-new-in-v181)
@@ -58,6 +59,12 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.4
+
+- **Mist theme** — choose **Mist** in the top theme picker for cool-grey window backgrounds, white cards, soft-grey inputs, fine borders and charcoal buttons. Dialogs follow the same palette.
+- **Compatibility** — existing themes and communication behavior remain unchanged; no new runtime dependencies. Theme switching and restoring your choice continue to work.
+- Windows Setup, macOS Apple Silicon DMG and Linux x86_64 `.run` share this release. Windows portable onefile builds are discontinued from v1.8.4.
 
 ## What's New in v1.8.3
 
@@ -944,10 +951,11 @@ A dropdown next to the title in the top-left toggles between **简体中文 / En
 
 ### Themes
 
-A second dropdown in the top-left (right next to the language picker) switches the overall color scheme. **9 themes** are available, each with a distinctive look that affects the whole window — sidebar cards, buttons, data area, status bar, even the close-confirm dialog:
+A second dropdown in the top-left (right next to the language picker) switches the overall color scheme. **10 themes** are available, each with a distinctive look that affects the whole window — sidebar cards, buttons, data area, status bar, even the close-confirm dialog:
 
 | Theme | Mode | Vibe |
 |-------|------|------|
+| Mist | light | Cool grey, white cards and charcoal buttons |
 | Default | light | Light default — light cards on a soft grey background |
 | Dark | dark | Generic VSCode-style dark grey |
 | One Half Light | light | Atom editor light, clean off-white |
@@ -993,7 +1001,7 @@ Right-click the tray icon and choose **About** to open the **About** dialog. It 
     - **macOS**: the `.dmg` opens; drag the app into Applications and relaunch (unsigned: see `xattr` under Install).
     - **Linux**: the `.run` installer starts after the app quits and overwrites `~/.local/opt/CommTool`.
   - **Already up to date** → the dialog simply tells you you're on the latest version.
-- **Update sources** — the version manifest tries **Gitee first**, then **GitHub**; each source has an **8-second timeout**. Windows Setup is on Gitee; macOS `.dmg` and Linux `.run` are on GitHub (Gitee quota only holds Windows Setup).
+- **Update sources** — the version manifest tries **Gitee first**, then **GitHub**; each source has an **8-second timeout**. Windows Setup is on Gitee; macOS `.dmg` and Linux `.run` are on GitHub (Gitee also hosts Setup and DMG; Linux packages are published on GitHub only).
 - **Integrity check** — the downloaded file is verified with SHA-256 (and size when present) before the installer runs. A manifest without a digest only offers the manual download page.
 - **Cancel anytime** — closing the dialog while a download is in progress cancels the download automatically.
 
@@ -1041,7 +1049,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.3`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.4`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1078,17 +1086,16 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.3**. Windows Setup is also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.3); Gitee does not host the Mac or Linux packages.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.4**. Windows Setup and macOS DMG are also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.4); Linux packages are available on GitHub only, following the repository release-channel rules.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.3.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
-- Portable: `CommTool_v1.8.3.exe` — no installer; first launch unpacks for about 1–2 seconds
+- Recommended: `CommTool_Setup_v1.8.4.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.3.dmg` from `comm-v1.8.3`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.4.dmg` from `comm-v1.8.4`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1099,7 +1106,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.3_linux_x86_64.run`
+- File: `CommTool_Setup_v1.8.4_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run
