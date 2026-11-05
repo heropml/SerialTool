@@ -1,13 +1,17 @@
 {
   "version": "1.8.5",
   "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.5/CommTool_Setup_v1.8.5.exe",
-  "url_mac": [],
-  "url_linux": [],
+  "url_mac": [
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.5/CommTool_v1.8.5.dmg"
+  ],
+  "url_linux": [
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.5/CommTool_Setup_v1.8.5_linux_x86_64.run"
+  ],
   "sha256": "0e15fcba3378b4e3b3a7d24b83870d8e3c624143f51287ff44c1eec982942712",
   "size": 48996657,
-  "sha256_mac": "",
-  "size_mac": 0,
-  "sha256_linux": "",
-  "size_linux": 0,
+  "sha256_mac": "7926033de156ef94e3fd44bb3149062a7c6bc2d4f0bad39140f6c14b02692696",
+  "size_mac": 50200696,
+  "sha256_linux": "108da976bf79c1c38096bb817c12a7e5da4f9e7d02fccbc5ab3cb0753d54fe3c",
+  "size_linux": 130263527,
   "notes": "串口调试助手 / 网络调试工具：修复雾白主题下拉框选中文字不可见，滑动开关开启色与主题主按钮统一，主界面及弹窗同步。"
 }
