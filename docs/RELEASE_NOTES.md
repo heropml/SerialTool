@@ -1,29 +1,35 @@
-**CommTool** 串口调试助手 / 网络调试工具（UART + RTT + TCP/UDP）。**v1.8.4**：新增「雾白」浅色皮肤。
+**CommTool** 串口调试助手 / 网络调试工具（UART + RTT + TCP/UDP）。**v1.8.5**：修复下拉框选中文字对比度，统一滑动开关与主题配色。
 
-## v1.8.4 更新内容
+## v1.8.5 更新内容
 
-### 雾白皮肤
+### 下拉框选中项清晰可见
 
-- 在顶部主题下拉框选择「雾白 / Mist / 霧白」，立即切换整套界面配色。
-- 冷灰窗口背景、纯白卡片、浅灰输入框与细边框，搭配炭黑操作按钮和低饱和文字，主界面与弹窗保持一致。
-- 接收区使用纯白背景，发送文字保留独立的柔和紫色；连接状态、警告和错误仍使用各自的状态色。
-- 原有 9 套主题的配色与样式保持一致；继续支持主题即时切换、历史文字重绘及重启恢复。
+- 修复雾白主题下流控等下拉菜单的选中项显示为深色背景、文字不可见的问题。
+- 下拉框统一使用列表绘制，让选中项正确应用主题强调背景与白色文字。
+- 保留可编辑下拉框、鼠标选择、键盘导航及主题即时切换。
 
-### 兼容性与安装包
+### 滑动开关随主题配色
 
-- 通信协议、收发逻辑与配置格式保持不变，无新增运行时依赖；随包示例工程版本同步为 v1.8.4。
-- 自本版本起，Windows 仅提供 Setup 安装包，停止发布免安装单文件版。
-- Windows、macOS Apple Silicon 与 Linux x86_64 安装包对应同一版本和源代码。
+- 开启轨道使用与主按钮相同的主题强调色，雾白主题为炭黑轨道配白色滑块，关闭时为浅灰轨道。
+- 主界面、工程菜单、桥接和 BLE 弹窗采用一致的开关配色，切换主题时同步更新。
+- 保留原有开关状态、信号触发、滑动动画和禁用态显示。
+
+### 兼容性与验证
+
+- 版本号与 9 个随包示例工程同步为 v1.8.5，README 和三语使用说明同步更新。
+- 通信协议、收发逻辑和配置格式保持不变，无新增运行时依赖。
+- 相关自动化测试 136 项通过，Ruff 检查通过；已验证 10 个主题的开关显示，以及下拉框选中文字与键盘选择。
+- Windows 仅提供 Setup 安装包；macOS、Linux 使用同一版本源码，按平台补包并校验下载链接、SHA-256 与大小。
 
 ## 下载与安装
 
 | 平台 | 文件 | 安装方式 |
 |------|------|----------|
-| Windows 10/11（64 位） | `CommTool_Setup_v1.8.4.exe` | 向导安装，可创建桌面快捷方式 |
-| macOS（Apple Silicon） | `CommTool_v1.8.4.dmg` | 打开 `.dmg`，拖入“应用程序”安装 |
+| Windows 10/11（64 位） | `CommTool_Setup_v1.8.5.exe` | 向导安装，可创建桌面快捷方式 |
+| macOS（Apple Silicon） | `CommTool_v1.8.5.dmg` | 打开 `.dmg`，拖入“应用程序”安装 |
 
-Linux x86_64：`CommTool_Setup_v1.8.4_linux_x86_64.run`，执行后安装到 `~/.local/opt/CommTool`，无需 sudo，要求 glibc ≥ 2.27（Ubuntu 18.04+）。
+Linux x86_64：`CommTool_Setup_v1.8.5_linux_x86_64.run`，执行后安装到 `~/.local/opt/CommTool`，无需 sudo，要求 glibc ≥ 2.27（Ubuntu 18.04+）。
 
-> Linux `.run` 按仓库发布渠道约定，仅在 [GitHub Release](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.4) 提供；Windows Setup 和 macOS DMG 在 GitHub、Gitee 均提供。
+> Linux `.run` 按仓库发布渠道约定，仅在 [GitHub Release](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.5) 提供；Windows Setup 和 macOS DMG 在 GitHub、Gitee 均提供。
 
-RTT 需另装 SEGGER J-Link 驱动。首次使用新皮肤时，在顶部主题下拉框选择「雾白」。
+RTT 需另装 SEGGER J-Link 驱动。

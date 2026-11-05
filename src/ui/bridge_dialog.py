@@ -569,7 +569,7 @@ class _BridgeSidePanel(QWidget):
     def refresh_theme(self):
         # 大部分样式在 BridgeDialog.setStyleSheet 统一处理；IOSSwitch 是自绘控件、需单独上主题色
         c = chrome_for(self.app._theme_id())
-        self.sw_spec_remote.set_theme_colors(c["separator"], "#FFFFFF")
+        self.sw_spec_remote.set_theme_colors(c["separator"], "#FFFFFF", c["accent"])
 
     def retranslate(self):
         t = self.app._t

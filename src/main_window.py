@@ -4637,9 +4637,9 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.title_bar.title_label.setStyleSheet(
                 f"color: {c['text_sec']}; background: transparent;")
         self._update_legend_label(c)
-        # iOS 开关是 custom-paint、不走 QSS，切主题时手动让关态色跟随主题（开态恒用绿）
+        # iOS 开关自绘、不走 QSS，轨道颜色随主题更新，开态与主按钮使用同一强调色。
         for sw in self.findChildren(IOSSwitch):
-            sw.set_theme_colors(c["separator"], "#FFFFFF")
+            sw.set_theme_colors(c["separator"], "#FFFFFF", c["accent"])
         # 数据区历史文字按角色重涂成新主题色 + 行高亮换色（否则浅↔深切换后文字看不见）
         if hasattr(self, "txt_recv"):
             self._recolor_history()

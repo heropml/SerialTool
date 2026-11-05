@@ -259,7 +259,7 @@ def build_project_menu(app):
     restore_layout.addWidget(restore_label, 1)
     restore_switch = IOSSwitch(
         app.settings.value("restore_last_project", True, type=bool))
-    restore_switch.set_theme_colors(c['separator'], "#FFFFFF")
+    restore_switch.set_theme_colors(c['separator'], "#FFFFFF", c['accent'])
     restore_switch.toggled.connect(app._set_restore_last_project)
     restore_layout.addWidget(restore_switch)
     restore_action.setDefaultWidget(restore_row)

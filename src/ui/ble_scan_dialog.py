@@ -495,7 +495,7 @@ class BleScanDialog(QDialog):
             QPushButton#BleFilterCloseBtn:hover {{ background: {ghost}; border-radius: 14px; }}
         """.format(card=c["card_bg"], sep=c["separator"], txt=c["text"],
                    inp=c["input_bg"], sec=c["text_sec"], ghost=c["ghost_hover"])))
-        self.sw_filter.set_theme_colors(c["separator"], "#FFFFFF")
+        self.sw_filter.set_theme_colors(c["separator"], "#FFFFFF", c["accent"])
 
     def _refresh_rssi_popup_theme(self):
         if self._rssi_popup is None:
@@ -531,7 +531,7 @@ class BleScanDialog(QDialog):
         """.format(card=c["card_bg"], sep=c["separator"], txt=c["text"],
                    inp=c["input_bg"], sec=c["text_sec"], acc=c["accent"],
                    ghost=c["ghost_hover"])))
-        self.sw_rssi.set_theme_colors(c["separator"], "#FFFFFF")
+        self.sw_rssi.set_theme_colors(c["separator"], "#FFFFFF", c["accent"])
 
     def retranslate(self):
         t = self.app._t

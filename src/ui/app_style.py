@@ -44,6 +44,7 @@ def build_app_qss(chrome, theme, tooltip_bg, tooltip_fg):
             border: 1px solid {_mix(c['separator'], c['card_bg'], 0.5)};
         }}
         QComboBox::drop-down {{ border: none; width: 22px; }}
+        QComboBox {{ combobox-popup: 0; }} /* 使用列表绘制，确保选中项遵循 selection-color。 */
         QComboBox::down-arrow {{
             image: none;
             border-left: 4px solid transparent;

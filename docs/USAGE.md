@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.5](#whats-new-in-v185)
 - [What's New in v1.8.4](#whats-new-in-v184)
 - [What's New in v1.8.3](#whats-new-in-v183)
 - [What's New in v1.8.2](#whats-new-in-v182)
@@ -59,6 +60,12 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.5
+
+- **Dropdown selection contrast** — selected entries now use the theme's highlight background with white text, fixing invisible text in the Mist theme's flow-control dropdown.
+- **Theme-matched switches** — enabled switches use the same accent color as primary buttons; Mist uses charcoal tracks and white knobs, with light-grey tracks when off. Main-window and dialog switches follow theme changes.
+- Mouse and keyboard selection remain available. Windows Setup, macOS Apple Silicon DMG and Linux x86_64 installers use the same version source.
 
 ## What's New in v1.8.4
 
@@ -1049,7 +1056,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.4`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.5`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1086,16 +1093,16 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.4**. Windows Setup and macOS DMG are also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.4); Linux packages are available on GitHub only, following the repository release-channel rules.
+Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.5**. Windows Setup and macOS DMG are also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.5); Linux packages are available on GitHub only, following the repository release-channel rules.
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.4.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Recommended: `CommTool_Setup_v1.8.5.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.4.dmg` from `comm-v1.8.4`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.5.dmg` from `comm-v1.8.5`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1106,7 +1113,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.4_linux_x86_64.run`
+- File: `CommTool_Setup_v1.8.5_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run
