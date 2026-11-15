@@ -4,6 +4,7 @@ import atexit
 import codecs
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -4969,6 +4970,9 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self._rx_side("mbm.feed", lambda: self._mbm_feed(data))
 
     def _on_data_received_impl(self, data: bytes, source=None):
+        now = self._rx_received_at
+        if now is None:
+            now = time.monotonic()
         self._stat_note_rx(len(data))
         # 标签刷新交给 1Hz 的 _rate_timer：高频收包路径只累加整数计数器，
         # 不每包重建文案 + setText（会触发状态栏重排），高吞吐下避免无谓的 GUI 线程开销。
@@ -4987,7 +4991,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._append_block_data(self._hexdump_block(data), direction="rx",
                                     force_new_block=True)
             self._last_direction = "rx"
-            self._last_recv_time = time.monotonic()
+            self._last_recv_time = now
             self._pending_line_break = False
             return
 
@@ -4997,7 +5001,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             if block:
                 self._append_block_data(block, direction="rx", force_new_block=True)
                 self._last_direction = "rx"
-            self._last_recv_time = time.monotonic()
+            self._last_recv_time = now
             self._pending_line_break = False
             return
 
@@ -5005,7 +5009,6 @@ class CommTool(SessionHostMixin, QMainWindow):
             rx_hex=bool(self._display_value("rx_hex", self.sw_rx_hex.isChecked())),
             line_split=bool(self._display_value(
                 "line_split", self.sw_line_split.isChecked())))
-        now = time.monotonic()
 
         ansi_spans = None      # ANSI 着色：[(起, 止, 样式)]，下标相对下面这个 text
         if use_hex:
@@ -8201,6 +8204,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         if hasattr(self, "_ar_gap_timer"):
             self._ar_gap_timer.stop()
         self._ar_buf = b""
+        self._ar_last_received_at = None
+        self._ar_gap_overflow = False
         if hasattr(self, "_ar_stream_buffers"):
             self._ar_stream_buffers.clear()
         if hasattr(self, "_modbus_buffers"):
@@ -8326,14 +8331,51 @@ class CommTool(SessionHostMixin, QMainWindow):
             for f in frames:
                 self._ar_match(f)
         elif mode == "gap":
-            self._ar_buf += bytes(data)
-            self._ar_gap_timer.start(self._ar_gap)
+            received_at = self._rx_received_at
+            previous = self._ar_last_received_at
+            # GUI stalls can queue several chunks past a silence boundary.
+            # Split using reader timestamps before appending the next chunk.
+            if (received_at is not None and previous is not None
+                    and received_at >= previous + self._ar_gap / 1000.0):
+                self._ar_flush(force=True)
+            if not self._ar_gap_overflow:
+                if len(self._ar_buf) + len(data) > _ar_gate.GAP_BUF_MAX:
+                    self._ar_buf = b""
+                    self._ar_gap_overflow = True
+                    _log.warning("auto-reply silence frame exceeded %d bytes",
+                                 _ar_gate.GAP_BUF_MAX)
+                    self.toast(self._t("ar_gap_overflow"), error=True)
+                else:
+                    self._ar_buf += bytes(data)
+            self._ar_last_received_at = received_at
+            remaining_ms = self._ar_gap
+            if received_at is not None:
+                remaining_ms = math.ceil(
+                    (received_at + self._ar_gap / 1000.0 - time.monotonic()) * 1000)
+            self._ar_gap_timer.start(max(1, remaining_ms))
         else:
             self._ar_match(bytes(data))
 
-    def _ar_flush(self):
+    def _ar_flush(self, *, force=False):
         """整包静默超时：把累积缓冲当一整帧匹配。Modbus 模式下不走规则匹配（防止切到 Modbus 后
         在途的 gap timer 仍误用规则匹配一帧）。"""
+        previous = self._ar_last_received_at
+        if (not force and (self._ar_buf or self._ar_gap_overflow)
+                and previous is not None):
+            latest = getattr(self.conn, "last_received_at", None)
+            processed = self._rx_processed_at
+            if latest is not None and processed is not None and latest > processed:
+                # Let queued RX reach the buffer before deciding its frame end.
+                self._ar_gap_timer.start(1)
+                return
+            remaining_ms = math.ceil(
+                (previous + self._ar_gap / 1000.0 - time.monotonic()) * 1000)
+            if remaining_ms > 0:
+                self._ar_gap_timer.start(remaining_ms)
+                return
+        self._ar_gap_timer.stop()
+        self._ar_last_received_at = None
+        self._ar_gap_overflow = False
         buf, self._ar_buf = self._ar_buf, b""
         if buf and self._session_ar_on() and self._is_open() and not self._ar_modbus.get("on"):
             self._ar_match(buf)

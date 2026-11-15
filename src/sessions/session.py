@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import deque
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QTextEdit
 
 from transport import io_stats
@@ -88,6 +88,7 @@ class Session:
         "_serial_device", "_serial_missing_count",
         "_freeze_view", "_ts_anchor",
         "_last_recv_time", "_last_direction", "_pending_line_break",
+        "_rx_received_at", "_rx_processed_at",
         "_rx_decode_buffer", "_rx_decode_buffers",
         "_rx_pending_cr", "_rx_pending_cr_source",
         "_inc_decoder", "_inc_decoders", "_txt_ends_with_nl",
@@ -95,7 +96,8 @@ class Session:
         "_ansi_state", "_ansi_pending", "_ansi_states", "_ansi_pendings",
         "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
         "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
-        "_ar_buf", "_ar_gap_timer", "_ar_stream_buffers",
+        "_ar_buf", "_ar_gap_timer", "_ar_stream_buffers", "_ar_last_received_at",
+        "_ar_gap_overflow",
         "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
         "_ar_generation", "_ar_seq",
         "_ar_enabled",
@@ -190,9 +192,12 @@ class Session:
         self._reset_recv_fields()
         self._ar_enabled = False
         self._ar_buf = b""
+        self._ar_last_received_at = None
+        self._ar_gap_overflow = False
         self._ar_stream_buffers = {}
         self._ar_gap_timer = QTimer(app)
         self._ar_gap_timer.setSingleShot(True)
+        self._ar_gap_timer.setTimerType(Qt.PreciseTimer)
         self._ar_gap_timer.timeout.connect(
             lambda _s=self: _s.app._ar_flush_for(_s.id))
         sm = getattr(app, "_ar_sm", None)
@@ -326,6 +331,8 @@ class Session:
 
     def _reset_recv_fields(self):
         self._last_recv_time = 0.0
+        self._rx_received_at = None
+        self._rx_processed_at = None
         self._last_direction = None
         self._pending_line_break = False
         self._rx_decode_buffer = b""

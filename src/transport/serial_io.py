@@ -2,6 +2,7 @@
 """串口后台线程：SerialReader / PortScannerThread / OneShotPortScanner。"""
 import logging
 import threading
+import time
 import serial
 import serial.tools.list_ports
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
@@ -86,6 +87,7 @@ def _scan_ports():
 # ============== 串口读取线程 ==============
 class SerialReader(QThread):
     data_received = pyqtSignal(bytes)
+    data_received_timed = pyqtSignal(bytes, float)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, ser):
@@ -94,22 +96,43 @@ class SerialReader(QThread):
         self._running = True
         self._reconfig_lock = threading.Lock()
         self._reconfiguring = False
+        self.last_received_at = None
 
     def set_reconfiguring(self, on):
         with self._reconfig_lock:
             self._reconfiguring = bool(on)
 
+    def _emit_received(self, data, received_at):
+        if data and self._running:
+            self.last_received_at = received_at
+            self.data_received_timed.emit(data, received_at)
+            self.data_received.emit(data)
+
     def run(self):
         while self._running:
             try:
                 if self.ser and self.ser.is_open:
-                    n = self.ser.in_waiting
-                    if n > 0:
-                        data = self.ser.read(n)
-                        if data:
-                            self.data_received.emit(data)
-                    else:
-                        self.msleep(10)
+                    # Block until the first byte, then take the suffix already
+                    # sitting in the driver buffer. Framing at 20ms uses this
+                    # chunk's timestamp; don't split the suffix by a shorter gap.
+                    pending = self.ser.in_waiting
+                    data = self.ser.read(pending or 1)
+                    if data:
+                        received_at = time.monotonic()
+                        # Expose activity before probing the suffix so the GUI
+                        # cannot flush an older frame while this read is pending.
+                        self.last_received_at = received_at
+                        try:
+                            if not pending and self._running:
+                                ready = self.ser.in_waiting
+                                if ready:
+                                    tail = self.ser.read(ready)
+                                    if tail:
+                                        data += tail
+                                        received_at = time.monotonic()
+                        finally:
+                            # Keep the first read if the suffix read fails.
+                            self._emit_received(data, received_at)
                 else:
                     self.msleep(50)
             except serial.SerialException as e:
@@ -125,6 +148,8 @@ class SerialReader(QThread):
 
     def stop(self):
         self._running = False
+        if self.isRunning():
+            _safe(self.ser.cancel_read)
         # Short wait keeps the GUI responsive.  If the OS read is stuck, continue;
         # close() disconnects signals first and _running stops further work.
         if self.isRunning() and not self.wait(200):
@@ -136,6 +161,7 @@ class SerialConn(QObject):
     让 main_window 用 self.conn 统一处理串口/网络，不关心底层。
     参数 bytesize/parity/stopbits 传 pyserial 常量（由 main_window 从下拉项解析后给）。"""
     data_received = pyqtSignal(bytes)
+    data_received_timed = pyqtSignal(bytes, float)
     error_occurred = pyqtSignal(str)
     state_changed = pyqtSignal(bool)
 
@@ -154,7 +180,7 @@ class SerialConn(QObject):
         try:
             self._ser = serial.Serial(
                 port=self._port, baudrate=self._baud, bytesize=self._bytesize,
-                parity=self._parity, stopbits=self._stopbits, timeout=0,
+                parity=self._parity, stopbits=self._stopbits, timeout=0.05,
                 rtscts=(self._flow == "rtscts"), xonxoff=(self._flow == "xonxoff"),
             )
         except (serial.SerialException, ValueError, OSError) as e:
@@ -163,6 +189,7 @@ class SerialConn(QObject):
             return False
         self._reader = SerialReader(self._ser)
         self._reader.data_received.connect(self.data_received)
+        self._reader.data_received_timed.connect(self.data_received_timed)
         self._reader.error_occurred.connect(self._on_reader_error)
         self._reader.start()
         self.state_changed.emit(True)
@@ -190,6 +217,7 @@ class SerialConn(QObject):
             # 先断信号再 stop：避免 stop 期间排队的 error_occurred 在 reader 置 None 后重入
             try:
                 self._reader.data_received.disconnect(self.data_received)
+                self._reader.data_received_timed.disconnect(self.data_received_timed)
                 self._reader.error_occurred.disconnect(self._on_reader_error)
             except (TypeError, RuntimeError):
                 pass
@@ -207,6 +235,11 @@ class SerialConn(QObject):
     @property
     def is_open(self):
         return self._ser is not None and self._ser.is_open
+
+    @property
+    def last_received_at(self):
+        """Latest reader timestamp, including RX still queued for the GUI."""
+        return self._reader.last_received_at if self._reader is not None else None
 
     def apply_params(self, baud=None, bytesize=None, parity=None, stopbits=None, flow=None):
         """不断开连接，把新参数一次性应用到已打开的串口（None=该项不动）。

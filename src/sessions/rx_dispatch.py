@@ -100,7 +100,7 @@ def force_new_block_first(
     """Whether the first stream segment starts a new display block."""
     if last_direction != "rx" or pending_line_break or cross_chunk_crlf:
         return True
-    if packet_split and float(gap_ms) > float(timeout_ms):
+    if packet_split and float(gap_ms) >= float(timeout_ms):
         return True
     return False
 

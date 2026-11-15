@@ -8,6 +8,7 @@ from __future__ import annotations
 
 LENGTH_BUF_MAX = 8192
 LENGTH_BUF_KEEP = 512
+GAP_BUF_MAX = 1024 * 1024
 SM_QUEUE_LIMIT = 256
 
 

@@ -53,6 +53,7 @@ _SESSION_PROXY_ATTRS = (
     "_serial_device", "_serial_missing_count",
     "_freeze_view", "_ts_anchor",
     "_last_recv_time", "_last_direction", "_pending_line_break",
+    "_rx_received_at", "_rx_processed_at",
     "_rx_decode_buffer", "_rx_decode_buffers",
     "_rx_pending_cr", "_rx_pending_cr_source",
     "_inc_decoder", "_inc_decoders", "_txt_ends_with_nl",
@@ -60,7 +61,7 @@ _SESSION_PROXY_ATTRS = (
     "_ansi_state", "_ansi_pending", "_ansi_states", "_ansi_pendings",
     "_term_pos", "_term_sgr", "_term_esc", "_term_discard_csi",
     "_term_discard_osc", "_term_osc_prev_esc", "_term_streams",
-    "_ar_gap_timer",
+    "_ar_gap_timer", "_ar_last_received_at", "_ar_gap_overflow",
     "_ar_state", "_ar_sm_pending", "_ar_sm_queue", "_ar_sm_draining",
     "_ar_generation", "_ar_seq",
     "_modbus", "_modbus_buffers", "_ar_stream_buffers", "_reset_timer",
@@ -1501,6 +1502,11 @@ class SessionHostMixin:
             conn.data_received_from.connect(
                 lambda data, target=None, _sid=sid, _c=conn:
                     self._route_session_data(_sid, data, target, _c))
+        elif hasattr(conn, "data_received_timed"):
+            conn.data_received_timed.connect(
+                lambda data, received_at, _sid=sid, _c=conn:
+                    self._route_session_data(
+                        _sid, data, None, _c, received_at=received_at))
         else:
             conn.data_received.connect(
                 lambda data, _sid=sid, _c=conn:
@@ -1527,18 +1533,25 @@ class SessionHostMixin:
             conn.peer_changed.connect(
                 lambda ip, port, _sid=sid: self._route_session_peer(_sid, ip, port))
 
-    def _route_session_data(self, session_id, data, reply_target=None, source_conn=None):
+    def _route_session_data(self, session_id, data, reply_target=None, source_conn=None,
+                            received_at=None):
         s = self.find_session(session_id)
         if s is None:
             return
         if source_conn is not None and s.conn is not source_conn:
             return
         with self._with_session(s):
-            if s.id == self._active_session_id:
-                self.on_data_received(data, reply_target)
-            else:
-                # Background: view/stats/log + session-pinned engines (AR/MBM/…).
-                self._on_background_session_data(data, reply_target)
+            previous = s._rx_received_at
+            s._rx_received_at = received_at
+            s._rx_processed_at = received_at
+            try:
+                if s.id == self._active_session_id:
+                    self.on_data_received(data, reply_target)
+                else:
+                    # Background: view/stats/log + session-pinned engines (AR/MBM/…).
+                    self._on_background_session_data(data, reply_target)
+            finally:
+                s._rx_received_at = previous
 
     def _on_background_session_data(self, data, reply_target=None):
         """Render with the owning session's options; feed session-pinned engines."""

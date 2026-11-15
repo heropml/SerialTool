@@ -69,6 +69,9 @@ def test_ansi_and_force_new_block():
     assert rx.force_new_block_first(
         last_direction="rx", pending_line_break=False, cross_chunk_crlf=False,
         packet_split=True, gap_ms=5, timeout_ms=20) is False
+    assert rx.force_new_block_first(
+        last_direction="rx", pending_line_break=False, cross_chunk_crlf=False,
+        packet_split=True, gap_ms=20, timeout_ms=20) is True
 
 
 def test_skip_empty_trailing_seg_edges():
