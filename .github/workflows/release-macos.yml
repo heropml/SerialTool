@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build-dmg:
     name: Build + upload macOS DMG
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

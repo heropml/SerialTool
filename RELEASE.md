@@ -103,7 +103,7 @@ git 提交 → push github + gitee → 建 GitHub Release(`--latest`，上传 Se
 ### 2. macOS（二选一打包，然后补 Gitee）
 
 **(a) 云端打包（不需要 Mac）**：GitHub Actions → `Release macOS DMG`（`.github/workflows/release-macos.yml`）→ Run workflow（`CommTool` 分支）。
-版本号取分支上的 `src/version.py`；在 `macos-14` runner 上打 dmg，挂到已有的 `comm-v<版本>` GitHub Release（已有同名 dmg 则跳过），
+版本号取分支上的 `src/version.py`；在 `macos-15` runner 上打 dmg，挂到已有的 `comm-v<版本>` GitHub Release（已有同名 dmg 则跳过），
 并在 `docs/RELEASE_NOTES.md` 已列出该 dmg 时用它同步 GitHub 正文。
 `latest.json` 的 `url_mac` / `sha256_mac` / `size_mac` 仍需人工提交回写。
 
