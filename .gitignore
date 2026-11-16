@@ -8,6 +8,7 @@ __pycache__/
 build/
 build_onefile/
 build_macos/
+.pyinstaller-cache/
 dist/
 dist_onefile/
 dist_verify*/

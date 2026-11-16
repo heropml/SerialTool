@@ -160,6 +160,7 @@ class SerialConn(QObject):
     """把串口包成和 NetConn 一样的接口：open()/close()/send()/is_open + 信号，
     让 main_window 用 self.conn 统一处理串口/网络，不关心底层。
     参数 bytesize/parity/stopbits 传 pyserial 常量（由 main_window 从下拉项解析后给）。"""
+    backend_name = "pyserial"
     data_received = pyqtSignal(bytes)
     data_received_timed = pyqtSignal(bytes, float)
     error_occurred = pyqtSignal(str)

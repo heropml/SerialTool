@@ -19,7 +19,8 @@ import serial
 import serial.tools.list_ports
 
 from modbus.bridge import BridgeEngine
-from transport.serial_io import SerialConn, OneShotPortScanner
+from transport.serial_io import OneShotPortScanner
+from transport.serial_backend import create_serial_connection as SerialConn
 from transport.net_io import (
     TcpServerConn, TcpClientConn, UdpConn,
     ERR_CONN_TIMEOUT, ERR_SEND_BACKPRESSURE, local_ipv4_list, is_valid_ip,

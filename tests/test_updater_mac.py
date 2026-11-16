@@ -147,3 +147,16 @@ def test_mac_asset_gate_rejects_missing_asset(monkeypatch):
     monkeypatch.setattr(check_mac_asset, "_release_data", lambda *_: {"assets": []})
     with pytest.raises(SystemExit, match="missing"):
         check_mac_asset.main(["1.5.0"])
+
+
+def test_updater_context_has_roots_without_build_machine_ca(monkeypatch, tmp_path):
+    import ssl
+    import updater
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "absent.pem"))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path / "absent-certs"))
+    ctx = updater._ssl_context()
+    assert ctx is not None
+    assert ctx.cert_store_stats()["x509_ca"] > 0
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname

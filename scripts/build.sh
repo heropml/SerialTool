@@ -94,7 +94,6 @@ pyinstaller \
     --exclude-module PyQt5.QtQuickWidgets \
     --exclude-module PyQt5.QtRemoteObjects \
     --exclude-module PyQt5.QtSensors \
-    --exclude-module PyQt5.QtSerialPort \
     --exclude-module PyQt5.QtSql \
     --exclude-module PyQt5.QtTest \
     --exclude-module PyQt5.QtWebChannel \

@@ -280,6 +280,137 @@ def _bind_timed_conn(w):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="PTY requires POSIX")
+@pytest.mark.parametrize("combo_name,value", [
+    ("cb_stopbits", "1.5"),
+    pytest.param("cb_parity", "Mark", marks=pytest.mark.skipif(
+        os.sys.platform != "darwin", reason="macOS parity restriction")),
+    pytest.param("cb_parity", "Space", marks=pytest.mark.skipif(
+        os.sys.platform != "darwin", reason="macOS parity restriction")),
+    ("cb_baud", "driver-reject"),
+])
+def test_unsupported_live_format_keeps_connection_and_restores_controls(
+        window, monkeypatch, combo_name, value):
+    import termios
+    w = window
+    master, slave = os.openpty()
+    monkeypatch.setenv("COMMTOOL_SERIAL_BACKEND", "qserialport")
+    name = os.ttyname(slave)
+    w.cb_port.addItem(name, name)
+    w.cb_port.setCurrentIndex(w.cb_port.count() - 1)
+    w.cb_baud.setCurrentText("115200")
+    w.cb_parity.setCurrentText("None")
+    w.cb_stopbits.setCurrentText("1")
+    w.cb_flow.setCurrentText("None")
+    try:
+        w.open_conn()
+        conn = w.conn
+        assert conn is not None and conn.is_open
+        worker, thread = conn._worker, conn._thread
+        signature = w._conn_cfg
+        config = dict(conn._config)
+        native_format = termios.tcgetattr(master)
+        errors, notices, states, toasts = [], [], [], []
+        conn.error_occurred.connect(errors.append)
+        conn.notice_occurred.connect(notices.append)
+        conn.state_changed.connect(states.append)
+        monkeypatch.setattr(w, "toast", lambda message, **_kw: toasts.append(message))
+        if value == "driver-reject":
+            configure = worker._configure
+            attempts = []
+
+            def reject_first(proposed):
+                attempts.append(dict(proposed))
+                if len(attempts) == 1:
+                    assert worker.port.setBaudRate(proposed["baud"])
+                    raise OSError("driver rejected parameters")
+                return configure(proposed)
+
+            monkeypatch.setattr(worker, "_configure", reject_first)
+        else:
+            getattr(w, combo_name).setCurrentText(value)
+        w.cb_baud.setCurrentText("9600")
+        w.cb_flow.setCurrentText("RTS/CTS")
+        w._apply_serial_params_live()
+        _APP.processEvents()
+        assert w.conn is conn and conn.is_open
+        assert conn._worker is worker and conn._thread is thread
+        assert errors == [] and states == []
+        assert len(notices) == 1 and toasts == notices
+        assert w._conn_cfg == signature
+        assert w._conn_config_signature() == signature
+        assert conn._config == config
+        assert termios.tcgetattr(master) == native_format
+        assert not w._reconnect_timer.isActive()
+        assert w._mbm_connection_ready()
+        assert w.sw_rts.isEnabled()
+        assert w._capture_connection_fields()["ser_baud"] == "115200"
+        received = w.rx_bytes
+        os.write(master, b"still connected")
+        deadline = time.monotonic() + 2
+        while w.rx_bytes == received and time.monotonic() < deadline:
+            _APP.processEvents()
+            time.sleep(0.001)
+        assert w.rx_bytes == received + len(b"still connected")
+    finally:
+        w.close_conn()
+        os.close(master)
+        os.close(slave)
+
+
+def test_live_parameter_rejection_without_connection_signature(window):
+    from main_window import PROTO_SERIAL
+    w = window
+    conn = SimpleNamespace(is_open=True, apply_params=lambda **_kwargs: False)
+    w.conn = conn
+    w._conn_proto = PROTO_SERIAL
+    w._conn_cfg = None
+    try:
+        w._apply_serial_params_live()
+        assert w.conn is conn and conn.is_open
+        assert w._conn_cfg is None
+    finally:
+        w.conn = None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="PTY requires POSIX")
+@pytest.mark.parametrize("backend", ["qserialport", "pyserial"])
+def test_selected_backend_uses_existing_20ms_framing(window, monkeypatch, backend):
+    w = window
+    master, slave = os.openpty()
+    monkeypatch.setenv("COMMTOOL_SERIAL_BACKEND", backend)
+    name = os.ttyname(slave)
+    w.cb_port.addItem(name, name)
+    w.cb_port.setCurrentIndex(w.cb_port.count() - 1)
+    w.cb_baud.setCurrentText("115200")
+    frames = []
+    monkeypatch.setattr(w, "_ar_match", lambda data: frames.append(
+        (data, time.monotonic(), w.conn.last_received_at)))
+    try:
+        w.open_conn()
+        assert w.conn is not None and w.conn.is_open
+        assert w.conn.backend_name == backend
+        w.active_session()._ar_enabled = True
+        for expected in (b"OK\r\n", b"next"):
+            for byte in expected:
+                os.write(master, bytes([byte]))
+                time.sleep(0.002)
+            target = len(frames) + 1
+            deadline = time.monotonic() + 2
+            while len(frames) < target and time.monotonic() < deadline:
+                _APP.processEvents()
+                time.sleep(0.001)
+            assert len(frames) == target
+            data, flushed_at, received_at = frames[-1]
+            assert data == expected
+            assert flushed_at - received_at >= 0.020
+            assert flushed_at - received_at < 0.5
+    finally:
+        w.close_conn()
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="PTY requires POSIX")
 @pytest.mark.parametrize("payload", [b"OK\r\n", bytes(range(128))])
 def test_native_idle_burst_matches_immediate_equal_rule(window, monkeypatch, payload):
     w = window

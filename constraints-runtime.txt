@@ -8,6 +8,7 @@ PyQt5-Qt5==5.15.2; sys_platform == "win32"
 PyQt5-Qt5==5.15.19; sys_platform != "win32"
 PyQt5-sip==12.17.1
 pyserial==3.5
+certifi==2026.10.23
 bleak==1.1.1
 pylink-square==1.7.0
 psutil==7.2.2

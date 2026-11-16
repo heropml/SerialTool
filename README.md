@@ -189,7 +189,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **侧栏自动隐藏**：点连接设置右上角图钉收成竖标签；悬停或点击展开，移开约半秒收回，再点图钉恢复固定。快速扫过不展开，切换工作台会关闭浮层；输入框编辑、下拉或模态框交互期间保持展开。自动隐藏状态与固定宽度随配置保存。
 - **状态栏**
   - 左下：状态点（红 = 未连接 / 绿 = 已连接·监听·已绑定）+ 连接状态文本（串口 `● COM3 @ 115200`；网络 `● TCP 监听 / ● 已连接 / ● UDP / ● 组播 地址:端口`；Virtual `● Virtual`）+ RX/TX 收发统计（字节 · 包数 · 实时速率，详见 v1.1.0）
-- 右下：版本号 `v1.8.6`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
+- 右下：版本号 `v1.8.7`（从 `version.py` 同步），有新版时变成「● 可更新 vX」可点徽标；左侧显示当前实时记录文件路径（📝）
 - **多语言切换**：标题栏左上下拉（**简体中文 / English / 繁體中文**），**无需重启**，所有 UI 文字（标签、按钮、占位提示、错误消息、文件对话框）瞬间切换
 - **主题切换**：标题栏左上紧挨语言的第二个下拉，**10 个配色方案**：
 
@@ -290,8 +290,8 @@ CommTool/
 ├── src/                    Python 源码（领域分包，import 形如 from transport.serial_io import …）
 │   ├── main.py             入口：HiDPI + QApplication + 启动 CommTool
 │   ├── main_window.py      主窗口 CommTool 主体类（最大模块，仍留在 src 根）
-│   ├── version.py          版本号单点真源 (__version__ = "1.8.6")
-│   ├── updater.py          在线更新（QtNetwork 检查/下载 + 跑安装向导）
+│   ├── version.py          版本号单点真源 (__version__ = "1.8.7")
+│   ├── updater.py          在线更新（urllib 检查/下载 + certifi 根证书 + 跑安装向导）
 │   ├── app_icon.py         运行时图标加载（resource_path / get_app_icon）
 │   ├── icon_data.py        128×128 PNG base64（运行时图标）
 │   ├── transport/          连接层：serial_io / rtt_io / net_io / ble_io / virtual_io
@@ -354,6 +354,27 @@ py -3 src\main.py
 要求 Python 3.11–3.13；CI 覆盖 3.11 / 3.12 / 3.13，发布构建固定使用 3.13。为避免依赖漂移，CI / 发版请同时使用 `constraints-runtime.txt`。
 
 ---
+
+### 串口后端试用
+
+本次源码和本地试用包默认使用 `qserialport`。QSerialPort 在独立 Qt 线程中收发，主窗口和串口桥接共用 `transport.serial_backend.create_serial_connection` 接口。接收接口输出字节块和读取时的单调时钟时间戳，上层继续使用现有的 20 毫秒静默组帧逻辑。
+
+启动前设置环境变量可切回 `pyserial`，方便同设备对照验证。
+
+```bash
+# macOS / Linux
+COMMTOOL_SERIAL_BACKEND=pyserial python src/main.py
+```
+
+```powershell
+# Windows PowerShell
+$env:COMMTOOL_SERIAL_BACKEND = "pyserial"
+python src/main.py
+```
+
+移除该环境变量或设为 `qserialport` 即使用试用后端。代码中也可通过工厂的 `backend="pyserial"` / `backend="qserialport"` 参数指定。后续库实现相同的连接协议并加入 `BACKENDS` 注册表，即可沿用现有会话和组帧逻辑。
+
+QSerialPort 后端会明确拒绝 macOS 的 Mark / Space 校验，以及 POSIX 平台的 1.5 停止位。在线改成这些格式，或驱动拒绝新参数且成功回滚时，会提示原因，参数控件恢复到当前有效值，连接继续使用原参数。Parity / Framing / Break 线路错误允许连接继续接收。发送返回 Qt 接受入队的字节数，输出队列上限为 4 MiB，达到上限时本次发送返回 0。实际写错误会清空输出队列并关闭连接，通知上层处理。
 
 ## 5. 重新打包
 
@@ -514,7 +535,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 
 `net_io.py` 定义统一基类 `NetConn(QObject)`，对外暴露与原串口一致的语义：`open()/close()/send(data,target)/is_open` + `data_received(bytes)/error_occurred/state_changed/clients_changed` 信号。三个实现 `TcpServerConn / TcpClientConn / UdpConn`（组播子类 `UdpGroupConn`）全部基于 **QtNetwork**（`QTcpServer/QTcpSocket/QUdpSocket`），靠 `readyRead` 等信号事件驱动，**不需要自己起轮询线程**。主窗口只认 `NetConn` 接口，因此数据区/发送/高亮/日志等上层逻辑无感。`send()` 返回写出字节数，`SEND_NO_TARGET(-1)` 表示无可发送目标（UDP 无对端 / TCP Server 无客户端）。
 
-串口侧 `serial_io.py` 的 `SerialConn` 镜像同一套接口（内部封装后台读线程 `SerialReader`）。主窗口 `open_conn()` 按「类型」下拉构造 `SerialConn` 或某个 `NetConn`，赋给同一个 `self.conn`，上层对串口 / 网络无感；`clients_changed` / `peer_changed` 是网络专有信号，串口连接不发，主窗口按 `hasattr` 守卫连接。
+串口侧由 `serial_backend.py` 的工厂创建符合 `SerialConnection` 协议的连接，提供 QSerialPort 和 pyserial 两种实现。主窗口 `open_conn()` 和串口桥接共用该工厂，上层通过信号、时间戳和收发方法操作连接。`clients_changed` / `peer_changed` 是网络专有信号，主窗口按 `hasattr` 守卫连接。
 
 ### 9.3 编码兼容
 
@@ -672,6 +693,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v69 (v1.8.1)**: 侧栏图钉自动隐藏、悬停浮层与布局记忆；修复快速扫过误展开和切换工作台后浮层回弹。Windows Setup / onefile 发布，macOS / Linux 新版待补包。
 - **v70 (v1.8.2)**: **正式版** — **弹窗全面主题化**（删除预设确认、帧构造器/Modbus 主机/脚本控制台命名输入、8 窗口上限提示全部换主题化对话框，跟随语言与主题）；**发送框粘贴只取纯文本**（不再带入网页/Word 的富文本格式）。Windows Setup / onefile 发布，macOS / Linux 新版待补包。1807 collected 全量通过。
 - **v71 (v1.8.3)**: **正式版** — **启动提速**（启动按已存主题只应用一次样式、全局事件过滤器对无关事件直接放行、RTT 器件表枚举推迟到主窗口首帧之后）；安装版启动到首帧约 1.35 s → 1.03 s（上次停在 RTT 约 1.69 s → 1.03 s），界面外观不变。Windows / macOS / Linux x86_64 已发。1815 collected 全量通过。
+- **v75 (v1.8.7)** QSerialPort 可切换串口后端，统一主窗口与桥接接口，采用异步发送与 4MiB 输出积压上限。修复线路错误、控制线不支持、在线参数回滚及线程清理，更新检查补充 certifi 根证书。源码已更新，三平台安装包待发布。
 - **v74 (v1.8.6)** 串口等待式接收与读线程时间戳，提高 20ms 时间分包和静默组帧稳定性；保留补读失败时已读数据，取消阻塞读取后断开连接；静默组帧每会话 1MiB 上限，超限丢弃整帧并提示，静默后恢复匹配。
 - **v73 (v1.8.5)**: **正式版** 修复雾白主题下拉框选中项文字不可见的问题；滑动开关开启色与主题主按钮统一，主界面、工程菜单、桥接和 BLE 弹窗同步更新。
 - **v72 (v1.8.4)**: **正式版** 新增「雾白 / Mist / 霧白」浅色皮肤（冷灰背景、白色卡片、细边框、炭黑按钮），原有 9 套主题保持一致；Windows Setup、macOS Apple Silicon DMG、Linux x86_64 `.run` 使用同一版本。自本版起停止发布 Windows 免安装单文件版。

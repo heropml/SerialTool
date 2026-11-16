@@ -85,7 +85,8 @@ from transport.net_io import (TcpServerConn, TcpClientConn, UdpConn, UdpGroupCon
                     PROTOCOLS, SEND_NO_TARGET, ERR_CONN_TIMEOUT, ERR_SEND_BACKPRESSURE,
                     local_ipv4_list, is_multicast_ipv4,
                     is_valid_ip, is_local_ipv4, resolve_export_local_ipv4)
-from transport.serial_io import SerialConn, PortScannerThread, OneShotPortScanner
+from transport.serial_io import PortScannerThread, OneShotPortScanner
+from transport.serial_backend import create_serial_connection as SerialConn
 from transport import conn_error_tips
 from transport.virtual_io import VirtualConn, PROTO_VIRTUAL
 from transport.ble_io import BleConn, BleScanner, ERROR_I18N as _BLE_ERROR_I18N
@@ -3677,14 +3678,28 @@ class CommTool(SessionHostMixin, QMainWindow):
         sp = _resolve_serial_params(
             self.cb_databits.currentText(), self.cb_parity.currentText(),
             self.cb_stopbits.currentText(), flow)
-        ok = self.conn.apply_params(
+        conn = self.conn
+        ok = conn.apply_params(
             baud=baud,
             bytesize=sp["bytesize"],
             parity=sp["parity"],
             stopbits=sp["stopbits"],
             flow=sp["flow"])
         if not ok:
-            return      # 失败已由 conn 的 error_occurred 走统一错误提示/掉线路径
+            # A nonfatal parameter rejection keeps the previous configuration.
+            # Restore the controls too, so Modbus readiness and saved settings
+            # continue to describe the active connection.
+            if self.conn is conn and conn.is_open and self._conn_cfg:
+                for combo, value in zip(
+                        (self.cb_baud, self.cb_databits, self.cb_parity,
+                         self.cb_stopbits, self.cb_flow), self._conn_cfg[2:]):
+                    blocked = combo.blockSignals(True)
+                    try:
+                        combo.setCurrentText(str(value))
+                    finally:
+                        combo.blockSignals(blocked)
+                self._on_flow_changed()
+            return
         self._conn_cfg = sig
         # 流控切到 RTS/CTS 后手动 RTS 开关要禁用（硬件接管）。目前 _on_flow_changed 靠
         # currentIndexChanged 与本函数的 activated 同帧触发而"顺带"生效，是巧合耦合；

@@ -5,7 +5,7 @@
     {"version": "1.0.5", "url": "<安装包下载地址>",
      "sha256": "<64位摘要>", "size": 123456, "notes": "本次更新内容…"}
 按 UPDATE_MANIFEST_URLS 的顺序逐个尝试，第一个成功拿到的为准。
-基于 Qt 自带 QtNetwork，无需额外依赖。
+网络请求使用 urllib，随包携带 certifi 根证书。
 
 发版流程：打好安装包 → update_manifest_integrity.py 写摘要/大小 → 上传并发布清单。
 注意：清单 URL 必须能**免登录**访问（开放的内网 HTTP，或公开仓库的 raw / Releases）。
@@ -24,6 +24,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import certifi
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl, QThread
 
 # 版本清单地址，按顺序逐个尝试，第一个成功的为准。
@@ -180,18 +181,21 @@ def cleanup_temp_installers():
 
 # 程序化请求的 User-Agent + 系统证书：Qt 的 QNetworkAccessManager 走 OpenSSL，而 OpenSSL
 # 在 Windows 默认不读系统证书存储 → 某些机器验证 Gitee/GitHub 证书失败、所有更新源「连不上」
-# （浏览器/Python ssl 用系统证书则正常，表现为「网页能开但程序连不上」）。故清单与下载都改用
-# Python urllib（系统证书）+ 浏览器 UA，放子线程跑、不阻塞 UI。
+# （浏览器能开但程序连不上）。清单与下载使用 urllib + 浏览器 UA，放子线程跑。
+# 默认平台信任库之外加载随包 certifi，兼容未安装构建机 Python / OpenSSL 的设备。
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36 CommTool")
 _running_workers = set()   # 保活在跑的 worker，防 Checker/Downloader 先销毁导致 QThread 被回收
 
 
 def _ssl_context():
-    """Windows 上 ssl 默认 context 用系统证书存储（与浏览器一致），避免 OpenSSL 找不到根 CA。"""
+    """Load bundled public CAs as well as the platform's default trust store."""
     try:
-        return ssl.create_default_context()
+        ctx = ssl.create_default_context()
+        ctx.load_verify_locations(cafile=certifi.where())
+        return ctx
     except (OSError, ValueError, ssl.SSLError):
+        _log.warning("updater certificate context failed", exc_info=True)
         return None
 
 

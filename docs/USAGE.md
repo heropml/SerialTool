@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.7](#whats-new-in-v187)
 - [What's New in v1.8.6](#whats-new-in-v186)
 - [What's New in v1.8.5](#whats-new-in-v185)
 - [What's New in v1.8.4](#whats-new-in-v184)
@@ -61,6 +62,16 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.7
+
+This section describes the v1.8.7 source. Installer packages are pending release.
+
+- Serial connections default to QSerialPort in a dedicated thread. The main window and serial bridge share the connection interface. Set `COMMTOOL_SERIAL_BACKEND=pyserial` before startup to compare backends.
+- The 20ms silence framer uses read timestamps. Parity, framing, break and unsupported optional modem-line operations allow the data connection to continue.
+- Mark/Space parity on macOS and 1.5 stop bits on POSIX are rejected explicitly. Driver-rejected live settings produce a notice and restore the controls after successful rollback. Failed rollback closes the connection and cleans up the thread.
+- Sending returns the byte count accepted into Qt's output queue, with a 4MiB backlog limit. Write failure clears the output and closes the connection.
+- Update checks add certifi roots to the system default trust configuration, fixing certificate verification failures in some packaged environments.
 
 ## What's New in v1.8.6
 
@@ -1064,7 +1075,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.6`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.7`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 

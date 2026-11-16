@@ -1,7 +1,8 @@
 # 运行时依赖
-# PyQt5 自带 QtNetwork（TCP/UDP）；串口走 pyserial（统一版：串口 + 网络）
+# PyQt5 自带 QtNetwork（TCP/UDP）和 QtSerialPort；pyserial 提供可切换后端和端口枚举
 PyQt5>=5.15.11,<5.16
 pyserial>=3.5
+certifi>=2026.10.23
 # Windows BLE 主机（UART 风格 Notify/Write）；macOS/Linux 界面可选但连接会提示不支持
 bleak>=1.1,<2
 # SEGGER RTT（连接类型「RTT」）：pylink-square 为纯 Python ctypes 封装
