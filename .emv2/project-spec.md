@@ -2,9 +2,9 @@
 
 ## Meta
 - **创建日期**: 2026-08-23
-- **项目类型**: 跨平台桌面通信调试工具（PyQt5；Serial / TCP / UDP / Virtual / BLE）
+- **项目类型**: 跨平台桌面通信调试工具（PyQt5；Serial / SEGGER J-Link RTT / TCP / UDP / Virtual / BLE）
 - **当前步骤**: S7 循环审核与零回归缺陷闭环
-- **整体状态**: v1.7.3 已发布；S6/S7 整改和循环回归已完成，待正常发布流程出包
+- **整体状态**: S6/S7 整改和循环回归已完成。当前版本见 [发行说明](../docs/RELEASE_NOTES.md)。
 - **项目路径**: `/Users/heropml/software/SerialTool`
 - **芯片型号**: 不适用（本仓库不是 MCU 固件）
 
@@ -20,7 +20,7 @@
 | S6 | 审计问题全量整改 | 已完成 | 2026-08-23 |
 | S7 | 循环审核、边界加固与全量回归 | 已完成 | 2026-08-23 |
 
-## 现状基线
+## 2026-08-23 审计基线
 
 - Git：`CommTool` 与 `origin/CommTool` 同步；审计开始时工作区干净；HEAD `ac2e85c`。
 - 规模：`src + tests + scripts` 共 92,693 行 Python；`src/main_window.py` 13,023 行。

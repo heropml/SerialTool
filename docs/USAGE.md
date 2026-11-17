@@ -65,13 +65,12 @@ On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bund
 
 ## What's New in v1.8.7
 
-This section describes the v1.8.7 source. Installer packages are pending release.
-
 - Serial connections default to QSerialPort in a dedicated thread. The main window and serial bridge share the connection interface. Set `COMMTOOL_SERIAL_BACKEND=pyserial` before startup to compare backends.
 - The 20ms silence framer uses read timestamps. Parity, framing, break and unsupported optional modem-line operations allow the data connection to continue.
 - Mark/Space parity on macOS and 1.5 stop bits on POSIX are rejected explicitly. Driver-rejected live settings produce a notice and restore the controls after successful rollback. Failed rollback closes the connection and cleans up the thread.
 - Sending returns the byte count accepted into Qt's output queue, with a 4MiB backlog limit. Write failure clears the output and closes the connection.
 - Update checks add certifi roots to the system default trust configuration, fixing certificate verification failures in some packaged environments.
+- **Live log folder** — the save dialog opens in the last successfully used directory for the current profile and suggests a new timestamped filename.
 
 ## What's New in v1.8.6
 
@@ -1112,16 +1111,16 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download from [GitHub Releases](https://github.com/heropml/SerialTool/releases). Current Windows, macOS, and Linux release is **v1.8.6**. Windows Setup and macOS DMG are also on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.6); The Linux package in this release is below 100MB and is also mirrored on Gitee.
+Download the v1.8.7 installers from [GitHub Releases](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.7) or check available mirrored assets on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.7).
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.6.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Recommended: `CommTool_Setup_v1.8.7.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.6.dmg` from `comm-v1.8.6`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.7.dmg` from `comm-v1.8.7`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1132,7 +1131,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.6_linux_x86_64.run`
+- File: `CommTool_Setup_v1.8.7_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run

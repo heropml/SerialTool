@@ -2309,6 +2309,41 @@ def test_switch_away_while_disconnected_keeps_reconnect_intent(
     w._close_all_sessions()
 
 
+def test_log_dialog_remembers_last_successful_directory(monkeypatch, tmp_path):
+    from PyQt5.QtWidgets import QFileDialog
+
+    w = _window(monkeypatch, tmp_path, "log-directory")
+    _open_virtual(w)
+    log_dir = tmp_path / "串口日志"
+    log_path = log_dir / "capture.log"
+    unavailable_dir = tmp_path / "not-a-directory"
+    unavailable_dir.touch()
+    choices = iter([str(log_path), str(unavailable_dir / "failed.log"), "", ""])
+    suggestions = []
+
+    def choose_path(parent, title, suggested_path, file_filter):
+        suggestions.append(Path(suggested_path))
+        return next(choices), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose_path)
+    w.sw_log_file.setChecked(True)
+    assert log_path.is_file()
+    w.sw_log_file.setChecked(False)
+    w.settings = QSettings(w.settings.fileName(), QSettings.IniFormat)
+
+    w.sw_log_file.setChecked(True)  # An invalid choice cannot replace the last directory.
+    assert not w.sw_log_file.isChecked()
+    w.sw_log_file.setChecked(True)  # Cancel the dialog.
+    assert not w.sw_log_file.isChecked()
+    assert [path.parent for path in suggestions] == [Path("."), log_dir, log_dir]
+    assert all(path.name.startswith("data_log_") and path.suffix == ".log" for path in suggestions)
+
+    log_path.unlink()
+    log_dir.rmdir()
+    w.sw_log_file.setChecked(True)
+    assert suggestions[-1].parent == Path(".")
+
+
 def test_user_disables_log_clears_reconnect_intent(monkeypatch, tmp_path):
     """Explicitly turning logging off must not reopen after auto-reconnect."""
     w = _window(monkeypatch, tmp_path, "log-off-intent")

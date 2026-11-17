@@ -11293,10 +11293,11 @@ class CommTool(SessionHostMixin, QMainWindow):
     def on_log_file_toggled(self, on):
         session = self._log_session()
         if on:
+            filename = "data_log_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S")
+            last_dir = self.settings.value("log_last_dir", "", type=str)
+            suggested_path = os.path.join(last_dir, filename) if os.path.isdir(last_dir) else filename
             path, _ = QFileDialog.getSaveFileName(
-                self, self._t("dlg_log_path"),
-                "data_log_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S"),
-                self._t("filter_text"))
+                self, self._t("dlg_log_path"), suggested_path, self._t("filter_text"))
             if not path:
                 self.sw_log_file.blockSignals(True)
                 self.sw_log_file.setChecked(False)
@@ -11315,6 +11316,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             now = datetime.now()
             real = self._log_segment_path(now, session=session)
             if self._open_log_segment(real, when=now, session=session):
+                self.settings.setValue("log_last_dir", os.path.dirname(os.path.abspath(path)))
+                self.settings.sync()
                 self.toast(self._t("log_started", path=real))
             else:
                 self.sw_log_file.setChecked(False)

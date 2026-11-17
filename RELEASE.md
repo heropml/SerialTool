@@ -22,7 +22,7 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 | Linux x86_64 | `CommTool_Setup_v<版本>_linux_x86_64.run`（v1.8.6 约 75MB） | ✅ | ✅ 小于 100MB 时 | `release_linux.sh`：传 GitHub；Gitee 自动尝试，超限跳过 |
 
 - 历史上 Gitee 很多版本缺 dmg，是**当时漏传**，不是规则；以本表为准。
-- Linux `.run` 若将来压到 100MB 以下，脚本会自动传上 Gitee，不用改规则。
+- Linux `.run` 符合 Gitee 的 100 MB 单文件限制时，脚本会尝试同步上传。
 - **Gitee 附件配额 1GB**（2026-09-24 实测约用 705MB，含 v1.8.3 的 exe + dmg）。满了上传会报 HTTP 400「超出配额」，**不自动清理旧版**，满了再人工决定删哪些。
 - `latest.json`：`url` 指 **Gitee** 的 Setup.exe；`url_mac` / `url_linux` **只填 GitHub 直链**（历史惯例，不改）。
 - 顺序：**先 Windows**（建两站 Release + 传 Setup.exe + 写 `latest.json`）→ 再 macOS / Linux 往**同一个** `comm-v<版本>` 追加。
@@ -85,7 +85,7 @@ Gitee 令牌读取顺序：环境变量 `GITEE_TOKEN` → `scripts/.gitee_token`
 
 ---
 
-## 二、标准双平台发版（推荐顺序）
+## 二、标准三平台发版（推荐顺序）
 
 > **先 Windows 后 macOS**。原因：`latest.json` 由 Windows 脚本统一维护。
 > macOS 端往同一个 Release 追加 `.dmg`，上传并校验后回写 `latest.json` 的 Mac URL、SHA-256 和大小。
@@ -237,7 +237,7 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
 - [ ] Gitee Release：`py -3 scripts/release_gitee.py`（见 6.2）
 - [ ] 验证两源 latest.json + Gitee 下载链接（见 6.3）
 - [ ] macOS `.dmg`：GitHub + **Gitee**（`release_macos.sh` 自动；云端 workflow 没配 secret 时 Mac 上补 `release_gitee_dmg.py`）
-- [ ] Linux `.run`：GitHub（`release_linux.sh`；超 100MB 不传 Gitee，Gitee 正文自动提示去 GitHub）
+- [ ] Linux `.run`：GitHub + Gitee（`release_linux.sh`；超 100 MB 时仅提供 GitHub 下载，Gitee 正文自动提示）
 - [ ] `latest.json` 的 `url_mac` / `url_linux` + sha256 / size 回写并推两站
 - [ ] 两站 Release 正文都同步成「均已发布」的最终文案
 - [ ] 跑「九、两站一致性核对」

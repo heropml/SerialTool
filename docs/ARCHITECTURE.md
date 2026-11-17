@@ -38,6 +38,11 @@ domain package that owns it and remain Qt-free whenever practical.
 - Ruff, compileall, pure-logic tests, platform smoke suites, full Windows tests, and
   nightly soak/disconnect churn form the delivery gate.
 
+## Serial transport and live logging
+
+- `transport/serial_backend.py` selects QSerialPort by default and supports pySerial through `COMMTOOL_SERIAL_BACKEND`. The terminal and bridge share this factory. Both backends deliver RX chunks with a monotonic read timestamp for session framing.
+- Live log handles and expanded filenames belong to their sessions. The save dialog stores the last successful directory in the current profile as `log_last_dir`.
+
 ## Qt migration boundary
 
 The current release line uses PyQt5/Qt5. New domain modules intentionally avoid Qt,

@@ -8,7 +8,9 @@ Automatic download and execution requires all of the following:
 - a valid 64-character SHA-256 in `latest.json`;
 - an exact digest match after download;
 - an exact byte-size match when the manifest supplies a size;
-- the platform installer signature gate (`MZ` on Windows, shebang on Linux).
+- the platform file format check (`MZ` on Windows, shebang on Linux).
+
+The update client validates HTTPS using the system trust store plus bundled certifi roots.
 
 Old manifests without a digest remain version-readable, but the app only opens the
 manual release page. Release scripts call `scripts/update_manifest_integrity.py` so

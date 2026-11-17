@@ -109,7 +109,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **RTT（SEGGER J-Link）**：选择目标器件、SWD/JTAG、速度（kHz）和通道；可填控制块精确地址，或用 `起点+范围` 搜索 RAM。器件侧栏只保留常用项，点「…」可在完整 J-Link 目录中筛选、排序并回填。多把探针时可填序列号；「自动」优先重试上次成功探针，失败才选系统默认探针；显式序列号绝不改选其他探针。需安装 `pylink-square` 与 SEGGER J-Link 驱动；连接后若控制块尚未出现会提示等待而不会断开。
 - **BLE（Windows）**：点「扫描」弹出窗口选择附近低功耗设备，按 UART 风格 Notify/Write 收发（FFF0 / FFE0 / Nordic UART / Microchip UART / Custom 模板，可对调写入与通知 UUID）。经典蓝牙 SPP 仍走 Serial COM。不支持 macOS/Linux BLE，也无 BLE PCAP
 - 动作按钮随协议/状态：打开/关闭、开始监听/停止监听、连接/断开；连接后整卡片锁定变灰
-- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口走 pyserial，RTT 走 pylink-square + SEGGER J-Link 驱动，BLE 走 Bleak，Virtual 为进程内注入
+- 基于 Qt 自带 **QtNetwork**（QTcpServer/QTcpSocket/QUdpSocket），事件驱动、无轮询线程；串口默认走 QSerialPort，可切换到 pyserial，RTT 走 pylink-square + SEGGER J-Link 驱动，BLE 走 Bleak，Virtual 为进程内注入
 
 ### 1.2 数据区（接收 + 发送日志）
 
@@ -139,6 +139,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - **关键字高亮**（v1.0.1）— 标题栏「关键字高亮」按钮打开配置弹窗：多条关键字，每条独立颜色、可选「背景 / 文字」着色、可限定「收 / 发 / 收发」范围；**区分大小写**子串匹配、**跳过时间戳**、规则持久化
 - **只显高亮行**（v1.0.1，v1.0.2 移到数据区标题栏）— 标题栏「只显高亮行」可切换按钮（开启时高亮），只保留命中关键字的行（其余折叠隐藏，数据不丢）
 - **关键字高亮分组**（v1.0.2）— 弹窗左侧分组列表（新建/双击改名/删除）；标题栏分组下拉选「哪个分组生效」（含「（关闭）」停用全部）；编辑分组与生效分组**相互独立**
+- **实时记录目录** — 再次开启实时记录时沿用上次成功使用的目录，并按当前时间建议新文件名。此目录保存在当前配置档中。
 - **实时记录按大小分包**（v1.0.2）— 实时记录开关旁下拉：不分包 / 1M~100M / 自定义（如 3M）；写满自动切到 `_001`/`_002` 新文件；当前日志路径显示在底部状态栏
 - **中文右键菜单**（v1.0.2）— 数据区右键 复制 / 全选 / 清空 / 保存，**跟随程序语言**（非系统语言的 Qt 默认菜单）
 
@@ -250,7 +251,7 @@ CommTool（通信调试工具）由原 SerialTool 与 NetworkTool 合并：左�
 - 点「检查更新」自动从更新源读取版本清单（`latest.json`），与当前版本比对
   - **有新版** → 显示版本号 + 更新说明 + 「下载并更新」→ 下载（带进度）→ 下载完弹出**正常安装向导**，手动点「下一步 / 安装」完成升级（非静默）
   - **已是最新** → 提示当前已是最新版本
-- 更新源**内网优先、回退公网**（GitHub 上 CommTool 分支的 `latest.json`），每个源 8 秒超时（外网不卡）
+- 更新清单从 CommTool 分支读取，**Gitee 优先、GitHub 回退**，每个源 8 秒超时
 - 下载后校验文件头魔数（`MZ`）防错误页误执行；关闭对话框 / ESC 自动中止在途下载并删半成品；启动时清理 `%TEMP%` 残留安装包；版本号解析容错
 - 网络类型基于 Qt 自带 **QtNetwork**（CommTool 网络侧本就用 QtNetwork），无新依赖；更新源地址在 `src/updater.py` 的 `UPDATE_MANIFEST_URLS` 配置，版本清单格式见根目录 `latest.json`
 
@@ -357,7 +358,7 @@ py -3 src\main.py
 
 ### 串口后端试用
 
-本次源码和本地试用包默认使用 `qserialport`。QSerialPort 在独立 Qt 线程中收发，主窗口和串口桥接共用 `transport.serial_backend.create_serial_connection` 接口。接收接口输出字节块和读取时的单调时钟时间戳，上层继续使用现有的 20 毫秒静默组帧逻辑。
+CommTool 默认使用 `qserialport`。QSerialPort 在独立 Qt 线程中收发，主窗口和串口桥接共用 `transport.serial_backend.create_serial_connection` 接口。接收接口输出字节块和读取时的单调时钟时间戳，上层继续使用现有的 20 毫秒静默组帧逻辑。
 
 启动前设置环境变量可切回 `pyserial`，方便同设备对照验证。
 
@@ -372,7 +373,7 @@ $env:COMMTOOL_SERIAL_BACKEND = "pyserial"
 python src/main.py
 ```
 
-移除该环境变量或设为 `qserialport` 即使用试用后端。代码中也可通过工厂的 `backend="pyserial"` / `backend="qserialport"` 参数指定。后续库实现相同的连接协议并加入 `BACKENDS` 注册表，即可沿用现有会话和组帧逻辑。
+移除该环境变量或设为 `qserialport` 即使用 QSerialPort 后端。代码中也可通过工厂的 `backend="pyserial"` / `backend="qserialport"` 参数指定。后续库实现相同的连接协议并加入 `BACKENDS` 注册表，即可沿用现有会话和组帧逻辑。
 
 QSerialPort 后端会明确拒绝 macOS 的 Mark / Space 校验，以及 POSIX 平台的 1.5 停止位。在线改成这些格式，或驱动拒绝新参数且成功回滚时，会提示原因，参数控件恢复到当前有效值，连接继续使用原参数。Parity / Framing / Break 线路错误允许连接继续接收。发送返回 Qt 接受入队的字节数，输出队列上限为 4 MiB，达到上限时本次发送返回 0。实际写错误会清空输出队列并关闭连接，通知上层处理。
 
@@ -406,6 +407,8 @@ py -3 -m PyInstaller --noconfirm --clean --windowed ^
 
 ### 5.2 单文件版（onefile）
 
+此节用于本地构建。官方 Windows 发布自 v1.8.4 起提供 Setup 安装包。
+
 ```
 scripts\build_onefile.bat
 ```
@@ -431,7 +434,7 @@ py -3 -m PyInstaller --noconfirm --clean --windowed --onefile ^
 scripts\build_installer.bat
 ```
 
-自动从 `src\version.py` 读 `__version__`，传给 ISCC 编译 `scripts\CommTool.iss`，输出 `installer\CommTool_Setup_v<版本>.exe` (~28 MB)。
+自动从 `src\version.py` 读 `__version__`，传给 ISCC 编译 `scripts\CommTool.iss`，输出 `installer\CommTool_Setup_v<版本>.exe`（约 49 MB）。
 
 安装包特性：
 - 多语言（英 / 简中 / 繁中，第一步选）
@@ -497,8 +500,9 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 
 | 包 | 版本 | 用途 |
 |----|------|------|
-| PyQt5 | ≥ 5.15 | GUI 框架 + 网络（QtNetwork，随 PyQt5 自带，无需单独装） |
-| pyserial | ≥ 3.5 | 串口收发（Serial 连接类型） |
+| PyQt5 | ≥ 5.15.11，< 5.16 | GUI、QtNetwork 和默认串口后端 QtSerialPort |
+| pyserial | ≥ 3.5 | 串口枚举及可切换的串口后端 |
+| certifi | ≥ 2026.10.23 | 在线更新补充 CA 根证书 |
 | pylink-square | ≥ 1.2 | SEGGER J-Link RTT（另需安装 J-Link 驱动） |
 | pyinstaller | ≥ 6.0 | 打包 exe（仅开发时需要） |
 | Pillow | ≥ 10.0 | 图标转换（仅 `icon_convert.py` 用）|
@@ -693,7 +697,7 @@ python -c "import base64, textwrap; b64 = '\n'.join(textwrap.wrap(base64.b64enco
 - **v69 (v1.8.1)**: 侧栏图钉自动隐藏、悬停浮层与布局记忆；修复快速扫过误展开和切换工作台后浮层回弹。Windows Setup / onefile 发布，macOS / Linux 新版待补包。
 - **v70 (v1.8.2)**: **正式版** — **弹窗全面主题化**（删除预设确认、帧构造器/Modbus 主机/脚本控制台命名输入、8 窗口上限提示全部换主题化对话框，跟随语言与主题）；**发送框粘贴只取纯文本**（不再带入网页/Word 的富文本格式）。Windows Setup / onefile 发布，macOS / Linux 新版待补包。1807 collected 全量通过。
 - **v71 (v1.8.3)**: **正式版** — **启动提速**（启动按已存主题只应用一次样式、全局事件过滤器对无关事件直接放行、RTT 器件表枚举推迟到主窗口首帧之后）；安装版启动到首帧约 1.35 s → 1.03 s（上次停在 RTT 约 1.69 s → 1.03 s），界面外观不变。Windows / macOS / Linux x86_64 已发。1815 collected 全量通过。
-- **v75 (v1.8.7)** QSerialPort 可切换串口后端，统一主窗口与桥接接口，采用异步发送与 4MiB 输出积压上限。修复线路错误、控制线不支持、在线参数回滚及线程清理，更新检查补充 certifi 根证书。源码已更新，三平台安装包待发布。
+- **v75 (v1.8.7)** QSerialPort 可切换串口后端，统一主窗口与桥接接口，采用异步发送与 4MiB 输出积压上限。修复线路错误、控制线不支持、在线参数回滚及线程清理，更新检查补充 certifi 根证书。实时记录保存窗口记住上次成功使用的目录。
 - **v74 (v1.8.6)** 串口等待式接收与读线程时间戳，提高 20ms 时间分包和静默组帧稳定性；保留补读失败时已读数据，取消阻塞读取后断开连接；静默组帧每会话 1MiB 上限，超限丢弃整帧并提示，静默后恢复匹配。
 - **v73 (v1.8.5)**: **正式版** 修复雾白主题下拉框选中项文字不可见的问题；滑动开关开启色与主题主按钮统一，主界面、工程菜单、桥接和 BLE 弹窗同步更新。
 - **v72 (v1.8.4)**: **正式版** 新增「雾白 / Mist / 霧白」浅色皮肤（冷灰背景、白色卡片、细边框、炭黑按钮），原有 9 套主题保持一致；Windows Setup、macOS Apple Silicon DMG、Linux x86_64 `.run` 使用同一版本。自本版起停止发布 Windows 免安装单文件版。
