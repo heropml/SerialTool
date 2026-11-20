@@ -1,17 +1,17 @@
 {
-  "version": "1.8.7",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.7/CommTool_Setup_v1.8.7.exe",
+  "version": "1.8.8",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_Setup_v1.8.8.exe",
   "url_mac": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.7/CommTool_v1.8.7.dmg"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_v1.8.8.dmg"
   ],
   "url_linux": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.7/CommTool_Setup_v1.8.7_linux_x86_64.run"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_Setup_v1.8.8_linux_x86_64.run"
   ],
-  "sha256": "d9ecdf3da7532e9cb8b5cb1b4f3616db215ea6db5ec4d0d158bff2e29e521f7f",
-  "size": 49169885,
-  "sha256_mac": "a60394d2158116a5e763fc637de43b741473a4c34c126f4766703932986af60f",
-  "size_mac": 51715716,
-  "sha256_linux": "87664000f7e85c7117c4fc8aaa0086c0708d60c6e5249c4f5cb423db4db61a88",
-  "size_linux": 130299551,
-  "notes": "串口调试助手 / 网络调试工具：新增可切换的 QSerialPort 串口后端，修复更新证书兼容性，实时记录记住上次保存目录。"
+  "sha256": "1489fef2c427ea05e394c7d25bfee455edaa918fb7471471b4a1e6bb93089ff6",
+  "size": 49180531,
+  "sha256_mac": "7b5a208b6b73f95d797a1d2f31614feb9edd8275f69abd1cb011449cd9a70007",
+  "size_mac": 51736726,
+  "sha256_linux": "6cf480305cf4c31da130989cfb6f31d7fb39d588e0dcf5d39db92b3961564a61",
+  "size_linux": 130302930,
+  "notes": "终端逐键预览，回车或点「发送」提交。修复串口与 RTT 同时记录时的日志漏记，重连可重选文件。串口日志与录制按读取时间计时，并区分读取块、时间分包和协议帧。"
 }

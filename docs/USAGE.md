@@ -9,6 +9,7 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.8.8](#whats-new-in-v188)
 - [What's New in v1.8.7](#whats-new-in-v187)
 - [What's New in v1.8.6](#whats-new-in-v186)
 - [What's New in v1.8.5](#whats-new-in-v185)
@@ -62,6 +63,12 @@
 On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bundled example, or the most recent project. Frame Builder can save reusable personal frame templates; Record / Replay indexes recently saved or opened `.ctrec` files. **Help → Export diagnostics** creates a redacted support ZIP. Webhooks default to public HTTPS; only enable the LAN / HTTP override for a service you trust.
 
 ---
+
+## What's New in v1.8.8
+
+- Terminal mode shows the current command as each keystroke is sent. Press Enter or click Send to transmit the selected line ending and clear the preview. Local echo follows cursor edits and deletions. Text committed through an input method is also sent.
+- Each serial or RTT tab writes its own HEX or terminal text log, including in the background. Turning on live logging opens the file chooser on the first click. A manual reconnect prompts for a new file if logging was active. A file chosen during the handshake remains selected.
+- Serial display, logs and recordings use the time of the underlying read. The RX status bar shows read chunks and, when configured, silence-delimited groups and decoded frames. Hover over RX for byte and chunk rates. The 20 ms boundary uses the interval between reads.
 
 ## What's New in v1.8.7
 
@@ -1074,7 +1081,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.7`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.8.8`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -1111,16 +1118,16 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download the v1.8.7 installers from [GitHub Releases](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.7) or check available mirrored assets on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.7).
+Download the v1.8.8 installers from [GitHub Releases](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.8) or check available mirrored assets on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.8).
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.7.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Recommended: `CommTool_Setup_v1.8.8.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.7.dmg` from `comm-v1.8.7`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.8.8.dmg` from `comm-v1.8.8`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -1131,7 +1138,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.7_linux_x86_64.run`
+- File: `CommTool_Setup_v1.8.8_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run

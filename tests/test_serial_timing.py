@@ -3,6 +3,7 @@
 import os
 import threading
 import time
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -482,6 +483,104 @@ def test_delayed_delivery_preserves_display_and_auto_reply_frames(
     assert session._rx_received_at is None
     assert session._ar_last_received_at is None
     assert session._ar_gap_timer.timerType() == Qt.PreciseTimer
+
+
+@pytest.mark.parametrize("fmt", ["relative", "epoch", "time", "absolute"])
+@pytest.mark.parametrize("background", [False, True])
+def test_queued_rx_timestamp_in_view_log_and_saved_capture(window, tmp_path, fmt, background):
+    from record import rec_replay
+
+    w = window
+    s = _bind_timed_conn(w)
+    s._conn_proto = "Serial"
+    w.sw_show_timestamp.setChecked(True)
+    w._ts_format = fmt
+    base, wall = 1000.0, 1700000000.0
+    s._io_stats.session_t0_mono, s._io_stats.session_t0_wall = base, wall
+    log_path = tmp_path / "serial.log"
+    assert w._open_log_segment(str(log_path), session=s)
+    s._recorder.start()
+    if background:
+        w.add_session(activate=True)
+    s.conn.receive(b"A", base)
+    s.conn.receive(b"B", base + .080)
+    for dt, payload in [(0.0, "A"), (.080, "B")]:
+        if fmt == "relative":
+            stamp = "%+.3f" % dt
+        elif fmt == "epoch":
+            stamp = "%.3f" % (wall + dt)
+        else:
+            pattern = "%Y/%m/%d %H:%M:%S.%f" if fmt == "absolute" else "%H:%M:%S.%f"
+            stamp = datetime.fromtimestamp(wall + dt).strftime(pattern)[:-3]
+        line = "[%s] ← %s" % (stamp, payload)
+        assert line in s.txt_recv.toPlainText().splitlines()
+        assert line in log_path.read_text(encoding="utf-8").splitlines()
+    path = tmp_path / "serial.ctrec"
+    s._recorder.save(path)
+    events, header = rec_replay.load(path)
+    assert events == [(0.0, "rx", b"A"), (.080, "rx", b"B")]
+    assert header["wall_t0"] == wall
+
+
+@pytest.mark.parametrize("gap_ms,split", [(19.999, False), (20.000, True), (20.001, True)])
+def test_serial_gap_agrees_in_view_auto_reply_and_counters(window, monkeypatch, gap_ms, split):
+    w = window
+    s = _bind_timed_conn(w)
+    s._conn_proto = "Serial"
+    matched = []
+    monkeypatch.setattr(w, "_ar_match", matched.append)
+    s.conn.receive(b"A", 1000.0)
+    s.conn.receive(b"B", 1000.0 + gap_ms / 1000)
+    w._ar_flush(force=True)
+    expected = [b"A", b"B"] if split else [b"AB"]
+    assert matched == expected
+    assert s.txt_recv.toPlainText().encode().splitlines() == expected
+    assert s.rx_bytes == s.rx_packets == 2
+    assert s._io_stats.rx_gap_groups == len(expected)
+    assert s._io_stats.rx_protocol_frames == 0
+    w._refresh_stat_labels()
+    assert w._t("stat_gap_groups", n=len(expected)) in w.lbl_rx_stat.text()
+    assert w._t("stat_chunk_unit") in w.lbl_rx_stat.text()
+    assert w._t("stat_protocol_frames", n=0) not in w.lbl_rx_stat.text()
+
+
+def test_gap_groups_and_decoded_frames_have_independent_counts(window):
+    from protocol import binproto
+
+    w = window
+    s = _bind_timed_conn(w)
+    s._conn_proto = "Serial"
+    w._stream_frame = binproto.norm_stream_frame(
+        {"on": True, "header": "AA BB", "len_off": 2, "len_width": 1, "len_extra": 3})
+    frame = bytes.fromhex("AA BB 01 42")
+    s.conn.receive(frame[:2], 1000.000)
+    s.conn.receive(frame[2:] + frame, 1000.004)
+    s.conn.receive(frame * 2, 1000.030)
+    w._refresh_stat_labels()
+    assert (s.rx_packets, s._io_stats.rx_gap_groups, s._io_stats.rx_protocol_frames) == (3, 2, 4)
+    assert w._t("stat_protocol_frames", n=4) in w.lbl_rx_stat.text()
+    w._reset_stats()
+    assert (s.rx_packets, s._io_stats.rx_gap_groups, s._io_stats.rx_protocol_frames) == (0, 0, 0)
+    s.conn.receive(frame[:2], 1000.031)
+    assert (s.rx_packets, s._io_stats.rx_gap_groups, s._io_stats.rx_protocol_frames) == (1, 1, 0)
+
+
+def test_capture_queued_rx_preceding_tx_keeps_order_and_timing(tmp_path):
+    from record import rec_replay
+
+    rec = rec_replay.StreamRecorder()
+    rec.start()
+    rec.on_tx(b"tx", t=1000.050)
+    rec.on_rx(b"A", t=1000.000, wall_time=1700000000.)
+    rec.on_rx(b"B", t=1000.020, wall_time=1700000000.020)
+    rec.on_rx(b"C", t=1000.080, wall_time=1700000000.080)
+    assert [event[2] for event in rec.events] == [b"A", b"B", b"tx", b"C"]
+    assert [event[0] for event in rec.events] == pytest.approx([0, .020, .050, .080])
+    path = tmp_path / "mixed.ctrec"
+    rec.save(path)
+    events, header = rec_replay.load(path)
+    assert [event[2] for event in events] == [b"A", b"B", b"tx", b"C"]
+    assert header["wall_t0"] == 1700000000.
 
 
 def test_silence_waits_for_rx_still_queued_for_gui(window, monkeypatch):

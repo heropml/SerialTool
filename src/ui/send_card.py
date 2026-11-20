@@ -5,7 +5,7 @@ S-2 R40: CommTool.build_send_card thin wrapper.
 """
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QPushButton, QScrollArea, QTextEdit, QVBoxLayout,
+    QComboBox, QFrame, QGridLayout, QHBoxLayout, QPushButton, QScrollArea, QTextEdit, QVBoxLayout,
     QWidget,
 )
 
@@ -90,7 +90,7 @@ def build(app):
     # 固定高度、不拉伸：否则与接收区(数据区)抢垂直空间，发送卡片被压缩导致按钮和发送框重叠
     app.txt_send.setFixedHeight(64)
     # 占位文案随终端模式而定（启动恢复 terminal_mode=True 时也用对的那句）；
-    # tr_placeholder 属性供语言切换 _apply_language 刷新，终端模式时由 _set_terminal_enabled 改它。
+    # tr_placeholder 属性供语言切换 _apply_language 刷新，随当前会话的终端模式切换。
     _ph = "term_send_ph" if app._terminal_on else "send_placeholder"
     app.txt_send.setProperty("tr_placeholder", _ph)
     app.txt_send.installEventFilter(app)   # ↑↓ 历史导航（在 eventFilter 里处理）
@@ -98,7 +98,34 @@ def build(app):
     # 悬浮提示：动态字段语法 + ↑↓ 历史；语言切换由 _apply_language 通过 tr_tooltip 刷新
     app.txt_send.setProperty("tr_tooltip", "send_box_tip")
     set_tooltip(app.txt_send, app._t("send_box_tip"))
-    layout.addWidget(app.txt_send)
+    # 终端当前行单独显示。已逐键发送的字符不能进入普通草稿、发送历史或配置。
+    app.txt_terminal = QTextEdit()
+    app.txt_terminal.setObjectName("SendBox")
+    app.txt_terminal.setFont(app.txt_send.font())
+    app.txt_terminal.setFixedHeight(app.txt_send.height())
+    app.txt_terminal.setReadOnly(True)
+    app.txt_terminal.setFocusPolicy(Qt.NoFocus)
+    app.txt_terminal.setAttribute(Qt.WA_TransparentForMouseEvents)
+    app.txt_terminal.setUndoRedoEnabled(False)
+    editors = QGridLayout()
+    editors.addWidget(app.txt_send, 0, 0)
+    editors.addWidget(app.txt_terminal, 0, 0)
+    layout.addLayout(editors)
+    app.txt_terminal.hide()
+
+    def place_preview():
+        # 默认覆盖空输入框，另有文件或模板草稿时并排显示，键盘始终由原发送框接收。
+        if app.txt_terminal.document().isEmpty():
+            app.txt_terminal.hide()
+            return
+        column = 0 if app.txt_send.document().isEmpty() else 1
+        if editors.getItemPosition(editors.indexOf(app.txt_terminal))[1] != column:
+            editors.addWidget(app.txt_terminal, 0, column)
+        app.txt_terminal.show()
+        app.txt_terminal.raise_()
+
+    app.txt_terminal.textChanged.connect(place_preview)
+    app.txt_send.document().contentsChanged.connect(place_preview)
 
     btn_row = QHBoxLayout()
     btn_row.setSpacing(6)        # 与上一行 ms_bar 同 spacing → 两行同列按钮右边缘对齐
@@ -112,6 +139,7 @@ def build(app):
     app.btn_clear_tx.setObjectName("GhostBtn")
     app.btn_clear_tx.setProperty("tr_text", "clear")
     app.btn_clear_tx.clicked.connect(lambda: app.txt_send.clear())
+    app.btn_clear_tx.clicked.connect(app._clear_terminal_input)
     btn_row.addWidget(app.btn_clear_tx)
 
     # 自动应答（紧挨清空；启用时按钮高亮：动态属性 arActive 配 QSS [arActive="true"]）
@@ -158,7 +186,7 @@ def build(app):
     app.btn_send.setProperty("tr_text", "send_btn")
     app.btn_send.setProperty("tr_tooltip", "send_btn_tip")
     set_tooltip(app.btn_send, app._t("send_btn_tip"))
-    app.btn_send.clicked.connect(app.do_send)
+    app.btn_send.clicked.connect(app._on_send_clicked)
     btn_row.addWidget(app.btn_send)
 
     layout.addLayout(btn_row)

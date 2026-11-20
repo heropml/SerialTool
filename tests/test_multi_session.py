@@ -1952,22 +1952,32 @@ def test_period_and_log_intent_persist_roundtrip(monkeypatch, tmp_path):
     w._close_all_sessions()
 
 
-def test_cold_restore_is_the_only_ui_load_path_that_restores_log_intent(
-        monkeypatch, tmp_path):
+def test_cold_restore_first_log_click_chooses_file(monkeypatch, tmp_path):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QFileDialog
+
     w = _window(monkeypatch, tmp_path, "cold-log-restore")
+    previous = tmp_path / "cold.log"
+    previous.write_bytes(b"previous session\n")
     payload = [{
         "id": "cold-log", "title_index": 1,
-        "log_wanted": True, "log_base_path": str(tmp_path / "cold.log"),
+        "log_wanted": True, "log_base_path": str(previous),
     }]
     w.settings.setValue("sessions_v1", json.dumps(payload))
-    restored = []
-    monkeypatch.setattr(
-        w, "_restore_session_log_intent",
-        lambda session: restored.append(session.id) or True)
-
+    choices = []
+    def choose(*args):
+        choices.append(True)
+        return str(tmp_path / "new.log"), ""
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
     w._restore_sessions_settings()
-
-    assert restored == ["cold-log"]
+    session = w.active_session()
+    assert session.log_wanted and session._log_file is None
+    assert not w.sw_log_file.isChecked() and not choices
+    QTest.mouseClick(w.sw_log_file, Qt.LeftButton)
+    assert choices == [True]
+    assert w.sw_log_file.isChecked() and session._log_file is not None
+    assert previous.read_bytes() == b"previous session\n"
     w._close_all_sessions()
 
 
@@ -2244,6 +2254,46 @@ def test_concurrent_session_logs_keep_writing_in_background(monkeypatch, tmp_pat
     assert s2._log_file is None
 
 
+def test_hex_and_terminal_sessions_both_log_across_tab_switches(monkeypatch, tmp_path):
+    from PyQt5.QtWidgets import QFileDialog
+
+    w = _window(monkeypatch, tmp_path, "hex-terminal-logs")
+    hex_path = tmp_path / "serial.log"
+    term_path = tmp_path / "rtt.log"
+    choices = iter((hex_path, term_path))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(next(choices)), ""))
+
+    _open_virtual(w, loopback=False)
+    serial = w.active_session()
+    w.cb_view_mode.setCurrentIndex(w.cb_view_mode.findData("hex"))
+    w.sw_log_file.setChecked(True)
+    term = w.add_session(activate=True)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w.sw_log_file.setChecked(True)
+    header = term_path.read_text(encoding="utf-8")
+
+    term.conn.inject(b"[RX] partial")
+    serial.conn.inject(b"\xde\xad")
+    _APP.processEvents()
+    assert term_path.read_text(encoding="utf-8") == header + "[RX] partial"
+    assert w.switch_session(serial.id)
+    term.conn.inject(b" line\r")
+    term.conn.inject(b"\n\x1b[32")
+    term.conn.inject(b"m[CHECK] PASS\x1b[0m\r\n")
+    serial.conn.inject(b"\xbe\xef")
+    _APP.processEvents()
+    assert w.switch_session(term.id)
+    term.conn.inject(b"[SUMMARY] done\n")
+    _APP.processEvents()
+
+    assert term_path.read_text(encoding="utf-8") == (
+        header + "[RX] partial line\n[CHECK] PASS\n[SUMMARY] done\n")
+    hex_log = hex_path.read_text(encoding="utf-8")
+    assert "DE AD" in hex_log and "BE EF" in hex_log
+    assert "[RX]" not in hex_log and "[CHECK]" not in hex_log and "[SUMMARY]" not in hex_log
+
+
 def test_background_period_log_uses_own_timestamp(monkeypatch, tmp_path):
     """Background period TX logging must not inherit the active tab timestamp."""
     w = _window(monkeypatch, tmp_path, "bg-period-log-ts")
@@ -2289,7 +2339,7 @@ def test_switch_away_while_disconnected_keeps_reconnect_intent(
     assert s1.log_wanted is True
 
     # Visiting a disconnected session must not reopen its log. Only a real
-    # reconnect or process-start cold restore may consume the preserved intent.
+    # connection may consume the preserved intent.
     w.switch_session(s1.id)
     assert not s1.is_open()
     assert s1._log_file is None
@@ -2371,6 +2421,57 @@ def test_user_disables_log_clears_reconnect_intent(monkeypatch, tmp_path):
     assert s1.log_wanted is False
     assert s1._log_file is None
     w._close_all_sessions()
+
+
+def test_manual_reopen_prompts_for_new_log(monkeypatch, tmp_path):
+    from PyQt5.QtWidgets import QFileDialog
+    from transport.virtual_io import VirtualConn
+
+    w = _window(monkeypatch, tmp_path, "reopen-log")
+    _open_virtual(w, loopback=False)
+    session = w.active_session()
+    first = tmp_path / "first.log"
+    second = tmp_path / "second.log"
+    choices = iter([str(first), str(second), ""])
+    prompts = []
+
+    def choose(parent, title, suggestion, file_filter):
+        prompts.append((w.active_session().id, Path(suggestion).parent))
+        return next(choices), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    w.sw_log_file.setChecked(True)
+    w.toggle_conn()
+    assert session._log_file is None and not w.sw_log_file.isChecked()
+    old_log = first.read_bytes()
+    with monkeypatch.context() as failed_open:
+        failed_open.setattr(VirtualConn, "open", lambda conn: False)
+        w.toggle_conn()
+        _APP.processEvents()
+        assert not session.is_open() and len(prompts) == 1
+    w.toggle_conn()
+    # The dialog belongs to the reopened session even if another tab gets focus.
+    w.add_session(activate=True)
+    _APP.processEvents()
+    assert len(prompts) == 1
+    assert w.switch_session(session.id)
+    _APP.processEvents()
+    assert prompts[-1] == (session.id, tmp_path)
+    assert w.sw_log_file.isChecked() and session._log_file_path == str(second)
+    w.txt_send.setPlainText("second-connection")
+    w.do_send()
+    w.toggle_conn()
+    assert "second-connection" in second.read_text(encoding="utf-8")
+    assert first.read_bytes() == old_log
+
+    w.toggle_conn()
+    _APP.processEvents()
+    assert session.is_open() and session._log_file is None
+    assert not w.sw_log_file.isChecked()
+    w.toggle_conn()
+    w.toggle_conn()
+    _APP.processEvents()
+    assert len(prompts) == 3
 
 
 def test_background_reconnect_restores_period_and_log_intent(
@@ -2732,6 +2833,237 @@ def test_io_task_busy_periodic_is_context_session(monkeypatch, tmp_path):
         assert w._io_task_busy(exclude=("periodic",)) is False
     s1._period_timer.stop()
     w._close_all_sessions()
+
+
+@pytest.mark.parametrize("echo,enter_key,ending", [(False, "Key_Return", b"\r"),
+                                                    (True, "Key_Enter", b"\r\n")])
+def test_terminal_input_visible_until_enter(monkeypatch, tmp_path, echo, enter_key, ending):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w._terminal_echo = echo
+    w._terminal_enter = 0 if ending == b"\r" else 2
+    w._switch_workspace("terminal")
+    w.show()
+    _APP.processEvents()
+    QTest.mouseClick(w.txt_send.viewport(), Qt.LeftButton)
+    w.txt_recv.clear()
+    QTest.keyClicks(w.txt_send, "helx")
+    _APP.processEvents()
+    assert w.txt_terminal.isVisible()
+    assert w.txt_terminal.geometry() == w.txt_send.geometry()
+    assert w.txt_send.hasFocus()
+    assert w.txt_terminal.toPlainText() == "helx"
+    assert w.txt_recv.toPlainText() == ("helx" if echo else "")
+    assert w.conn.tx_log == [b"h", b"e", b"l", b"x"]
+    QTest.keyClick(w.txt_send, Qt.Key_Backspace)
+    QTest.keyClicks(w.txt_send, "p")
+    assert w.txt_terminal.toPlainText() == "help"
+    QTest.keyClick(w.txt_send, getattr(Qt, enter_key))
+    assert w.txt_terminal.toPlainText() == ""
+    assert w.txt_terminal.isHidden()
+    assert w.conn.tx_log == [b"h", b"e", b"l", b"x", b"\x7f", b"p", ending]
+    assert "help" in w.txt_recv.toPlainText().splitlines()
+
+    w.txt_send.setPlainText("preset")
+    QTest.keyClicks(w.txt_send, "status")
+    _APP.processEvents()
+    assert not w.txt_send.geometry().intersects(w.txt_terminal.geometry())
+    QTest.mouseClick(w.btn_send, Qt.LeftButton)
+    assert w.conn.tx_log[-7:] == [b"s", b"t", b"a", b"t", b"u", b"s", ending]
+    assert w.txt_terminal.toPlainText() == ""
+    assert w.txt_send.toPlainText() == "preset"
+    w.conn.inject(b"device reply\r\n")
+    _pump()
+    assert w.txt_recv.toPlainText().endswith("status\ndevice reply\n")
+    w.btn_send.click()
+    assert w.conn.tx_log[-1] == b"preset"
+
+
+def test_terminal_input_stays_with_its_session(monkeypatch, tmp_path):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    first = w.active_session()
+    QTest.keyClicks(w.txt_send, "ac")
+    QTest.keyClick(w.txt_send, Qt.Key_Left)
+    w.add_session(activate=True)
+    assert w.txt_terminal.isHidden()
+    assert first.send_draft == ""
+    assert w.switch_session(first.id)
+    QTest.keyClicks(w.txt_send, "b")
+    assert w.txt_terminal.toPlainText() == "abc"
+    w._set_terminal_enabled(False)
+    assert w.txt_terminal.isHidden()
+    assert w.txt_send.toPlainText() == ""
+
+
+@pytest.mark.parametrize("ready_in_dialog", [False, True])
+def test_manual_log_choice_during_reopen_handshake(monkeypatch, tmp_path, ready_in_dialog):
+    from PyQt5.QtWidgets import QFileDialog
+    from transport.virtual_io import VirtualConn
+
+    w = _window(monkeypatch, tmp_path)
+    s = w.active_session()
+    s.conn = VirtualConn()
+    w._bind_conn_signals(s.conn, s)
+    s.prompt_log_on_open = s.log_wanted = True
+    old = tmp_path / "previous.log"
+    new = tmp_path / "chosen.log"
+    s.log_base_path = str(old)
+    prompts = []
+
+    def choose(*args):
+        prompts.append(True)
+        if ready_in_dialog:
+            s.conn.open()
+            _APP.processEvents()
+        return str(new), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    w.sw_log_file.setChecked(True)
+    if not ready_in_dialog:
+        assert not s.is_open() and new.exists()
+        s.conn.open()
+    _APP.processEvents()
+    assert len(prompts) == 1 and s.is_open() and w.sw_log_file.isChecked()
+    s.conn.inject(b"logged after handshake")
+    _APP.processEvents()
+    assert "logged after handshake" in new.read_text(encoding="utf-8")
+    assert not old.exists()
+
+
+@pytest.mark.parametrize("early,late", [("", "help"), ("he", "lp"), ("help", "")])
+def test_submitted_command_and_fragmented_device_echo_logged_once(monkeypatch, tmp_path, early, late):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w._terminal_echo = False
+    path = tmp_path / "device-echo.log"
+    assert w._open_log_segment(str(path))
+    header = path.read_text(encoding="utf-8")
+    QTest.keyClicks(w.txt_send, "help")
+    if early:
+        w.conn.inject(early.encode())
+        _APP.processEvents()
+    w.btn_send.click()
+    for part in [late[:1], late[1:], "\r", "\n", "helpful response\r\n"]:
+        w.conn.inject(part.encode())
+        _APP.processEvents()
+    assert w.txt_recv.toPlainText() == "help\nhelpful response\n"
+    assert path.read_text(encoding="utf-8") == header + "help\nhelpful response\n"
+    assert b"".join(w.conn.tx_log) == b"help\r"
+
+
+def test_terminal_local_echo_edits_and_ime_commit(monkeypatch, tmp_path):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QInputMethodEvent
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w._terminal_echo = True
+    path = tmp_path / "edited.log"
+    assert w._open_log_segment(str(path))
+    header = path.read_text(encoding="utf-8")
+    QTest.keyClicks(w.txt_send, "elxx")
+    QTest.keyClick(w.txt_send, Qt.Key_Backspace)
+    QTest.keyClick(w.txt_send, Qt.Key_Left)
+    QTest.keyClick(w.txt_send, Qt.Key_Delete)
+    QTest.keyClick(w.txt_send, Qt.Key_Home)
+    QTest.keyClicks(w.txt_send, "h")
+    QTest.keyClick(w.txt_send, Qt.Key_End)
+    QTest.keyClicks(w.txt_send, "p")
+    assert w.txt_recv.toPlainText() == w.txt_terminal.toPlainText() == "help"
+    assert path.read_text(encoding="utf-8") == header
+    w.txt_send.setPlainText("preset")
+    before = list(w.conn.tx_log)
+    _APP.sendEvent(w.txt_send, QInputMethodEvent("ceshi", []))
+    assert w.conn.tx_log == before
+    commit = QInputMethodEvent()
+    commit.setCommitString("测试")
+    _APP.sendEvent(w.txt_send, commit)
+    assert w.txt_recv.toPlainText() == w.txt_terminal.toPlainText() == "help测试"
+    assert w.txt_send.toPlainText() == "preset"
+    assert w.conn.tx_log[len(before):] == ["测试".encode(w._send_codec())]
+    QTest.keyClick(w.txt_send, Qt.Key_Return)
+    assert w.txt_recv.toPlainText() == "help测试\n"
+    assert path.read_text(encoding="utf-8") == header + "help测试\n"
+
+
+def test_echo_mismatch_and_unfinished_prefix_are_preserved(monkeypatch, tmp_path):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w._terminal_echo = False
+    for part in ("helpful\r\n", "he"):
+        QTest.keyClicks(w.txt_send, "help")
+        QTest.keyClick(w.txt_send, Qt.Key_Return)
+        w.conn.inject(part[:1].encode())
+        _APP.processEvents()
+        w.conn.inject(part[1:].encode())
+        _APP.processEvents()
+    w.close_conn()
+    assert w.txt_recv.toPlainText() == "help\nhelpful\nhelp\nhe"
+
+
+def test_inline_device_echo_before_send_returns(monkeypatch, tmp_path):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    w = _window(monkeypatch, tmp_path)
+    _open_virtual(w, loopback=False)
+    w._set_terminal_enabled(True)
+    w._terminal_echo = True
+    w._terminal_enter = 2
+    send = w.conn.send
+
+    def echo(data, target=None):
+        n = send(data, target)
+        w.conn.data_received.emit(data)
+        return n
+
+    monkeypatch.setattr(w.conn, "send", echo)
+    QTest.keyClicks(w.txt_send, "help")
+    QTest.keyClick(w.txt_send, Qt.Key_Enter)
+    assert w.txt_recv.toPlainText() == "help\n"
+
+
+def test_session_host_can_restore_draft_without_terminal_editor(monkeypatch, tmp_path):
+    from PyQt5.QtWidgets import QTextEdit
+
+    w = _window(monkeypatch, tmp_path)
+    s = w.active_session()
+    with monkeypatch.context() as minimal:
+        # A minimal host does not install the full send card's layout signals.
+        minimal.setattr(w, "txt_send", QTextEdit(w))
+        minimal.delattr(w, "txt_terminal")
+        w.txt_send.setPlainText("ordinary draft")
+        w._save_ui_into_session(s)
+        w.txt_send.clear()
+        w._load_session_into_ui(s)
+        assert w.txt_send.toPlainText() == "ordinary draft"
+
+
+def test_serial_tooltip_distinguishes_chunk_rate_and_byte_rate(monkeypatch, tmp_path):
+    w = _window(monkeypatch, tmp_path)
+    w.active_session()._conn_proto = "Serial"
+    lines = w._stat_tooltip("rx").splitlines()
+    for key in ("stat_rate", "stat_chunk_rate", "stat_peak", "stat_peak_chunk_rate"):
+        assert sum(line.startswith(w._t(key) + ": ") for line in lines) == 1
 
 
 def test_terminal_mode_stops_all_session_period_timers(monkeypatch, tmp_path):

@@ -31,6 +31,10 @@ class IoStatsAccumulator(object):
         self.tx_bytes = 0
         self.rx_packets = 0
         self.tx_packets = 0
+        self.rx_gap_groups = 0
+        self.rx_protocol_frames = 0
+        self.last_group_rx_at = None
+        self.last_group_gap_ms = None
         self.rx_errors = 0
         self.tx_errors = 0
         self.rx_rate = 0
@@ -58,6 +62,9 @@ class IoStatsAccumulator(object):
         self.tx_hist = [0] * (len(SIZE_BINS) + 1)
         self.timeouts = {"seq": 0, "mbm": 0, "conn": 0}
         self.history = []  # [{t, wall_t, rx_bps, tx_bps, rx_pps, tx_pps}, ...]
+
+    def wall_time_at(self, monotonic_time):
+        return self.session_t0_wall + (monotonic_time - self.session_t0_mono)
 
     def note_rx(self, n):
         n = int(n or 0)
@@ -139,7 +146,7 @@ class IoStatsAccumulator(object):
             self.rx_peak_pps = self.rx_pps
         if self.tx_pps > self.tx_peak_pps:
             self.tx_peak_pps = self.tx_pps
-        wall_t = self.session_t0_wall + (now - self.session_t0_mono)
+        wall_t = self.wall_time_at(now)
         self.history.append({
             "t": now,
             "rx_bps": self.rx_rate,

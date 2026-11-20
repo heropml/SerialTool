@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtWidgets import (
     QTabBar, QHBoxLayout, QPushButton, QWidget, QLabel, QTextEdit, QDialog,
 )
@@ -933,6 +933,10 @@ class SessionHostMixin:
     @staticmethod
     def _dispose_session_timers(session):
         """Destroy Qt timers when a session permanently leaves the host."""
+        echo = getattr(session, "terminal_echo_state", None)
+        if echo is not None:
+            echo.timer.stop()
+            echo.timer.deleteLater()
         for name in ("_reconnect_timer", "_ar_gap_timer", "_period_timer",
                      "_reset_timer", "_ms_cycle_timer", "_seq_timer",
                      "_mbm_sched", "_mbm_to"):
@@ -1005,6 +1009,9 @@ class SessionHostMixin:
             _log.debug("capture conn fields failed", exc_info=True)
         if hasattr(self, "txt_send"):
             session.send_draft = self.txt_send.toPlainText()
+        if getattr(self, "txt_terminal", None) is not None:
+            session.terminal_input = (self.txt_terminal.toPlainText(),
+                                      self.txt_terminal.textCursor().position())
         # Display / send options snapshot (best-effort)
         opts = {}
         for attr, key in (
@@ -1096,6 +1103,12 @@ class SessionHostMixin:
                 session.conn_fields = {}
             if hasattr(self, "txt_send"):
                 self.txt_send.setPlainText(session.send_draft or "")
+            if getattr(self, "txt_terminal", None) is not None:
+                text, pos = session.terminal_input
+                self.txt_terminal.setPlainText(text)
+                cursor = self.txt_terminal.textCursor()
+                cursor.setPosition(pos)
+                self.txt_terminal.setTextCursor(cursor)
             if hasattr(self, "ed_period_ms") and session.period_ms:
                 self.ed_period_ms.setText(str(session.period_ms))
             self._restore_session_periodic(session)
@@ -1230,6 +1243,8 @@ class SessionHostMixin:
             self._sync_open_button_from_session(session)
             if session.is_open():
                 self.set_settings_enabled(False)
+                if session.prompt_log_on_open:
+                    QTimer.singleShot(0, self._prompt_reopened_log)
             else:
                 self.set_settings_enabled(True)
             self._update_net_fields()
@@ -1620,6 +1635,9 @@ class SessionHostMixin:
             # Only drive full UI state changes when this is the active session
             if s.id == self._active_session_id:
                 self._on_conn_state_changed(opened)
+                if opened and s.prompt_log_on_open:
+                    # 同步连接也等 open_conn 完成后再进文件框的嵌套事件循环。
+                    QTimer.singleShot(0, self._prompt_reopened_log)
             else:
                 if opened:
                     s._conn_engaged = True
@@ -1931,10 +1949,7 @@ class SessionHostMixin:
         want = str(self.settings.value("active_session_id", "") or "")
         if want and self.find_session(want):
             self._active_session_id = want
-        restore_log = getattr(self, "_restore_session_log_intent", None)
-        if callable(restore_log):
-            for session in restored:
-                restore_log(session)
+        # 启动时连接仍是关闭的。保留记录意愿，手动打开连接时再选择文件。
         self._rebuild_session_tabs(select_id=self._active_session_id)
         self._load_session_into_ui(self.active_session())
         if self.recv_stack is not None:

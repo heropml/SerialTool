@@ -64,7 +64,7 @@ def timestamp_prefix(fmt, direction, *, now=None, wall_time=None, anchor=None):
     elif fmt == "relative":
         if anchor is None:
             anchor = wall_time
-        ts = "+%.3f" % (wall_time - anchor)
+        ts = "%+.3f" % (wall_time - anchor)
     else:  # absolute
         ts = ("%04d/%02d/%02d %02d:%02d:%02d.%03d"
               % (now.year, now.month, now.day, now.hour, now.minute,

@@ -19,6 +19,7 @@ from modbus import modbus_slave
 from record import rec_replay
 from automation import seq_context
 from ui.fonts import mono_font
+from ui.terminal_echo import TerminalEcho
 from protocol.parse_diag import ParseDiagnostics
 from protocol.frame_stream import FrameAssemblerMap
 from protocol import frame_stream
@@ -129,9 +130,9 @@ class Session:
         "_rr_capture",
         "txt_recv",
         "_bookmarks", "_bookmark_idx", "_recv_highlight_line", "_proto_fields",
-        "conn_fields", "send_draft", "period_ms", "period_on",
+        "conn_fields", "send_draft", "terminal_input", "terminal_echo_state", "period_ms", "period_on",
         "_send_count", "send_target",
-        "display_opts", "log_wanted", "log_base_path", "log_seg",
+        "display_opts", "log_wanted", "prompt_log_on_open", "log_base_path", "log_seg",
         "_log_file", "_log_file_path", "_log_opened_at",
         "_log_ends_with_nl", "_log_limit",
         "clients", "udp_peer",
@@ -313,12 +314,16 @@ class Session:
 
         self.conn_fields = {}
         self.send_draft = ""
+        self.terminal_input = ("", 0)  # 当前终端行及其 Qt 光标位置，仅驻留内存
+        self.terminal_echo_state = TerminalEcho(app)
+        self.terminal_echo_state.timer.timeout.connect(lambda: app._flush_terminal_echo(self))
         self.period_ms = "1000"
         self.period_on = False
         self._send_count = 0
         self.send_target = "__all__"
         self.display_opts = {}
         self.log_wanted = False
+        self.prompt_log_on_open = False  # 手动重新连接时重新选日志，仅限当前会话
         self.log_base_path = ""
         self.log_seg = 0
         self._log_file = None
@@ -562,6 +567,7 @@ class Session:
             self.display_opts[key] = _persist_bool(self.display_opts[key])
         self._freeze_view = self.display_opts.get("freeze_view", False)
         self.log_wanted = _persist_bool(data.get("log_wanted", False))
+        self.prompt_log_on_open = False
         log_base_path = data.get("log_base_path")
         self.log_base_path = log_base_path if isinstance(log_base_path, str) else ""
         try:
@@ -589,4 +595,5 @@ class Session:
             cfg, proto, data, source, self._frame_assemblers)
         if stats is not None:
             self._parse_diag.note_assemble(len(units), stats)
+            self._io_stats.rx_protocol_frames += len(units)
         return units

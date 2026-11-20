@@ -660,7 +660,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         # app 级过滤器每个事件都会进 Python；只有这些类型需要看，其余在入口直接放行
         # （启动期就有上万次 Polish/ChildAdded/LayoutRequest 等事件）。改 eventFilter 用到新事件类型时同步这里。
         ef_types = {QEvent.Wheel, QEvent.ToolTip, QEvent.Leave, QEvent.MouseButtonPress,
-                    QEvent.MouseButtonDblClick, QEvent.KeyPress, QEvent.ShortcutOverride,
+                    QEvent.MouseButtonDblClick, QEvent.KeyPress, QEvent.InputMethod, QEvent.ShortcutOverride,
                     QEvent.Resize, QEvent.ContextMenu}
         if self._manual_resize:
             ef_types |= {QEvent.MouseMove, QEvent.MouseButtonRelease}
@@ -1829,12 +1829,17 @@ class CommTool(SessionHostMixin, QMainWindow):
                 QToolTip.showText(event.globalPos(), tip, self.txt_send,
                                   self.txt_send.rect(), 600000)   # 10 min 上限
             return True
-        # 终端模式：发送框作键盘捕获 —— 每个按键即时转字节发出、吃掉事件不让它进发送框累积。
+        # 逐键直发，预览与普通发送草稿独立。
         # 放在 ↑↓ 历史导航之前：终端里方向键要发 ESC 序列(shell 历史/编辑)，而非翻命令历史。
-        if (getattr(self, "_terminal_on", False) and obj is getattr(self, "txt_send", None)
-                and event.type() == QEvent.KeyPress):
-            self._terminal_key(event)
-            return True
+        if getattr(self, "_terminal_on", False) and obj is getattr(self, "txt_send", None):
+            if event.type() == QEvent.InputMethod:
+                if event.commitString():
+                    self._edit_terminal_input(0, Qt.NoModifier, event.commitString())
+                event.accept()
+                return True
+            if event.type() == QEvent.KeyPress:
+                self._terminal_key(event)
+                return True
         # 发送区 ↑↓ 历史导航：仅在 cursor 在首行(↑)/末行(↓)时拦截，否则让 QTextEdit 走默认行内移动
         if obj is getattr(self, "txt_send", None) and event.type() in (
                 QEvent.KeyPress, QEvent.ShortcutOverride):
@@ -3002,6 +3007,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             if session is not None:
                 session._user_closing = True
                 session.period_on = False
+                if session._log_file is not None:
+                    session.prompt_log_on_open = True
             else:
                 self._user_closing = True
             try:
@@ -3544,6 +3551,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         if session is self.active_session():
             self._mbm_guard_until = 0.0
         self.conn = conn
+        if manual_open and session.log_wanted and session._log_file is None:
+            # 掉线后用户抢在自动重连之前手动打开，也应由用户选择新文件。
+            session.prompt_log_on_open = True
+            session.log_wanted = False
         if not conn.open():
             if self.conn is conn:
                 self.conn = None
@@ -3762,6 +3773,8 @@ class CommTool(SessionHostMixin, QMainWindow):
         """重置主数据区接收状态；断线/清屏这类真正的数据流断点可同时切断仪表盘半行。
         HEX/转储显示设置也会调用本函数，但不应影响与显示区解耦的仪表盘解析。"""
         self._last_recv_time = 0.0
+        if reset_dashboard:
+            self._io_stats.last_group_rx_at = None
         self._last_direction = None
         self._pending_line_break = False
         self._rx_decode_buffer = b""
@@ -4210,6 +4223,10 @@ class CommTool(SessionHostMixin, QMainWindow):
     def close_conn(self, update_ui=True, preserve_session_intent=False):
         session = self._session_ctx()
         if session is not None:
+            self._flush_terminal_echo(session, reset=True)
+            session.terminal_input = ("", 0)
+            if session is self.active_session():
+                self.txt_terminal.clear()
             if not preserve_session_intent:
                 session.period_on = False
             if session._period_timer.isActive():
@@ -4290,8 +4307,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 self.sw_period.blockSignals(False)
         self._ms_stop_cycle(session)
         self._flush_pending_cr()
-        if (update_ui and not preserve_session_intent
-                and self.sw_log_file.isChecked()):
+        if update_ui and self.sw_log_file.isChecked():
             self.sw_log_file.blockSignals(True)
             self.sw_log_file.setChecked(False)
             self.sw_log_file.blockSignals(False)
@@ -4936,9 +4952,10 @@ class CommTool(SessionHostMixin, QMainWindow):
                 peer = self.conn.peer_endpoint()
             elif proto == PROTO_TCP_SERVER:
                 peer = reply_target
-            self._rx_side(
-                "recorder.on_rx",
-                lambda peer=peer: self._recorder.on_rx(data, source=peer))
+            received_at = self._rx_received_at
+            wall_time = self._io_stats.wall_time_at(received_at) if received_at is not None else None
+            self._rx_side("recorder.on_rx", lambda: self._recorder.on_rx(
+                data, source=peer, t=received_at, wall_time=wall_time))
         # 结构化记录：复用 frame_rules 抽取普通协议字段；Modbus 标签在响应解析成功后单独写入。
         def _structured_feed():
             if _rx_dispatch.structured_feed_ok(
@@ -4998,8 +5015,29 @@ class CommTool(SessionHostMixin, QMainWindow):
             hexdump_on=bool(self._display_value("hexdump_on", self._hexdump_on)),
             numview_on=bool(self._display_value("numview_on", self._numview_on)),
         )
+        packet_split = bool(self._display_value(
+            "packet_split", self.sw_packet_split.isChecked()))
+        gap_ms = None
+        if packet_split and mode == "stream":
+            gap_ms = _rx_dispatch.packet_timeout_ms(self._display_value(
+                "packet_timeout", self.ed_packet_timeout.text()))
+        if self._conn_proto == PROTO_SERIAL:
+            stats = self._io_stats
+            if gap_ms is not None and data:
+                if (stats.last_group_rx_at is None or stats.last_group_gap_ms != gap_ms
+                        or _rx_dispatch.elapsed_ms(stats.last_group_rx_at, now) >= gap_ms):
+                    stats.rx_gap_groups += 1
+                stats.last_group_rx_at = now
+            else:
+                stats.last_group_rx_at = None
+            stats.last_group_gap_ms = gap_ms
         if mode == "terminal":
-            self._terminal_append(self._decode_rx(data, source=source), source=source)
+            session = self._session_ctx()
+            echo = session.terminal_echo_state
+            echo.hide_preview()
+            text = echo.receive(self._decode_rx(data, source=source))
+            self._terminal_append(text, source=source)
+            self._show_terminal_preview(session)
             return
 
         if mode == "hexdump":
@@ -5107,19 +5145,13 @@ class CommTool(SessionHostMixin, QMainWindow):
             is_last = (i == len(segments) - 1)
 
             if is_first:
-                packet_split = bool(self._display_value(
-                    "packet_split", self.sw_packet_split.isChecked()))
-                timeout_ms = (
-                    _rx_dispatch.packet_timeout_ms(self._display_value(
-                        "packet_timeout", self.ed_packet_timeout.text()))
-                    if packet_split else 0)
                 force_new_block = _rx_dispatch.force_new_block_first(
                     last_direction=self._last_direction,
                     pending_line_break=self._pending_line_break,
                     cross_chunk_crlf=cross_chunk_crlf,
                     packet_split=packet_split,
-                    gap_ms=(now - self._last_recv_time) * 1000.0,
-                    timeout_ms=timeout_ms)
+                    gap_ms=_rx_dispatch.elapsed_ms(self._last_recv_time, now) if packet_split else 0,
+                    timeout_ms=gap_ms)
             else:
                 force_new_block = True
 
@@ -5273,7 +5305,7 @@ class CommTool(SessionHostMixin, QMainWindow):
         plan = _view_force_prefix(
             force_new_block=force_new_block,
             ends_with_nl=self._txt_ends_with_nl,
-            show_timestamp=show_ts)
+            show_timestamp=show_ts and view_mode != VIEW_TERMINAL)
         if plan["need_leading_nl"]:
             cursor.insertText("\n")
             self._txt_ends_with_nl = True
@@ -8351,7 +8383,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             # GUI stalls can queue several chunks past a silence boundary.
             # Split using reader timestamps before appending the next chunk.
             if (received_at is not None and previous is not None
-                    and received_at >= previous + self._ar_gap / 1000.0):
+                    and _rx_dispatch.elapsed_ms(previous, received_at) >= self._ar_gap):
                 self._ar_flush(force=True)
             if not self._ar_gap_overflow:
                 if len(self._ar_buf) + len(data) > _ar_gate.GAP_BUF_MAX:
@@ -9396,6 +9428,14 @@ class CommTool(SessionHostMixin, QMainWindow):
                 im.commit()
         except Exception:
             _log.debug("IME commit failed", exc_info=True)
+
+    def _on_send_clicked(self):
+        if self._terminal_on and (not self.txt_terminal.document().isEmpty()
+                                  or self.txt_send.document().isEmpty()):
+            self._submit_terminal_line()
+            self.txt_send.setFocus()
+        else:
+            self.do_send()
 
     def do_send(self):
         raw_orig = self.txt_send.toPlainText()
@@ -10652,6 +10692,9 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _set_terminal_enabled(self, on):
         on = bool(on)
+        session = self._session_ctx()
+        if session is not None:
+            self._flush_terminal_echo(session, reset=True)
         self._terminal_on = on
         self._term_esc = ""           # 切换时清掉未完成的转义序列残留
         self._term_discard_csi = False
@@ -10670,10 +10713,8 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.sw_terminal.blockSignals(False)
         if hasattr(self, "txt_send"):
             if on:
-                self.txt_send.clear()   # 终端模式发送框作键盘捕获、不累积文本
-            ph = "term_send_ph" if on else "send_placeholder"
-            self.txt_send.setProperty("tr_placeholder", ph)   # 语言切换时也用对的占位文案
-            self.txt_send.setPlaceholderText(self._t(ph))
+                self.txt_send.clear()
+            self.txt_terminal.clear()
         if on:
             # Entering terminal mode stops ALL sessions' period timers and
             # multi-send cycles (not only the active tab).
@@ -10701,6 +10742,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         实时记录）不动。关闭终端模式后全部恢复可配置。
         冻结视图同样禁用：终端是连续流（回车覆盖 / 光标移动 / 跨块续写），没有块级「追加」这个
         可拦点，冻结会使显示与 _term_* 光标状态机失步。故终端模式下冻结开关不可配。"""
+        if hasattr(self, "txt_send"):
+            ph = "term_send_ph" if on else "send_placeholder"
+            self.txt_send.setProperty("tr_placeholder", ph)
+            self.txt_send.setPlaceholderText(self._t(ph))
         if on and hasattr(self, "sec_send_term"):
             # 正处在终端模式里却把这组折起来 → 找不到怎么退出，故开启时强制展开
             self.sec_send_term.setExpanded(True)
@@ -10732,6 +10777,10 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _on_term_echo_changed(self, on):
         self._terminal_echo = bool(on)
+        session = self._session_ctx()
+        if session is not None:
+            session.terminal_echo_state.hide_preview()
+            self._show_terminal_preview(session)
         self.settings.setValue("terminal_echo", self._terminal_echo)
         self.settings.sync()
 
@@ -10769,17 +10818,99 @@ class CommTool(SessionHostMixin, QMainWindow):
         return None, None
 
     def _terminal_key(self, event):
-        data, echo = self._term_key_to_bytes(event.key(), event.modifiers(), event.text())
-        if data:
-            self._terminal_send(data, echo)
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self._submit_terminal_line()
+            return
+        self._edit_terminal_input(key, event.modifiers(), event.text())
+
+    def _edit_terminal_input(self, key, modifiers, text):
+        data, echo = self._term_key_to_bytes(key, modifiers, text)
+        if not data:
+            return
+        session = self.active_session()
+        state = session.terminal_echo_state
+        new_line = state.input_start is None
+        state.begin(self.txt_recv.document())
+        if not self._terminal_send(data):
+            if new_line:
+                state.input_start = None
+            return
+        state.hide_preview()
+        if data == b"\x03":
+            self.txt_terminal.clear()
+            state.input_start = None
+            return
+        cur = self.txt_terminal.textCursor()
+        if key == Qt.Key_Backspace:
+            cur.deletePreviousChar()
+        elif key == Qt.Key_Delete:
+            cur.deleteChar()
+        elif key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End):
+            cur.movePosition({Qt.Key_Left: QTextCursor.PreviousCharacter,
+                              Qt.Key_Right: QTextCursor.NextCharacter,
+                              Qt.Key_Home: QTextCursor.Start, Qt.Key_End: QTextCursor.End}[key])
+        elif echo and (echo.isprintable() or key == Qt.Key_Tab):
+            cur.insertText(echo)
+        self.txt_terminal.setTextCursor(cur)
+        self._show_terminal_preview(session)
+
+    def _show_terminal_preview(self, session):
+        if self._terminal_echo and session.terminal_echo_state.input_start is not None:
+            line = (self.txt_terminal.toPlainText() if session is self.active_session()
+                    else session.terminal_input[0])
+            session.terminal_echo_state.show_preview(session.txt_recv.document(), line)
+
+    def _clear_terminal_input(self):
+        state = self.active_session().terminal_echo_state
+        state.hide_preview()
+        state.input_start = None
+        self.txt_terminal.clear()
+
+    def _flush_terminal_echo(self, session, reset=False):
+        state = session.terminal_echo_state
+        state.hide_preview()
+        if reset:
+            state.input_start = None
+        text = state.finish() if reset else state.expire()
+        with self._with_session(session):
+            if text:
+                self._terminal_append(text)
+            self._show_terminal_preview(session)
+
+    def _submit_terminal_line(self):
+        # 正文已经逐键发出；两个提交入口都只补配置的行结束符。
+        ending, _ = self._term_key_to_bytes(Qt.Key_Return, Qt.NoModifier, "")
+        if not self._terminal_send(ending):
+            return
+        line = self.txt_terminal.toPlainText()
+        session = self.active_session()
+        state = session.terminal_echo_state
+        state.hide_preview()
+        single_peer = self._conn_proto not in (PROTO_TCP_SERVER, PROTO_UDP, PROTO_UDP_MULTICAST)
+        prefix, completed = state.received_part(line) if single_peer else ("", False)
+        state.input_start = None
+        doc = self.txt_recv.document()
+        if line and not completed:
+            suffix = line[len(prefix):]
+            self._append_block_data(suffix + "\n", direction="tx",
+                                    force_new_block=not prefix, view_mode=VIEW_TERMINAL)
+            self._term_pos = doc.characterCount() - 1
+            # Only fold exact echoes on a single-peer stream. Recorder and RX byte
+            # counters have their own unfiltered transport path.
+            if single_peer:
+                state.expect(suffix)
+        elif not line and self._terminal_echo:
+            self._terminal_append("\n", direction="tx")
+        self.txt_terminal.clear()
 
     def _terminal_send(self, data, echo=None):
-        """终端模式即时发送一小段字节（按键）。统计计数；本地回显开则把回显文本写进数据区。"""
+        """逐键发送成功时返回 True；本地回显开启时也将回显文本写入数据区。"""
         if self._manual_send_blocked():
             self.toast_io_exclusive_busy()
-            return
+            return False
         if not self._is_open():
-            return
+            return False
         send_target = self._send_target()
         try:
             sent = self.conn.send(data, send_target)
@@ -10791,16 +10922,16 @@ class CommTool(SessionHostMixin, QMainWindow):
                 "err_send_failed",
                 e=conn_error_tips.format_conn_error_detail(str(e), self._t)),
                 error=True)
-            return
+            return False
         if sent == SEND_NO_TARGET:
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
             self.toast(self._t("net_no_target"), error=True)
-            return
+            return False
         if sent <= 0:
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
-            return
+            return False
         strict_full_write = getattr(self, "_conn_proto", None) in (
             PROTO_SERIAL, PROTO_TCP_CLIENT, PROTO_BLE, PROTO_RTT)
         if strict_full_write and sent != len(data):
@@ -10814,7 +10945,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._abort_partial_tcp_stream(sent, len(data))
             self._stat_note_tx_error()
             self._refresh_stat_labels(with_tooltip=False)
-            return
+            return False
         self._stat_note_tx(len(data))
         self._macro_record_tx(data)
         # 终端是绕过 _send_text 的直发路径，采集入口得在这里补一次：数据录制录的是「线路
@@ -10825,9 +10956,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         except (TypeError, ValueError, RuntimeError, OSError):
             _log.debug("_terminal_send failed", exc_info=True)
         if self._terminal_echo and echo:
-            self._terminal_append(echo)
+            self._terminal_append(echo, direction="tx")
+        return True
 
-    def _terminal_append(self, text, source=None):
+    def _terminal_append(self, text, source=None, direction="rx"):
         r"""把收到的字节流按终端语义渲染到数据区（轻量 VT）：处理 \b(光标左移)、\r(回行首)、
         \n(换行)、覆盖式打印，以及行编辑常用的 CSI 序列 ESC[J/ESC[K(擦除)、ESC[C/ESC[D(光标
         左右)；颜色 ESC[..m、定位 ESC[..H 等其它 CSI 忽略（不显示成乱码）。不解析全屏 TUI。"""
@@ -10877,10 +11009,16 @@ class CommTool(SessionHostMixin, QMainWindow):
             return f
 
         term_fmt = _make_fmt()
+        # 收集同一次 VT 解析得到的正文，过滤跨包转义序列；每包写一次，未换行也能读到。
+        session = self._session_ctx()
+        log_parts = [] if session is not None and session._log_file is not None else None
 
         def _flush():
             if buf:
-                cur.insertText("".join(buf), term_fmt)
+                run = "".join(buf)
+                cur.insertText(run, term_fmt)
+                if log_parts is not None:
+                    log_parts.append(run)
                 del buf[:]
 
         for ch in text:
@@ -10942,6 +11080,8 @@ class CommTool(SessionHostMixin, QMainWindow):
                 _flush()
                 cur.movePosition(QTextCursor.End)
                 cur.insertText("\n", term_fmt)
+                if log_parts is not None:
+                    log_parts.append("\n")
             elif ch == "\t" or (ch >= " " and ch != "�"):
                 # 覆盖式打印：行尾→追加（可批量）；行内→替换光标右侧字符。U+FFFD(无效字节)丢弃。
                 if cur.atBlockEnd():
@@ -10951,8 +11091,12 @@ class CommTool(SessionHostMixin, QMainWindow):
                     cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor)
                     cur.removeSelectedText()
                     cur.insertText(ch, term_fmt)
+                    if log_parts is not None:
+                        log_parts.append(ch)
             # 其它控制符（BEL/NUL 等）丢弃
         _flush()
+        if log_parts:
+            self._write_log_block("".join(log_parts), direction=direction, force_new_block=False)
         if stream_source is None:
             self._term_sgr = term_sgr
             self._term_esc = esc
@@ -11090,7 +11234,7 @@ class CommTool(SessionHostMixin, QMainWindow):
 
     def _restore_session_log_intent(self, session):
         """Reopen one session's live log after an automatic reconnect."""
-        if (session is None or not session.log_wanted
+        if (session is None or session.prompt_log_on_open or not session.log_wanted
                 or not session.log_base_path):
             return False
         if session._log_file is not None:
@@ -11101,10 +11245,10 @@ class CommTool(SessionHostMixin, QMainWindow):
             when=now, session=session)
         if not ok:
             session.log_wanted = False
-            if session is self.active_session() and hasattr(self, "sw_log_file"):
-                self.sw_log_file.blockSignals(True)
-                self.sw_log_file.setChecked(False)
-                self.sw_log_file.blockSignals(False)
+        if session is self.active_session() and hasattr(self, "sw_log_file"):
+            self.sw_log_file.blockSignals(True)
+            self.sw_log_file.setChecked(bool(ok))
+            self.sw_log_file.blockSignals(False)
         return bool(ok)
 
     def _log_conn_token(self, session=None) -> str:
@@ -11290,15 +11434,37 @@ class CommTool(SessionHostMixin, QMainWindow):
         path = self._log_segment_path(now, session=session, seg=next_seg)
         self._rotate_log_to(path, now, session, next_seg=next_seg)
 
-    def on_log_file_toggled(self, on):
+    def _prompt_reopened_log(self):
+        session = self.active_session()
+        if (session is None or not session.prompt_log_on_open
+                or not session.is_open() or session._log_file is not None):
+            return
+        previous = self.sw_log_file.blockSignals(True)
+        self.sw_log_file.setChecked(True)
+        self.sw_log_file.blockSignals(previous)
+        self.on_log_file_toggled(True, reopened_conn=session.conn)
+
+    def on_log_file_toggled(self, on, *, reopened_conn=None):
         session = self._log_session()
+        dialog_conn = session.conn if session is not None else None
+        if session is not None:
+            session.prompt_log_on_open = False
+            session.log_wanted = False  # 选择期间连接可能就绪，不应重开旧文件。
         if on:
             filename = "data_log_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S")
             last_dir = self.settings.value("log_last_dir", "", type=str)
             suggested_path = os.path.join(last_dir, filename) if os.path.isdir(last_dir) else filename
             path, _ = QFileDialog.getSaveFileName(
                 self, self._t("dlg_log_path"), suggested_path, self._t("filter_text"))
+            if session is not self.active_session():
+                return
+            if dialog_conn is not None and session.conn is not dialog_conn:
+                return  # 旧连接的文件框不能覆盖新连接的记录状态。
+            if reopened_conn is not None and not session.is_open():
+                path = ""
             if not path:
+                if session is not None:
+                    session.log_wanted = False
                 self.sw_log_file.blockSignals(True)
                 self.sw_log_file.setChecked(False)
                 self.sw_log_file.blockSignals(False)
@@ -11394,10 +11560,16 @@ class CommTool(SessionHostMixin, QMainWindow):
             return ""
         fmt = self._display_value(
             "ts_format", getattr(self, "_ts_format", "absolute"))
+        received_at = self._rx_received_at if direction == "rx" else None
+        if fmt == "relative":
+            stamp = received_at if received_at is not None else time.monotonic()
+        else:
+            stamp = (self._io_stats.wall_time_at(received_at)
+                     if received_at is not None else time.time())
+        local_time = None if fmt in ("epoch", "relative") else datetime.fromtimestamp(stamp)
         text, self._ts_anchor = _view_timestamp_prefix(
-            fmt, direction,
-            now=datetime.now(), wall_time=time.time(),
-            anchor=getattr(self, "_ts_anchor", None))
+            fmt, direction, now=local_time,
+            wall_time=stamp, anchor=getattr(self, "_ts_anchor", None))
         return text
 
     def save_recv(self):
@@ -11433,6 +11605,7 @@ class CommTool(SessionHostMixin, QMainWindow):
             self.toast(self._t("err_read_failed", e=e), error=True)
 
     def clear_recv(self):
+        self._flush_terminal_echo(self.active_session(), reset=True)
         self.txt_recv.clear()
         self._recv_highlight_line = -1
         self._bookmarks = []
@@ -11511,15 +11684,27 @@ class CommTool(SessionHostMixin, QMainWindow):
             except Exception:
                 _log.debug("_tick_rate failed", exc_info=True)
 
+    def _serial_rx_stats(self):
+        return (self._conn_proto or self.cb_proto.currentText()) == PROTO_SERIAL
+
     def _refresh_stat_labels(self, with_tooltip=True):
         """Refresh status-bar RX/TX: bytes, packets, B/s, pps."""
         if not hasattr(self, "lbl_rx_stat"):
             return
         unit = self._t("stat_pkt_unit")
         pps_u = self._t("stat_pps_unit")
+        serial_rx = self._serial_rx_stats()
         rx = _io_format_stat_bar(
             "RX", self.rx_bytes, self.rx_packets, self._rx_rate,
-            self._io_stats.rx_pps, self.rx_errors, unit, pps_u)
+            self._io_stats.rx_pps, self.rx_errors,
+            self._t("stat_chunk_unit") if serial_rx else unit,
+            self._t("stat_chunk_rate_unit") if serial_rx else pps_u)
+        if serial_rx:
+            if self._io_stats.rx_gap_groups or self._io_stats.last_group_gap_ms is not None:
+                rx += " · " + self._t("stat_gap_groups", n=self._io_stats.rx_gap_groups)
+            cfg = self._stream_frame or {}
+            if self._io_stats.rx_protocol_frames or (cfg.get("on") and cfg.get("_header")):
+                rx += " · " + self._t("stat_protocol_frames", n=self._io_stats.rx_protocol_frames)
         tx = _io_format_stat_bar(
             "TX", self.tx_bytes, self.tx_packets, self._tx_rate,
             self._io_stats.tx_pps, self.tx_errors, unit, pps_u)
@@ -11545,15 +11730,17 @@ class CommTool(SessionHostMixin, QMainWindow):
             pps, peak_pps = acc.tx_pps, acc.tx_peak_pps
         total = self.fmt_bytes(b) + ((" (%s B)" % format(b, ",")) if b >= 1024 else "")
         smin, smax, savg = acc.size_summary(direction)
+        serial_rx = direction == "rx" and self._serial_rx_stats()
+        rate_unit = self._t("stat_chunk_rate_unit" if serial_rx else "stat_pps_unit")
         lines = [
             head,
-            self._t("stat_tip_packet_note"),
+            self._t("stat_serial_rx_note" if serial_rx else "stat_tip_packet_note"),
             "%s: %s" % (self._t("stat_total"), total),
-            "%s: %s" % (self._t("stat_packets"), format(p, ",")),
+            "%s: %s" % (self._t("stat_read_chunks" if serial_rx else "stat_packets"), format(p, ",")),
             "%s: %s" % (self._t("stat_rate"), self._fmt_rate(r)),
-            "%s: %s %s" % (self._t("stat_pps"), pps, self._t("stat_pps_unit")),
+            "%s: %s %s" % (self._t("stat_chunk_rate" if serial_rx else "stat_pps"), pps, rate_unit),
             "%s: %s" % (self._t("stat_peak"), self._fmt_rate(pk)),
-            "%s: %s %s" % (self._t("stat_peak_pps"), peak_pps, self._t("stat_pps_unit")),
+            "%s: %s %s" % (self._t("stat_peak_chunk_rate" if serial_rx else "stat_peak_pps"), peak_pps, rate_unit),
             "%s: %s" % (self._t("stat_errors"), format(e, ",")),
         ]
         if smin is not None:

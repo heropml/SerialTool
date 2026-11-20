@@ -15,6 +15,8 @@ t = 相对录制开始的秒数；b = 空格分隔 HEX（可读性优先，比 b
 Player 只依赖一个 `inject(bytes)` 回调，不碰 Qt 控件；定时由调用方（对话框）用 QTimer 驱动，
 便于单测。
 """
+from bisect import bisect_right
+from operator import itemgetter
 import io
 import ipaddress
 import json
@@ -112,26 +114,38 @@ class StreamRecorder:
     def total_bytes(self):
         return sum(len(b) for _t, _d, b in self.events)
 
-    def _add(self, direction, data, t=None, pcap_peer=None):
+    def _add(self, direction, data, t=None, pcap_peer=None, wall_time=None):
         if not self.recording or not data:
+            return
+        if len(self.events) >= self._max:
+            self.truncated = True
             return
         now = time.monotonic() if t is None else t
         if self._t0 is None:
             self._t0 = now
             # Wall-clock anchor so session-diff / tools can map relative t
             # back to absolute time for jump_to_session_time.
-            self._wall_t0 = time.time()
+            self._wall_t0 = time.time() if wall_time is None else wall_time
+        elif now < self._t0 and wall_time is not None:
+            # A queued serial RX may precede the first GUI-side TX.
+            shift = self._t0 - now
+            self.events[:] = [(at + shift, d, b) for at, d, b in self.events]
+            self._t0, self._wall_t0 = now, wall_time
         rel = max(0.0, now - self._t0)
         payload = bytes(data)
         peers = getattr(self.events, "pcap_peers", None)
+        insert_at = len(self.events)
+        if self.events and rel < self.events[-1][0]:
+            insert_at = bisect_right(self.events, rel, key=itemgetter(0))
         # 大块按同一时间戳拆事件，不能直接截掉尾部；录制的是原始流，静默丢字节会让复现失真。
         for off in range(0, len(payload), _MAX_CHUNK):
             if len(self.events) >= self._max:
                 self.truncated = True   # 到上限停止采集（保留最早的现场，不滚动丢头）
                 return
-            self.events.append((rel, direction, payload[off:off + _MAX_CHUNK]))
+            self.events.insert(insert_at, (rel, direction, payload[off:off + _MAX_CHUNK]))
             if isinstance(peers, list):
-                peers.append(pcap_peer)
+                peers.insert(insert_at, pcap_peer)
+            insert_at += 1
 
     @staticmethod
     def _same_udp_peer(link, source):
@@ -252,7 +266,7 @@ class StreamRecorder:
             self.link.pop("remote_port", None)
         return peer
 
-    def on_rx(self, data, t=None, source=None):
+    def on_rx(self, data, t=None, source=None, wall_time=None):
         pcap_peer = None
         if self.recording and isinstance(self.link, dict):
             proto = self.link.get("proto")
@@ -276,7 +290,7 @@ class StreamRecorder:
                     # A multicast RX frame without a sender cannot be represented
                     # truthfully in PCAP; keep the recording but disable export.
                     self.link = None
-        self._add("rx", data, t, pcap_peer=pcap_peer)
+        self._add("rx", data, t, pcap_peer=pcap_peer, wall_time=wall_time)
 
     def on_tx(self, data, t=None, source=None, peers=None):
         pcap_peer = None

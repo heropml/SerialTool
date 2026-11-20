@@ -88,6 +88,11 @@ def packet_timeout_ms(raw, default=20):
         return int(default)
 
 
+def elapsed_ms(previous, current):
+    """Subtract integer nanoseconds before converting a reader interval to ms."""
+    return (round(current * 1_000_000_000) - round(previous * 1_000_000_000)) / 1_000_000
+
+
 def force_new_block_first(
     *,
     last_direction,
