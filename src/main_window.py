@@ -1263,7 +1263,10 @@ class CommTool(SessionHostMixin, QMainWindow):
         return _sidebar.build(self)
 
     def build_settings_card(self):
-        return _settings_card.build(self)
+        card = _settings_card.build(self)
+        self.cb_rtt_probe.popup_opening.connect(
+            lambda: self._ensure_rtt_catalog(refresh_probes=True))
+        return card
 
     def _update_net_fields(self):
         """Show/hide connection fields and refresh open-button text."""
@@ -1375,22 +1378,23 @@ class CommTool(SessionHostMixin, QMainWindow):
                 cb.setCurrentText(sn)
         cb.blockSignals(False)
 
-    def _ensure_rtt_catalog(self):
-        """首次进 RTT 页时后台取一次器件表 + 已插调试器。
+    def _ensure_rtt_catalog(self, *, refresh_probes=False):
+        """后台加载 RTT 器件表，或在展开调试器下拉框时刷新探针。
 
         枚举走 JLinkARM DLL（数千项，几百 ms 到数秒），必须离开 UI 线程；
         没装驱动时线程内部退回内置候选，界面照常可用。
         """
         if getattr(self, "_rtt_catalog_thread", None) is not None:
             return
-        if getattr(self, "_rtt_catalog_done", False):
+        catalog_done = getattr(self, "_rtt_catalog_done", False)
+        if catalog_done and not refresh_probes:
             return
         if not hasattr(self, "cb_rtt_device"):
             return
-        if getattr(self, "_rtt_catalog_hold", False):
+        if getattr(self, "_rtt_catalog_hold", False) and not refresh_probes:
             self._rtt_catalog_wanted = True
             return
-        th = RttCatalog()
+        th = RttCatalog(probes_only=catalog_done)
         th.ready.connect(self._on_rtt_catalog)
         th.finished.connect(self._on_rtt_catalog_finished)
         self._rtt_catalog_thread = th
@@ -1414,18 +1418,22 @@ class CommTool(SessionHostMixin, QMainWindow):
             self._ensure_rtt_catalog()
 
     def _on_rtt_catalog(self, devices, probes):
-        self._rtt_catalog_done = True
-        self._rtt_devices = list(devices or [])
-        cb = getattr(self, "cb_rtt_device", None)
         th = getattr(self, "_rtt_catalog_thread", None)
-        self._rtt_driver_path = getattr(th, "driver_path", "") if th else ""
-        dlg = getattr(self, "_rtt_dev_dlg", None)
-        if dlg is not None:
-            dlg.set_devices(self._rtt_devices)
-            dlg.set_driver(self._rtt_driver_path)
-            dlg.select_device(cb.currentText() if cb is not None else "")
+        source = self.sender()
+        if source is not None and source is not th:
+            return
+        if not getattr(th, "probes_only", False):
+            self._rtt_catalog_done = True
+            self._rtt_devices = list(devices or [])
+            self._rtt_driver_path = getattr(th, "driver_path", "")
+            cb = getattr(self, "cb_rtt_device", None)
+            dlg = getattr(self, "_rtt_dev_dlg", None)
+            if dlg is not None:
+                dlg.set_devices(self._rtt_devices)
+                dlg.set_driver(self._rtt_driver_path)
+                dlg.select_device(cb.currentText() if cb is not None else "")
         pcb = getattr(self, "cb_rtt_probe", None)
-        if pcb is not None:
+        if pcb is not None and probes != [pcb.itemData(i) for i in range(1, pcb.count())]:
             keep = self._rtt_probe_text()
             pcb.blockSignals(True)
             while pcb.count() > 1:
@@ -1434,6 +1442,7 @@ class CommTool(SessionHostMixin, QMainWindow):
                 pcb.addItem(str(sn), str(sn))
             pcb.blockSignals(False)
             self._set_rtt_probe_text(keep)
+            pcb.refresh_popup()
 
     def _on_rtt_catalog_finished(self):
         current = getattr(self, "_rtt_catalog_thread", None)

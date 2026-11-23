@@ -11,6 +11,8 @@
 - `latest.json`：`url` 指 Gitee 的 Setup.exe；`url_mac` / `url_linux` 只填 GitHub 直链。
 - 顺序：先 Windows（`release.ps1` 建两站 Release），再往同一个 Release 追加 dmg / .run
   （`release_macos.sh` / `release_linux.sh` 会自动补传 Gitee 并同步两站正文；手动补用 `release_gitee_asset.py`）。
-- Gitee 附件配额 1GB，不自动清理旧版，满了再人工处理。
+- 发版时，简体中文、繁体中文和英文使用说明的目录与版本更新正文都只保留最近 5 个正式版本，也就是当前版本加前四版。新增一版时同步移除超出范围的目录条目和正文，较早的历史统一链接到 GitHub Releases。
+- Gitee 附件配额不足时，先核对已有附件的实际大小和本次需要的空间，列出能满足要求的旧版本，由用户明确指定要清理的版本。
+- 清理以完整版本为单位。先归档 GitHub 和 Gitee 上对应的发布说明、全部安装附件及 `comm-v<版本>` 标签，并校验归档。再同步删除用户确认版本在两站的 Release、全部附件和标签，核对两站结果后继续发布。不要只删除某一站或某个平台的附件来腾空间。
 - remote 名：Windows 机 `github` / `gitee`；Mac 上 GitHub 叫 `origin`。推 Gitee 前先 fetch，确认 Gitee 上没有本地缺的提交。
 - 发完跑 RELEASE.md「九、两站一致性核对」；GitHub 上别残留 `claude/*` 临时分支（PR 合并后删掉）。

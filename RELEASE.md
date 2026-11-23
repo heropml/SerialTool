@@ -23,7 +23,7 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 
 - 历史上 Gitee 很多版本缺 dmg，是**当时漏传**，不是规则；以本表为准。
 - Linux `.run` 符合 Gitee 的 100 MB 单文件限制时，脚本会尝试同步上传。
-- **Gitee 附件配额 1GB**（2026-09-24 实测约用 705MB，含 v1.8.3 的 exe + dmg）。满了上传会报 HTTP 400「超出配额」，**不自动清理旧版**，满了再人工决定删哪些。
+- **Gitee 附件配额 1GB**。空间不足时按 [AGENTS.md](AGENTS.md) 核对需要腾出的空间，由用户指定旧版本，归档并校验后在两站整版清理。
 - `latest.json`：`url` 指 **Gitee** 的 Setup.exe；`url_mac` / `url_linux` **只填 GitHub 直链**（历史惯例，不改）。
 - 顺序：**先 Windows**（建两站 Release + 传 Setup.exe + 写 `latest.json`）→ 再 macOS / Linux 往**同一个** `comm-v<版本>` 追加。
   各脚本只替换**同名**附件，互不删除；追加后会用 `docs/RELEASE_NOTES.md` 同步两站正文。
@@ -98,7 +98,7 @@ Gitee 令牌读取顺序：环境变量 `GITEE_TOKEN` → `scripts/.gitee_token`
 git 提交 → push github + gitee → 建 GitHub Release(`--latest`，上传 Setup.exe) →
 发 Gitee Release(调 `release_gitee.py`，国内下载源)。
 **只剩三语用户文档要手动补**(脚本结尾会提醒)：`docs/USAGE.md` · `使用说明.md` · `使用說明.md`
-各加版本历史章节 + 目录条目 + 右下角「当前版本号」。macOS `.dmg` 仍由协作者补(见下方第 2 步)。
+更新目录、版本更新正文、右下角「当前版本号」及下载安装说明。每份使用说明只保留当前版本和前四个版本的更新，较早的历史链接到 GitHub Releases。macOS `.dmg` 可按下方第 2 步补齐。
 
 ### 2. macOS（二选一打包，然后补 Gitee）
 
@@ -228,7 +228,7 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
 
 - [ ] `src/version.py` 改版本号
 - [ ] `latest.json` 改 version / url（url 指 Gitee）/ notes
-- [ ] `docs/RELEASE_NOTES.md` + README + 三语用户文档 同步
+- [ ] 同步 `docs/RELEASE_NOTES.md`、README 和三语使用说明，检查三份使用说明各保留最近 5 个版本的目录和更新正文
 - [ ] 打包：`build.bat` → ISCC（`MSYS_NO_PATHCONV=1`，`/DMyAppVersion=`）（v1.8.4 起不再打 onefile）
 - [ ] `git push github CommTool`
 - [ ] `git push gitee CommTool` ← **易漏**（走 SSH，见 6.0a）

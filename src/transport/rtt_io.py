@@ -32,15 +32,15 @@ import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
+from transport.rtt_worker import JLinkProcess, JLinkProcessExited
+
 _log = logging.getLogger(__name__)
 
-# JLinkARM carries process-global state. Keep one RTT worker in the DLL at a
-# time, including the interval after close() timed out while a DLL call remains
-# blocked. The worker releases this claim only from its own finally block.
+# Each real connection has its own JLinkARM process. Reserve the probe until
+# its worker exits. The None key represents an in-process driver override.
 _ACTIVE_WORKER_LOCK = threading.Lock()
-_ACTIVE_WORKER = None
-# JLinkARM 内部状态是进程级的；器件/探针枚举与实际 RTT 收发也不能并发
-# 进入同一份 DLL。RLock 允许目录线程在持锁期间调用 list_devices/probes。
+_ACTIVE_WORKERS = {}
+# 串行化本进程内的 DLL 调用。RLock 允许目录线程在持锁期间调用 list_devices/probes。
 _JLINK_DLL_LOCK = threading.RLock()
 # “自动”探针模式记住最近一次真正连通的 J-Link。RttConn 每次连接都会新建，
 # 所以缓存必须放在模块级，才能复现参考 rtt_t2 跨连接优先重试原探针的语义。
@@ -48,20 +48,31 @@ _LAST_SUCCESSFUL_PROBE_LOCK = threading.Lock()
 _LAST_SUCCESSFUL_PROBE = ""
 
 
-def _claim_worker(thread):
-    global _ACTIVE_WORKER
+def _claim_worker(thread, probe):
     with _ACTIVE_WORKER_LOCK:
-        if _ACTIVE_WORKER is not None:
+        if probe in _ACTIVE_WORKERS:
             return False
-        _ACTIVE_WORKER = thread
+        # 自动选探针只在没有其他连接时开始。获得实际序列号后，其余探针可独立使用。
+        if probe is not None and (PROBE_AUTO in _ACTIVE_WORKERS
+                                  or (not probe and _ACTIVE_WORKERS)):
+            return False
+        _ACTIVE_WORKERS[probe] = thread
         return True
 
 
-def _release_worker(thread):
-    global _ACTIVE_WORKER
+def _identify_auto_probe(thread, probe):
     with _ACTIVE_WORKER_LOCK:
-        if _ACTIVE_WORKER is thread:
-            _ACTIVE_WORKER = None
+        if _ACTIVE_WORKERS.get(PROBE_AUTO) is thread:
+            del _ACTIVE_WORKERS[PROBE_AUTO]
+            _ACTIVE_WORKERS[probe] = thread
+
+
+def _release_worker(thread):
+    with _ACTIVE_WORKER_LOCK:
+        for probe, worker in _ACTIVE_WORKERS.items():
+            if worker is thread:
+                del _ACTIVE_WORKERS[probe]
+                break
 
 
 def _last_successful_probe():
@@ -70,7 +81,7 @@ def _last_successful_probe():
 
 
 def _remember_successful_probe(jlink):
-    """缓存当前 J-Link 的实际序列号；老 pylink / 测试替身无此属性就跳过。"""
+    """缓存并返回实际序列号，旧驱动无法读取时返回空串。"""
     global _LAST_SUCCESSFUL_PROBE
     try:
         value = getattr(jlink, "serial_number", "")
@@ -78,10 +89,11 @@ def _remember_successful_probe(jlink):
             value = value()
         value = normalize_probe(value)
     except Exception:
-        return
+        return PROBE_AUTO
     if value:
         with _LAST_SUCCESSFUL_PROBE_LOCK:
             _LAST_SUCCESSFUL_PROBE = value
+    return value
 
 
 def _clear_probe_history():
@@ -100,7 +112,7 @@ ERR_NO_RTT = "rtt:no-rtt"           # RTT 控制块没找到
 ERR_GONE = "rtt:gone"               # 运行中调试器 / 目标掉线
 ERR_NO_DEVICE = "rtt:no-device"     # 未填器件名
 ERR_TIMEOUT = "rtt:timeout"         # 打开阶段长时间无响应（调试器被占用/目标无应答）
-ERR_BUSY = "rtt:busy"               # 上一个连接还在收尾（JLinkARM 是进程级单例）
+ERR_BUSY = "rtt:busy"               # 调试器正被使用、自动选择尚未完成或连接还在收尾
 ERR_CONNECT = "rtt:connect"         # 其它连接失败（原文走 {e}）
 
 ERROR_I18N = {
@@ -120,8 +132,10 @@ ERROR_I18N = {
 
 NOTICE_WAIT_CB = "rtt:waiting-cb"   # 已连上目标，控制块还没出现（继续等，不断线）
 
+NOTICE_NO_DOWN_CHANNEL = "rtt:no-down-channel"
 NOTICE_I18N = {
     NOTICE_WAIT_CB: "rtt_notice_waiting_cb",
+    NOTICE_NO_DOWN_CHANNEL: "rtt_notice_no_down_channel",
 }
 
 INTERFACES = ("SWD", "JTAG")
@@ -343,6 +357,15 @@ def normalize_probe(value):
     return s
 
 
+def probe_key(value):
+    """Use the same reservation for a serial number with or without leading zeros."""
+    serial_no = normalize_probe(value)
+    try:
+        return str(int(serial_no))
+    except ValueError:
+        return serial_no
+
+
 def split_write(data, chunk=WRITE_CHUNK):
     """下行数据按 chunk 切块（空 -> []）。"""
     size = chunk if isinstance(chunk, int) and chunk > 0 else WRITE_CHUNK
@@ -364,6 +387,8 @@ def classify_error(text):
     ``enums.JLinkGlobalErrors.to_string`` 的固定英文句）与 DLL 直出的常见
     提示 —— 漏一条用户就会看到一句生英文。
     """
+    if isinstance(text, JLinkProcessExited):
+        return ERR_GONE
     s = str(text or "").strip()
     if s.startswith("rtt:"):
         return s
@@ -819,8 +844,9 @@ class RttCatalog(QObject):
     ready = pyqtSignal(list, list)      # device rows, probes
     finished = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, probes_only=False):
         super().__init__(parent)
+        self.probes_only = probes_only
         self.driver_path = ""
         self._thread = None
 
@@ -852,8 +878,16 @@ class RttCatalog(QObject):
                 pass
 
     def run(self):
-        # 活跃 RTT 会话会独占 JLinkARM。目录线程在后台等它释放，不把“DLL
-        # 正忙”误报成一次成功的兜底枚举；线程是 daemon，应用退出也不会被拖住。
+        if self.probes_only:
+            # 下拉框刷新不等待其他会话释放 DLL，暂时保留上次枚举结果。
+            if not _JLINK_DLL_LOCK.acquire(blocking=False):
+                return
+            try:
+                self.ready.emit([], list_probes())
+            finally:
+                _JLINK_DLL_LOCK.release()
+            return
+        # 目录枚举与本进程内的其他 DLL 调用串行。实际 RTT 会话各自使用独立进程。
         with _JLINK_DLL_LOCK:
             self.driver_path = find_jlink_dll() or ""
             try:
@@ -874,8 +908,8 @@ class RttCatalog(QObject):
 class RttConn(QObject):
     """SEGGER RTT 连接：经 J-Link 读写目标 MCU 内存中的 RTT 缓冲。
 
-    一个 worker 线程串行化全部 DLL 调用（连接、轮询读、下行写），与 Qt 侧
-    只通过信号交互 —— 契约与 BleConn 一致，另加一个可选的
+    每个会话的线程将连接、轮询读和下行写串行提交给独立的 J-Link 进程，与 Qt 侧
+    只通过信号交互，与 BleConn 契约一致，另加一个可选的
     ``notice_occurred``（非致命提示，主窗口只 toast，不断连）。
     """
 
@@ -901,7 +935,8 @@ class RttConn(QObject):
                          if isinstance(rtt_address, int) and rtt_address > 0 else 0)
         self._search_size = (int(search_size)
                              if isinstance(search_size, int) and search_size > 0 else 0)
-        self._serial_no = normalize_probe(serial_no)
+        self._serial_no = probe_key(serial_no)
+        self._probe_serial = self._serial_no
         self._reset = bool(reset_on_open)
         ch = normalize_channel(channel)
         self._channel = DEFAULT_CHANNEL if ch is None else ch
@@ -930,6 +965,10 @@ class RttConn(QObject):
         return self._channel
 
     @property
+    def probe_serial(self):
+        return self._probe_serial
+
+    @property
     def control_block_seen(self):
         """控制块是否命中过（连上但一直 False = 固件侧没有 RTT 输出）。"""
         return bool(self._cb_seen)
@@ -943,8 +982,7 @@ class RttConn(QObject):
         thread = self._thread
         if thread is not None and thread.is_alive():
             if self._stop.is_set() or self._closing:
-                # 上一轮还卡在某个 DLL 调用里没退出。JLinkARM 是进程级单例，
-                # 再起一个 worker 就是两个线程同时进 DLL —— 宁可让用户重试。
+                # 上一轮还在关闭，直到 worker 退出才释放该探针。
                 self.error_occurred.emit(ERR_BUSY)
                 return False
             return True
@@ -955,15 +993,18 @@ class RttConn(QObject):
         self._ready = False
         self._was_open = False
         self._cb_seen = False
+        self._probe_serial = self._serial_no
         self._gen += 1
         self._stop.clear()
         with self._lock:
             self._pending.clear()
             self._queued = 0
+        local_driver = self.jlink_factory is not None or self.pylink_module is not None
+        probe = None if local_driver else self._probe_serial
         thread = threading.Thread(
-            target=self._run, args=(self._gen,),
+            target=self._run, args=(self._gen, local_driver),
             name="CommToolRttLoop", daemon=True)
-        if not _claim_worker(thread):
+        if not _claim_worker(thread, probe):
             self.error_occurred.emit(ERR_BUSY)
             return False
         self._thread = thread
@@ -1005,8 +1046,7 @@ class RttConn(QObject):
         if thread is not None and thread.is_alive():
             thread.join(timeout=JOIN_TIMEOUT_S)
         if thread is None or not thread.is_alive():
-            # 线程真退出了才松手；还卡在 DLL 里就留着引用，让下一次 open()
-            # 看得见并拒绝，而不是并发进同一个 JLinkARM。
+            # 线程真退出了才松手。下一次 open() 能看见仍在关闭的连接。
             self._thread = None
         self._closing = False
         if was_open:
@@ -1017,8 +1057,7 @@ class RttConn(QObject):
     def _arm_watchdog(self, gen):
         """打开阶段看门狗：CONNECT_TIMEOUT_S 内未就绪就报超时。
 
-        DLL 卡死时无法中断当次调用，只能先把失败亮出来；worker 等卡住的
-        调用返回后经 _cancelled(gen) 静默退出并自行清理。
+        worker 检测取消后会关掉自己的 J-Link 子进程。
         """
         self._disarm_watchdog()
         timer = threading.Timer(
@@ -1048,20 +1087,26 @@ class RttConn(QObject):
     def _cancelled(self, gen):
         return bool(gen != self._gen or self._closing or self._stop.is_set())
 
-    def _run(self, gen):
+    def _run(self, gen, local_driver):
         jlink = None
         ready = False
-        dll_locked = False
-        try:
+        isolated = None
+        if local_driver:
             _JLINK_DLL_LOCK.acquire()
-            dll_locked = True
+        try:
             if self._cancelled(gen):
                 return
             pylink_mod = self.pylink_module
             if pylink_mod is None:
                 pylink_mod = _import_pylink()
-            factory = self.jlink_factory
-            jlink = factory() if factory is not None else make_jlink(pylink_mod)
+            if local_driver:
+                factory = self.jlink_factory
+                jlink = factory() if factory is not None else make_jlink(pylink_mod)
+            else:
+                isolated = JLinkProcess(get_dll_hint(), lambda: self._cancelled(gen),
+                                        pylink_mod.errors.JLinkException)
+                jlink = isolated
+                jlink.start()
             self._require_probe(jlink)
             self._open_probe(jlink, pylink_mod)
             self._silence_dll_dialogs(jlink)
@@ -1072,7 +1117,11 @@ class RttConn(QObject):
             block = self._resolve_block(jlink, gen)
             self._flush_swo(jlink)
             jlink.rtt_start(block or None)
-            _remember_successful_probe(jlink)
+            probe = _remember_successful_probe(jlink)
+            if not self._serial_no and probe:
+                self._probe_serial = probe_key(probe)
+                if isolated is not None:
+                    _identify_auto_probe(threading.current_thread(), self._probe_serial)
             # 到这里 J-Link 已经在跟目标说话了 —— 与 rtt_t2 / RTT Viewer 一致，
             # 链路立刻算通。控制块可能还要几秒、甚至要等固件跑到 RTT_Init，
             # 那是 _pump 里的等待状态，不是连接失败。
@@ -1104,15 +1153,19 @@ class RttConn(QObject):
             with self._lock:
                 self._pending.clear()
                 self._queued = 0
-            if jlink is not None:
-                for fn in ("rtt_stop", "close"):
-                    try:
-                        getattr(jlink, fn)()
-                    except Exception:
-                        _log.debug("rtt %s cleanup failed", fn, exc_info=True)
-            if dll_locked:
-                _JLINK_DLL_LOCK.release()
-            _release_worker(threading.current_thread())
+            try:
+                if isolated is not None:
+                    isolated.close()
+                elif jlink is not None:
+                    for fn in ("rtt_stop", "close"):
+                        try:
+                            getattr(jlink, fn)()
+                        except Exception:
+                            _log.debug("rtt %s cleanup failed", fn, exc_info=True)
+            finally:
+                if local_driver:
+                    _JLINK_DLL_LOCK.release()
+                _release_worker(threading.current_thread())
 
     def _require_probe(self, jlink):
         """没插调试器就立刻失败，别进 open()。
@@ -1268,6 +1321,20 @@ class RttConn(QObject):
                     self.notice_occurred.emit(NOTICE_WAIT_CB)
                 self._stop.wait(POLL_IDLE_S)
 
+    def _down_channel_unavailable(self, jlink):
+        """Confirm a missing down buffer without assuming every write error means that."""
+        describe = getattr(jlink, "rtt_get_buf_descriptor", None)
+        if callable(describe):
+            try:
+                return describe(self._channel, False).SizeOfBuffer == 0
+            except Exception:
+                _log.debug("rtt down buffer descriptor unavailable", exc_info=True)
+        try:
+            count = getattr(jlink, "rtt_get_num_down_buffers", None)
+            return callable(count) and self._channel >= count()
+        except Exception:
+            return False
+
     def _drain_tx(self, jlink):
         while True:
             with self._lock:
@@ -1281,8 +1348,17 @@ class RttConn(QObject):
                     n += w
                     if w < len(chunk):
                         break   # 下行缓冲满：剩余留到下一个节拍
-            except Exception:
-                raise    # 下行通道可单独失败，不能把失败伪装成发送成功
+            except Exception as exc:
+                if (classify_error(exc) in FATAL_READ_TOKENS
+                        or not self._down_channel_unavailable(jlink)):
+                    _log.debug("rtt write failed on channel %d", self._channel, exc_info=True)
+                    raise
+                # Down buffers can be absent even while the target and up channel work.
+                with self._lock:
+                    self._pending.clear()
+                    self._queued = 0
+                self.notice_occurred.emit(NOTICE_NO_DOWN_CHANNEL)
+                return
             with self._lock:
                 if not self._pending:
                     return

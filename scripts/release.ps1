@@ -36,7 +36,7 @@
     下载源走 Gitee：latest.json 的 url 指向 Gitee Release（updater 第一源是 Gitee raw latest.json）。
     CommTool 现为本仓库主力产品 → GitHub Release 用 --latest（持有「Latest」徽章）。
     ⚠️ 脚本不动三语用户文档：发版后需手动给 docs/USAGE.md · 使用说明.md · 使用說明.md
-       各补 vN 版本历史章节 + 目录条目 + 右下角「当前版本号」（脚本结尾会再提醒）。
+       更新目录、当前版本号与下载安装说明，版本更新只保留最近 5 个版本（脚本结尾会再提醒）。
 #>
 [CmdletBinding()]
 param(
@@ -338,5 +338,5 @@ Write-Host "app「关于 → 检查更新」现在即可检测到 $Version 并�
 Write-Host ""
 Write-Host "⚠️ 别忘手动同步三语用户文档（脚本不动它们）：" -ForegroundColor Yellow
 Write-Host "   docs/USAGE.md · docs/使用说明.md · docs/使用說明.md"
-Write-Host "   各加 v$Version 版本历史章节 + 目录条目 + 右下角『当前版本号』。"
+Write-Host "   更新 v$Version 的目录、当前版本号和下载说明，版本更新只保留最近 5 个版本。"
 Write-Host "macOS .dmg 仍由协作者在 Mac 上跑 release_macos.sh 补到同一 Release。"

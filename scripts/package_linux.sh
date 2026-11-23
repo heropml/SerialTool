@@ -60,9 +60,11 @@ ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps"
 DESKTOP_DIR="$HOME/Desktop"
 
 echo "Installing CommTool to: $PREFIX"
-mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
-rm -rf "$PREFIX"
-mkdir -p "$PREFIX"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR" "$PREFIX"
+# Replace the bundled runtime while keeping the profile and other user files.
+if [ -d "$HERE/CommTool/_internal" ]; then
+    rm -rf -- "$PREFIX/_internal"
+fi
 cp -a "$HERE/CommTool"/. "$PREFIX/"
 chmod +x "$PREFIX/CommTool" "$PREFIX/CommTool.bin" 2>/dev/null || true
 

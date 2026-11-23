@@ -1414,8 +1414,9 @@ class SessionHostMixin:
             addr = ble_uuid.normalize_address(addr)
             return ("ble", addr) if addr else None
         if proto == "RTT":
-            device = str(fields.get("device") or fields.get("rtt_device") or "").strip()
-            return ("rtt", device.lower()) if device else None
+            from transport.rtt_io import probe_key
+            probe = probe_key(fields.get("probe") or fields.get("rtt_probe"))
+            return ("rtt", probe) if probe else None
         port = fields.get("local_port")
         if not port:
             return None
@@ -1437,8 +1438,7 @@ class SessionHostMixin:
                            if hasattr(self, "ed_local_port") else ""),
             "address": (self.ed_ble_address.text()
                         if hasattr(self, "ed_ble_address") else ""),
-            "device": (self.cb_rtt_device.currentText()
-                       if hasattr(self, "cb_rtt_device") else ""),
+            "probe": self._rtt_probe_text() if proto == "RTT" else "",
         }
         return self._session_resource_key_from_open(proto, fields)
 
@@ -1457,8 +1457,9 @@ class SessionHostMixin:
             from transport import ble_uuid
             addr = ble_uuid.normalize_address(cfg[1])
             return ("ble", addr) if addr else None
-        if proto == "RTT" and cfg and len(cfg) > 1 and cfg[1]:
-            return ("rtt", str(cfg[1]).lower())
+        if proto == "RTT":
+            probe = getattr(session.conn, "probe_serial", "")
+            return ("rtt", probe) if probe else None
         snapshot = getattr(session, "_reconnect_snapshot", None) or {}
         if snapshot:
             key = self._session_resource_key_from_open(
@@ -1471,7 +1472,6 @@ class SessionHostMixin:
             "local_ip": fields.get("net_local_ip"),
             "local_port": fields.get("net_local_port"),
             "address": fields.get("ble_address"),
-            "device": fields.get("rtt_device"),
         })
         if key is not None:
             return key
@@ -1631,6 +1631,10 @@ class SessionHostMixin:
         s = self.find_session(session_id)
         if s is None:
             return
+        if opened and s._conn_proto == "RTT" and s._reconnect_snapshot:
+            probe = getattr(s.conn, "probe_serial", "")
+            if probe:
+                s._reconnect_snapshot["fields"]["probe"] = probe
         with self._with_session(s):
             # Only drive full UI state changes when this is the active session
             if s.id == self._active_session_id:

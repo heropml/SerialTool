@@ -144,10 +144,9 @@ def test_rtt_capture_apply_roundtrip(tmp_path, monkeypatch):
         fields.get("rtt_channel"), fields.get("rtt_probe"),
         fields.get("rtt_reset"))
 
-    key = w._session_resource_key_from_open(PROTO_RTT, {"device": "NRF52"})
-    assert key == ("rtt", "nrf52")
-    w.cb_rtt_device.setCurrentText("MyDev")
-    assert w._session_resource_key_from_ui() == ("rtt", "mydev")
+    key = w._session_resource_key_from_open(PROTO_RTT, {"device": "NRF52", "probe": "600100123"})
+    assert key == ("rtt", "600100123")
+    assert w._session_resource_key_from_ui() == key
 
 
 def test_rtt_open_validates_device(tmp_path, monkeypatch):
@@ -223,6 +222,88 @@ def test_rtt_open_close_with_fake_jlink(tmp_path, monkeypatch):
     assert "rtt_stop" in jl.calls and "close" in jl.calls
 
 
+def _fake_jlink_worker(pipe, _dll_hint):
+    from tests.test_rtt_io import FakeJLink
+    from transport.rtt_worker import _serve_jlink
+
+    class EchoJLink(FakeJLink):
+        def open(self, serial_no=None):
+            super().open(serial_no)
+            self.serial_number = serial_no or "69403184"
+
+        def rtt_write(self, channel, data):
+            self.rx += f"{self.serial_number}/{channel}/{os.getpid()}:".encode() + data
+            return len(data)
+
+    with pipe:
+        try:
+            _serve_jlink(pipe, EchoJLink(), RuntimeError)
+        except EOFError:
+            pass
+
+
+@pytest.mark.parametrize("first_probe", ["69403184", ""])
+def test_same_window_connects_two_rtt_probes_for_same_target(tmp_path, monkeypatch, first_probe):
+    from tests.test_rtt_io import _wait_until
+    from transport import rtt_io, rtt_worker
+
+    monkeypatch.setattr(rtt_worker, "_run_jlink_worker", _fake_jlink_worker)
+    monkeypatch.setattr(rtt_io, "_LAST_SUCCESSFUL_PROBE", "")
+    w = _make_window(tmp_path, monkeypatch)
+
+    def open_rtt(probe, channel):
+        w.cb_proto.setCurrentText(PROTO_RTT)
+        w.cb_rtt_device.setCurrentText("GD32F103CBT6")
+        w._set_rtt_probe_text(probe)
+        w.cb_rtt_channel.setCurrentIndex(channel)
+        w.toggle_conn()
+        session = w.active_session()
+        assert _wait_until(lambda: session.is_open(), timeout=8.0)
+        return session
+
+    first = open_rtt(first_probe, 0)
+    w.add_session(activate=True)
+    second = open_rtt("69409969", 1)
+    assert first.is_open() and second.is_open()
+    assert w._session_resource_key(first) == ("rtt", "69403184")
+    assert w._session_resource_key(second) == ("rtt", "69409969")
+
+    first_rx, second_rx = [], []
+    first.conn.data_received.connect(first_rx.append)
+    second.conn.data_received.connect(second_rx.append)
+    assert first.conn.send(b"first") == 5
+    assert second.conn.send(b"second") == 6
+    assert _wait_until(lambda: first_rx and second_rx)
+    first_tag, first_payload = first_rx[0].split(b":", 1)
+    second_tag, second_payload = second_rx[0].split(b":", 1)
+    assert first_tag.startswith(b"69403184/0/") and first_payload == b"first"
+    assert second_tag.startswith(b"69409969/1/") and second_payload == b"second"
+    assert first_tag.split(b"/")[-1] != second_tag.split(b"/")[-1]
+
+    # A second connection to the same physical probe is still exclusive.
+    duplicate = RttConn("AnotherPart", serial_no="069403184")
+    assert duplicate.open() is False
+
+    # Simulate a lost link while the other probe stays active. Auto must reopen
+    # the first tab's resolved probe, even though the last open was on probe two.
+    previous = first.conn
+    previous.error_occurred.emit(rtt_io.ERR_GONE)
+    assert first.conn is None and second.is_open()
+    assert first._reconnect_snapshot["fields"]["probe"] == "69403184"
+    with w._with_session(first):
+        w._try_reconnect()
+    assert _wait_until(first.is_open, timeout=8.0)
+    assert first.conn is not previous and first.conn.probe_serial == "69403184"
+    assert second.is_open()
+    first.conn.data_received.connect(first_rx.append)
+
+    w.toggle_conn()
+    assert _wait_until(lambda: second.conn is None)
+    assert first.is_open()
+    assert first.conn.send(b"still open") == 10
+    assert _wait_until(lambda: len(first_rx) == 2)
+
+
 def test_rtt_device_catalog_stays_out_of_sidebar_combo(tmp_path, monkeypatch):
     """完整器件表只进轻量选择窗，不往侧栏组合框创建上万项。"""
     w = _make_window(tmp_path, monkeypatch)
@@ -242,6 +323,45 @@ def test_rtt_device_catalog_stays_out_of_sidebar_combo(tmp_path, monkeypatch):
     assert w._rtt_probe_text() == ""
     w.cb_rtt_probe.setCurrentIndex(1)
     assert w._rtt_probe_text() == "600100123"
+
+
+def test_rtt_probe_popup_refreshes_after_hotplug(tmp_path, monkeypatch):
+    from transport import rtt_io
+
+    w = _make_window(tmp_path, monkeypatch)
+    w._release_rtt_catalog_hold()
+    w.cb_proto.setCurrentText(PROTO_RTT)
+    devices = [{"name": "MyPart"}]
+    probes = ["69403184"]
+    monkeypatch.setattr(rtt_io, "find_jlink_dll", lambda: "fake.dll")
+    monkeypatch.setattr(rtt_io, "list_devices", lambda: devices)
+    monkeypatch.setattr(rtt_io, "list_probes", lambda: probes.copy())
+    w._rtt_catalog_thread.run()
+    w._rtt_catalog_thread.finished.emit()
+
+    # 目录已缓存，只刷新探针。模拟下拉框打开后后台才返回第二把探针。
+    monkeypatch.setattr(rtt_io, "list_devices", lambda: pytest.fail("device rescan"))
+    w.show()
+    _APP.processEvents()
+    cb = w.cb_rtt_probe
+    cb.setCurrentIndex(1)
+    cb.showPopup()
+    _APP.processEvents()
+    assert cb.view().isVisible()
+    probes.append("69409969")
+    refresh = w._rtt_catalog_thread
+    assert refresh is not None
+    refresh.run()
+    refresh.finished.emit()
+    _APP.processEvents()
+
+    assert [cb.itemData(i) for i in range(cb.count())] == ["", *probes]
+    assert w._rtt_probe_text() == "69403184"
+    assert w._rtt_devices == devices
+    view = cb.view()
+    last_row = view.visualRect(cb.model().index(2, 0))
+    assert view.viewport().rect().contains(last_row.center())
+    cb.hidePopup()
 
 
 def test_rtt_notice_is_toast_not_drop(tmp_path, monkeypatch):

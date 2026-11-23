@@ -4,7 +4,7 @@
 S-2 R38: move CommTool.build_settings_card body here so main_window
 stays a thin wrapper. Widgets are attached onto the host `app`.
 """
-from PyQt5.QtCore import Qt, QSize, QTimer
+from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox, QCompleter, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QWidget,
@@ -24,6 +24,19 @@ from transport.serial_params import (
     STOPBITS_OPTIONS,
     FLOW_OPTIONS,
 )
+
+
+class _RttProbeComboBox(QComboBox):
+    popup_opening = pyqtSignal()
+
+    def showPopup(self):
+        self.popup_opening.emit()
+        super().showPopup()
+
+    def refresh_popup(self):
+        # Qt 不会随异步添加的选项自动增高已展开的下拉框。
+        if self.view().isVisible():
+            super().showPopup()
 
 
 def build(app):
@@ -319,7 +332,7 @@ def build(app):
     app.row_rtt_device = make_row("rtt_device", _dev_box)
 
     # 调试器：空 = 自动选第一个；插多把 J-Link 时按序列号指定
-    app.cb_rtt_probe = QComboBox()
+    app.cb_rtt_probe = _RttProbeComboBox()
     app.cb_rtt_probe.setEditable(True)
     app.cb_rtt_probe.setInsertPolicy(QComboBox.NoInsert)
     app.cb_rtt_probe.addItem(app._t("rtt_probe_auto"), "")

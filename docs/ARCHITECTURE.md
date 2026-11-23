@@ -34,7 +34,10 @@ domain package that owns it and remain Qt-free whenever practical.
 - Runtime dependencies are bounded in `requirements.txt` and reproduced in CI/release
   builds through `constraints-runtime.txt`.
 - RTT uses `pylink-square`; the Python package is bundled, while the vendor J-Link
-  driver remains an explicit host prerequisite. DLL access is process-serialized.
+  driver remains an explicit host prerequisite. Each active RTT connection owns
+  a worker process and a probe reservation by serial number. After a probe is
+  identified, reconnect uses that serial number. The UI process enumerates probes
+  and device names separately.
 - Ruff, compileall, pure-logic tests, platform smoke suites, full Windows tests, and
   nightly soak/disconnect churn form the delivery gate.
 
@@ -91,5 +94,6 @@ is held back while `_rtt_catalog_hold` is set: from construction until the main
 window's first `paintEvent` (plus one event-loop turn), with a 2 s fallback for a
 window that is never shown. Requests during the hold only set
 `_rtt_catalog_wanted`; `_release_rtt_catalog_hold` enumerates only if the
-connection type is still RTT. The device picker and driver-folder reload clear
-the hold and enumerate immediately.
+connection type is still RTT. An explicit device picker or driver-folder reload
+can start the catalog immediately. Opening the probe dropdown starts a fresh
+probe scan and reuses the loaded device catalog.

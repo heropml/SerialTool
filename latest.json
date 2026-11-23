@@ -1,17 +1,13 @@
 {
-  "version": "1.8.8",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_Setup_v1.8.8.exe",
-  "url_mac": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_v1.8.8.dmg"
-  ],
-  "url_linux": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.8/CommTool_Setup_v1.8.8_linux_x86_64.run"
-  ],
-  "sha256": "1489fef2c427ea05e394c7d25bfee455edaa918fb7471471b4a1e6bb93089ff6",
-  "size": 49180531,
-  "sha256_mac": "7b5a208b6b73f95d797a1d2f31614feb9edd8275f69abd1cb011449cd9a70007",
-  "size_mac": 51736726,
-  "sha256_linux": "6cf480305cf4c31da130989cfb6f31d7fb39d588e0dcf5d39db92b3961564a61",
-  "size_linux": 130302930,
-  "notes": "终端逐键预览，回车或点「发送」提交。修复串口与 RTT 同时记录时的日志漏记，重连可重选文件。串口日志与录制按读取时间计时，并区分读取块、时间分包和协议帧。"
+  "version": "1.8.9",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.9/CommTool_Setup_v1.8.9.exe",
+  "url_mac": [],
+  "url_linux": [],
+  "sha256": "6cb6d21b0fae32ee3ef56ccd615ee4b154c171f03ecba358d70d72951156f1fe",
+  "size": 43240658,
+  "sha256_mac": "",
+  "size_mac": 0,
+  "sha256_linux": "",
+  "size_linux": 0,
+  "notes": "串口调试助手 / 网络调试工具，同一窗口可同时使用多把 J-Link。展开调试器列表可刷新探针，重连沿用原探针。RTT 通道无法发送时保留连接。"
 }

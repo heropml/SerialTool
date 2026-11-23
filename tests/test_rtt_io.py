@@ -307,9 +307,9 @@ def test_rtt_signature_and_presets():
 
 def test_resource_keys_rtt():
     key = SessionHostMixin._session_resource_key_from_open
-    assert key("RTT", {"device": "NRF52"}) == ("rtt", "nrf52")
-    assert key("RTT", {"device": ""}) is None
-    assert key("RTT", {"rtt_device": "X"}) == ("rtt", "x")
+    assert key("RTT", {"device": "NRF52", "probe": "069403184"}) == ("rtt", "69403184")
+    assert key("RTT", {"rtt_device": "NRF52", "rtt_probe": "69409969"}) == ("rtt", "69409969")
+    assert key("RTT", {"device": "NRF52", "probe": "auto"}) is None
 
 
 # ----- conn_ui visibility -----
@@ -701,6 +701,46 @@ def test_conn_write_failure_drops_link_and_queue():
         assert states[-1] is False
         assert conn.is_open is False
         assert conn.queued_bytes == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("down_slots", [1, 3, None])
+def test_unconfigured_down_channel_rejects_write_without_disconnecting(down_slots):
+    class ReceiveOnlyJLink(FakeJLink):
+        def rtt_get_num_down_buffers(self):
+            if down_slots is None:
+                raise RuntimeError("The RTT Control Block has not yet been found (wait?)")
+            return down_slots
+
+        def rtt_get_buf_descriptor(self, channel, up):
+            assert (channel, up) == (1, False)
+            if down_slots == 1:
+                raise ValueError("Invalid error code: -3")
+            return types.SimpleNamespace(SizeOfBuffer=0)
+
+        def rtt_write(self, channel, data):
+            assert channel == 1
+            raise RuntimeError("Unspecified error.")
+
+    jl = ReceiveOnlyJLink()
+    conn = _make_conn(jl, channel=1)
+    errors, states, notices, received = [], [], [], []
+    conn.error_occurred.connect(errors.append)
+    conn.state_changed.connect(states.append)
+    conn.notice_occurred.connect(notices.append)
+    conn.data_received.connect(received.append)
+    try:
+        assert conn.open()
+        assert _wait_until(lambda: states == [True])
+        assert conn.send(b"help\r") == 5
+        assert _wait_until(lambda: notices or errors)
+        assert not errors
+        assert notices == [rtt_io.NOTICE_NO_DOWN_CHANNEL]
+        assert conn.is_open and states == [True]
+        assert conn.queued_bytes == 0
+        jl.rx = b"still receiving"
+        assert _wait_until(lambda: received == [b"still receiving"])
     finally:
         conn.close()
 
