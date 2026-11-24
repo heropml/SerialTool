@@ -9,11 +9,11 @@
 ## Contents
 
 - [Quick Start](#quick-start)
+- [What's New in v1.9.0](#whats-new-in-v190)
 - [What's New in v1.8.9](#whats-new-in-v189)
 - [What's New in v1.8.8](#whats-new-in-v188)
 - [What's New in v1.8.7](#whats-new-in-v187)
 - [What's New in v1.8.6](#whats-new-in-v186)
-- [What's New in v1.8.5](#whats-new-in-v185)
 - [Features](#features)
   - [Connection](#connection)
   - [Receiving Data](#receiving-data)
@@ -46,6 +46,11 @@ On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bund
 
 ---
 
+## What's New in v1.9.0
+
+- **RTT disconnect** — The window stays responsive while the driver cleans up in the background. The probe becomes available when cleanup finishes. Queued signals from a closed connection cannot affect its replacement.
+- **Linux upgrades** — The installer checks and stages the new files first. If installation fails, it attempts to restore the previous runtime and launch entries while keeping your settings. If any file cannot be restored, the installer reports where it kept the backup.
+
 ## What's New in v1.8.9
 
 - **Multiple RTT sessions** — Each tab can connect to a different J-Link, even when the targets use the same device model. Reopen the Probe list to refresh it.
@@ -72,12 +77,6 @@ On an empty terminal, use the **Quick start** bar for a Virtual loopback, a bund
 - Packet-split display and auto-reply silence framing use reader timestamps even when GUI delivery is delayed. A 20ms silence interval suits normal use.
 - Activity is registered before reading the suffix to prevent early frame completion. Already-read bytes survive suffix errors, and disconnect cancels blocking reads.
 - Auto-reply silence buffers are limited to 1MiB per session. An oversized frame is discarded with a notice, and matching resumes after silence. Packet Split controls display. Configure the auto-reply gap separately, with gap=0 matching each received chunk immediately.
-
-## What's New in v1.8.5
-
-- **Dropdown selection contrast** — selected entries now use the theme's highlight background with white text, fixing invisible text in the Mist theme's flow-control dropdown.
-- **Theme-matched switches** — enabled switches use the same accent color as primary buttons; Mist uses charcoal tracks and white knobs, with light-grey tracks when off. Main-window and dialog switches follow theme changes.
-- Mouse and keyboard selection remain available. Windows Setup, macOS Apple Silicon DMG and Linux x86_64 installers use the same version source.
 
 For earlier versions, see [GitHub Releases](https://github.com/heropml/SerialTool/releases).
 
@@ -362,7 +361,7 @@ Bottom-left:
 Bottom-right:
 
 - **📝 log path** — the current log file (elided in the middle, full path on hover); blank when not logging
-- current **version** (`v1.8.9`) — turns into a clickable “● Update vX” badge when a newer version is available
+- current **version** (`v1.9.0`) — turns into a clickable “● Update vX” badge when a newer version is available
 
 ---
 
@@ -399,16 +398,16 @@ A: Writes are append-only — even hundreds of MB stay smooth. **Max Lines** onl
 
 ## Install (Windows / macOS / Linux)
 
-Download the v1.8.9 installers from [GitHub Releases](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.9) or check available mirrored assets on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.8.9).
+Download the v1.9.0 installers from [GitHub Releases](https://github.com/heropml/SerialTool/releases/tag/comm-v1.9.0) or check available mirrored assets on [Gitee](https://gitee.com/heropml/SerialTool/releases/tag/comm-v1.9.0).
 
 ### Windows
 
 - Windows 10 / 11 (64-bit)
-- Recommended: `CommTool_Setup_v1.8.9.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
+- Recommended: `CommTool_Setup_v1.9.0.exe` — wizard install, optional desktop shortcut; per-user install does not need admin
 
 ### macOS
 
-- **Apple Silicon** (arm64) only: download `CommTool_v1.8.9.dmg` from `comm-v1.8.9`
+- **Apple Silicon** (arm64) only: download `CommTool_v1.9.0.dmg` from `comm-v1.9.0`
 - Open the DMG and drag CommTool into **Applications**
 - If macOS says the app is damaged (not notarized), run once:
 
@@ -419,7 +418,7 @@ xattr -dr com.apple.quarantine /Applications/CommTool.app
 ### Linux
 
 - **x86_64**, glibc ≥ 2.27 (Ubuntu 18.04+ / most Kylin desktops). xcb / X11 libs are bundled; you usually do not need extra `apt` packages
-- File: `CommTool_Setup_v1.8.9_linux_x86_64.run`
+- File: `CommTool_Setup_v1.9.0_linux_x86_64.run`
 
 ```bash
 chmod +x CommTool_Setup_v<version>_linux_x86_64.run

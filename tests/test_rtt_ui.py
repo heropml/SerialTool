@@ -164,7 +164,7 @@ def test_rtt_open_validates_device(tmp_path, monkeypatch):
 
 
 def test_rtt_open_close_with_fake_jlink(tmp_path, monkeypatch):
-    from tests.test_rtt_io import FakeJLink, _FakePylink
+    from tests.test_rtt_io import FakeJLink, _FakePylink, _wait_until
 
     jl = FakeJLink(rx=b"hello from target")
     monkeypatch.setattr(RttConn, "jlink_factory", staticmethod(lambda: jl))
@@ -219,7 +219,34 @@ def test_rtt_open_close_with_fake_jlink(tmp_path, monkeypatch):
         _APP.processEvents()
         time.sleep(0.02)
     assert w.conn is None
-    assert "rtt_stop" in jl.calls and "close" in jl.calls
+    assert _wait_until(lambda: "rtt_stop" in jl.calls and "close" in jl.calls)
+
+
+def test_queued_signals_from_closing_probe_leave_replacement_open(tmp_path, monkeypatch):
+    import threading
+
+    w = _make_window(tmp_path, monkeypatch)
+    session = w.active_session()
+    old = RttConn("old")
+    session.conn = old
+    w._bind_conn_signals(old, session)
+    notices = []
+    monkeypatch.setattr(w, "toast", lambda *args, **kwargs: notices.append(args))
+
+    def queue_signals():
+        old.notice_occurred.emit("old notice")
+        old.error_occurred.emit("old error")
+        old.state_changed.emit(False)
+
+    thread = threading.Thread(target=queue_signals)
+    thread.start()
+    thread.join()
+    old.close()
+    replacement = RttConn("new")
+    session.conn = replacement
+    _APP.processEvents()
+    assert session.conn is replacement
+    assert not notices
 
 
 def _fake_jlink_worker(pipe, _dll_hint):

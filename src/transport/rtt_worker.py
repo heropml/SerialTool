@@ -105,15 +105,22 @@ class JLinkProcess:
         return self._receive()
 
     def _receive(self):
-        try:
-            while not self._cancelled():
+        while not self._cancelled():
+            try:
                 if self._pipe.poll(0.05):
                     status, result = self._pipe.recv()
                     break
-            else:
-                raise InterruptedError()
-        except (EOFError, BrokenPipeError, ConnectionResetError) as exc:
-            raise JLinkProcessExited() from exc
+                if self._process is not None and not self._process.is_alive():
+                    if self._pipe.poll(0):
+                        status, result = self._pipe.recv()
+                        break
+                    raise JLinkProcessExited()
+            except JLinkProcessExited:
+                raise
+            except (EOFError, OSError) as exc:
+                raise JLinkProcessExited() from exc
+        else:
+            raise InterruptedError()
         if status == "driver_error":
             raise self._driver_error(result)
         if status == "error":
@@ -129,7 +136,7 @@ class JLinkProcess:
             return
         # EOF gives the child a chance to stop RTT and close the probe. A stuck
         # DLL may never return, so reap that child without touching other links.
-        process.join(0.25)
+        process.join(1.0)
         if process.is_alive():
             process.terminate()
             process.join(0.5)

@@ -1542,10 +1542,11 @@ class CommTool(SessionHostMixin, QMainWindow):
         self._rtt_catalog_hold = False    # 用户换了驱动：不等启动保持期
         self._ensure_rtt_catalog()
 
-    def _route_session_notice(self, session_id, msg):
+    def _route_session_notice(self, session_id, msg, source_conn=None):
         """连接层的非致命提示（如 RTT 控制块还没出现）：只 toast，不断连。"""
         session = self.find_session(session_id)
-        if session is None or session.id != self._active_session_id:
+        if (session is None or session.id != self._active_session_id
+                or (source_conn is not None and session.conn is not source_conn)):
             return
         key = _RTT_NOTICE_I18N.get(msg)
         self.toast(self._t(key) if key else str(msg))

@@ -1,24 +1,23 @@
-**CommTool** 串口调试助手 / 网络调试工具支持 UART、RTT 和 TCP/UDP。v1.8.9 支持在同一个窗口同时连接多把 J-Link，并改进 RTT 探针列表、重连和发送失败提示。
+**CommTool** 串口调试助手 / 网络调试工具支持 UART、RTT 和 TCP/UDP。v1.9.0 修复 RTT 断开时的界面卡顿，并在 Linux 升级失败时恢复旧版运行文件和启动入口。
 
-## RTT 多探针
+## RTT 断开与重连
 
-- 每个 RTT 标签可连接一把独立的 J-Link。即使两块目标板型号相同，也可以按调试器序列号分别连接。
-- 展开「调试器」时后台扫描当前连接的探针，保留当前选择。自动重连会沿用该会话已识别的探针。
-- 所选 RTT 通道缺少下行缓冲区时，应用会提示无法发送并保留连接。通道由各块板的固件分别配置，两块板都在通道 0 提供终端时，两个标签均可选择通道 0。
-- Windows 实机验证使用两把 J-Link 的两个标签分别发送 `help`，均收到自身目标的帮助菜单。没有下行缓冲区的一路提示发送失败后，两路仍保持连接。
+- 点击断开后立即停止收发，J-Link 在后台清理。清理完成前，该探针仍由原会话占用，其他探针可以继续使用。
+- 连接超时与断开同时发生时，等待回调结束后再销毁连接对象。旧连接排队的状态、错误与提示不会传到新会话。
+- 会话按 J-Link 序列号识别探针。同一型号的目标板仍可用不同探针分别连接。
 
-## 使用说明
+## Linux 安装与升级
 
-简体中文、繁体中文和英文使用说明的目录和更新正文都只保留最近 5 个版本。更早的版本记录可在 [GitHub Releases](https://github.com/heropml/SerialTool/releases) 查看。
-
-Linux 覆盖安装会保留安装目录中的用户配置和日志。
+- 安装前检查主程序和随包运行库，在目标文件系统暂存新版，再替换正在使用的程序文件。
+- 升级失败时恢复原程序、运行库和启动入口，保留安装目录里的用户配置。即使某个文件恢复失败，也会继续恢复其余文件，并报告保留备份的位置。
+- 通过安装器创建的命令行入口可从 PATH 启动。并发安装时会保护共用的命令和桌面入口。
 
 ## 下载与安装
 
 | 平台 | 文件 | 安装方式 |
 |------|------|----------|
-| Windows 10/11（64 位） | `CommTool_Setup_v1.8.9.exe` | 运行安装向导 |
-| macOS（Apple Silicon） | `CommTool_v1.8.9.dmg` | 打开镜像，将应用拖入「应用程序」 |
-| Linux x86_64 | `CommTool_Setup_v1.8.9_linux_x86_64.run` | 赋予执行权限后运行，默认安装到 `~/.local/opt/CommTool` |
+| Windows 10/11（64 位） | `CommTool_Setup_v1.9.0.exe` | 运行安装向导 |
+| macOS（Apple Silicon） | `CommTool_v1.9.0.dmg` | 打开镜像，将应用拖入「应用程序」 |
+| Linux x86_64 | `CommTool_Setup_v1.9.0_linux_x86_64.run` | 赋予执行权限后运行，默认安装到 `~/.local/opt/CommTool` |
 
-RTT 连接需安装 SEGGER J-Link 驱动。Gitee 未提供 Linux 安装包时，请从 [GitHub Release](https://github.com/heropml/SerialTool/releases/tag/comm-v1.8.9) 下载。
+RTT 连接需安装 SEGGER J-Link 驱动。简体中文、繁体中文和英文使用说明保留最近五版更新。更早的记录可在 [GitHub Releases](https://github.com/heropml/SerialTool/releases) 查看。

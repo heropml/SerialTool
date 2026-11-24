@@ -397,8 +397,12 @@ class Session:
             return None
         if proto == PROTO_BLE and len(cfg) > 1 and cfg[1]:
             return ("ble", str(cfg[1]).upper())
-        if proto == PROTO_RTT and len(cfg) > 1 and cfg[1]:
-            return ("rtt", str(cfg[1]).lower())
+        if proto == PROTO_RTT:
+            from transport.rtt_io import probe_key
+            probe = probe_key(getattr(self.conn, "probe_serial", ""))
+            if not probe and len(cfg) > 7:
+                probe = probe_key(cfg[7])
+            return ("rtt", probe) if probe else None
         if len(cfg) >= 1:
             return ("net", proto, tuple(cfg))
         return ("net", proto, tuple(cfg) if cfg else ())

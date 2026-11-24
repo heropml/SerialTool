@@ -166,6 +166,7 @@ jobs:
           tests/test_session_host.py
           tests/test_updater_mac.py
           tests/test_updater_linux.py
+          tests/test_linux_installer.py
           tests/test_multi_session.py
           -q --tb=short
           --timeout=120

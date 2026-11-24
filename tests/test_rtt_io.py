@@ -37,6 +37,7 @@ def _clean_rtt_module_caches():
     rtt_io._LIBRARY_CACHE.clear()
     rtt_io._clear_probe_history()
     yield
+    assert _wait_until(lambda: not rtt_io._ACTIVE_WORKERS)
     rtt_io.clear_device_cache()
     rtt_io._LIBRARY_CACHE.clear()
     rtt_io._clear_probe_history()
@@ -143,11 +144,13 @@ class _GateJLink(FakeJLink):
     def __init__(self):
         super().__init__()
         self._gate = threading.Event()
+        self.entered = threading.Event()
 
     def release(self):
         self._gate.set()
 
     def connect(self, device, speed=0, verbose=False):
+        self.entered.set()
         self._gate.wait(3.0)
         super().connect(device, speed=speed, verbose=verbose)
 
@@ -312,6 +315,24 @@ def test_resource_keys_rtt():
     assert key("RTT", {"device": "NRF52", "probe": "auto"}) is None
 
 
+def test_session_resource_key_rtt_uses_probe_serial():
+    from sessions.session import Session
+
+    s = Session(None)
+    s._conn_proto = "RTT"
+    s._conn_cfg = connection_presets.rtt_signature(
+        "RTT", "GD32F103CBT6", 4000, "SWD", 0, 0, probe="", reset=False)
+    assert s.resource_key() is None
+
+    s.conn = types.SimpleNamespace(probe_serial="069403184")
+    assert s.resource_key() == ("rtt", "69403184")
+
+    s.conn = None
+    s._conn_cfg = connection_presets.rtt_signature(
+        "RTT", "GD32F103CBT6", 4000, "SWD", 0, 0, probe="069409969", reset=False)
+    assert s.resource_key() == ("rtt", "69409969")
+
+
 # ----- conn_ui visibility -----
 
 def test_conn_ui_rtt_rows_and_btn():
@@ -361,7 +382,7 @@ def test_conn_open_rx_tx_close():
         conn.close()
     assert states[-1] is False
     assert conn.is_open is False
-    assert "rtt_stop" in jl.calls and "close" in jl.calls
+    assert _wait_until(lambda: "rtt_stop" in jl.calls and "close" in jl.calls)
     assert conn.send(b"x") == 0   # 关闭后发送被拒绝
 
 
@@ -375,6 +396,7 @@ def test_auto_probe_retries_last_successful_then_falls_back():
     finally:
         conn.close()
     assert first.calls[0] == "open"
+    assert _wait_until(lambda: conn._thread is None)
     assert rtt_io._last_successful_probe() == "111"
 
     class _FallbackJLink(FakeJLink):
@@ -932,6 +954,7 @@ def test_conn_probe_serial_and_reset():
         conn.close()
 
     jl2 = FakeJLink(rx=b"x")
+    assert _wait_until(lambda: conn._thread is None)
     conn2 = _make_conn(jl2)          # 默认：自动选调试器、不复位
     try:
         assert conn2.open() is True
@@ -1030,27 +1053,26 @@ def test_list_probes(monkeypatch):
 
 # ----- 上一个连接没退干净时不再并发进 DLL -----
 
-def test_open_rejected_while_previous_worker_stuck(monkeypatch):
-    monkeypatch.setattr(rtt_io, "JOIN_TIMEOUT_S", 0.1)
-    jl = _GateJLink()          # connect() 卡住，close() join 不回来
+def test_open_rejected_while_previous_worker_stuck():
+    jl = _GateJLink()
     conn = _make_conn(jl)
     errs = []
     conn.error_occurred.connect(errs.append)
     try:
         assert conn.open() is True
+        assert jl.entered.wait(1)
         conn.close()           # worker 仍卡在 DLL 调用里
         assert conn.open() is False
         assert _wait_until(lambda: errs)
         assert errs[-1] == rtt_io.ERR_BUSY
     finally:
         jl.release()
-        time.sleep(0.2)
+        assert _wait_until(lambda: conn._thread is None)
         conn.close()
 
 
-def test_new_conn_rejected_while_previous_worker_stuck(monkeypatch):
+def test_new_conn_rejected_while_previous_worker_stuck():
     """主窗口会重建 RttConn；互斥必须跨实例，而不只是单实例保护。"""
-    monkeypatch.setattr(rtt_io, "JOIN_TIMEOUT_S", 0.1)
     jl = _GateJLink()
     conn1 = _make_conn(jl)
     conn2 = _make_conn(FakeJLink())
@@ -1058,13 +1080,14 @@ def test_new_conn_rejected_while_previous_worker_stuck(monkeypatch):
     conn2.error_occurred.connect(errs.append)
     try:
         assert conn1.open() is True
+        assert jl.entered.wait(1)
         conn1.close()
         assert conn2.open() is False
         assert _wait_until(lambda: errs)
         assert errs == [rtt_io.ERR_BUSY]
     finally:
         jl.release()
-        time.sleep(0.2)
+        assert _wait_until(lambda: conn1._thread is None)
         conn1.close()
         conn2.close()
 
@@ -1335,3 +1358,178 @@ def test_probe_precheck_skipped_when_unsupported():
         assert "open" in jl.calls
     finally:
         conn.close()
+
+
+def test_jlink_process_receive_handles_exit_errors_and_cancel():
+    from transport.rtt_worker import JLinkProcess, JLinkProcessExited
+
+    class _DeadProc:
+        def is_alive(self):
+            return False
+
+    class _EmptyPipe:
+        def poll(self, timeout=0):
+            return False
+
+    proc = JLinkProcess("", lambda: False, RuntimeError)
+    proc._pipe = _EmptyPipe()
+    proc._process = _DeadProc()
+    with pytest.raises(JLinkProcessExited):
+        proc._receive()
+
+    class _BufferedErrorPipe:
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self, timeout=0):
+            self.polls += 1
+            return self.polls > 1
+
+        def recv(self):
+            return ("error", "dll load failed")
+
+    proc = JLinkProcess("", lambda: False, RuntimeError)
+    proc._pipe = _BufferedErrorPipe()
+    proc._process = _DeadProc()
+    with pytest.raises(RuntimeError, match="dll load failed"):
+        proc._receive()
+
+    class _OsErrorPipe:
+        def poll(self, timeout=0):
+            raise OSError("pipe handle invalid")
+
+    proc = JLinkProcess("", lambda: False, RuntimeError)
+    proc._pipe = _OsErrorPipe()
+    with pytest.raises(JLinkProcessExited):
+        proc._receive()
+
+    cancelled = JLinkProcess("", lambda: True, RuntimeError)
+    cancelled._pipe = _EmptyPipe()
+    with pytest.raises(InterruptedError):
+        cancelled._receive()
+
+
+def test_jlink_process_close_waits_gracefully_before_terminate():
+    from transport.rtt_worker import JLinkProcess
+
+    class _SlowExitProc:
+        def __init__(self):
+            self.joins = []
+            self.terminated = False
+            self.closed = False
+            self._alive = True
+
+        def join(self, timeout=None):
+            self.joins.append(timeout)
+            if timeout is None or timeout >= 0.8:
+                self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+        def terminate(self):
+            self.terminated = True
+            self._alive = False
+
+        def kill(self):
+            self._alive = False
+
+        def close(self):
+            self.closed = True
+
+    class _Pipe:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    proc = JLinkProcess("", lambda: False, RuntimeError)
+    fake_proc = _SlowExitProc()
+    fake_pipe = _Pipe()
+    proc._pipe = fake_pipe
+    proc._process = fake_proc
+    proc.close()
+    assert fake_pipe.closed is True
+    assert fake_proc.joins == [1.0]
+    assert fake_proc.terminated is False
+    assert fake_proc.closed is True
+
+
+def test_close_keeps_qt_responsive_and_probe_reserved_until_cleanup():
+    from PyQt5 import sip
+    from PyQt5.QtCore import QCoreApplication, QEvent, QTimer
+
+    cleaning = threading.Event()
+    release = threading.Event()
+
+    class SlowClose(FakeJLink):
+        def close(self):
+            cleaning.set()
+            release.wait(2)
+            super().close()
+
+    jl = SlowClose()
+    conn = _make_conn(jl)
+    other = _make_conn(FakeJLink())
+    try:
+        assert conn.open() and _wait_until(lambda: conn.is_open)
+        start = time.monotonic()
+        conn.close()
+        assert time.monotonic() - start < 0.25
+        conn.deleteLater()
+        assert cleaning.wait(1)
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert not sip.isdeleted(conn)
+        assert not conn.is_open and conn.send(b"x") == 0
+        assert not other.open()
+        # Only the Qt event loop can let this driver finish closing.
+        QTimer.singleShot(0, release.set)
+        assert _wait_until(lambda: conn._thread is None)
+        assert "close" in jl.calls
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert sip.isdeleted(conn)
+        assert other.open() and _wait_until(lambda: other.is_open)
+    finally:
+        release.set()
+        if not sip.isdeleted(conn):
+            conn.close()
+        other.close()
+
+
+def test_timeout_callback_finishes_before_qobject_deletion(monkeypatch):
+    from PyQt5 import sip
+    from PyQt5.QtCore import QCoreApplication, QEvent, Qt
+
+    monkeypatch.setattr(rtt_io, "CONNECT_TIMEOUT_S", 0.2)
+    jl = _GateJLink()
+    conn = _make_conn(jl)
+    in_callback = threading.Event()
+    resume = threading.Event()
+    states = []
+
+    def hold_timeout(_message):
+        in_callback.set()
+        resume.wait(5)
+
+    conn.error_occurred.connect(hold_timeout, Qt.DirectConnection)
+    conn.state_changed.connect(states.append)
+    try:
+        assert conn.open() and jl.entered.wait(1)
+        assert in_callback.wait(2)
+        conn.close()
+        conn.deleteLater()
+        jl.release()
+        assert _wait_until(lambda: conn._thread is None)
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert not sip.isdeleted(conn)
+        assert not conn.open()
+        resume.set()
+        assert _wait_until(lambda: states == [False])
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert sip.isdeleted(conn)
+    finally:
+        jl.release()
+        resume.set()
+        if not sip.isdeleted(conn):
+            conn.close()

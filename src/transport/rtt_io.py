@@ -165,7 +165,6 @@ READ_BURST = 16
 READ_CHUNK = 8192
 WRITE_CHUNK = 512           # 下行缓冲目标侧常见 16~1024，交给 DLL 分批落
 MAX_QUEUED_BYTES = 256 * 1024
-JOIN_TIMEOUT_S = 3.0
 # 运行期读失败宽限：DLL 忙 / 目标复位的瞬间会抛「未知」错误，参考实现直接
 # 吞掉继续读。只有持续这么久都读不动才判定掉线。
 READ_FAIL_GRACE_S = 5.0
@@ -946,6 +945,8 @@ class RttConn(QObject):
         self._closing = False
         self._cb_seen = False
         self._thread = None
+        self._delete_on_finish = False
+        self._notifying_timeout = False
         self._watchdog = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -979,37 +980,43 @@ class RttConn(QObject):
             return self._queued
 
     def open(self):
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            if self._stop.is_set() or self._closing:
-                # 上一轮还在关闭，直到 worker 退出才释放该探针。
-                self.error_occurred.emit(ERR_BUSY)
+        with self._lock:
+            if self._delete_on_finish:
                 return False
-            return True
-        if not self._device:
-            self.error_occurred.emit(ERR_NO_DEVICE)
+            if self._thread is not None or self._notifying_timeout:
+                if not self._stop.is_set() and not self._closing:
+                    return True
+                error = ERR_BUSY
+            elif not self._device:
+                error = ERR_NO_DEVICE
+            elif self._start_worker_locked():
+                return True
+            else:
+                error = ERR_BUSY
+        self.error_occurred.emit(error)
+        return False
+
+    def _start_worker_locked(self):
+        gen = self._gen + 1
+        local_driver = self.jlink_factory is not None or self.pylink_module is not None
+        probe = None if local_driver else self._serial_no
+        thread = threading.Thread(
+            target=self._run, args=(gen, local_driver),
+            name="CommToolRttLoop", daemon=True)
+        if not _claim_worker(thread, probe):
             return False
+        self._gen = gen
         self._closing = False
         self._ready = False
         self._was_open = False
         self._cb_seen = False
         self._probe_serial = self._serial_no
-        self._gen += 1
         self._stop.clear()
-        with self._lock:
-            self._pending.clear()
-            self._queued = 0
-        local_driver = self.jlink_factory is not None or self.pylink_module is not None
-        probe = None if local_driver else self._probe_serial
-        thread = threading.Thread(
-            target=self._run, args=(self._gen, local_driver),
-            name="CommToolRttLoop", daemon=True)
-        if not _claim_worker(thread, probe):
-            self.error_occurred.emit(ERR_BUSY)
-            return False
+        self._pending.clear()
+        self._queued = 0
         self._thread = thread
-        self._arm_watchdog(self._gen)
         try:
+            self._arm_watchdog(gen)
             thread.start()
         except Exception:
             self._disarm_watchdog()
@@ -1032,25 +1039,28 @@ class RttConn(QObject):
         return len(raw)
 
     def close(self):
-        was_open = self._was_open
-        self._was_open = False
-        self._ready = False
-        self._closing = True
-        self._gen += 1
-        self._stop.set()
-        self._disarm_watchdog()
         with self._lock:
+            was_open = self._was_open
+            self._was_open = False
+            self._ready = False
+            self._closing = True
+            self._gen += 1
+            self._stop.set()
             self._pending.clear()
             self._queued = 0
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=JOIN_TIMEOUT_S)
-        if thread is None or not thread.is_alive():
-            # 线程真退出了才松手。下一次 open() 能看见仍在关闭的连接。
-            self._thread = None
-        self._closing = False
+            self._disarm_watchdog()
         if was_open:
             self.state_changed.emit(False)
+
+    def deleteLater(self):
+        with self._lock:
+            self._delete_on_finish = True
+            self._delete_if_idle_locked()
+
+    def _delete_if_idle_locked(self):
+        # Both the driver worker and an in-flight timeout callback use Qt signals.
+        if self._delete_on_finish and self._thread is None and not self._notifying_timeout:
+            super().deleteLater()
 
     # ---- watchdog ----
 
@@ -1074,13 +1084,21 @@ class RttConn(QObject):
 
     def _on_open_timeout(self, gen):
         with self._lock:
-            if gen != self._gen or self._ready or self._was_open or self._closing:
+            if (self._watchdog is not threading.current_thread() or gen != self._gen
+                    or self._thread is None or self._ready
+                    or self._was_open or self._closing):
                 return
             self._stop.set()
             self._ready = False
-        self._disarm_watchdog()
-        self.error_occurred.emit(ERR_TIMEOUT)
-        self.state_changed.emit(False)
+            self._notifying_timeout = True
+            self._disarm_watchdog()
+        try:
+            self.error_occurred.emit(ERR_TIMEOUT)
+            self.state_changed.emit(False)
+        finally:
+            with self._lock:
+                self._notifying_timeout = False
+                self._delete_if_idle_locked()
 
     # ---- worker thread ----
 
@@ -1131,18 +1149,21 @@ class RttConn(QObject):
                 if self._stop.is_set() or self._closing or gen != self._gen:
                     return
                 self._ready = True
-            self._was_open = True
-            self._disarm_watchdog()
+                self._was_open = True
+                self._disarm_watchdog()
             self.state_changed.emit(True)
             self._pump(jlink, gen)
         except Exception as exc:
-            if self._cancelled(gen):
-                return
-            self._ready = False
+            with self._lock:
+                if self._cancelled(gen):
+                    return
+                self._disarm_watchdog()
+                self._ready = False
+                if ready:
+                    self._was_open = False
             if ready:
                 # 会话中断线：与 BLE 相同的 error → state(False) 次序，
                 # 主窗口先按错误收尾，随后的 state(False) 因 conn 已空被忽略。
-                self._was_open = False
                 self.error_occurred.emit(ERR_GONE)
                 self.state_changed.emit(False)
                 return
@@ -1165,7 +1186,13 @@ class RttConn(QObject):
             finally:
                 if local_driver:
                     _JLINK_DLL_LOCK.release()
-                _release_worker(threading.current_thread())
+                with self._lock:
+                    self._disarm_watchdog()
+                    self._thread = None
+                    try:
+                        self._delete_if_idle_locked()
+                    finally:
+                        _release_worker(threading.current_thread())
 
     def _require_probe(self, jlink):
         """没插调试器就立刻失败，别进 open()。

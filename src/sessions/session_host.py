@@ -1527,14 +1527,14 @@ class SessionHostMixin:
                 lambda data, _sid=sid, _c=conn:
                     self._route_session_data(_sid, data, None, _c))
         conn.error_occurred.connect(
-            lambda msg, _sid=sid: self._route_session_error(_sid, msg))
+            lambda msg, _sid=sid: self._route_session_error(_sid, msg, conn))
         conn.state_changed.connect(
-            lambda opened, _sid=sid: self._route_session_state(_sid, opened))
+            lambda opened, _sid=sid: self._route_session_state(_sid, opened, conn))
         notice = getattr(conn, "notice_occurred", None)
         route_notice = getattr(self, "_route_session_notice", None)
         if notice is not None and callable(route_notice):
             # 非致命提示（RTT 控制块还没出现等）：只 toast，不动连接状态。
-            notice.connect(lambda msg, _sid=sid: self._route_session_notice(_sid, msg))
+            notice.connect(lambda msg, _sid=sid: self._route_session_notice(_sid, msg, conn))
         rtt_ready = getattr(conn, "control_block_found", None)
         route_rtt_ready = getattr(self, "_route_session_rtt_ready", None)
         if rtt_ready is not None and callable(route_rtt_ready):
@@ -1618,18 +1618,18 @@ class SessionHostMixin:
         finally:
             self._display_context = previous
 
-    def _route_session_error(self, session_id, msg):
+    def _route_session_error(self, session_id, msg, source_conn=None):
         s = self.find_session(session_id)
-        if s is None:
+        if s is None or (source_conn is not None and s.conn is not source_conn):
             return
         active = s.id == self._active_session_id
         with self._with_session(s):
             self._on_conn_error(msg, update_ui=active)
         self._refresh_session_tab_styles()
 
-    def _route_session_state(self, session_id, opened):
+    def _route_session_state(self, session_id, opened, source_conn=None):
         s = self.find_session(session_id)
-        if s is None:
+        if s is None or (source_conn is not None and s.conn is not source_conn):
             return
         if opened and s._conn_proto == "RTT" and s._reconnect_snapshot:
             probe = getattr(s.conn, "probe_serial", "")

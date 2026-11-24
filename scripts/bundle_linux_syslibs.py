@@ -154,7 +154,7 @@ def write_launcher(app_dir):
             os.chmod(real, 0o755)
     script = os.path.join(app_dir, "CommTool")
     body = """#!/usr/bin/env bash
-HERE="$(cd "$(dirname "$0")" && pwd)"
+HERE="$(dirname -- "$(readlink -f -- "$0")")"
 export LD_LIBRARY_PATH="$HERE/_internal${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   if [ -S /tmp/.X11-unix/X0 ]; then
