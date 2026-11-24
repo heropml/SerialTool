@@ -1,17 +1,17 @@
 {
-  "version": "1.8.9",
-  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.8.9/CommTool_Setup_v1.8.9.exe",
+  "version": "1.9.0",
+  "url": "https://gitee.com/heropml/SerialTool/releases/download/comm-v1.9.0/CommTool_Setup_v1.9.0.exe",
   "url_mac": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.9/CommTool_v1.8.9.dmg"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.9.0/CommTool_v1.9.0.dmg"
   ],
   "url_linux": [
-    "https://github.com/heropml/SerialTool/releases/download/comm-v1.8.9/CommTool_Setup_v1.8.9_linux_x86_64.run"
+    "https://github.com/heropml/SerialTool/releases/download/comm-v1.9.0/CommTool_Setup_v1.9.0_linux_x86_64.run"
   ],
-  "sha256": "6cb6d21b0fae32ee3ef56ccd615ee4b154c171f03ecba358d70d72951156f1fe",
-  "size": 43240658,
-  "sha256_mac": "465a9d53181ebec9f6f94a55b4ead232c9bac35017662639078eec73cfb29395",
-  "size_mac": 51775667,
-  "sha256_linux": "aae0d98315869ccb7da24983e51b44864af005ab73cf21e33787c99b546fe287",
-  "size_linux": 78102991,
-  "notes": "串口调试助手 / 网络调试工具，同一窗口可同时使用多把 J-Link。展开调试器列表可刷新探针，重连沿用原探针。RTT 通道无法发送时保留连接。"
+  "sha256": "0465748de7d50ed2c3c90f6c4e0b9ad9f72a186859111d0b3016454b138dfdf6",
+  "size": 43236434,
+  "sha256_mac": "3cc3fb12059b5874bb62f3ba73df3667637f49cc142e03486df8ec839f3944bc",
+  "size_mac": 51741774,
+  "sha256_linux": "50ad4ad4257238a5834b2dad8991baace465c9f20350040486ea9aba33f3d323",
+  "size_linux": 78101584,
+  "notes": "串口调试助手 / 网络调试工具，修复 RTT 断开时的界面卡顿。Linux 安装器检查并暂存新版，升级失败时尝试恢复旧版和启动入口。"
 }
