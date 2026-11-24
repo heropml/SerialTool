@@ -28,11 +28,16 @@ class LinuxInstallerTests(unittest.TestCase):
         (self.payload / "CommTool").write_text(
             '#!/bin/sh\ncd "$(dirname "$0")"\ncat _internal/version\nexec ./CommTool.bin "$@"\n')
         (self.payload / "_internal" / "version").write_text("old\n")
-        shutil.copy2("/bin/sleep", str(self.payload / "CommTool.bin"))
+        # Bash stays executable when renamed, including on runners whose
+        # coreutils are a multicall binary that checks the invoked name.
+        binary = self.payload / "CommTool.bin"
+        shutil.copy2(shutil.which("bash"), str(binary))
+        self.old_binary = binary.read_bytes()
         self.install()
         (self.prefix / "profile.ini").write_text("user settings")
         (self.payload / "_internal" / "version").write_text("new\n")
-        shutil.copy2("/bin/true", str(self.payload / "CommTool.bin"))
+        with binary.open("ab") as stream:
+            stream.write(b"new release")
 
     def install(self, success=True):
         result = subprocess.run(["bash", str(self.script)], env=self.env,
@@ -42,20 +47,24 @@ class LinuxInstallerTests(unittest.TestCase):
         return output
 
     def assert_version(self, version):
-        self.assertEqual(subprocess.check_output([str(self.prefix / "CommTool"), "0"]),
+        self.assertEqual(subprocess.check_output([str(self.prefix / "CommTool"), "-c", ":"]),
                          (version + "\n").encode())
         self.assertEqual((self.prefix / "profile.ini").read_text(), "user settings")
         self.assertFalse(list(self.prefix.glob(".commtool-install.*")))
 
     def test_upgrade_replaces_running_binary(self):
-        running = subprocess.Popen([str(self.prefix / "CommTool.bin"), "60"])
+        running = subprocess.Popen([str(self.prefix / "CommTool.bin"), "-c", "read -t 60 line"],
+                                   stdin=subprocess.PIPE)
         try:
             self.install()
             self.assertIsNone(running.poll())
             self.assert_version("new")
+            self.assertEqual((self.prefix / "CommTool.bin").read_bytes(),
+                             self.old_binary + b"new release")
         finally:
             running.terminate()
             running.wait()
+            running.stdin.close()
 
     def test_incomplete_payload_keeps_old_version(self):
         (self.payload / "CommTool.bin").unlink()
@@ -76,9 +85,9 @@ class LinuxInstallerTests(unittest.TestCase):
 
     def test_plain_elf_launcher_can_be_installed_without_wrapper(self):
         (self.payload / "CommTool.bin").unlink()
-        shutil.copy2("/bin/true", str(self.payload / "CommTool"))
+        shutil.copy2(shutil.which("bash"), str(self.payload / "CommTool"))
         self.install()
-        subprocess.check_call([str(self.prefix / "CommTool")])
+        subprocess.check_call([str(self.prefix / "CommTool"), "-c", ":"])
 
     def test_failed_install_in_other_prefix_restores_shared_shortcuts(self):
         from scripts.bundle_linux_syslibs import write_launcher
@@ -97,7 +106,7 @@ class LinuxInstallerTests(unittest.TestCase):
         self.assertEqual(cli.resolve(), self.prefix / "CommTool")
         self.assertEqual(menu.read_bytes(), original_menu)
         self.assertFalse((alternate / "CommTool").exists())
-        subprocess.check_call([str(cli), "0"])
+        subprocess.check_call([str(cli), "-c", ":"])
         self.assertEqual((self.prefix / "_internal" / "version").read_text(), "old\n")
         self.assertEqual((self.prefix / "profile.ini").read_text(), "user settings")
 
@@ -127,7 +136,7 @@ class LinuxInstallerTests(unittest.TestCase):
         self.env["PATH"] = str(commands) + os.pathsep + self.env["PATH"]
         self.install(success=False)
         self.assert_version("old")
-        self.assertEqual((self.prefix / "CommTool.bin").read_bytes(), Path("/bin/sleep").read_bytes())
+        self.assertEqual((self.prefix / "CommTool.bin").read_bytes(), self.old_binary)
         mv.unlink()
         self.install()
         self.assert_version("new")
@@ -155,7 +164,7 @@ class LinuxInstallerTests(unittest.TestCase):
         output = self.install(success=False)
         work, = self.prefix.glob(".commtool-install.*")
         self.assertIn("backup retained at " + str(work), output)
-        self.assertEqual((work / "old" / "CommTool.bin").read_bytes(), Path("/bin/sleep").read_bytes())
+        self.assertEqual((work / "old" / "CommTool.bin").read_bytes(), self.old_binary)
         self.assertEqual((self.prefix / "_internal" / "version").read_text(), "old\n")
         self.assertTrue((self.prefix / "CommTool").exists())
         self.assertFalse(list(desktop.glob(".commtool-entry.*")))
