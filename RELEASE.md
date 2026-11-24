@@ -23,7 +23,8 @@ GitHub 和 Gitee 两个仓库（`heropml/SerialTool`，`CommTool` 分支），�
 
 - 历史上 Gitee 很多版本缺 dmg，是**当时漏传**，不是规则；以本表为准。
 - Linux `.run` 符合 Gitee 的 100 MB 单文件限制时，脚本会尝试同步上传。
-- **Gitee 附件配额 1GB**。空间不足时按 [AGENTS.md](AGENTS.md) 核对需要腾出的空间，由用户指定旧版本，归档并校验后在两站整版清理。
+- **两站只保留最近 20 个 CommTool 正式版本**。按版本号排序，发版时先归档并校验超期版本的两站发布说明、全部安装附件和标签，再同步删除对应 Release、附件及远端标签。
+- **Gitee 附件配额 1GB**。清理超期版本后若空间仍不足，核对现有附件和待上传文件的实际大小，由用户决定是否清理最近 20 版中的版本。完整流程见 [AGENTS.md](AGENTS.md)。
 - `latest.json`：`url` 指 **Gitee** 的 Setup.exe；`url_mac` / `url_linux` **只填 GitHub 直链**（历史惯例，不改）。
 - 顺序：**先 Windows**（建两站 Release + 传 Setup.exe + 写 `latest.json`）→ 再 macOS / Linux 往**同一个** `comm-v<版本>` 追加。
   各脚本只替换**同名**附件，互不删除；追加后会用 `docs/RELEASE_NOTES.md` 同步两站正文。
@@ -229,6 +230,7 @@ curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" \
 - [ ] `src/version.py` 改版本号
 - [ ] `latest.json` 改 version / url（url 指 Gitee）/ notes
 - [ ] 同步 `docs/RELEASE_NOTES.md`、README 和三语使用说明，检查三份使用说明各保留最近 5 个版本的目录和更新正文
+- [ ] 按版本号核对两站最近 20 个 CommTool 正式版，先归档校验，再整版清理超出范围的 Release、安装附件和远端标签
 - [ ] 打包：`build.bat` → ISCC（`MSYS_NO_PATHCONV=1`，`/DMyAppVersion=`）（v1.8.4 起不再打 onefile）
 - [ ] `git push github CommTool`
 - [ ] `git push gitee CommTool` ← **易漏**（走 SSH，见 6.0a）
@@ -286,5 +288,4 @@ diff <(curl -sL https://gitee.com/heropml/SerialTool/raw/CommTool/latest.json) \
      <(curl -sL https://raw.githubusercontent.com/heropml/SerialTool/CommTool/latest.json) && echo same
 ```
 
-已知的历史差异（不用修）：Gitee 镜像从 `comm-v1.1.2` 起，更早的 Release 与 SerialTool `v1.0.x`、NetworkTool `net-v*` 只在 GitHub；
-Gitee 上是附注 tag、GitHub 上是轻量 tag（哈希不同但指向同一提交），唯 `comm-v1.1.2`、`comm-v1.1.5` 两个老 tag 两边指向的提交不同。
+CommTool 只保留最近 20 个正式版。核对两站的标签时以最终指向的提交为准，附注标签和轻量标签的对象 SHA 可以不同。SerialTool `v1.0.x` 和 NetworkTool `net-v*` 沿用各自的历史记录。
